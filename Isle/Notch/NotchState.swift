@@ -40,11 +40,22 @@ enum NotchStateResolver {
 }
 
 extension Animation {
-    /// Shared open/close curve. A spring rather than an ease so the panel
-    /// settles with a little weight — matches the system Dynamic Island feel
-    /// the spec asks for. `bounce` kept low; anything higher reads as toylike
-    /// at this size.
-    static var notch: Animation {
+    /// Opening curve. A spring rather than an ease so the panel settles with a
+    /// little weight — matches the system Dynamic Island feel the spec asks
+    /// for. Underdamped on purpose: overshooting *larger* on the way open is
+    /// the part that feels good.
+    static var notchOpen: Animation {
         .spring(response: 0.34, dampingFraction: 0.76, blendDuration: 0)
+    }
+
+    /// Closing curve — critically damped, so it cannot overshoot.
+    ///
+    /// The same underdamped spring used for opening looked wrong closing: the
+    /// collapsed pill is exactly the height of the physical camera housing, so
+    /// any undershoot made it briefly *shorter* than the hardware and exposed
+    /// the desktop either side of the notch. Settling without overshoot is the
+    /// whole point here.
+    static var notchClose: Animation {
+        .spring(response: 0.30, dampingFraction: 1.0, blendDuration: 0)
     }
 }

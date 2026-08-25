@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  This key has to live in a real file rather than an
+	  INFOPLIST_KEY_ build setting. Xcode only translates a curated
+	  list of INFOPLIST_KEY_* settings into the generated plist, and
+	  NSAudioCaptureUsageDescription is not on it — setting it there
+	  fails silently, producing an app with no usage description.
+
+	  Without this key AudioHardwareCreateProcessTap still returns
+	  noErr, the aggregate device is still created, and AudioDeviceStart
+	  still succeeds — but the IOProc is never called even once, and no
+	  permission prompt is ever shown. Everything looks healthy and no
+	  audio arrives.
+
+	  The remaining keys are still supplied via INFOPLIST_KEY_ settings
+	  and merged into this file by GENERATE_INFOPLIST_FILE.
+	-->
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Isle reads system audio levels to animate the notch waveform. Audio is analysed in memory and never recorded or sent anywhere.</string>
+</dict>
+</plist>

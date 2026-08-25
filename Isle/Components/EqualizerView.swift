@@ -60,10 +60,15 @@ struct EqualizerView: View {
         // One gradient shading for the whole strip, sampled per bar, so the
         // ramp is continuous across the waveform instead of restarting in
         // each bar.
+        //
+        // Runs bottom-to-top. Because the bars are symmetric about the centre
+        // line, a top-to-bottom ramp made each bar read as mirrored — bright
+        // at the top, bright again at the bottom, darkest in the middle. This
+        // way the colour travels in a single direction across the strip.
         let shading = GraphicsContext.Shading.linearGradient(
-            Gradient(colors: [palette.accent, palette.primary, palette.secondary]),
-            startPoint: CGPoint(x: 0, y: 0),
-            endPoint: CGPoint(x: 0, y: size.height)
+            Gradient(colors: [palette.primary, palette.accent]),
+            startPoint: CGPoint(x: 0, y: size.height),
+            endPoint: CGPoint(x: 0, y: 0)
         )
 
         for index in 0..<barCount {

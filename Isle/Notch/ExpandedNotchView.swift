@@ -17,13 +17,19 @@ struct ExpandedNotchView: View {
     var body: some View {
         // Wide gap after the artwork: it pushes the whole text/scrubber/
         // controls column to the right, which is what shortens the playbar.
-        HStack(spacing: 32) {
+        HStack(spacing: 22) {
             artwork
                 // Extra leading inset on the artwork alone, so the album sits
                 // further in from the edge than the trailing margin. Done here
                 // rather than widening the root padding, which would pull the
                 // right edge in by the same amount and undo the shift.
-                .padding(.leading, 10)
+                .padding(.leading, 12)
+                // Raised out of its layout slot into the housing band. That's
+                // safe only because the artwork spans x 32-146 while the
+                // camera cutout starts at x 167 — there is no hardware above
+                // the album. `offset` rather than negative padding so the
+                // text column's own position is left undisturbed.
+                .offset(y: -10)
 
             // Spacers rather than fixed gaps: the row's height is driven by
             // the artwork, and letting the text/scrubber/controls distribute
@@ -45,7 +51,7 @@ struct ExpandedNotchView: View {
                     trackLabels
                     Spacer().frame(height: 6)
                     scrubber
-                    Spacer().frame(height: 8)
+                    Spacer().frame(height: 6)
                     controls
                     Spacer(minLength: 0)
                 } else if !viewModel.hasLiveActivity {
@@ -53,6 +59,11 @@ struct ExpandedNotchView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            // Nudged down to sit clear of the housing band now that the title
+            // and artist are larger. The column's own height is ~107 against
+            // 114 of usable space, so there is only a few points of slack —
+            // raising this further will clip the controls.
+            .offset(y: 4)
         }
         .frame(maxHeight: .infinity)
         .foregroundStyle(.white)
@@ -94,7 +105,8 @@ struct ExpandedNotchView: View {
         VStack(alignment: .leading, spacing: 1) {
             MarqueeText(
                 text: media.title.isEmpty ? "Not playing" : media.title,
-                font: .system(size: 13, weight: .semibold)
+                font: .system(size: 15, weight: .semibold),
+                lineHeight: 19
             )
 
             // No HStack wrapper: it gave the marquee an ambiguous width to
@@ -103,8 +115,8 @@ struct ExpandedNotchView: View {
             // rather than inheriting the 18pt title default.
             MarqueeText(
                 text: media.artist,
-                font: .system(size: 11, weight: .regular),
-                lineHeight: 15
+                font: .system(size: 13, weight: .regular),
+                lineHeight: 17
             )
             .foregroundStyle(.white.opacity(0.7))
         }

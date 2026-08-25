@@ -49,6 +49,10 @@ final class SystemAudioLevels: ObservableObject {
 
     private var displayTimer: Timer?
 
+    #if DEBUG
+    private var diagnosticTimer: Timer?
+    #endif
+
     init(bandCount: Int = 6) {
         self.bandCount = bandCount
         self.analyzer = AudioAnalyzer(bandCount: bandCount)
@@ -77,6 +81,11 @@ final class SystemAudioLevels: ObservableObject {
     func stop() {
         displayTimer?.invalidate()
         displayTimer = nil
+
+        #if DEBUG
+        diagnosticTimer?.invalidate()
+        diagnosticTimer = nil
+        #endif
 
         if aggregateID != kAudioObjectUnknown {
             if let ioProcID {
@@ -210,6 +219,32 @@ final class SystemAudioLevels: ObservableObject {
     /// SwiftUI from it would be pure wasted work.
     private func startPublishing() {
         let analyzer = self.analyzer
+
+        #if DEBUG
+        diagnosticTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                let (calls, peak) = analyzer.drainDiagnostics()
+                let levels = analyzer.snapshot()
+                    .map { String(format: "%.2f", $0) }
+                    .joined(separator: " ")
+                let line = "calls=\(calls) peak=\(String(format: "%.5f", peak)) levels=[\(levels)]\n"
+                // A file rather than NSLog: this app is LSUIElement and its
+                // NSLog output does not reach the unified log where it can be
+                // read back, which makes NSLog useless for diagnosing it.
+                if let data = line.data(using: .utf8) {
+                    let url = URL(fileURLWithPath: "/tmp/isle-audio.log")
+                    if let handle = try? FileHandle(forWritingTo: url) {
+                        handle.seekToEndOfFile()
+                        try? handle.write(contentsOf: data)
+                        try? handle.close()
+                    } else {
+                        try? data.write(to: url)
+                    }
+                }
+            }
+        }
+        #endif
+
         displayTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             // Timer callbacks genuinely are delivered on the main run loop, so
             // assuming main-actor isolation here is sound — unlike in the audio
@@ -245,6 +280,10 @@ private final class AudioAnalyzer: @unchecked Sendable {
     private let lock = NSLock()
     private var smoothed: [Double]
 
+    /// Diagnostics, guarded by the same lock as `smoothed`.
+    private var callCount = 0
+    private var peak: Float = 0
+
     init(bandCount: Int) {
         self.bandCount = bandCount
         self.smoothed = Array(repeating: 0, count: bandCount)
@@ -272,6 +311,22 @@ private final class AudioAnalyzer: @unchecked Sendable {
         return smoothed
     }
 
+    /// Callback count and peak sample seen since the last call, then reset.
+    ///
+    /// Exists to tell apart the two failure modes that look identical from the
+    /// UI: the IOProc never firing (tap/aggregate is broken) versus it firing
+    /// with silent buffers (permission denied — Core Audio hands over zeroes
+    /// rather than returning an error).
+    func drainDiagnostics() -> (calls: Int, peak: Float) {
+        lock.lock()
+        defer {
+            callCount = 0
+            peak = 0
+            lock.unlock()
+        }
+        return (callCount, peak)
+    }
+
     /// Called on the realtime audio thread.
     func process(_ bufferList: UnsafePointer<AudioBufferList>) {
         let buffers = UnsafeMutableAudioBufferListPointer(
@@ -284,7 +339,18 @@ private final class AudioAnalyzer: @unchecked Sendable {
         let available = Int(first.mDataByteSize) / MemoryLayout<Float>.size
         guard available > 0 else { return }
 
-        analyse(data.bindMemory(to: Float.self, capacity: available), count: available)
+        let samples = data.bindMemory(to: Float.self, capacity: available)
+
+        // Peak before any windowing or smoothing, so it reflects exactly what
+        // Core Audio handed us.
+        var framePeak: Float = 0
+        vDSP_maxmgv(samples, 1, &framePeak, vDSP_Length(available))
+        lock.lock()
+        callCount += 1
+        peak = max(peak, framePeak)
+        lock.unlock()
+
+        analyse(samples, count: available)
     }
 
     /// Log-spaced bands rather than linear: linear bands put nearly all of
@@ -324,6 +390,13 @@ private final class AudioAnalyzer: @unchecked Sendable {
             }
         }
 
+        // vDSP_fft_zrip returns results scaled by 2N, so raw magnitudes grow
+        // with the transform size and have no fixed relationship to the input
+        // amplitude. Left unscaled, every band pegged at full height on any
+        // audible signal — the meter was saturated rather than responsive.
+        var scale = Float(1) / Float(2 * fftSize)
+        vDSP_vsmul(magnitudes, 1, &scale, &magnitudes, 1, vDSP_Length(halfSize))
+
         var newLevels = [Double](repeating: 0, count: bandCount)
         // Skip bin 0 (DC) — it carries no audible information and would peg
         // the first bar on any signal with an offset.
@@ -344,8 +417,15 @@ private final class AudioAnalyzer: @unchecked Sendable {
 
             // dB, then map a useful window onto 0...1. Amplitude is
             // perceptually logarithmic, so a linear meter looks dead.
+            // Music's energy falls off steeply with frequency, so without a
+            // tilt the top bands sit near zero and the waveform looks like it
+            // only has three working bars. 4dB per band measured roughly flat
+            // across real tracks at bandCount 6 — note this is coupled to the
+            // band count, since fewer bands means each spans a wider range and
+            // needs more correction.
+            let tilt = Double(band) * 4
             let db = 20 * log10(max(mean, 1e-7))
-            let normalised = (Double(db) + 70) / 60
+            let normalised = (Double(db) + tilt + 70) / 60
             newLevels[band] = min(max(normalised, 0), 1)
         }
 

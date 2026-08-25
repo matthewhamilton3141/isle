@@ -202,7 +202,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Isle;
 				INFOPLIST_KEY_LSUIElement = YES;
-				INFOPLIST_KEY_NSAudioCaptureUsageDescription = "Isle reads system audio levels to animate the notch waveform. Audio is analysed in memory and never recorded or sent anywhere.";
+				INFOPLIST_FILE = "Isle-Info.plist";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -226,7 +226,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Isle;
 				INFOPLIST_KEY_LSUIElement = YES;
-				INFOPLIST_KEY_NSAudioCaptureUsageDescription = "Isle reads system audio levels to animate the notch waveform. Audio is analysed in memory and never recorded or sent anywhere.";
+				INFOPLIST_FILE = "Isle-Info.plist";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

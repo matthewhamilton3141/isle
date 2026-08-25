@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import AppKit
 import Combine
 
 @MainActor
@@ -62,6 +63,26 @@ final class NotchViewModel: ObservableObject {
     func stop() {
         adapter.stop()
         audio.stop()
+    }
+
+    // MARK: - Haptics
+
+    private var lastHapticDate: Date = .distantPast
+
+    /// One tick per open/close, throttled.
+    ///
+    /// Expanding changes the notch's shape, which changes its hit-test region,
+    /// which can hand back a fresh hover event — so a single deliberate open
+    /// could emit a burst of ticks that felt like a drum roll. The throttle
+    /// collapses any such burst into the one click the gesture deserves.
+    func playTransitionHaptic() {
+        let now = Date()
+        guard now.timeIntervalSince(lastHapticDate) > 0.35 else { return }
+        lastHapticDate = now
+        NSHapticFeedbackManager.defaultPerformer.perform(
+            .levelChange,
+            performanceTime: .now
+        )
     }
 
     // MARK: - Playback clock

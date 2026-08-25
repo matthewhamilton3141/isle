@@ -11,6 +11,7 @@
 //
 
 import SwiftUI
+import AppKit
 
 struct NotchRootView: View {
     @ObservedObject var viewModel: NotchViewModel
@@ -44,7 +45,14 @@ struct NotchRootView: View {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .animation(.notch, value: state)
+        .animation(state.isExpanded ? .notchOpen : .notchClose, value: state)
+        .onChange(of: state) { previous, current in
+            // Only on the open/close transition itself, not on changes between
+            // the two expanded states — those aren't a gesture the user made
+            // and buzzing for them would feel random.
+            guard previous.isExpanded != current.isExpanded else { return }
+            viewModel.playTransitionHaptic()
+        }
     }
 
     private var notch: some View {
@@ -66,14 +74,25 @@ struct NotchRootView: View {
                 )
                 .fill(
                     LinearGradient(
-                        colors: [
-                            palette.secondary.opacity(0.20),
-                            palette.primary.opacity(0.42),
+                        stops: [
+                            // Nothing above 0.40 — that lands roughly on the
+                            // artist line, so the wash starts below the text
+                            // rather than running the full height of the
+                            // panel. Still strictly one direction: it only
+                            // ever gets stronger toward the bottom.
+                            .init(color: .clear, location: 0.40),
+                            .init(color: palette.secondary.opacity(0.10), location: 0.64),
+                            .init(color: palette.primary.opacity(0.24), location: 1.0),
                         ],
                         startPoint: .top,
                         endPoint: .bottom
                     )
                 )
+                // Artwork palettes are pulled from album covers, which are
+                // often heavily saturated — taken neat the wash read as a
+                // colour cast over the panel rather than ambient light. Pulling
+                // saturation down keeps the hue association without the glare.
+                .saturation(0.35)
                 .opacity(state.isExpanded ? 1 : 0)
             }
 
@@ -96,7 +115,7 @@ struct NotchRootView: View {
             )
         )
         .onHover { hovering in
-            withAnimation(.notch) {
+            withAnimation(hovering ? .notchOpen : .notchClose) {
                 viewModel.isHovering = hovering
             }
         }

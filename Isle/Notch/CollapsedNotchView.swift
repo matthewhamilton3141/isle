@@ -113,7 +113,10 @@ struct CollapsedNotchView: View {
                 )
             }
         }
-        .frame(width: 18, height: 18)
-        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        // 22 in a 32pt-tall collapsed notch leaves 5pt of breathing room top
+        // and bottom, which is about as large as this can go before it starts
+        // touching the edges of the pill.
+        .frame(width: 22, height: 22)
+        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
     }
 }
