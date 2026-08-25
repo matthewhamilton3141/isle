@@ -30,6 +30,14 @@ struct NotchRootView: View {
         ArtworkColors.palette(from: viewModel.media.artwork)
     }
 
+    /// Height of the physical camera housing. Content in the expanded panel
+    /// has to start below this. Falls back to the common 32pt housing if
+    /// metrics aren't available yet, which is safer than falling back to 0 —
+    /// guessing low hides content, guessing high only wastes a few points.
+    private var notchBandHeight: CGFloat {
+        viewModel.metrics?.notchSize.height ?? 32
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             notch
@@ -46,10 +54,11 @@ struct NotchRootView: View {
                 bottomCornerRadius: state.isExpanded ? 22 : 12
             )
             .fill(.black)
-            // Artwork colour washing up from the bottom edge. Rising rather
-            // than falling so it reads as light pooling under the album art
-            // instead of a header bar, and so the top stays pure black where
-            // it meets the physical bezel.
+            // A single directional wash from one artwork colour to the other,
+            // travelling upward: secondary at the top, primary pooling at the
+            // bottom. Both ends are real colours rather than fading to clear,
+            // so the ramp reads as one continuous direction instead of
+            // brightening toward the middle and falling away again.
             .overlay {
                 NotchShape(
                     topCornerRadius: state.isExpanded ? 12 : 8,
@@ -57,10 +66,9 @@ struct NotchRootView: View {
                 )
                 .fill(
                     LinearGradient(
-                        stops: [
-                            .init(color: .clear, location: 0),
-                            .init(color: palette.primary.opacity(0.10), location: 0.55),
-                            .init(color: palette.primary.opacity(0.30), location: 1),
+                        colors: [
+                            palette.secondary.opacity(0.20),
+                            palette.primary.opacity(0.42),
                         ],
                         startPoint: .top,
                         endPoint: .bottom
@@ -70,8 +78,13 @@ struct NotchRootView: View {
             }
 
             content
-                .padding(.horizontal, state.isExpanded ? 18 : 10)
-                .padding(.vertical, state.isExpanded ? 14 : 0)
+                .padding(.horizontal, state.isExpanded ? 22 : 10)
+                // Reserve the camera housing's band. Nothing may be drawn in
+                // the top `notchHeight` points of the expanded panel — that's
+                // physical hardware, and anything placed there is simply
+                // invisible rather than merely obscured.
+                .padding(.top, state.isExpanded ? notchBandHeight + 2 : 0)
+                .padding(.bottom, state.isExpanded ? 8 : 0)
         }
         .frame(width: size.width, height: size.height)
         // Restrict both hover and clicks to the drawn shape, so the corners

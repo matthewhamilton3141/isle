@@ -35,7 +35,14 @@ struct NotchMetrics {
     static let collapsedSideInset: CGFloat = 46
 
     /// Size of the hover-expanded panel.
-    static let expandedSize = CGSize(width: 520, height: 170)
+    ///
+    /// Height accounts for the dead band under the camera housing: the top
+    /// `notchSize.height` points of the expanded panel sit behind the physical
+    /// cutout and can't show anything, so the usable content area is that much
+    /// shorter than the panel. At 156 the usable content area is 114pt, which
+    /// is what the artwork size in ExpandedNotchView is sized against — the
+    /// two numbers move together.
+    static let expandedSize = CGSize(width: 520, height: 156)
 
     /// Fraction of the collapsed width given to music when both music and a
     /// Claude Code activity are live. See the split-view rule in spec 3.1 —

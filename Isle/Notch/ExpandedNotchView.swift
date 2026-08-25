@@ -15,8 +15,15 @@ struct ExpandedNotchView: View {
     private var media: MediaPlaybackModel { viewModel.media }
 
     var body: some View {
-        HStack(spacing: 14) {
+        // Wide gap after the artwork: it pushes the whole text/scrubber/
+        // controls column to the right, which is what shortens the playbar.
+        HStack(spacing: 32) {
             artwork
+                // Extra leading inset on the artwork alone, so the album sits
+                // further in from the edge than the trailing margin. Done here
+                // rather than widening the root padding, which would pull the
+                // right edge in by the same amount and undo the shift.
+                .padding(.leading, 10)
 
             // Spacers rather than fixed gaps: the row's height is driven by
             // the artwork, and letting the text/scrubber/controls distribute
@@ -29,11 +36,18 @@ struct ExpandedNotchView: View {
                 }
 
                 if media.hasTrack {
+                    // Fixed gaps between the three rows, flexible space only
+                    // at the ends. Previously the inner gaps were flexible
+                    // too, so any spare height was spent pushing the labels up
+                    // and the controls down — the group drifted apart instead
+                    // of staying together and centring.
+                    Spacer(minLength: 0)
                     trackLabels
-                    Spacer(minLength: 4)
+                    Spacer().frame(height: 6)
                     scrubber
-                    Spacer(minLength: 4)
+                    Spacer().frame(height: 8)
                     controls
+                    Spacer(minLength: 0)
                 } else if !viewModel.hasLiveActivity {
                     idlePlaceholder
                 }
@@ -51,6 +65,8 @@ struct ExpandedNotchView: View {
             if let image = media.artwork {
                 Image(nsImage: image)
                     .resizable()
+                    .interpolation(.high)
+                    .antialiased(true)
                     .aspectRatio(contentMode: .fill)
             } else {
                 LinearGradient(
@@ -65,8 +81,11 @@ struct ExpandedNotchView: View {
                 }
             }
         }
-        .frame(width: 108, height: 108)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        // Sized to fill the usable content height (panel 170 minus the
+        // reserved housing band and vertical padding). Raising this without
+        // also raising NotchMetrics.expandedSize will clip it.
+        .frame(width: 114, height: 114)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     // MARK: - Text
@@ -78,13 +97,16 @@ struct ExpandedNotchView: View {
                 font: .system(size: 13, weight: .semibold)
             )
 
-            HStack(spacing: 4) {
-                MarqueeText(
-                    text: media.artist,
-                    font: .system(size: 11, weight: .regular)
-                )
-                .foregroundStyle(.white.opacity(0.7))
-            }
+            // No HStack wrapper: it gave the marquee an ambiguous width to
+            // measure against, which is the other half of why long artist
+            // strings failed to scroll. lineHeight is trimmed to suit 11pt
+            // rather than inheriting the 18pt title default.
+            MarqueeText(
+                text: media.artist,
+                font: .system(size: 11, weight: .regular),
+                lineHeight: 15
+            )
+            .foregroundStyle(.white.opacity(0.7))
         }
     }
 
@@ -127,20 +149,28 @@ struct ExpandedNotchView: View {
             let progress = viewModel.displayProgress(at: context.date)
             let elapsed = progress * media.duration
 
-            VStack(spacing: 3) {
+            VStack(spacing: 2) {
                 GeometryReader { proxy in
                     ZStack(alignment: .leading) {
                         Capsule()
                             .fill(.white.opacity(0.22))
 
+                        // Fixed white rather than palette.accent: the accent is
+                        // derived from artwork and on a dark or low-contrast
+                        // cover the filled portion became hard to read against
+                        // the track behind it.
                         Capsule()
-                            .fill(palette.accent)
+                            .fill(.white)
                             .frame(width: max(0, proxy.size.width * progress))
                     }
+                    // Visible track is 6pt; the hit area is the full
+                    // GeometryReader height so the grab target stays generous.
+                    .frame(height: 6)
+                    .frame(maxHeight: .infinity)
                     .contentShape(Rectangle())
                     .gesture(dragGesture(width: proxy.size.width))
                 }
-                .frame(height: 4)
+                .frame(height: 10)
 
                 HStack {
                     Text(TimeFormatter.string(from: elapsed))
@@ -171,29 +201,37 @@ struct ExpandedNotchView: View {
     // MARK: - Controls
 
     private var controls: some View {
-        HStack(spacing: 16) {
-            controlButton("shuffle", isActive: media.isShuffled) {
+        // One tight cluster rather than shuffle and repeat pinned to the far
+        // edges. The transport keys are the primary targets so they're sized
+        // up, and the two mode toggles sit right alongside them, smaller and
+        // dimmer, reading as secondary without being flung to the corners.
+        HStack(spacing: 11) {
+            Spacer(minLength: 0)
+
+            controlButton("shuffle", size: 13, isActive: media.isShuffled) {
                 viewModel.toggleShuffle()
             }
 
-            Spacer(minLength: 0)
-
-            controlButton("backward.fill") { viewModel.previousTrack() }
+            controlButton("backward.fill", size: 21) { viewModel.previousTrack() }
 
             controlButton(
                 media.isPlaying ? "pause.fill" : "play.fill",
-                size: 17
+                size: 28
             ) {
                 viewModel.togglePlayPause()
             }
 
-            controlButton("forward.fill") { viewModel.nextTrack() }
+            controlButton("forward.fill", size: 21) { viewModel.nextTrack() }
 
-            Spacer(minLength: 0)
-
-            controlButton(media.repeatMode.symbolName, isActive: media.repeatMode.isActive) {
+            controlButton(
+                media.repeatMode.symbolName,
+                size: 13,
+                isActive: media.repeatMode.isActive
+            ) {
                 viewModel.cycleRepeat()
             }
+
+            Spacer(minLength: 0)
         }
         .disabled(!viewModel.canControlPlayback)
         .opacity(viewModel.canControlPlayback ? 1 : 0.4)
@@ -209,7 +247,7 @@ struct ExpandedNotchView: View {
             Image(systemName: symbol)
                 .font(.system(size: size, weight: .medium))
                 .foregroundStyle(isActive ? .white : .white.opacity(0.4))
-                .frame(width: size + 10, height: size + 10)
+                .frame(width: size + 7, height: size + 7)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

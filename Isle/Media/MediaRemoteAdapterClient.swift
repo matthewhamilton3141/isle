@@ -219,11 +219,31 @@ final class MediaRemoteAdapterClient {
         if let base64 = payload.artworkData {
             let cleaned = base64.trimmingCharacters(in: .whitespacesAndNewlines)
             if let data = Data(base64Encoded: cleaned) {
-                current.artwork = NSImage(data: data)
+                current.artwork = Self.decodeArtwork(data)
             }
         } else if !isDiff {
             current.artwork = nil
         }
+    }
+
+    /// Decodes artwork with its `size` pinned to the bitmap's true pixel
+    /// dimensions.
+    ///
+    /// `NSImage(data:)` derives `size` from the file's DPI metadata, not its
+    /// pixel count. Artwork from Spotify and Music routinely carries a
+    /// non-72 DPI tag, so a 640x640 JPEG can arrive claiming to be 320x320
+    /// points — and AppKit then treats it as a low-resolution image, throwing
+    /// away half the detail before SwiftUI ever scales it. Overriding `size`
+    /// to the real pixel dimensions makes the full bitmap available, which is
+    /// what makes the 18pt collapsed thumbnail look sharp instead of mushy.
+    private static func decodeArtwork(_ data: Data) -> NSImage? {
+        guard let rep = NSBitmapImageRep(data: data) else {
+            return NSImage(data: data)
+        }
+        let image = NSImage(size: NSSize(width: rep.pixelsWide, height: rep.pixelsHigh))
+        rep.size = image.size
+        image.addRepresentation(rep)
+        return image
     }
 
     /// The adapter emits whole-second timestamps (`2026-08-25T19:12:47Z`) but

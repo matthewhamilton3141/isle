@@ -20,15 +20,21 @@ struct CollapsedNotchView: View {
 
     var body: some View {
         HStack(spacing: 0) {
+            // Both clusters align *toward* the cutout rather than toward the
+            // outer edges, so they sit tucked against the camera housing
+            // instead of stranded at the far ends of the pill. The side inset
+            // exists to give them room, not to push them outward.
             leading
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.trailing, 7)
 
             // Dead zone over the camera housing.
             Color.clear
                 .frame(width: cutoutWidth)
 
             trailing
-                .frame(maxWidth: .infinity, alignment: .trailing)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 7)
         }
         .padding(.horizontal, 4)
     }
@@ -89,8 +95,13 @@ struct CollapsedNotchView: View {
     private var artworkThumbnail: some View {
         Group {
             if let artwork = viewModel.media.artwork {
+                // High interpolation is load-bearing here: this is a ~640px
+                // bitmap being drawn into 18pt, and the default filter
+                // aliases badly at that reduction.
                 Image(nsImage: artwork)
                     .resizable()
+                    .interpolation(.high)
+                    .antialiased(true)
                     .aspectRatio(contentMode: .fill)
             } else {
                 // Keep the layout stable while artwork loads rather than

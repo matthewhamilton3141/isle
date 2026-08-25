@@ -42,7 +42,7 @@ final class NotchViewModel: ObservableObject {
 
     init() {
         adapter.onUpdate = { [weak self] model in
-            self?.media = model
+            self?.apply(model)
         }
 
         // Republish rather than exposing `audio` directly: nesting an
@@ -62,6 +62,62 @@ final class NotchViewModel: ObservableObject {
     func stop() {
         adapter.stop()
         audio.stop()
+    }
+
+    // MARK: - Playback clock
+
+    // The scrubber runs off its own anchor rather than off whatever the
+    // adapter last reported.
+    //
+    // The adapter re-reports elapsed time about once a second, and each report
+    // is quantised to the source app's own update granularity. Anchoring
+    // directly to it meant the extrapolated position was yanked back into line
+    // every second — small, but a visible stutter on a bar that's otherwise
+    // moving continuously. Here a report only moves the anchor outright when
+    // it disagrees materially (a seek, a track change, a play/pause); ordinary
+    // sub-second disagreement is absorbed a fraction at a time, so the bar
+    // stays monotonic and the correction is invisible.
+    private var anchorElapsed: TimeInterval = 0
+    private var anchorDate: Date?
+    private var anchorRate: Double = 0
+
+    /// How much of a small disagreement to absorb per report. Low enough to be
+    /// imperceptible, high enough to converge within a couple of seconds.
+    private static let driftCorrection: Double = 0.18
+
+    /// Beyond this many seconds of disagreement, assume it's a real jump
+    /// (seek, track change) and snap rather than easing.
+    private static let snapThreshold: TimeInterval = 1.5
+
+    private func apply(_ model: MediaPlaybackModel) {
+        let now = Date()
+        let reported = model.elapsed(at: now)
+
+        let isNewTrack = model.title != media.title || model.album != media.album
+        let transportChanged = model.isPlaying != media.isPlaying
+            || model.playbackRate != anchorRate
+
+        if anchorDate == nil || isNewTrack || transportChanged {
+            anchorElapsed = reported
+        } else {
+            let predicted = projectedElapsed(at: now)
+            let disagreement = reported - predicted
+            anchorElapsed = abs(disagreement) > Self.snapThreshold
+                ? reported
+                : predicted + disagreement * Self.driftCorrection
+        }
+
+        anchorDate = now
+        anchorRate = model.playbackRate
+        media = model
+    }
+
+    /// Elapsed position extrapolated from the anchor, clamped to the track.
+    private func projectedElapsed(at date: Date) -> TimeInterval {
+        guard let anchorDate else { return 0 }
+        let raw = anchorElapsed + date.timeIntervalSince(anchorDate) * anchorRate
+        guard media.duration > 0 else { return max(0, raw) }
+        return min(max(0, raw), media.duration)
     }
 
     // MARK: - Derived state
@@ -132,14 +188,21 @@ final class NotchViewModel: ObservableObject {
         commands.seek(to: seconds)
 
         // Optimistically move our own clock, otherwise the thumb snaps back
-        // to the old position until the adapter reports the new one.
+        // to the old position until the adapter reports the new one. The
+        // anchor has to move too — it's what the scrubber actually renders
+        // from, so updating only the model would leave the bar where it was.
         media.reportedElapsed = seconds
         media.timestamp = Date()
+        anchorElapsed = seconds
+        anchorDate = Date()
         self.scrubTarget = nil
     }
 
-    /// Progress to render: the drag target while scrubbing, else live.
+    /// Progress to render: the drag target while scrubbing, else the smoothed
+    /// playback clock.
     func displayProgress(at date: Date = Date()) -> Double {
-        scrubTarget ?? media.progress(at: date)
+        if let scrubTarget { return scrubTarget }
+        guard media.duration > 0 else { return 0 }
+        return projectedElapsed(at: date) / media.duration
     }
 }

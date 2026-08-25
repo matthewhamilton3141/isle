@@ -26,6 +26,10 @@ struct MarqueeText: View {
     /// Seconds held still at each end.
     var pause: Double = 1.2
 
+    /// Row height. Defaults to a 13pt title; pass something smaller for the
+    /// artist line so it doesn't reserve space it never uses.
+    var lineHeight: CGFloat = 18
+
     @State private var textWidth: CGFloat = 0
     @State private var containerWidth: CGFloat = 0
 
@@ -34,23 +38,35 @@ struct MarqueeText: View {
     }
 
     var body: some View {
-        GeometryReader { geometry in
-            Group {
-                if overflow > 0 {
-                    scrolling
-                } else {
-                    Text(text)
-                        .font(font)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+        Group {
+            if overflow > 0 {
+                scrolling
+            } else {
+                Text(text)
+                    .font(font)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .onAppear { containerWidth = geometry.size.width }
-            .onChange(of: geometry.size.width) { _, new in containerWidth = new }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: lineHeight)
-        // Measure the untruncated text off-screen. `fixedSize` stops the
-        // layout system from wrapping or eliding it, so we get the true width.
+        // Both widths are reported through preferences rather than read
+        // inside onChange. Reading `proxy.size.width` from an onChange(of:
+        // text) handler returns the width from *before* the new string was
+        // laid out, so a longer title measured as the previous, shorter one —
+        // overflow came out as 0 and the text was silently truncated instead
+        // of scrolling. Preferences are emitted after layout, so they always
+        // describe the string currently on screen.
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: MarqueeContainerWidthKey.self,
+                    value: proxy.size.width
+                )
+            }
+        )
+        // The untruncated text, measured off-screen. `fixedSize` stops the
+        // layout system wrapping or eliding it, so we get its true width.
         .background(
             Text(text)
                 .font(font)
@@ -59,21 +75,18 @@ struct MarqueeText: View {
                 .hidden()
                 .background(
                     GeometryReader { proxy in
-                        Color.clear.onAppear { textWidth = proxy.size.width }
-                            .onChange(of: text) { _, _ in
-                                textWidth = proxy.size.width
-                            }
+                        Color.clear.preference(
+                            key: MarqueeTextWidthKey.self,
+                            value: proxy.size.width
+                        )
                     }
                 )
                 .allowsHitTesting(false),
             alignment: .leading
         )
+        .onPreferenceChange(MarqueeContainerWidthKey.self) { containerWidth = $0 }
+        .onPreferenceChange(MarqueeTextWidthKey.self) { textWidth = $0 }
         .clipped()
-    }
-
-    private var lineHeight: CGFloat {
-        // Enough for a 13pt line without clipping descenders.
-        18
     }
 
     private var scrolling: some View {
@@ -128,6 +141,20 @@ struct MarqueeText: View {
     /// Gentle ease in/out so the text doesn't start and stop abruptly.
     private func eased(_ t: Double) -> CGFloat {
         CGFloat(t * t * (3 - 2 * t))
+    }
+}
+
+private struct MarqueeTextWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct MarqueeContainerWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
