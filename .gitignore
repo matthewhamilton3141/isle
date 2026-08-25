@@ -1,0 +1,30 @@
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcuserdatad
+xcuserdata/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# The adapter framework is a compiled binary reproducible from
+# scripts/build-mediaremote-adapter.sh (pinned to a tagged upstream release),
+# so it doesn't belong in git. It's also ad-hoc signed, and code signatures
+# don't survive a round-trip through version control intact.
+#
+# Run the script after cloning or media playback won't work. The Xcode build
+# phase emits a warning rather than failing if it's absent.
+#
+# The .pl driver and the upstream BSD-3 license text ARE tracked: they're small,
+# readable, and keeping the license in-repo preserves attribution.
+Vendor/mediaremote-adapter/MediaRemoteAdapter.framework/

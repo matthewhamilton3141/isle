@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "isle-cli set-state working" }] }
+    ],
+    "PreToolUse": [
+      { "hooks": [{ "type": "command", "command": "isle-cli set-state working" }] }
+    ],
+    "Notification": [
+      { "hooks": [{ "type": "command", "command": "isle-cli set-state needs_approval" }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "isle-cli set-state done" }] }
+    ],
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "isle-cli set-state idle" }] }
+    ]
+  }
+}
