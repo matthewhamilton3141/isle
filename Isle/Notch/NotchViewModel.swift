@@ -30,9 +30,18 @@ final class NotchViewModel: ObservableObject {
     var metrics: NotchMetrics?
 
     private let adapter = MediaRemoteAdapterClient()
-    private let commands = MediaRemoteCommands.shared
+    private let spotify = SpotifyController()
     private let audio = SystemAudioLevels()
     private var cancellables = Set<AnyCancellable>()
+
+    // The two now-playing sources, kept separately and merged in
+    // `recomputeSource`. The adapter (MediaRemote) is preferred when Spotify
+    // owns the system session — it pushes updates and ships artwork as bytes.
+    // The AppleScript poll is the fallback for when something else (a browser
+    // tab, say) owns the session, so the notch still shows Spotify.
+    private var adapterModel = MediaPlaybackModel()
+    private var spotifyModel: MediaPlaybackModel?
+    private var lastApplied = MediaPlaybackModel()
 
     /// Live per-band audio magnitudes. Empty when capture isn't running, which
     /// EqualizerView reads as "use the procedural fallback".
@@ -43,7 +52,12 @@ final class NotchViewModel: ObservableObject {
 
     init() {
         adapter.onUpdate = { [weak self] model in
-            self?.apply(model)
+            self?.adapterModel = model
+            self?.recomputeSource()
+        }
+        spotify.onUpdate = { [weak self] model in
+            self?.spotifyModel = model
+            self?.recomputeSource()
         }
 
         // Republish rather than exposing `audio` directly: nesting an
@@ -57,12 +71,30 @@ final class NotchViewModel: ObservableObject {
 
     func start() {
         adapter.start()
+        spotify.start()
         audio.start()
     }
 
     func stop() {
         adapter.stop()
+        spotify.stop()
         audio.stop()
+    }
+
+    /// Picks which source drives the notch and feeds it through `apply`.
+    ///
+    /// Prefer the adapter whenever it carries a Spotify track (Spotify owns
+    /// the system session); otherwise fall back to the AppleScript poll. The
+    /// equality guard matters: without it, a 1 Hz poll tick would re-apply an
+    /// unchanged adapter model and yank the scrubber back to that model's
+    /// now-stale elapsed time every second.
+    private func recomputeSource() {
+        let effective = adapterModel.hasTrack
+            ? adapterModel
+            : (spotifyModel ?? MediaPlaybackModel())
+        guard effective != lastApplied else { return }
+        lastApplied = effective
+        apply(effective)
     }
 
     // MARK: - Haptics
@@ -176,27 +208,29 @@ final class NotchViewModel: ObservableObject {
 
     // MARK: - Transport
 
-    var canControlPlayback: Bool { commands.canControlPlayback }
-    var canSeek: Bool { commands.canSeek }
+    // Spotify handles every command over AppleScript, so controls are live
+    // whenever a track is showing, regardless of which app owns the system
+    // now-playing session.
+    var canControlPlayback: Bool { media.hasTrack }
+    var canSeek: Bool { media.hasTrack && media.duration > 0 }
 
-    func togglePlayPause() { commands.togglePlayPause() }
-    func nextTrack() { commands.nextTrack() }
-    func previousTrack() { commands.previousTrack() }
-
-    func toggleShuffle() {
-        let target = !media.isShuffled
-        commands.setShuffle(target)
-        // Reflect immediately. MediaRemote doesn't echo shuffle changes back
-        // promptly and the button would otherwise sit visibly stale for a
-        // beat after every tap.
-        media.isShuffled = target
+    func togglePlayPause() {
+        spotify.playPause()
+        // Optimistic: flip locally so the icon and scrubber react at once
+        // rather than waiting up to a second for the next poll to confirm.
+        // Re-anchor the clock at the current position with the new rate so
+        // the bar stops/resumes from where it visually is.
+        let now = Date()
+        anchorElapsed = projectedElapsed(at: now)
+        anchorDate = now
+        media.isPlaying.toggle()
+        media.playbackRate = media.isPlaying ? 1 : 0
+        anchorRate = media.playbackRate
+        lastApplied = media
     }
 
-    func cycleRepeat() {
-        let target = media.repeatMode.next
-        commands.setRepeat(target)
-        media.repeatMode = target
-    }
+    func nextTrack() { spotify.nextTrack() }
+    func previousTrack() { spotify.previousTrack() }
 
     /// Commits a scrub. Called on drag end, not continuously — seeking on
     /// every drag sample makes the source app stutter.
@@ -206,16 +240,17 @@ final class NotchViewModel: ObservableObject {
             return
         }
         let seconds = scrubTarget * media.duration
-        commands.seek(to: seconds)
+        spotify.seek(to: seconds)
 
         // Optimistically move our own clock, otherwise the thumb snaps back
-        // to the old position until the adapter reports the new one. The
+        // to the old position until the source reports the new one. The
         // anchor has to move too — it's what the scrubber actually renders
         // from, so updating only the model would leave the bar where it was.
         media.reportedElapsed = seconds
         media.timestamp = Date()
         anchorElapsed = seconds
         anchorDate = Date()
+        lastApplied = media
         self.scrubTarget = nil
     }
 

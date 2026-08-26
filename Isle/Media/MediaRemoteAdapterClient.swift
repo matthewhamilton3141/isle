@@ -9,8 +9,8 @@
 //  MRMediaRemoteGetNowPlayingInfo in-process returns an empty dictionary
 //  for unentitled apps. /usr/bin/perl is Apple-signed and does hold the
 //  entitlement, so the adapter loads MediaRemote there and pipes results
-//  back. Sending commands is unaffected and still happens in-process —
-//  see MediaRemoteCommands.
+//  back. Commands are sent to Spotify directly over AppleScript — see
+//  SpotifyController.
 //
 //  Upstream: github.com/ungive/mediaremote-adapter (BSD-3-Clause).
 //  Build it with scripts/build-mediaremote-adapter.sh.
@@ -143,12 +143,27 @@ final class MediaRemoteAdapterClient {
         }
     }
 
+    /// Isle is scoped to Spotify. MediaRemote reports whichever app owns the
+    /// system now-playing session — Music, a browser tab, anything — so any
+    /// non-Spotify owner is treated as "nothing playing" and collapses the
+    /// notch rather than surfacing another app's track.
+    private static let spotifyBundleID = "com.spotify.client"
+
     private func handle(line: Data) {
         guard let envelope = try? JSONDecoder().decode(StreamEnvelope.self, from: line) else {
             return  // partial or unrecognised line; nothing useful to do
         }
         merge(envelope.payload, isDiff: envelope.diff ?? false)
-        onUpdate?(current)
+
+        // `current` still tracks the true system owner (merged from diffs), but
+        // we only publish it when that owner is Spotify. Publishing an empty
+        // model otherwise keeps stale non-Spotify data off screen without
+        // discarding what we know about the current session.
+        if current.bundleIdentifier == Self.spotifyBundleID {
+            onUpdate?(current)
+        } else {
+            onUpdate?(MediaPlaybackModel())
+        }
     }
 
     private func handleTermination() {

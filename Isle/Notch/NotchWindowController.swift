@@ -20,6 +20,7 @@ final class NotchWindowController {
     private var hostingView: NotchHostingView<NotchRootView>?
     private var metrics: NotchMetrics?
     private var screenObserver: (any NSObjectProtocol)?
+    private var pointerMonitor: Any?
 
     private let viewModel = NotchViewModel()
 
@@ -32,6 +33,9 @@ final class NotchWindowController {
     deinit {
         if let screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)
+        }
+        if let pointerMonitor {
+            NSEvent.removeMonitor(pointerMonitor)
         }
     }
 
@@ -68,12 +72,54 @@ final class NotchWindowController {
         window.orderFrontRegardless()
 
         self.window = window
+        observePointer()
         viewModel.start()
     }
 
     func hide() {
         window?.orderOut(nil)
+        if let pointerMonitor {
+            NSEvent.removeMonitor(pointerMonitor)
+            self.pointerMonitor = nil
+        }
         viewModel.stop()
+    }
+
+    // MARK: - Pointer backstop
+
+    /// Force-collapses the notch once the pointer leaves the panel entirely.
+    ///
+    /// SwiftUI's `.onHover` occasionally misses a mouse-exit for a high-level
+    /// overlay panel — the notch then stays expanded, and because the expanded
+    /// panel fills the window its hit area swallows clicks across the whole
+    /// top-centre strip. This global monitor is the guarantee: once the pointer
+    /// is well clear of the panel, hovering is false, full stop. Isle never
+    /// becomes the active app, so a global monitor (not a local one) is what
+    /// sees these moves. `.mouseMoved` monitoring needs no special permission.
+    private func observePointer() {
+        guard pointerMonitor == nil else { return }
+        pointerMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.mouseMoved]
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self,
+                      let window = self.window,
+                      self.viewModel.isHovering
+                else { return }
+
+                // The window hugs the screen's top edge, so the pointer on the
+                // island's top row reports y == frame.maxY — which `contains`
+                // counts as *outside*, wrongly collapsing the panel the moment
+                // you touch the top. Pad the region (generously up top) so only
+                // a real departure from the island trips the backstop.
+                //
+                // NSEvent.mouseLocation and the frame are both screen coords,
+                // bottom-left origin, so they compare directly.
+                let region = window.frame.insetBy(dx: -6, dy: -12)
+                guard !region.contains(NSEvent.mouseLocation) else { return }
+                self.viewModel.isHovering = false
+            }
+        }
     }
 
     // MARK: - Screen changes

@@ -15,15 +15,12 @@ struct ExpandedNotchView: View {
     private var media: MediaPlaybackModel { viewModel.media }
 
     var body: some View {
-        // Wide gap after the artwork: it pushes the whole text/scrubber/
-        // controls column to the right, which is what shortens the playbar.
-        HStack(spacing: 22) {
+        // The album and the text column are one tight pair — a small fixed gap
+        // between them, a fixed-width text block — and that pair is centred in
+        // the panel by the outer `.frame(maxWidth: .infinity)`, so the leftover
+        // space splits evenly into equal left and right margins.
+        HStack(spacing: 14) {
             artwork
-                // Extra leading inset on the artwork alone, so the album sits
-                // further in from the edge than the trailing margin. Done here
-                // rather than widening the root padding, which would pull the
-                // right edge in by the same amount and undo the shift.
-                .padding(.leading, 12)
                 // Raised out of its layout slot into the housing band. That's
                 // safe only because the artwork spans x 32-146 while the
                 // camera cutout starts at x 167 — there is no hardware above
@@ -51,21 +48,27 @@ struct ExpandedNotchView: View {
                     trackLabels
                     Spacer().frame(height: 6)
                     scrubber
-                    Spacer().frame(height: 6)
+                    // Tight gap so the transport keys sit up close under the
+                    // playbar rather than floating below it.
+                    Spacer().frame(height: 2)
                     controls
                     Spacer(minLength: 0)
                 } else if !viewModel.hasLiveActivity {
                     idlePlaceholder
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            // Nudged down to sit clear of the housing band now that the title
-            // and artist are larger. The column's own height is ~107 against
-            // 114 of usable space, so there is only a few points of slack —
-            // raising this further will clip the controls.
-            .offset(y: 4)
+            // Fixed width rather than filling: a filling column would stretch
+            // to the right edge and the "pair" could never be centred. 340 is
+            // the width it occupied before, so the playbar length is unchanged.
+            .frame(minWidth: 340, maxWidth: 340, maxHeight: .infinity, alignment: .leading)
+            // Vertical position of the whole text column (title, artist,
+            // playbar, transport). The column is ~107 tall against 114 of
+            // usable space, so there is only a few points of slack top and
+            // bottom to play with here.
+            .offset(y: -1)
         }
-        .frame(maxHeight: .infinity)
+        // Centres the album+text pair between the panel edges.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .foregroundStyle(.white)
     }
 
@@ -105,8 +108,8 @@ struct ExpandedNotchView: View {
         VStack(alignment: .leading, spacing: 1) {
             MarqueeText(
                 text: media.title.isEmpty ? "Not playing" : media.title,
-                font: .system(size: 15, weight: .semibold),
-                lineHeight: 19
+                font: .system(size: 14, weight: .semibold),
+                lineHeight: 18
             )
 
             // No HStack wrapper: it gave the marquee an ambiguous width to
@@ -115,8 +118,8 @@ struct ExpandedNotchView: View {
             // rather than inheriting the 18pt title default.
             MarqueeText(
                 text: media.artist,
-                font: .system(size: 13, weight: .regular),
-                lineHeight: 17
+                font: .system(size: 11, weight: .regular),
+                lineHeight: 15
             )
             .foregroundStyle(.white.opacity(0.7))
         }
@@ -213,16 +216,11 @@ struct ExpandedNotchView: View {
     // MARK: - Controls
 
     private var controls: some View {
-        // One tight cluster rather than shuffle and repeat pinned to the far
-        // edges. The transport keys are the primary targets so they're sized
-        // up, and the two mode toggles sit right alongside them, smaller and
-        // dimmer, reading as secondary without being flung to the corners.
-        HStack(spacing: 11) {
+        // Just the three transport keys, centred. Shuffle and repeat were
+        // dropped: Spotify only exposes them over AppleScript, they never
+        // worked cleanly, and they weren't worth the automation friction.
+        HStack(spacing: 18) {
             Spacer(minLength: 0)
-
-            controlButton("shuffle", size: 13, isActive: media.isShuffled) {
-                viewModel.toggleShuffle()
-            }
 
             controlButton("backward.fill", size: 21) { viewModel.previousTrack() }
 
@@ -235,14 +233,6 @@ struct ExpandedNotchView: View {
 
             controlButton("forward.fill", size: 21) { viewModel.nextTrack() }
 
-            controlButton(
-                media.repeatMode.symbolName,
-                size: 13,
-                isActive: media.repeatMode.isActive
-            ) {
-                viewModel.cycleRepeat()
-            }
-
             Spacer(minLength: 0)
         }
         .disabled(!viewModel.canControlPlayback)
@@ -252,13 +242,12 @@ struct ExpandedNotchView: View {
     private func controlButton(
         _ symbol: String,
         size: CGFloat = 13,
-        isActive: Bool = true,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: size, weight: .medium))
-                .foregroundStyle(isActive ? .white : .white.opacity(0.4))
+                .foregroundStyle(.white)
                 .frame(width: size + 7, height: size + 7)
                 .contentShape(Rectangle())
         }

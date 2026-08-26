@@ -20,5 +20,14 @@
 	-->
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>Isle reads system audio levels to animate the notch waveform. Audio is analysed in memory and never recorded or sent anywhere.</string>
+
+	<!--
+	  Required to send Apple Events. Spotify ignores MediaRemote's
+	  shuffle/repeat commands, so those two controls are routed to it
+	  over AppleScript instead (see MediaRemoteCommands). Without this
+	  key the automation request is denied silently on current macOS.
+	-->
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Isle controls shuffle and repeat in Spotify from the notch.</string>
 </dict>
 </plist>

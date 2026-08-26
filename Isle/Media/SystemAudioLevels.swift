@@ -3,21 +3,25 @@
 //
 //  Real audio-reactive levels for the notch waveform.
 //
-//  Taps the system's default output device with Core Audio's process-tap
-//  API (macOS 14.4+), runs an FFT over the captured samples, and reduces
-//  the spectrum to a handful of log-spaced bands.
+//  Taps Spotify's audio with Core Audio's process-tap API (macOS 14.4+),
+//  runs an FFT over the captured samples, and reduces the spectrum to a
+//  handful of log-spaced bands.
 //
-//  A global tap is used rather than a per-process one so the waveform
-//  follows whatever is actually audible — the same reason the now-playing
-//  feed is source-agnostic. This does mean a system alert sound will nudge
-//  the bars, which is correct behaviour for a level meter.
+//  A process-scoped tap rather than a global one: Isle is Spotify-only, so
+//  the waveform must reflect Spotify and nothing else. A global tap made the
+//  bars react to any audible sound — a YouTube tab, a system alert — which
+//  read as wrong for a Spotify overlay. The tap is bound to Spotify's audio
+//  process object, resolved from its PID, and rebuilt when Spotify launches
+//  or relaunches (its PID, and therefore the process object, changes).
 //
-//  Everything here fails soft. If the OS is too old, the user declines the
-//  audio-capture prompt, or the device can't be tapped, `levels` simply
-//  stays empty and EqualizerView falls back to its procedural pattern.
+//  Everything here fails soft. If the OS is too old, Spotify isn't running,
+//  the user declines the audio-capture prompt, or the device can't be
+//  tapped, `levels` simply stays empty and EqualizerView falls back to its
+//  procedural pattern.
 //
 
 import Foundation
+import AppKit
 import AudioToolbox
 import CoreAudio
 import Accelerate
@@ -58,6 +62,13 @@ final class SystemAudioLevels: ObservableObject {
         self.analyzer = AudioAnalyzer(bandCount: bandCount)
     }
 
+    deinit {
+        let center = NSWorkspace.shared.notificationCenter
+        for observer in lifecycleObservers {
+            center.removeObserver(observer)
+        }
+    }
+
     // MARK: - Lifecycle
 
     func start() {
@@ -65,10 +76,21 @@ final class SystemAudioLevels: ObservableObject {
             failureReason = "System audio capture requires macOS 14.4 or later."
             return
         }
+        // Rebuild the tap whenever Spotify comes or goes — its PID, and so its
+        // audio process object, changes across launches. Registered once.
+        observeSpotifyLifecycle()
+
         guard aggregateID == kAudioObjectUnknown else { return }
 
+        guard let processObject = spotifyProcessObject() else {
+            // Spotify isn't running yet. Not an error — the launch observer
+            // will start capture once it appears. Leave `levels` empty so the
+            // waveform rests as dots rather than reacting to other apps.
+            return
+        }
+
         do {
-            try startCapture()
+            try startCapture(tapping: processObject)
             startPublishing()
             failureReason = nil
         } catch {
@@ -76,6 +98,72 @@ final class SystemAudioLevels: ObservableObject {
             NSLog("Isle: audio capture unavailable — \(error.localizedDescription)")
             stop()
         }
+    }
+
+    /// Audio HAL process object for the running Spotify, or nil if Spotify
+    /// isn't running (or the translation fails).
+    private func spotifyProcessObject() -> AudioObjectID? {
+        guard let app = NSRunningApplication
+            .runningApplications(withBundleIdentifier: SpotifyController.bundleID)
+            .first else { return nil }
+
+        let pid = app.processIdentifier
+        guard pid > 0 else { return nil }
+
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var pidQualifier = pid
+        var processObject = AudioObjectID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            UInt32(MemoryLayout<pid_t>.size), &pidQualifier,
+            &size, &processObject
+        )
+        guard status == noErr, processObject != kAudioObjectUnknown else { return nil }
+        return processObject
+    }
+
+    // MARK: - Spotify lifecycle
+
+    private var lifecycleObservers: [NSObjectProtocol] = []
+
+    private func observeSpotifyLifecycle() {
+        guard lifecycleObservers.isEmpty else { return }
+        let center = NSWorkspace.shared.notificationCenter
+
+        lifecycleObservers.append(center.addObserver(
+            forName: NSWorkspace.didLaunchApplicationNotification,
+            object: nil, queue: .main
+        ) { [weak self] note in
+            guard Self.isSpotify(note) else { return }
+            Task { @MainActor in self?.restart() }
+        })
+
+        lifecycleObservers.append(center.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification,
+            object: nil, queue: .main
+        ) { [weak self] note in
+            guard Self.isSpotify(note) else { return }
+            // Tap is bound to the now-dead process; tear it down so the bars
+            // rest rather than freezing on the last frame.
+            Task { @MainActor in self?.stop() }
+        })
+    }
+
+    private nonisolated static func isSpotify(_ note: Notification) -> Bool {
+        (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
+            .bundleIdentifier == SpotifyController.bundleID
+    }
+
+    /// Tear down and bring capture back up against Spotify's current process.
+    private func restart() {
+        stop()
+        start()
     }
 
     func stop() {
@@ -113,11 +201,12 @@ final class SystemAudioLevels: ObservableObject {
     // MARK: - Capture setup
 
     @available(macOS 14.4, *)
-    private func startCapture() throws {
+    private func startCapture(tapping processObject: AudioObjectID) throws {
         let outputUID = try defaultOutputDeviceUID()
 
-        // Empty exclusion list => tap everything the device is playing.
-        let tapDescription = CATapDescription(monoGlobalTapButExcludeProcesses: [])
+        // Scoped to Spotify's process alone, so the meter follows Spotify and
+        // ignores every other sound on the system.
+        let tapDescription = CATapDescription(monoMixdownOfProcesses: [processObject])
         tapDescription.isPrivate = true
         tapDescription.muteBehavior = .unmuted
 

@@ -22,9 +22,29 @@ struct NotchRootView: View {
 
     private var state: NotchState { viewModel.state }
 
+    /// The notch's *live* width, sampled from the animating layout rather than
+    /// the discrete target `size`. Drives both the reveal of the expanded
+    /// content and the cutout hit-test, so neither jumps ahead of the frame.
+    @State private var liveWidth: CGFloat = 0
+
     private var size: CGSize {
         viewModel.metrics?.windowSize(for: state)
             ?? NotchMetrics.expandedSize
+    }
+
+    /// 0 when fully collapsed, 1 when fully expanded, tracking the animation.
+    private var expandProgress: CGFloat {
+        let collapsed = viewModel.metrics?.windowSize(for: .collapsed).width ?? 0
+        let expanded = NotchMetrics.expandedSize.width
+        guard expanded > collapsed, liveWidth > 0 else { return state.isExpanded ? 1 : 0 }
+        return min(max((liveWidth - collapsed) / (expanded - collapsed), 0), 1)
+    }
+
+    /// The expanded content stays fully hidden until the notch is ~65% open,
+    /// then fades in over the rest of the travel — so the title, artwork and
+    /// controls never show inside a half-grown notch.
+    private var expandedContentOpacity: Double {
+        Double(min(1, max(0, (expandProgress - 0.65) / 0.3)))
     }
 
     private var palette: ArtworkPalette {
@@ -106,14 +126,23 @@ struct NotchRootView: View {
                 .padding(.bottom, state.isExpanded ? 8 : 0)
         }
         .frame(width: size.width, height: size.height)
-        // Restrict both hover and clicks to the drawn shape, so the corners
-        // of the bounding box aren't secretly interactive.
-        .contentShape(
+        // Clip everything to the notch outline. The expanded content is laid
+        // out at its full width the instant the state flips, but the frame
+        // only reaches that width at the end of the animation — without this
+        // the content spills out of a still-growing notch.
+        .clipShape(
             NotchShape(
                 topCornerRadius: state.isExpanded ? 12 : 8,
                 bottomCornerRadius: state.isExpanded ? 22 : 12
             )
         )
+        // Hover region is the full bounding rectangle, not the notch outline.
+        // The outline's top edge sits at the screen edge and its top corners
+        // are carved inward by the concave flares, so hovering the top of the
+        // island landed just *outside* the shape and collapsed it. The
+        // rectangle keeps the whole island — top edge and corners included —
+        // live, so the panel only closes once the pointer leaves it entirely.
+        .contentShape(Rectangle())
         .onHover { hovering in
             withAnimation(hovering ? .notchOpen : .notchClose) {
                 viewModel.isHovering = hovering
@@ -135,7 +164,10 @@ struct NotchRootView: View {
     private var content: some View {
         if state.isExpanded {
             ExpandedNotchView(viewModel: viewModel, palette: palette)
-                .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                // Opacity gated on how far the notch has actually opened; the
+                // transition still handles the fade-out on collapse.
+                .opacity(expandedContentOpacity)
+                .transition(.opacity)
         } else {
             CollapsedNotchView(viewModel: viewModel, palette: palette)
                 .transition(.opacity)
@@ -145,6 +177,7 @@ struct NotchRootView: View {
     private static let space = "isle.notch"
 
     private func report(_ proxy: GeometryProxy) {
+        liveWidth = proxy.size.width
         onActiveRectChange?(proxy.frame(in: .global))
     }
 }

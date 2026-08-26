@@ -20,13 +20,16 @@ struct CollapsedNotchView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            // Both clusters align *toward* the cutout rather than toward the
-            // outer edges, so they sit tucked against the camera housing
-            // instead of stranded at the far ends of the pill. The side inset
-            // exists to give them room, not to push them outward.
+            // Both clusters align *toward* the cutout so they tuck against the
+            // camera housing rather than stranding at the far ends. The two
+            // cutout-side insets are tuned so the album (22pt) and the wider
+            // waveform (26pt) end up the *same* distance — 18pt — from their
+            // outer edge, which is what reads as balanced. The waveform runs a
+            // hair closer to the cutout as a result; against the housing that
+            // difference isn't noticeable.
             leading
                 .frame(maxWidth: .infinity, alignment: .trailing)
-                .padding(.trailing, 7)
+                .padding(.trailing, 6)
 
             // Dead zone over the camera housing.
             Color.clear
@@ -34,7 +37,7 @@ struct CollapsedNotchView: View {
 
             trailing
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 7)
+                .padding(.leading, 2)
         }
         .padding(.horizontal, 4)
     }
