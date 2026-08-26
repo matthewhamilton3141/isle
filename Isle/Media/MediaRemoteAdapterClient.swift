@@ -216,18 +216,24 @@ final class MediaRemoteAdapterClient {
             current.repeatMode = .off
         }
 
+        // Elapsed and timestamp are a matched pair — "position P, measured at
+        // time T" — and must move together or not at all. The old code
+        // advanced the timestamp on *every* diff, including the many that
+        // carry no new elapsedTime; that re-stamped a stale position as
+        // "measured now", freezing the scrubber there and making the stale
+        // value look fresh enough to override a real seek. So only touch the
+        // clock when a new elapsed actually arrives; a diff without one leaves
+        // both fields alone and extrapolation keeps running from the last real
+        // reading.
         if let elapsed = payload.elapsedTime {
             current.reportedElapsed = elapsed
+            if let stamp = payload.timestamp, let date = Self.parseTimestamp(stamp) {
+                current.timestamp = date
+            } else {
+                current.timestamp = Date()
+            }
         } else if !isDiff {
             current.reportedElapsed = 0
-        }
-
-        if let stamp = payload.timestamp, let date = Self.parseTimestamp(stamp) {
-            current.timestamp = date
-        } else {
-            // No timestamp means we can't extrapolate from the adapter's
-            // clock, so anchor to now — better a slightly-off scrubber than
-            // one that jumps by the age of a stale timestamp.
             current.timestamp = Date()
         }
 

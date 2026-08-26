@@ -89,9 +89,26 @@ final class NotchViewModel: ObservableObject {
     /// unchanged adapter model and yank the scrubber back to that model's
     /// now-stale elapsed time every second.
     private func recomputeSource() {
-        let effective = adapterModel.hasTrack
+        var effective = adapterModel.hasTrack
             ? adapterModel
             : (spotifyModel ?? MediaPlaybackModel())
+
+        // The AppleScript poll reads Spotify's *true* player position, which
+        // the adapter's cached elapsed lags after a seek/restart (MediaRemote
+        // catches up on its own schedule). For a Spotify-scoped app the poll is
+        // the ground truth for the clock, so let it drive the timing fields
+        // while the adapter still supplies metadata and byte artwork. Without
+        // this, a stale adapter position snaps the bar back over a fresh seek;
+        // apply()'s drift easing absorbs the steady 1 Hz corrections so this
+        // doesn't reintroduce jitter, and a restart self-corrects within ~1s.
+        if let poll = spotifyModel, poll.hasTrack,
+           poll.title == effective.title, poll.album == effective.album {
+            effective.reportedElapsed = poll.reportedElapsed
+            effective.timestamp = poll.timestamp
+            effective.isPlaying = poll.isPlaying
+            effective.playbackRate = poll.playbackRate
+        }
+
         guard effective != lastApplied else { return }
         lastApplied = effective
         apply(effective)
