@@ -48,6 +48,11 @@ struct ExpandedNotchView: View {
                     trackLabels
                     Spacer().frame(height: 6)
                     scrubber
+                        // Nudged down without changing the layout gaps, so the
+                        // group stays centred. Safe against the transport row
+                        // because the time labels sit at the far edges while
+                        // the keys are centred — they don't collide.
+                        .offset(y: 3)
                     // Tight gap so the transport keys sit up close under the
                     // playbar rather than floating below it.
                     Spacer().frame(height: 2)
