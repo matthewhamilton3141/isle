@@ -80,7 +80,7 @@ struct NotchRootView: View {
     /// The current Claude marker's colour — its fixed hue, or the artwork accent
     /// for palette-tinted markers — so the wash matches the dots.
     private var claudeMarkerColor: Color {
-        let design = MarkerStore.shared.design(for: MarkerKind(state: viewModel.claudeState))
+        let design = MarkerStore.shared.design(for: viewModel.claudeMarkerKind)
         return design.colorMode == .fixed ? Color(hex: design.fixedColorHex) : palette.accent
     }
 

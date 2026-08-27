@@ -21,7 +21,7 @@ struct ClaudeExpandedView: View {
         // album art sits, then a text column — but with a bold headline and a
         // width-spanning info row so the panel doesn't read as empty.
         HStack(spacing: 14) {
-            ClaudeStatusGlyphView(state: state, palette: palette)
+            ClaudeStatusGlyphView(state: state, kind: viewModel.claudeMarkerKind, palette: palette)
                 // A touch smaller than the album, and only slightly raised, so
                 // the top dots stay on the island instead of running off the
                 // top edge into the camera band.

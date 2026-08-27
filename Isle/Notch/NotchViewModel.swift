@@ -641,6 +641,19 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
+    /// The marker to render for the current Claude state. For a failure this
+    /// picks a specific error marker from `error_type` (rate-limit vs server vs
+    /// generic) so the glyph itself distinguishes them; otherwise it's the plain
+    /// lifecycle marker.
+    var claudeMarkerKind: MarkerKind {
+        guard claudeState == .failed else { return MarkerKind(state: claudeState) }
+        switch claudeErrorType {
+        case "rate_limit": return .rateLimited
+        case "server_error", "overloaded": return .serverError
+        default: return .apiError
+        }
+    }
+
     private static func textWidth(_ string: String) -> CGFloat {
         guard !string.isEmpty else { return 0 }
         let font = NSFont.systemFont(ofSize: CollapsedSize.statusFontSize, weight: .semibold)

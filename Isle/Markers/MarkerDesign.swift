@@ -36,6 +36,7 @@ struct MarkerDesign: Codable, Equatable {
         case pulse     // all lit dots pulse together
         case blink     // hard on/off
         case motion    // evolving plasma — waves + ripples that keep changing
+        case compact   // a full box collapses line by line, then refills
 
         var id: String { rawValue }
         var title: String { rawValue.capitalized }
@@ -128,7 +129,7 @@ struct MarkerDesign: Codable, Equatable {
                                 animation: .solid, speed: 2.0, intensity: 1.0, ghost: true)
         case .compacting:
             return MarkerDesign(dots: full, colorMode: .palette, fixedColorHex: Hex.cyan,
-                                animation: .shimmer, speed: 2.2, intensity: 0.8, ghost: true)
+                                animation: .compact, speed: 2.2, intensity: 0.9, ghost: true)
         case .paused:
             return MarkerDesign(dots: pauseBars, colorMode: .fixed, fixedColorHex: Hex.gray,
                                 animation: .solid, speed: 1.0, intensity: 0.7, ghost: true)

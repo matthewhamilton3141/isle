@@ -121,6 +121,8 @@ struct DotMatrixView: View {
                     anim = blinkOn ? 1.0 : 0.12
                 case .motion:
                     anim = motionValue(row: row, col: col, clock: clock, speed: speed)
+                case .compact:
+                    anim = compactValue(row: row, clock: clock, speed: speed)
                 }
 
                 let intensity = design.intensity * level * anim
@@ -191,6 +193,26 @@ struct DotMatrixView: View {
 
         let v = (w1 + w2 + w3) / 3          // -1…1
         return 0.18 + 0.82 * (0.5 + 0.5 * v)
+    }
+
+    /// "Compacting": a full box collapses one line at a time from the top, down
+    /// to a single row, then refills back to full — a triangle over the cycle so
+    /// it loops without a hard snap. Rows are lit from the bottom up; the number
+    /// lit tracks `fillCount`, and each row's edge is softened over ~one row so
+    /// lines fade in/out rather than blink. Only the row matters (every dot in a
+    /// line shares the level), so a filled marker reads as lines being compacted.
+    private func compactValue(row: Int, clock: Double, speed: Double) -> Double {
+        let n = Double(MarkerDesign.dimension)
+        let frac = fract(clock * speed * 0.18)
+        let tri = abs(2 * frac - 1)            // 1 → 0 → 1  (full, compact, full)
+        let fillCount = 1 + tri * (n - 1)      // 1…n rows lit, from the bottom
+        let cutoff = n - fillCount             // rows with index ≥ cutoff are lit
+
+        // Soft one-row edge at the cutoff so a line eases off instead of blinking.
+        let e = Double(row) - (cutoff - 0.5)
+        let t = min(1, max(0, e))
+        let on = t * t * (3 - 2 * t)           // smoothstep
+        return 0.10 + 0.90 * on
     }
 }
 

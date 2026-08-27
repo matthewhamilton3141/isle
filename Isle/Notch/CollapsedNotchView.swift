@@ -90,8 +90,12 @@ struct CollapsedNotchView: View {
     // MARK: - Pieces
 
     private func claudeDots(size: CGFloat) -> some View {
-        ClaudeStatusGlyphView(state: viewModel.claudeState, palette: palette)
-            .frame(width: size, height: size)
+        ClaudeStatusGlyphView(
+            state: viewModel.claudeState,
+            kind: viewModel.claudeMarkerKind,
+            palette: palette
+        )
+        .frame(width: size, height: size)
     }
 
     private var statusText: some View {
@@ -107,7 +111,7 @@ struct CollapsedNotchView: View {
     /// The marker's colour, so the status text matches the dots: its fixed hue,
     /// or the artwork accent for palette-tinted markers.
     private var markerColor: Color {
-        let design = MarkerStore.shared.design(for: MarkerKind(state: viewModel.claudeState))
+        let design = MarkerStore.shared.design(for: viewModel.claudeMarkerKind)
         return design.colorMode == .fixed ? Color(hex: design.fixedColorHex) : palette.accent
     }
 
