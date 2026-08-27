@@ -34,6 +34,11 @@ enum HookInstaller {
     private static let hookEvents: [(event: String, args: String)] = [
         ("UserPromptSubmit", "set-state working"),
         ("PreToolUse", "set-state working"),
+        // PostToolUse clears an attention state the moment a tool completes —
+        // above all, it's what closes the notch when an AskUserQuestion is
+        // answered. The `AskUserQuestion → needs_question` conversion is gated
+        // to PreToolUse so this can't re-raise it.
+        ("PostToolUse", "set-state working"),
         ("Notification", "notify"),
         ("Stop", "set-state done"),
         ("SessionStart", "set-state idle"),
@@ -213,8 +218,12 @@ enum HookInstaller {
     ACTION=""
     TARGET=""
     MESSAGE=""
+    HOOK_EVENT=""
     if [ ! -t 0 ]; then
       STDIN_JSON="$(cat)"
+      HOOK_EVENT="$(printf '%s' "$STDIN_JSON" \
+        | grep -oE '"hook_event_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
       SESSION_ID="$(printf '%s' "$STDIN_JSON" \
         | grep -oE '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' \
         | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
@@ -224,7 +233,17 @@ enum HookInstaller {
       TARGET="$(printf '%s' "$STDIN_JSON" \
         | grep -oE '"(file_path|command|pattern|path|url)"[[:space:]]*:[[:space:]]*"[^"]*"' \
         | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
-      TARGET="$(printf '%s' "$TARGET" | tr -d '\\' | cut -c1-48)"
+      TARGET="$(printf '%s' "$TARGET" | tr -d '\\')"
+      # Reduce a bare file path to its last component, so a long absolute path
+      # still shows its filename instead of being clipped mid-name by the cap
+      # below. URLs (host matters) and command lines (first token matters) are
+      # left for the app to reduce, so they're skipped here.
+      case "$TARGET" in
+        *"://"*) : ;;
+        *" "*)   : ;;
+        */*)     TARGET="${TARGET##*/}" ;;
+      esac
+      TARGET="$(printf '%s' "$TARGET" | cut -c1-48)"
       MESSAGE="$(printf '%s' "$STDIN_JSON" \
         | grep -oE '"message"[[:space:]]*:[[:space:]]*"[^"]*"' \
         | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
@@ -244,7 +263,13 @@ enum HookInstaller {
       esac
     fi
 
-    if [ "$CMD" = "set-state" ] && [ "$STATE" = "working" ] && [ "$ACTION" = "AskUserQuestion" ]; then
+    # Surface AskUserQuestion as a question only while it's being *asked*
+    # (PreToolUse). Its PostToolUse fires when the question is answered; letting
+    # that convert too would re-raise the question and the notch would never
+    # close. Absent hook_event_name we keep converting, so a lone PreToolUse
+    # still opens.
+    if [ "$CMD" = "set-state" ] && [ "$STATE" = "working" ] \
+       && [ "$ACTION" = "AskUserQuestion" ] && [ "$HOOK_EVENT" != "PostToolUse" ]; then
       STATE="needs_question"
     fi
 

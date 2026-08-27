@@ -44,8 +44,12 @@ SESSION_ID=""
 ACTION=""
 TARGET=""
 MESSAGE=""
+HOOK_EVENT=""
 if [ ! -t 0 ]; then
   STDIN_JSON="$(cat)"
+  HOOK_EVENT="$(printf '%s' "$STDIN_JSON" \
+    | grep -oE '"hook_event_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
   SESSION_ID="$(printf '%s' "$STDIN_JSON" \
     | grep -oE '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' \
     | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
@@ -55,7 +59,17 @@ if [ ! -t 0 ]; then
   TARGET="$(printf '%s' "$STDIN_JSON" \
     | grep -oE '"(file_path|command|pattern|path|url)"[[:space:]]*:[[:space:]]*"[^"]*"' \
     | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
-  TARGET="$(printf '%s' "$TARGET" | tr -d '\\' | cut -c1-48)"
+  TARGET="$(printf '%s' "$TARGET" | tr -d '\\')"
+  # Reduce a bare file path to its last component, so a long absolute path
+  # still shows its filename instead of being clipped mid-name by the cap
+  # below. URLs (host matters) and command lines (first token matters) are
+  # left for the app to reduce, so they're skipped here.
+  case "$TARGET" in
+    *"://"*) : ;;
+    *" "*)   : ;;
+    */*)     TARGET="${TARGET##*/}" ;;
+  esac
+  TARGET="$(printf '%s' "$TARGET" | cut -c1-48)"
   MESSAGE="$(printf '%s' "$STDIN_JSON" \
     | grep -oE '"message"[[:space:]]*:[[:space:]]*"[^"]*"' \
     | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
@@ -80,8 +94,13 @@ if [ "$CMD" = "notify" ]; then
   esac
 fi
 
-# A tool that asks the user a question surfaces as a question, not plain work.
-if [ "$CMD" = "set-state" ] && [ "$STATE" = "working" ] && [ "$ACTION" = "AskUserQuestion" ]; then
+# A tool that asks the user a question surfaces as a question, not plain work —
+# but only while it's being *asked* (PreToolUse). The matching PostToolUse fires
+# when the question is answered; letting it convert too would re-raise the
+# question forever and the notch would never close. Absent hook_event_name we
+# keep the old behaviour (convert), so a lone PreToolUse still opens.
+if [ "$CMD" = "set-state" ] && [ "$STATE" = "working" ] \
+   && [ "$ACTION" = "AskUserQuestion" ] && [ "$HOOK_EVENT" != "PostToolUse" ]; then
   STATE="needs_question"
 fi
 

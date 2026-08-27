@@ -6,6 +6,9 @@
     "PreToolUse": [
       { "hooks": [{ "type": "command", "command": "isle-cli set-state working" }] }
     ],
+    "PostToolUse": [
+      { "hooks": [{ "type": "command", "command": "isle-cli set-state working" }] }
+    ],
     "Notification": [
       { "hooks": [{ "type": "command", "command": "isle-cli notify" }] }
     ],

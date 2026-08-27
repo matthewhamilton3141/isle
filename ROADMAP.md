@@ -262,19 +262,101 @@ Ship-ready framing for the "Dynamic Island + Claude Code" story.
 
 ---
 
+## Milestone 7 — Act from the Notch
+
+Turn the Claude island from a *notifier* into a *control surface*. Today a
+`needs_approval` interrupt opens the notch (`hasLiveActivity` →
+`liveActivityExpanded`) but you still alt-tab to the terminal to answer it. This
+milestone lets you approve or deny a tool call **in the notch**, and have that
+click actually decide the call.
+
+This is also the feature that unblocks **Scheduled Prompts** (see "Parked"):
+both need the same primitive — a way for the notch to *talk back* into a live
+Claude Code session. Building the blocking-hook + decision-file handshake here
+de-risks that work.
+
+### Goal
+When Claude Code asks permission for a tool, the expanded Claude panel shows the
+exact tool + target with **Approve** / **Deny** buttons, and clicking one
+resolves the pending call in the session — with a hard timeout that falls back
+to Claude's normal in-terminal prompt.
+
+### How it works
+Claude Code's `PreToolUse` hook has the two properties this needs: it is an
+ordinary command, so **it can block** as long as it likes before it prints; and
+it can **return a permission decision** on stdout. Current schema (confirm
+against live docs before building — this is the load-bearing detail):
+
+```json
+{ "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "allow" | "deny" | "ask",
+    "permissionDecisionReason": "…" } }
+```
+
+The handshake:
+1. `PreToolUse` calls `isle-cli` in a new `ask` mode. It writes `needs_approval`
+   with the already-captured `action`/`target` and a request id keyed by
+   `session_id`, and clears any stale decision file.
+2. The script **blocks**, polling `~/.isle/claude-decision-<session_id>.json`
+   with a timeout.
+3. The notch is already open (via `isAttention`); `ClaudeExpandedView` renders
+   the command/target with Approve / Deny.
+4. The click writes the decision file; the blocked hook reads it, prints the
+   matching JSON, exits. Claude proceeds or is stopped with the reason fed back.
+5. **Timeout or Isle-not-running → exit 0 with no decision**, so Claude falls
+   back to its own permission prompt. Never silently allow.
+
+### Scope
+- `isle-cli`: new `ask` verb (write request + block-poll for decision + timeout)
+  and a `decide <session_id> <allow|deny>` verb the app calls. Keep
+  `HookInstaller.scriptBody` byte-for-byte in sync (they're intentionally
+  duplicated).
+- `integration/claude-code-hooks/settings.json`: point `PreToolUse` at `ask`.
+- `ClaudeStatus` / `ClaudeStatusWatcher`: carry the request id through.
+- `ClaudeExpandedView`: Approve / Deny buttons (only when `needsApproval`),
+  showing the exact tool + target.
+- `NotchViewModel`: an action that writes the decision file for the live
+  session.
+
+### Acceptance
+- A tool permission prompt shows Approve / Deny in the notch; Approve lets the
+  tool run, Deny blocks it with the reason surfaced to Claude.
+- Quitting Isle (or a 30s timeout) mid-prompt never wedges the session — Claude
+  falls back to the terminal prompt.
+- Two concurrent sessions each get their own prompt (decisions keyed by
+  `session_id`).
+
+### Boundaries & decisions to lock
+- **Tool approvals only.** `needsQuestion` (free-text `AskUserQuestion`) can't be
+  answered by allow/deny — that needs text injected into the session (the
+  fragile terminal-injection problem). Out of scope here; it stays a
+  "go to the terminal" case.
+- **Timeout length** — default 30s, then fall back. Confirm the number.
+- **Permission posture** — a notch click authorizes a tool. Always show the exact
+  command/target; default-deny on timeout; never auto-allow.
+
+---
+
 ## Suggested sequencing
 
 ```
 M1 Mode archetype ─┬─> M2 Onboarding
-                   ├─> M3 Claude bridge ──> M4 Tabbed "Both" ─┐
-                   └─────────────────────> M5 Settings ───────┴─> M6 Launch
+                   ├─> M3 Claude bridge ─┬─> M4 Tabbed "Both" ─┐
+                   │                     └─> M7 Act from notch ─┤
+                   └───────────────────────> M5 Settings ──────┴─> M6 Launch
+                                                                    │
+                                     M7 unblocks ──> Scheduled Prompts (Parked)
 ```
 
 - **M1 is the gate** — everything reads from `AppSettings.mode`.
 - **M5 (Settings) can start after M1** and grow a section per milestone as
   features land.
+- **M7 (Act from notch) needs M3's bridge** (it extends `isle-cli` and the
+  status watcher) and delivers the "talk back into a session" primitive that
+  Scheduled Prompts is parked on.
 - A credible public build = **M1 + M2 + M3 + M4** (the full three-mode island),
-  with **M5** and **M6** finishing it for release.
+  with **M5**, **M7**, and **M6** finishing it for release.
 
 ---
 
@@ -314,6 +396,13 @@ build.** Notes captured so far:
   never silently skip permissions).
 - **Wake/sleep** — a closed-lid MacBook won't run timers; would need a `launchd`
   agent or a "keep awake" caveat.
+
+- **Talk-back primitive** — the hard part (getting the notch to inject something
+  into a running session) is prototyped by **Milestone 7 — Act from the Notch**,
+  which builds a blocking-hook + decision-file handshake for approvals. Scheduled
+  Prompts is the same shape one layer up: instead of writing a decision, write a
+  *prompt* the session picks up. Wait for M7 to land, then reassess whether the
+  decision-file channel generalizes or a resume-session spawn is cleaner.
 
 Revisit and promote to a numbered milestone once the delivery mechanism is
 chosen.

@@ -561,12 +561,30 @@ final class NotchViewModel: ObservableObject {
         return width > 0 ? CollapsedSize.gap + width : 0
     }
 
+    /// The current tool call as a display model, used by the expanded "what it's
+    /// doing" line. Nil until a `PreToolUse` has reported a tool (e.g. right
+    /// after a prompt submit, before the first tool runs).
+    var claudeActivity: ClaudeActivity? {
+        ClaudeActivity(action: claudeAction, target: claudeTarget)
+    }
+
+    /// Claude is `working` but not inside a tool call — the reasoning/planning
+    /// phase. That's the case right after a prompt (before the first tool) and
+    /// for a whole text-only turn, so the island can honestly say "Thinking"
+    /// then and "Working" once a tool is actually running. Between tools the
+    /// last tool's action lingers (we don't clear it on PostToolUse), so this
+    /// deliberately doesn't flip on every tool boundary — that would flap the
+    /// collapsed word constantly.
+    var isThinking: Bool {
+        claudeState == .working && claudeActivity == nil
+    }
+
     /// A short, stable word for the collapsed notch — deliberately *not* the
     /// per-tool action (that changes every tool call and would make the island
     /// resize constantly). The expanded view shows the detailed "Editing …".
     var collapsedStatusText: String {
         switch claudeState {
-        case .working: return "Working"
+        case .working: return isThinking ? "Thinking" : "Working"
         case .needsApproval: return "Approve"
         case .needsQuestion: return "Question"
         case .waitingInput: return "Waiting"

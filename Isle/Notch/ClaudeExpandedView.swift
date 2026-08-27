@@ -44,6 +44,10 @@ struct ClaudeExpandedView: View {
                     .font(.system(size: 12.5, weight: .regular))
                     .foregroundStyle(.white.opacity(0.72))
                     .lineLimit(1)
+                    // Shrink a long filename to fit before resorting to an
+                    // ellipsis, so "Editing SomeLongComponentName.swift" stays
+                    // whole instead of getting clipped mid-name.
+                    .minimumScaleFactor(0.7)
                     .truncationMode(.middle)
 
                 Spacer().frame(height: 11)
@@ -98,7 +102,8 @@ struct ClaudeExpandedView: View {
     private var detail: String {
         switch state {
         case .working:
-            return actionText ?? "Working on it…"
+            // No tool running → Claude is reasoning, not acting.
+            return actionText ?? "Thinking…"
         case .needsApproval:
             return "Waiting for your go-ahead"
         case .needsQuestion:
@@ -115,30 +120,10 @@ struct ClaudeExpandedView: View {
     }
 
     /// A friendly phrase for the current tool, e.g. "Editing App.swift" or
-    /// "Running npm test". Nil when there's no tool info.
+    /// "Running npm". Nil when there's no tool info. Shares its phrasing and
+    /// target hygiene with the collapsed glyph via `ClaudeActivity`.
     private var actionText: String? {
-        guard let action = viewModel.claudeAction, !action.isEmpty else { return nil }
-        let target = viewModel.claudeTarget
-        let file = target.map { ($0 as NSString).lastPathComponent }
-
-        switch action {
-        case "Edit", "MultiEdit", "Write", "NotebookEdit":
-            return "Editing \(file ?? "a file")"
-        case "Read":
-            return "Reading \(file ?? "a file")"
-        case "Bash":
-            return target.map { "Running \($0)" } ?? "Running a command"
-        case "Grep", "Glob":
-            return target.map { "Searching \($0)" } ?? "Searching"
-        case "WebFetch", "WebSearch":
-            return "Browsing the web"
-        case "Task", "Agent":
-            return "Delegating a task"
-        case "TodoWrite":
-            return "Updating the plan"
-        default:
-            return action
-        }
+        viewModel.claudeActivity?.phrase
     }
 
     /// Live "… ago", ticking once a second. Project lives in its own chip.
