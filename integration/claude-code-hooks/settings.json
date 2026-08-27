@@ -6,11 +6,17 @@
     "PreToolUse": [
       { "hooks": [{ "type": "command", "command": "isle-cli set-state working" }] }
     ],
+    "PostToolUse": [
+      { "hooks": [{ "type": "command", "command": "isle-cli set-state working" }] }
+    ],
     "Notification": [
-      { "hooks": [{ "type": "command", "command": "isle-cli set-state needs_approval" }] }
+      { "hooks": [{ "type": "command", "command": "isle-cli notify" }] }
     ],
     "Stop": [
       { "hooks": [{ "type": "command", "command": "isle-cli set-state done" }] }
+    ],
+    "StopFailure": [
+      { "hooks": [{ "type": "command", "command": "isle-cli fail" }] }
     ],
     "SessionStart": [
       { "hooks": [{ "type": "command", "command": "isle-cli set-state idle" }] }

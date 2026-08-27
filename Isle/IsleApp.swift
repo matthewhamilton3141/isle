@@ -33,6 +33,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         notchController = NotchWindowController()
         notchController?.show()
+
+        // First launch (no mode chosen yet): ask what Isle should be before
+        // it settles into the default Both behaviour.
+        if !AppSettings.shared.hasChosenMode {
+            openSetup()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -54,7 +60,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             action: #selector(toggleNotch),
             keyEquivalent: ""
         ).target = self
+        menu.addItem(
+            withTitle: "Settings…",
+            action: #selector(openSettings),
+            keyEquivalent: ","
+        ).target = self
+        menu.addItem(
+            withTitle: "Setup…",
+            action: #selector(openSetup),
+            keyEquivalent: ""
+        ).target = self
         menu.addItem(.separator())
+
+        menu.addItem(
+            withTitle: "Marker Editor…",
+            action: #selector(openMarkerEditor),
+            keyEquivalent: ""
+        ).target = self
+        menu.addItem(
+            withTitle: "Animation Gallery…",
+            action: #selector(openAnimationGallery),
+            keyEquivalent: ""
+        ).target = self
+        menu.addItem(.separator())
+
         menu.addItem(
             withTitle: "Quit Isle",
             action: #selector(NSApplication.terminate(_:)),
@@ -68,5 +97,121 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleNotch() {
         guard let notchController else { return }
         notchController.isVisible ? notchController.hide() : notchController.show()
+    }
+
+    // MARK: - Onboarding / Setup
+
+    private var setupWindow: NSWindow?
+
+    @objc private func openSetup() {
+        if let setupWindow {
+            setupWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let view = OnboardingView(settings: .shared) { [weak self] in
+            self?.setupWindow?.close()
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 460),
+            styleMask: [.titled, .closable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Isle Setup"
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isMovableByWindowBackground = true
+        window.contentView = NSHostingView(rootView: view)
+        window.center()
+        window.isReleasedWhenClosed = false
+        setupWindow = window
+
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private var galleryWindow: NSWindow?
+
+    @objc private func openAnimationGallery() {
+        if let galleryWindow {
+            galleryWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 820),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Isle — Animation Gallery"
+        window.contentView = NSHostingView(rootView: AnimationGalleryView())
+        window.center()
+        // Keep the instance around after a close so reopening is instant and
+        // doesn't hit a released window (the app is an agent with no main
+        // window to fall back on).
+        window.isReleasedWhenClosed = false
+        galleryWindow = window
+
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // MARK: - Marker editor
+
+    private var markerEditorWindow: NSWindow?
+
+    @objc private func openMarkerEditor() {
+        if let markerEditorWindow {
+            markerEditorWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 640),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Isle — Marker Editor"
+        window.contentView = NSHostingView(rootView: MarkerEditorView())
+        window.center()
+        window.isReleasedWhenClosed = false
+        markerEditorWindow = window
+
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // MARK: - Settings
+
+    private var settingsWindow: NSWindow?
+
+    @objc private func openSettings() {
+        if let settingsWindow {
+            settingsWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 440),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Isle Settings"
+        window.contentView = NSHostingView(rootView: SettingsView(settings: .shared))
+        window.center()
+        window.isReleasedWhenClosed = false
+        settingsWindow = window
+
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 }

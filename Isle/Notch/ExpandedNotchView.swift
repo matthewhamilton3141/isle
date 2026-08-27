@@ -15,6 +15,30 @@ struct ExpandedNotchView: View {
     private var media: MediaPlaybackModel { viewModel.media }
 
     var body: some View {
+        // The Music/Claude switcher itself lives in NotchRootView, positioned
+        // to the right of the physical cutout — see NotchRootView.tabBar.
+        content
+            // Cross-fade content on any tab change, including the
+            // interrupt-driven switch to Claude that doesn't go through the
+            // tab button's animation.
+            .animation(.easeInOut(duration: 0.2), value: viewModel.expandedTab)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch viewModel.expandedTab {
+        case .music:
+            musicBody
+                .transition(.opacity)
+        case .claude:
+            ClaudeExpandedView(viewModel: viewModel, palette: palette)
+                .transition(.opacity)
+        }
+    }
+
+    // MARK: - Music
+
+    private var musicBody: some View {
         // The album and the text column are one tight pair — a small fixed gap
         // between them, a fixed-width text block — and that pair is centred in
         // the panel by the outer `.frame(maxWidth: .infinity)`, so the leftover
@@ -33,11 +57,6 @@ struct ExpandedNotchView: View {
             // into whatever is left keeps the panel from looking top-heavy
             // with a band of dead space under the buttons.
             VStack(alignment: .leading, spacing: 0) {
-                if viewModel.hasLiveActivity {
-                    claudeCard
-                    Spacer(minLength: 6)
-                }
-
                 if media.hasTrack {
                     // Fixed gaps between the three rows, flexible space only
                     // at the ends. Previously the inner gaps were flexible
@@ -46,19 +65,21 @@ struct ExpandedNotchView: View {
                     // of staying together and centring.
                     Spacer(minLength: 0)
                     trackLabels
-                    Spacer().frame(height: 6)
-                    scrubber
-                        // Nudged down without changing the layout gaps, so the
-                        // group stays centred. Safe against the transport row
-                        // because the time labels sit at the far edges while
-                        // the keys are centred — they don't collide.
-                        .offset(y: 3)
+                    if viewModel.showScrubber {
+                        Spacer().frame(height: 6)
+                        scrubber
+                            // Nudged down without changing the layout gaps, so
+                            // the group stays centred. Safe against the transport
+                            // row because the time labels sit at the far edges
+                            // while the keys are centred — they don't collide.
+                            .offset(y: 3)
+                    }
                     // Tight gap so the transport keys sit up close under the
                     // playbar rather than floating below it.
-                    Spacer().frame(height: 2)
+                    Spacer().frame(height: viewModel.showScrubber ? 2 : 8)
                     controls
                     Spacer(minLength: 0)
-                } else if !viewModel.hasLiveActivity {
+                } else {
                     idlePlaceholder
                 }
             }
@@ -138,26 +159,6 @@ struct ExpandedNotchView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.white.opacity(0.6))
         }
-    }
-
-    // MARK: - Claude
-
-    private var claudeCard: some View {
-        HStack(spacing: 8) {
-            ClaudeStatusGlyphView(state: viewModel.claudeState)
-                .frame(width: 16, height: 16)
-
-            Text("Claude Code needs your approval")
-                .font(.system(size: 12, weight: .medium))
-
-            Spacer(minLength: 0)
-        }
-        .padding(.vertical, 6)
-        .padding(.horizontal, 9)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(.white.opacity(0.12))
-        )
     }
 
     // MARK: - Scrubber

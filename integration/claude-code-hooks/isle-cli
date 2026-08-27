@@ -1,40 +1,126 @@
 #!/bin/bash
 #
-# isle-cli — the bridge script Claude Code's hooks call. Writes a small
-# JSON status file that Isle watches with DispatchSource (see the build
-# spec, Section 3.3). Deliberately dependency-free (no jq/python required)
-# so it can't be the reason a hook fails.
+# isle-cli — the bridge script Claude Code's hooks call. Writes a small JSON
+# status file (~/.isle/claude-status.json) that Isle watches with DispatchSource.
+# Dependency-free (no jq/python) so a missing tool can never break a hook. Does
+# NOT require Isle.app to be running — it just writes a file (exit 0 either way).
 #
-# Usage: isle-cli set-state <disconnected|idle|working|needs_approval|done>
+# Usage:
+#   isle-cli set-state <disconnected|idle|working|done>   # state comes from the hook
+#   isle-cli notify                                        # classify a Notification
 #
-# Does NOT require Isle.app to be running to succeed — it just writes a
-# file. If Isle isn't open, the write is a harmless no-op from Claude
-# Code's perspective (exit 0 either way).
+# Kept in sync with Isle's embedded HookInstaller.scriptBody.
 
 set -euo pipefail
 
 STATUS_DIR="$HOME/.isle"
 STATUS_FILE="$STATUS_DIR/claude-status.json"
 
-if [ "${1:-}" != "set-state" ] || [ -z "${2:-}" ]; then
-  echo "Usage: isle-cli set-state <disconnected|idle|working|needs_approval|done>" >&2
-  exit 1
-fi
+CMD="${1:-}"
+case "$CMD" in
+  set-state)
+    STATE="${2:-}"
+    if [ -z "$STATE" ]; then
+      echo "Usage: isle-cli set-state <disconnected|idle|working|done>" >&2
+      exit 1
+    fi
+    ;;
+  notify)
+    STATE=""   # decided from the notification message below
+    ;;
+  fail)
+    STATE="error"   # the turn ended on an API error (StopFailure hook)
+    ;;
+  *)
+    echo "Usage: isle-cli <set-state <state> | notify | fail>" >&2
+    exit 1
+    ;;
+esac
 
-STATE="$2"
 PROJECT="$(basename "$PWD")"
 TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
+# Pull fields out of the hook's stdin JSON without jq. Each `|| true` swallows a
+# no-match exit so set -e/pipefail can't abort before the file is written (a
+# matched value is already on stdout, so a real value is never clobbered).
+SESSION_ID=""
+ACTION=""
+TARGET=""
+MESSAGE=""
+HOOK_EVENT=""
+ERROR_TYPE=""
+if [ ! -t 0 ]; then
+  STDIN_JSON="$(cat)"
+  HOOK_EVENT="$(printf '%s' "$STDIN_JSON" \
+    | grep -oE '"hook_event_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+  ERROR_TYPE="$(printf '%s' "$STDIN_JSON" \
+    | grep -oE '"error_type"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+  SESSION_ID="$(printf '%s' "$STDIN_JSON" \
+    | grep -oE '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+  ACTION="$(printf '%s' "$STDIN_JSON" \
+    | grep -oE '"tool_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+  TARGET="$(printf '%s' "$STDIN_JSON" \
+    | grep -oE '"(file_path|command|pattern|path|url)"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+  TARGET="$(printf '%s' "$TARGET" | tr -d '\\')"
+  # Reduce a bare file path to its last component, so a long absolute path
+  # still shows its filename instead of being clipped mid-name by the cap
+  # below. URLs (host matters) and command lines (first token matters) are
+  # left for the app to reduce, so they're skipped here.
+  case "$TARGET" in
+    *"://"*) : ;;
+    *" "*)   : ;;
+    */*)     TARGET="${TARGET##*/}" ;;
+  esac
+  TARGET="$(printf '%s' "$TARGET" | cut -c1-48)"
+  MESSAGE="$(printf '%s' "$STDIN_JSON" \
+    | grep -oE '"message"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+fi
+
+# Classify a Notification from its message: a permission prompt is an approval,
+# an idle "waiting for your input" nudge is calmer, everything else defaults to
+# approval (some attention is needed).
+if [ "$CMD" = "notify" ]; then
+  # Keep an active question: a question (from the AskUserQuestion tool) is the
+  # more specific signal, and the notification that follows it is just "waiting
+  # on you" for the same prompt — don't let it downgrade to a plain approval.
+  # The question clears on its own when Claude moves on (next tool use / Stop).
+  if [ -f "$STATUS_FILE" ] && grep -q '"state": "needs_question"' "$STATUS_FILE" 2>/dev/null; then
+    exit 0
+  fi
+  lower="$(printf '%s' "$MESSAGE" | tr '[:upper:]' '[:lower:]')"
+  case "$lower" in
+    *permission*|*approve*|*allow*) STATE="needs_approval" ;;
+    *waiting*)                      STATE="waiting_input" ;;
+    *)                              STATE="needs_approval" ;;
+  esac
+fi
+
+# A tool that asks the user a question surfaces as a question, not plain work —
+# but only while it's being *asked* (PreToolUse). The matching PostToolUse fires
+# when the question is answered; letting it convert too would re-raise the
+# question forever and the notch would never close. Absent hook_event_name we
+# keep the old behaviour (convert), so a lone PreToolUse still opens.
+if [ "$CMD" = "set-state" ] && [ "$STATE" = "working" ] \
+   && [ "$ACTION" = "AskUserQuestion" ] && [ "$HOOK_EVENT" != "PostToolUse" ]; then
+  STATE="needs_question"
+fi
+
 mkdir -p "$STATUS_DIR"
 
-# Heredoc, not jq/python — state and project are the only interpolated
-# values, both effectively controlled inputs (a fixed enum + a directory
-# name), so this stays simple on purpose. Revisit if you add session_id
-# parsing from the hook's stdin JSON later (multi-session stretch goal).
 cat > "$STATUS_FILE" <<EOF
 {
   "state": "$STATE",
   "project": "$PROJECT",
+  "session_id": "$SESSION_ID",
+  "action": "$ACTION",
+  "target": "$TARGET",
+  "error_type": "$ERROR_TYPE",
   "updated_at": "$TIMESTAMP"
 }
 EOF
