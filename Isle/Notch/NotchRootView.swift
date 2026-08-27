@@ -197,7 +197,7 @@ struct NotchRootView: View {
         .contentShape(Rectangle())
         .onHover { hovering in
             withAnimation(hovering ? .notchOpen : .notchClose) {
-                viewModel.isHovering = hovering
+                viewModel.setHovering(hovering)
             }
         }
         .background(

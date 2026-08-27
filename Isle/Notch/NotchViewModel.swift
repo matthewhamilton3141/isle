@@ -28,8 +28,19 @@ enum CollapsedSize {
 
 @MainActor
 final class NotchViewModel: ObservableObject {
-    /// Pointer is over the notch's hit area.
-    @Published var isHovering: Bool = false
+    /// Pointer is over the notch's hit area. Set only through `setHovering`,
+    /// never directly, so the collapse-commit gate can't be bypassed.
+    @Published private(set) var isHovering: Bool = false
+
+    /// While true, pointer-driven expansion is refused. Set the instant the
+    /// notch starts collapsing and cleared once the close animation has
+    /// settled — see `setHovering`.
+    private var collapseLocked = false
+
+    /// How long re-expansion stays locked out after a collapse begins. Covers
+    /// the close spring (`Animation.notchClose`, response 0.30) so the hover
+    /// region has fully shrunk before hover can fire again.
+    private static let collapseLockDuration: TimeInterval = 0.32
 
     /// Claude Code state from the hook bridge, driven by `ClaudeStatusWatcher`.
     /// Stays `.disconnected` when the active mode doesn't show Claude, or when
@@ -459,6 +470,26 @@ final class NotchViewModel: ObservableObject {
             isHovering: isHovering,
             hasLiveActivity: hasLiveActivity
         )
+    }
+
+    /// The only way `isHovering` changes. Opening is immediate; closing commits
+    /// to the collapse and locks re-expansion out for the length of the close
+    /// animation. That's what stops the panel flapping back open under a
+    /// pointer that's on its way off the island — a stray hover-in during the
+    /// shrink is ignored until the notch has fully settled. A live-activity
+    /// interrupt is unaffected: it opens through `hasLiveActivity`, not hover.
+    func setHovering(_ hovering: Bool) {
+        if hovering {
+            guard !collapseLocked, !isHovering else { return }
+            isHovering = true
+        } else {
+            guard isHovering else { return }
+            isHovering = false
+            collapseLocked = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.collapseLockDuration) { [weak self] in
+                self?.collapseLocked = false
+            }
+        }
     }
 
     /// Whether the expanded panel shows the Music/Claude segmented switcher —
