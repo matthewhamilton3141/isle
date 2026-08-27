@@ -202,14 +202,31 @@ struct NotchRootView: View {
         }
         .background(
             GeometryReader { proxy in
+                // Tracks only the *animating* width, for the content reveal.
+                // The clickable rect is computed deterministically (see
+                // `activeRect`) so it can never get stuck on a stale value.
                 Color.clear
-                    .onAppear { report(proxy) }
-                    .onChange(of: proxy.frame(in: .named(Self.space))) { _, _ in
-                        report(proxy)
-                    }
+                    .onAppear { liveWidth = proxy.size.width }
+                    .onChange(of: proxy.size.width) { _, w in liveWidth = w }
             }
         )
-        .coordinateSpace(name: Self.space)
+        .onAppear { onActiveRectChange?(activeRect) }
+        .onChange(of: activeRect) { _, rect in onActiveRectChange?(rect) }
+    }
+
+    /// The notch's clickable region in the hosting view's coordinate space
+    /// (top-left origin). Derived from the current size + shift rather than
+    /// read back from a GeometryReader, so it collapses immediately with the
+    /// state and never leaves the expanded footprint swallowing clicks.
+    private var activeRect: CGRect {
+        let hostWidth = viewModel.metrics?.maximumFrame.width ?? NotchMetrics.expandedSize.width
+        let s = size
+        return CGRect(
+            x: (hostWidth - s.width) / 2 + collapsedShift,
+            y: 0,
+            width: s.width,
+            height: s.height
+        )
     }
 
     @ViewBuilder
@@ -274,10 +291,4 @@ struct NotchRootView: View {
         }
     }
 
-    private static let space = "isle.notch"
-
-    private func report(_ proxy: GeometryProxy) {
-        liveWidth = proxy.size.width
-        onActiveRectChange?(proxy.frame(in: .global))
-    }
 }
