@@ -107,6 +107,16 @@ struct SettingsView: View {
                     .labelsHidden()
                 }
             }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Expand notch for alerts", isOn: $settings.expandOnAlert)
+                Text(settings.expandOnAlert
+                     ? "Approvals, questions, and API errors pop the notch open."
+                     : "Delivered minimized — the collapsed island shows the alert; hover to open.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

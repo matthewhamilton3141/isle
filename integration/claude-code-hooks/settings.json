@@ -15,6 +15,9 @@
     "Stop": [
       { "hooks": [{ "type": "command", "command": "isle-cli set-state done" }] }
     ],
+    "StopFailure": [
+      { "hooks": [{ "type": "command", "command": "isle-cli fail" }] }
+    ],
     "SessionStart": [
       { "hooks": [{ "type": "command", "command": "isle-cli set-state idle" }] }
     ]

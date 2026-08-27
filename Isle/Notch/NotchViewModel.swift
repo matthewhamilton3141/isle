@@ -17,8 +17,6 @@ enum CollapsedSize {
     static let waveSplit: CGFloat = 22   // waveform when paired with the album
     static let waveSolo: CGFloat = 26    // waveform when it's the only thing
     static let dots: CGFloat = 16
-    static let approvalDots: CGFloat = 18
-    static let ring: CGFloat = 8
     static let gap: CGFloat = 5          // between elements within a cluster
     static let cutoutGap: CGFloat = 6    // between a cluster and the camera
     static let minSide: CGFloat = 30     // resting half-width when a side is empty
@@ -58,6 +56,10 @@ final class NotchViewModel: ObservableObject {
     /// for the "what it's doing" line in the expanded view.
     @Published private(set) var claudeAction: String?
     @Published private(set) var claudeTarget: String?
+
+    /// For `.failed`, the API `error_type` (rate_limit / overloaded / …) so the
+    /// notch can name the failure. Nil in every other state.
+    @Published private(set) var claudeErrorType: String?
 
     /// When the last Claude status change arrived, for the "… ago" line in the
     /// Claude expanded view. `nil` when disconnected.
@@ -273,6 +275,7 @@ final class NotchViewModel: ObservableObject {
             claudeSessionId = nil
             claudeAction = nil
             claudeTarget = nil
+            claudeErrorType = nil
             claudeUpdatedAt = nil
         }
     }
@@ -296,6 +299,7 @@ final class NotchViewModel: ObservableObject {
         claudeSessionId = status.sessionId
         claudeAction = status.action
         claudeTarget = status.target
+        claudeErrorType = status.errorType
         claudeUpdatedAt = status.state == .disconnected ? nil : Date()
 
         // Rotate the "thinking" word only while actually working.
@@ -305,10 +309,17 @@ final class NotchViewModel: ObservableObject {
             stopWorkingWords()
         }
 
-        guard status.state == .done else { return }
-        let duration = settings.doneToastSeconds
+        // `done` and `failed` are both terminal toasts: show them, then ease
+        // back to idle so they don't stick until the next prompt. A failure
+        // lingers a little longer since it's easier to miss and worth reading.
+        let revertDelay: TimeInterval
+        switch status.state {
+        case .done: revertDelay = settings.doneToastSeconds
+        case .failed: revertDelay = max(settings.doneToastSeconds, 6)
+        default: return
+        }
         doneRevertTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(duration))
+            try? await Task.sleep(for: .seconds(revertDelay))
             guard !Task.isCancelled else { return }
             withAnimation(.easeInOut(duration: 0.25)) {
                 self?.claudeState = .idle
@@ -462,13 +473,26 @@ final class NotchViewModel: ObservableObject {
     /// the notch would flap open on every tool call. Suppressed entirely when
     /// the active mode doesn't show Claude.
     var hasLiveActivity: Bool {
-        settings.effectiveMode.showsClaude && claudeState.isAttention
+        // Approvals/questions interrupt; a failure also pops the panel so the
+        // stopped turn is noticed (it auto-reverts to idle — see
+        // applyClaudeStatus).
+        settings.effectiveMode.showsClaude
+            && (claudeState.isAttention || claudeState == .failed)
+    }
+
+    /// A live activity takes over the panel only when the user hasn't chosen to
+    /// receive alerts minimized. When off, the alert still shows in the collapsed
+    /// island (glyph/label) and the user expands on hover — it just doesn't pop
+    /// open on its own. `hasLiveActivity` itself stays true so a manual expand
+    /// still lands on the Claude tab (see `expandedTab`).
+    private var autoExpandsForActivity: Bool {
+        hasLiveActivity && settings.expandOnAlert
     }
 
     var state: NotchState {
         NotchStateResolver.resolve(
             isHovering: isHovering,
-            hasLiveActivity: hasLiveActivity
+            hasLiveActivity: autoExpandsForActivity
         )
     }
 
@@ -520,10 +544,12 @@ final class NotchViewModel: ObservableObject {
             && claudeState != .disconnected && claudeState != .idle
     }
 
-    /// Both sources live at once — collapsed view splits (spec 3.1), unless
-    /// Claude needs approval, which takes the full width.
+    /// Both sources live at once — collapsed view splits (spec 3.1): music keeps
+    /// its place on the left, Claude sits on the right. Alerts (approval /
+    /// question) stay on Claude's side too rather than taking over the whole
+    /// island, so the music isn't displaced.
     var shouldSplitCollapsed: Bool {
-        hasMusicActivity && hasClaudeActivity && claudeState != .needsApproval
+        hasMusicActivity && hasClaudeActivity
     }
 
     /// Content widths either side of the camera cutout in the collapsed notch,
@@ -538,9 +564,6 @@ final class NotchViewModel: ObservableObject {
         let s = CollapsedSize.self
         let g = s.cutoutGap
 
-        if claudeState.isAttention {
-            return (s.approvalDots + g, hasMusicActivity ? s.ring + g : s.minSide)
-        }
         if shouldSplitCollapsed {
             let leading = s.album + (showWaveform ? s.gap + s.waveSplit : 0) + g
             return (leading, s.dots + statusSlot + g)
@@ -590,7 +613,31 @@ final class NotchViewModel: ObservableObject {
         case .waitingInput: return "Waiting"
         case .done: return "Done"
         case .idle: return "Ready"
+        case .failed: return claudeError.short
         case .disconnected: return ""
+        }
+    }
+
+    /// Human copy for an API failure, chosen from `claudeErrorType`. One place
+    /// so the collapsed word, the expanded headline, and its detail agree.
+    var claudeError: (short: String, title: String, detail: String) {
+        switch claudeErrorType {
+        case "rate_limit":
+            return ("Rate limit", "Rate limited", "Usage limit reached — resend once it resets.")
+        case "overloaded":
+            return ("Busy", "Overloaded", "The API is busy right now — resend to retry.")
+        case "server_error":
+            return ("Server", "Server error", "The API returned a 5xx — resend to retry.")
+        case "authentication_failed", "oauth_org_not_allowed":
+            return ("Auth", "Auth failed", "Re-authenticate Claude Code, then retry.")
+        case "billing_error":
+            return ("Billing", "Billing issue", "Check your plan or billing, then retry.")
+        case "max_output_tokens":
+            return ("Length", "Response too long", "Hit the output limit — narrow the ask and resend.")
+        case "invalid_request", "model_not_found":
+            return ("Error", "Request rejected", "The API rejected the request.")
+        default:
+            return ("Error", "API error", "The turn stopped on an API error — resend to retry.")
         }
     }
 

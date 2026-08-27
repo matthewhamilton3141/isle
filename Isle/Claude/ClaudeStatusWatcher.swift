@@ -26,6 +26,9 @@ struct ClaudeStatus: Equatable {
     var action: String?
     /// A best-effort target for that tool (file path, command, pattern).
     var target: String?
+    /// For `.failed`, the API `error_type` from `StopFailure` (rate_limit,
+    /// overloaded, server_error, …). Nil otherwise.
+    var errorType: String?
 
     static let disconnected = ClaudeStatus(state: .disconnected, project: nil, sessionId: nil)
 }
@@ -163,7 +166,8 @@ final class ClaudeStatusWatcher {
             project: payload.project,
             sessionId: payload.session_id,
             action: payload.action.flatMap { $0.isEmpty ? nil : $0 },
-            target: payload.target.flatMap { $0.isEmpty ? nil : $0 }
+            target: payload.target.flatMap { $0.isEmpty ? nil : $0 },
+            errorType: payload.error_type.flatMap { $0.isEmpty ? nil : $0 }
         )
     }
 }
@@ -180,6 +184,7 @@ private struct StatusPayload: Decodable {
     let session_id: String?
     let action: String?
     let target: String?
+    let error_type: String?
 
     var claudeState: ClaudeCodeState {
         switch state {
@@ -189,6 +194,7 @@ private struct StatusPayload: Decodable {
         case "needs_question": return .needsQuestion
         case "waiting_input": return .waitingInput
         case "done": return .done
+        case "error": return .failed
         default: return .disconnected
         }
     }

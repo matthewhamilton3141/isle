@@ -23,6 +23,7 @@ final class AppSettings: ObservableObject {
     private static let showWaveformKey = "isle.showWaveform"
     private static let showScrubberKey = "isle.showScrubber"
     private static let doneToastKey = "isle.doneToastSeconds"
+    private static let expandOnAlertKey = "isle.expandOnAlert"
 
     /// The user's chosen mode, or `nil` until onboarding sets one
     /// (Milestone 2). Persisted on change.
@@ -65,6 +66,14 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(doneToastSeconds, forKey: Self.doneToastKey) }
     }
 
+    /// Whether an attention event (approval, question, API error) pops the panel
+    /// open on its own. Off delivers it minimized — the collapsed island shows
+    /// the alert glyph/label, but the notch doesn't take over the screen; the
+    /// user expands on hover to act.
+    @Published var expandOnAlert: Bool {
+        didSet { defaults.set(expandOnAlert, forKey: Self.expandOnAlertKey) }
+    }
+
     /// Whether the user has ever picked a mode. Onboarding keys off this.
     var hasChosenMode: Bool { mode != nil }
 
@@ -85,5 +94,6 @@ final class AppSettings: ObservableObject {
         showWaveform = defaults.object(forKey: Self.showWaveformKey) as? Bool ?? true
         showScrubber = defaults.object(forKey: Self.showScrubberKey) as? Bool ?? true
         doneToastSeconds = defaults.object(forKey: Self.doneToastKey) as? Double ?? 4
+        expandOnAlert = defaults.object(forKey: Self.expandOnAlertKey) as? Bool ?? true
     }
 }

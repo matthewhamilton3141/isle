@@ -19,10 +19,16 @@ enum ClaudeCodeState: Equatable {
     case needsQuestion
     case waitingInput
     case done
+    /// The turn ended on an API error (Claude Code's `StopFailure` hook —
+    /// rate limit, overloaded, server error, …). The specific `error_type`
+    /// rides alongside on the view model rather than in the case itself.
+    case failed
 
     /// States that warrant interrupting the user — opening the notch and
     /// taking over the collapsed island. Approval and questions qualify;
-    /// idle-waiting is calmer and stays ambient.
+    /// idle-waiting is calmer and stays ambient. A failure surfaces too, but
+    /// via its own path (see `NotchViewModel.hasLiveActivity`) so the collapsed
+    /// layout keeps its status text instead of the bare approval dots.
     var isAttention: Bool {
         self == .needsApproval || self == .needsQuestion
     }
@@ -52,6 +58,11 @@ struct GlyphConfig: Equatable {
             // Faster + brighter than `working` — this is the interrupt case,
             // it should read as urgent at a glance in the collapsed notch.
             return GlyphConfig(period: 0.8, minScale: 0.8, maxScale: 1.05, minOpacity: 0.6, maxOpacity: 1.0,
+                                color: .red, nsColor: .systemRed)
+        case .failed:
+            // A steady, dimmer red — the turn already stopped, so this reads as
+            // an alert to notice rather than an urgent pulse to act on.
+            return GlyphConfig(period: 2.0, minScale: 0.92, maxScale: 1.0, minOpacity: 0.7, maxOpacity: 1.0,
                                 color: .red, nsColor: .systemRed)
         case .done:
             // Not actually used for the breathing loop — `done` renders via

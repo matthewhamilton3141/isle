@@ -95,6 +95,7 @@ struct ClaudeExpandedView: View {
         case .needsQuestion: return "Has a question"
         case .waitingInput: return "Waiting for you"
         case .done: return "Done"
+        case .failed: return viewModel.claudeError.title
         }
     }
 
@@ -114,6 +115,8 @@ struct ClaudeExpandedView: View {
             return "Finished responding"
         case .idle:
             return "Session ready"
+        case .failed:
+            return viewModel.claudeError.detail
         case .disconnected:
             return "Install the Claude Code hook to connect a session"
         }

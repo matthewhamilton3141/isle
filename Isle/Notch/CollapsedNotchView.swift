@@ -47,11 +47,10 @@ struct CollapsedNotchView: View {
 
     @ViewBuilder
     private var leading: some View {
-        if viewModel.claudeState.isAttention {
-            // Approval takes over the whole notch; the "!" leads.
-            claudeDots(size: 18)
-        } else if viewModel.shouldSplitCollapsed {
+        if viewModel.shouldSplitCollapsed {
             // Music cluster: album + waveform, waveform tucked toward the camera.
+            // Kept in place even during a Claude alert — the alert sits on the
+            // right rather than displacing the music.
             HStack(spacing: CollapsedSize.gap) {
                 artworkThumbnail
                 if viewModel.showWaveform {
@@ -69,17 +68,12 @@ struct CollapsedNotchView: View {
 
     @ViewBuilder
     private var trailing: some View {
-        if viewModel.claudeState.isAttention {
-            // Music demotes to a thin tinted ring so approval can't be missed.
-            if viewModel.hasMusicActivity {
-                Circle()
-                    .stroke(palette.accent.opacity(0.8), lineWidth: 2)
-                    .frame(width: 8, height: 8)
-            }
-        } else if viewModel.shouldSplitCollapsed
-                    || (viewModel.hasClaudeActivity && !viewModel.hasMusicActivity) {
+        if viewModel.shouldSplitCollapsed
+            || (viewModel.hasClaudeActivity && !viewModel.hasMusicActivity) {
             // Claude cluster: dots next to the camera, status word beside them,
-            // text coloured to match the marker.
+            // text coloured to match the marker. Alerts (approval / question /
+            // error) render here too — the pulsing red glyph and word carry the
+            // urgency without shoving the music aside.
             HStack(spacing: CollapsedSize.gap) {
                 claudeDots(size: CollapsedSize.dots)
                 statusText

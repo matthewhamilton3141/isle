@@ -41,6 +41,10 @@ enum HookInstaller {
         ("PostToolUse", "set-state working"),
         ("Notification", "notify"),
         ("Stop", "set-state done"),
+        // Fires only when a turn ends on an API error (rate limit, overloaded,
+        // server error, …); `Stop` never fires in that case. Surfaces the
+        // failure in the notch instead of leaving it frozen on "working".
+        ("StopFailure", "fail"),
         ("SessionStart", "set-state idle"),
     ]
 
@@ -203,8 +207,11 @@ enum HookInstaller {
       notify)
         STATE=""
         ;;
+      fail)
+        STATE="error"
+        ;;
       *)
-        echo "Usage: isle-cli <set-state <state> | notify>" >&2
+        echo "Usage: isle-cli <set-state <state> | notify | fail>" >&2
         exit 1
         ;;
     esac
@@ -219,10 +226,14 @@ enum HookInstaller {
     TARGET=""
     MESSAGE=""
     HOOK_EVENT=""
+    ERROR_TYPE=""
     if [ ! -t 0 ]; then
       STDIN_JSON="$(cat)"
       HOOK_EVENT="$(printf '%s' "$STDIN_JSON" \
         | grep -oE '"hook_event_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+      ERROR_TYPE="$(printf '%s' "$STDIN_JSON" \
+        | grep -oE '"error_type"[[:space:]]*:[[:space:]]*"[^"]*"' \
         | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
       SESSION_ID="$(printf '%s' "$STDIN_JSON" \
         | grep -oE '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' \
@@ -282,6 +293,7 @@ enum HookInstaller {
       "session_id": "$SESSION_ID",
       "action": "$ACTION",
       "target": "$TARGET",
+      "error_type": "$ERROR_TYPE",
       "updated_at": "$TIMESTAMP"
     }
     EOF

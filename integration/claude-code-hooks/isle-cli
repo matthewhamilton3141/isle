@@ -28,8 +28,11 @@ case "$CMD" in
   notify)
     STATE=""   # decided from the notification message below
     ;;
+  fail)
+    STATE="error"   # the turn ended on an API error (StopFailure hook)
+    ;;
   *)
-    echo "Usage: isle-cli <set-state <state> | notify>" >&2
+    echo "Usage: isle-cli <set-state <state> | notify | fail>" >&2
     exit 1
     ;;
 esac
@@ -45,10 +48,14 @@ ACTION=""
 TARGET=""
 MESSAGE=""
 HOOK_EVENT=""
+ERROR_TYPE=""
 if [ ! -t 0 ]; then
   STDIN_JSON="$(cat)"
   HOOK_EVENT="$(printf '%s' "$STDIN_JSON" \
     | grep -oE '"hook_event_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+  ERROR_TYPE="$(printf '%s' "$STDIN_JSON" \
+    | grep -oE '"error_type"[[:space:]]*:[[:space:]]*"[^"]*"' \
     | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
   SESSION_ID="$(printf '%s' "$STDIN_JSON" \
     | grep -oE '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' \
@@ -113,6 +120,7 @@ cat > "$STATUS_FILE" <<EOF
   "session_id": "$SESSION_ID",
   "action": "$ACTION",
   "target": "$TARGET",
+  "error_type": "$ERROR_TYPE",
   "updated_at": "$TIMESTAMP"
 }
 EOF

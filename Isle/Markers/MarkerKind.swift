@@ -125,6 +125,10 @@ enum MarkerKind: String, CaseIterable, Identifiable, Codable {
         case .needsQuestion: self = .needsQuestion
         case .waitingInput: self = .waitingInput
         case .done: self = .done
+        // The specific failure kind (rate limited / server error / …) is chosen
+        // from `error_type` on the view model; the lifecycle mapping just needs
+        // a sensible default marker.
+        case .failed: self = .apiError
         }
     }
 }
