@@ -18,42 +18,20 @@ import SwiftUI
 
 struct ClaudeStatusGlyphView: View {
     var state: ClaudeCodeState
-    var shape: AnyShape = AnyShape(SparkShape())
 
-    /// Fires once the one-shot `done` animation (draw-in + hold) finishes,
-    /// so the caller can advance back to `.idle`/`.disconnected` — this is
-    /// where the spec's "~4s toast, then auto-collapse" timing lives.
-    var onDoneAnimationFinished: (() -> Void)? = nil
+    /// Artwork colours to tint the dots with, so the indicator matches the
+    /// waveform. Falls back to a neutral palette when none is available.
+    var palette: ArtworkPalette = .fallback
+
+    /// The designs are read from the shared store, so editing a marker in the
+    /// editor updates the live notch immediately.
+    @ObservedObject private var markers = MarkerStore.shared
 
     var body: some View {
-        Group {
-            switch state {
-            case .done:
-                CheckmarkBurstView(color: GlyphConfig.config(for: .done).color) {
-                    onDoneAnimationFinished?()
-                }
-                .transition(.opacity)
-            default:
-                let cfg = GlyphConfig.config(for: state)
-                BreathingShapeView(
-                    shape: shape,
-                    color: cfg.color,
-                    period: cfg.period,
-                    minScale: cfg.minScale,
-                    maxScale: cfg.maxScale,
-                    minOpacity: cfg.minOpacity,
-                    maxOpacity: cfg.maxOpacity
-                )
-                .transition(.opacity)
-            }
-        }
-        // Smooths the swap between branches (e.g. working -> done). If you
-        // set `state` from outside a SwiftUI transaction (a Combine/async
-        // callback off the hook file-watcher, for instance), wrap that
-        // assignment in `withAnimation` at the call site as well — this
-        // modifier alone only catches changes made during SwiftUI's own
-        // update cycle.
-        .animation(.easeInOut(duration: 0.25), value: state)
+        DotMatrixView(
+            design: markers.design(for: MarkerKind(state: state)),
+            palette: palette
+        )
     }
 }
 
@@ -110,10 +88,11 @@ struct ClaudeStatusGlyphExample: View {
 
     var body: some View {
         VStack(spacing: 24) {
-            ClaudeStatusGlyphView(state: state) {
-                state = .idle
-            }
-            .frame(width: 32, height: 32)
+            ClaudeStatusGlyphView(
+                state: state,
+                palette: ArtworkPalette(primary: .pink, secondary: .blue, accent: .orange)
+            )
+            .frame(width: 40, height: 40)
 
             Picker("State", selection: $state) {
                 Text("Disconnected").tag(ClaudeCodeState.disconnected)

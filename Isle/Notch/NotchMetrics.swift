@@ -34,6 +34,13 @@ struct NotchMetrics {
     /// and the split view's two elements start colliding.
     static let collapsedSideInset: CGFloat = 46
 
+    /// Extra width added to the *right* of the collapsed notch when the Claude
+    /// glyph shows alongside the music waveform, so the glyph gets its own room
+    /// instead of the waveform shrinking and the row rebalancing. The shape is
+    /// shifted right by half of this so the camera cutout stays put — see
+    /// NotchRootView.collapsedShift.
+    static let collapsedClaudeExtra: CGFloat = 22
+
     /// Size of the hover-expanded panel.
     ///
     /// Height accounts for the dead band under the camera housing: the top
@@ -115,13 +122,20 @@ struct NotchMetrics {
     func windowSize(for state: NotchState) -> CGSize {
         switch state {
         case .collapsed:
-            return CGSize(
-                width: notchSize.width + Self.collapsedSideInset * 2,
-                height: notchSize.height
-            )
+            return collapsedSize(claudeAlongsideMusic: false)
         case .hoverExpanded, .liveActivityExpanded:
             return Self.expandedSize
         }
+    }
+
+    /// Collapsed size, optionally widened on the right to seat the Claude glyph
+    /// next to the waveform without reflowing the music content.
+    func collapsedSize(claudeAlongsideMusic: Bool) -> CGSize {
+        let extra = claudeAlongsideMusic ? Self.collapsedClaudeExtra : 0
+        return CGSize(
+            width: notchSize.width + Self.collapsedSideInset * 2 + extra,
+            height: notchSize.height
+        )
     }
 
     /// The largest frame Isle ever occupies. The window is sized to this once

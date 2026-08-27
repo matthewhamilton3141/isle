@@ -1,0 +1,163 @@
+//
+//  ClaudeExpandedView.swift
+//
+//  The Claude face of the expanded panel. Mirrors the music tab's weight — a
+//  large marker on the left where the album art sits, and a text column with
+//  the status, what Claude is doing, and the project + elapsed — so the tab
+//  fills the panel instead of floating a small glyph in dead space. Shown as
+//  the whole panel in `.claude` mode, or under the Claude tab in `.both`.
+//
+
+import SwiftUI
+
+struct ClaudeExpandedView: View {
+    @ObservedObject var viewModel: NotchViewModel
+    var palette: ArtworkPalette
+
+    private var state: ClaudeCodeState { viewModel.claudeState }
+
+    var body: some View {
+        // Same skeleton as the music tab: a 114pt block on the left where the
+        // album art sits, then a text column — but with a bold headline and a
+        // width-spanning info row so the panel doesn't read as empty.
+        HStack(spacing: 14) {
+            ClaudeStatusGlyphView(state: state, palette: palette)
+                // A touch smaller than the album, and only slightly raised, so
+                // the top dots stay on the island instead of running off the
+                // top edge into the camera band.
+                .frame(width: 100, height: 100)
+                .offset(y: -4)
+
+            VStack(alignment: .leading, spacing: 0) {
+                Spacer(minLength: 0)
+
+                Text(headline)
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .contentTransition(.opacity)
+
+                Spacer().frame(height: 2)
+
+                Text(detail)
+                    .font(.system(size: 12.5, weight: .regular))
+                    .foregroundStyle(.white.opacity(0.72))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Spacer().frame(height: 11)
+
+                infoRow
+
+                Spacer(minLength: 0)
+            }
+            .frame(minWidth: 340, maxWidth: 340, maxHeight: .infinity, alignment: .leading)
+            .offset(y: -1)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .foregroundStyle(.white)
+    }
+
+    /// The project chip and the elapsed time, grouped together on the left so
+    /// the time isn't stranded at the far right of the panel.
+    private var infoRow: some View {
+        HStack(spacing: 10) {
+            if let project = viewModel.claudeProject, !project.isEmpty {
+                Label(project, systemImage: "folder.fill")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(.white.opacity(0.12)))
+            }
+
+            if viewModel.claudeUpdatedAt != nil, state != .disconnected {
+                metaLine
+            }
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    // MARK: - Text
+
+    private var headline: String {
+        switch state {
+        case .disconnected: return "No active session"
+        case .idle: return "Ready"
+        case .working: return viewModel.workingWord   // rotating gerund
+        case .needsApproval: return "Needs your approval"
+        case .needsQuestion: return "Has a question"
+        case .waitingInput: return "Waiting for you"
+        case .done: return "Done"
+        }
+    }
+
+    /// The secondary line under the headline — what's actually happening.
+    private var detail: String {
+        switch state {
+        case .working:
+            return actionText ?? "Working on it…"
+        case .needsApproval:
+            return "Waiting for your go-ahead"
+        case .needsQuestion:
+            return "Answer to keep it moving"
+        case .waitingInput:
+            return "It's ready for your next prompt"
+        case .done:
+            return "Finished responding"
+        case .idle:
+            return "Session ready"
+        case .disconnected:
+            return "Install the Claude Code hook to connect a session"
+        }
+    }
+
+    /// A friendly phrase for the current tool, e.g. "Editing App.swift" or
+    /// "Running npm test". Nil when there's no tool info.
+    private var actionText: String? {
+        guard let action = viewModel.claudeAction, !action.isEmpty else { return nil }
+        let target = viewModel.claudeTarget
+        let file = target.map { ($0 as NSString).lastPathComponent }
+
+        switch action {
+        case "Edit", "MultiEdit", "Write", "NotebookEdit":
+            return "Editing \(file ?? "a file")"
+        case "Read":
+            return "Reading \(file ?? "a file")"
+        case "Bash":
+            return target.map { "Running \($0)" } ?? "Running a command"
+        case "Grep", "Glob":
+            return target.map { "Searching \($0)" } ?? "Searching"
+        case "WebFetch", "WebSearch":
+            return "Browsing the web"
+        case "Task", "Agent":
+            return "Delegating a task"
+        case "TodoWrite":
+            return "Updating the plan"
+        default:
+            return action
+        }
+    }
+
+    /// Live "… ago", ticking once a second. Project lives in its own chip.
+    @ViewBuilder
+    private var metaLine: some View {
+        if let date = viewModel.claudeUpdatedAt {
+            TimelineView(.periodic(from: date, by: 1)) { context in
+                Text(Self.relative(from: date, to: context.date))
+                    .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+        }
+    }
+
+    private static func relative(from date: Date, to now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(date)))
+        if seconds < 60 { return "\(seconds)s ago" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "\(minutes)m ago" }
+        return "\(minutes / 60)h ago"
+    }
+}

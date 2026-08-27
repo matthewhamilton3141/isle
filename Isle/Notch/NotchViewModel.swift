@@ -10,15 +10,57 @@ import SwiftUI
 import AppKit
 import Combine
 
+/// Element widths for the collapsed notch, shared by the width calculation
+/// (NotchViewModel) and the layout (CollapsedNotchView) so they can't drift.
+enum CollapsedSize {
+    static let album: CGFloat = 22
+    static let waveSplit: CGFloat = 22   // waveform when paired with the album
+    static let waveSolo: CGFloat = 26    // waveform when it's the only thing
+    static let dots: CGFloat = 16
+    static let approvalDots: CGFloat = 18
+    static let ring: CGFloat = 8
+    static let gap: CGFloat = 5          // between elements within a cluster
+    static let cutoutGap: CGFloat = 6    // between a cluster and the camera
+    static let minSide: CGFloat = 30     // resting half-width when a side is empty
+    static let claudeSoloLeading: CGFloat = 14
+    static let statusFontSize: CGFloat = 10
+}
+
 @MainActor
 final class NotchViewModel: ObservableObject {
     /// Pointer is over the notch's hit area.
     @Published var isHovering: Bool = false
 
-    /// Claude Code state from the hook bridge. Phase 2 wires this to the
-    /// file watcher; until then it stays `.disconnected` and the notch
-    /// behaves as a music-only overlay.
+    /// Claude Code state from the hook bridge, driven by `ClaudeStatusWatcher`.
+    /// Stays `.disconnected` when the active mode doesn't show Claude, or when
+    /// there's no live session.
     @Published var claudeState: ClaudeCodeState = .disconnected
+
+    /// Project directory name from the status file. For the Claude expanded
+    /// view (Milestone 4).
+    @Published private(set) var claudeProject: String?
+
+    /// Session id from the status file, when the installed `isle-cli` emits it.
+    @Published private(set) var claudeSessionId: String?
+
+    /// The tool Claude is currently running (Edit / Bash / …) and its target,
+    /// for the "what it's doing" line in the expanded view.
+    @Published private(set) var claudeAction: String?
+    @Published private(set) var claudeTarget: String?
+
+    /// When the last Claude status change arrived, for the "… ago" line in the
+    /// Claude expanded view. `nil` when disconnected.
+    @Published private(set) var claudeUpdatedAt: Date?
+
+    /// The tab the user last selected in `.both` mode. Backed by AppSettings so
+    /// it survives relaunch. Display may override this during an interrupt —
+    /// see `expandedTab`.
+    @Published var activeTab: IsleTab {
+        didSet {
+            guard activeTab != oldValue else { return }
+            settings.lastTab = activeTab
+        }
+    }
 
     @Published private(set) var media = MediaPlaybackModel()
 
@@ -29,10 +71,75 @@ final class NotchViewModel: ObservableObject {
 
     var metrics: NotchMetrics?
 
+    private let settings: AppSettings
     private let adapter = MediaRemoteAdapterClient()
     private let spotify = SpotifyController()
     private let audio = SystemAudioLevels()
+    private let claudeWatcher = ClaudeStatusWatcher()
     private var cancellables = Set<AnyCancellable>()
+
+    /// True between `start()` and `stop()` — i.e. while the notch window is
+    /// shown. Guards the live mode-change subscription so it doesn't spin up
+    /// subsystems while the overlay is hidden.
+    private var isRunning = false
+
+    /// Whether the media subsystems (adapter, Spotify, audio) are currently
+    /// live. Tracked so a mode change only toggles the delta rather than
+    /// restarting an already-running capture.
+    private var mediaRunning = false
+
+    /// Whether the Claude status watcher is currently live.
+    private var claudeRunning = false
+
+    /// Reverts a `done` glyph back to `idle` after a beat, so the checkmark
+    /// reads as a toast rather than sticking until the next prompt. Cancelled
+    /// if any other status arrives first.
+    private var doneRevertTask: Task<Void, Never>?
+
+    // MARK: - Working words
+
+    /// A rotating "thinking" word shown in the expanded view while working,
+    /// echoing the Claude Code CLI's spinner (the real word isn't exposed to
+    /// hooks, so this is our own set in the same spirit).
+    @Published private(set) var workingWord: String = "Working"
+
+    private var workingWordTimer: Timer?
+    private var workingWordIndex = 0
+
+    private static let workingWords = [
+        "Thinking", "Coalescing", "Percolating", "Ruminating", "Cogitating",
+        "Simmering", "Pondering", "Noodling", "Churning", "Brewing",
+        "Conjuring", "Wrangling", "Synthesizing", "Contemplating", "Marinating",
+        "Deliberating", "Computing", "Puzzling", "Finagling", "Vibing",
+    ]
+
+    private func startWorkingWords() {
+        guard workingWordTimer == nil else { return }
+        workingWordIndex = Int.random(in: 0..<Self.workingWords.count)
+        workingWord = Self.workingWords[workingWordIndex]
+        workingWordTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.workingWordIndex = (self.workingWordIndex + 1) % Self.workingWords.count
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    self.workingWord = Self.workingWords[self.workingWordIndex]
+                }
+            }
+        }
+    }
+
+    private func stopWorkingWords() {
+        workingWordTimer?.invalidate()
+        workingWordTimer = nil
+    }
+
+    // MARK: - Settings passthrough
+
+    /// Show the animated waveform in the collapsed notch (Settings).
+    var showWaveform: Bool { settings.showWaveform }
+
+    /// Show the seekable scrubber in the expanded panel (Settings).
+    var showScrubber: Bool { settings.showScrubber }
 
     // The two now-playing sources, kept separately and merged in
     // `recomputeSource`. The adapter (MediaRemote) is preferred when Spotify
@@ -43,6 +150,15 @@ final class NotchViewModel: ObservableObject {
     private var spotifyModel: MediaPlaybackModel?
     private var lastApplied = MediaPlaybackModel()
 
+    // After a manual transport action, trust the optimistic value and ignore
+    // contradicting source reads until a source confirms it or this window
+    // lapses — otherwise a stale 1 Hz poll flickers play/pause back and snaps
+    // the scrubber to the pre-seek position, which reads as lag.
+    private var pendingPlayState: Bool?
+    private var pendingSeekTarget: TimeInterval?
+    private var pendingCommandDeadline: Date = .distantPast
+    private static let commandGrace: TimeInterval = 1.5
+
     /// Live per-band audio magnitudes. Empty when capture isn't running, which
     /// EqualizerView reads as "use the procedural fallback".
     @Published private(set) var audioLevels: [Double] = []
@@ -50,7 +166,14 @@ final class NotchViewModel: ObservableObject {
     /// Why audio capture isn't running, if it isn't.
     var audioFailureReason: String? { audio.failureReason }
 
-    init() {
+    // `settings` defaults to the shared instance, resolved inside the
+    // main-actor-isolated init body rather than as a default argument — a
+    // default-argument reference to a main-actor static is a Swift 6 error.
+    init(settings: AppSettings? = nil) {
+        let resolvedSettings = settings ?? .shared
+        self.settings = resolvedSettings
+        self.activeTab = resolvedSettings.lastTab
+
         adapter.onUpdate = { [weak self] model in
             self?.adapterModel = model
             self?.recomputeSource()
@@ -60,6 +183,18 @@ final class NotchViewModel: ObservableObject {
             self?.recomputeSource()
         }
 
+        claudeWatcher.onStatus = { [weak self] status in
+            self?.applyClaudeStatus(status)
+        }
+
+        // Re-render notch views on any settings change (waveform/scrubber
+        // toggles etc.), since those views observe this view model, not
+        // AppSettings directly. Mode changes are handled separately below so
+        // they also restart subsystems.
+        self.settings.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
         // Republish rather than exposing `audio` directly: nesting an
         // ObservableObject inside another doesn't propagate to SwiftUI.
         audio.$levels
@@ -67,18 +202,107 @@ final class NotchViewModel: ObservableObject {
                 self?.audioLevels = levels
             }
             .store(in: &cancellables)
+
+        // React to a live mode change (Settings — Milestone 6): start or
+        // stop the affected subsystems and re-derive the collapsed layout.
+        self.settings.$mode
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self, self.isRunning else { return }
+                self.applyMode()
+                self.objectWillChange.send()
+            }
+            .store(in: &cancellables)
     }
 
     func start() {
-        adapter.start()
-        spotify.start()
-        audio.start()
+        isRunning = true
+        applyMode()
     }
 
     func stop() {
-        adapter.stop()
-        spotify.stop()
-        audio.stop()
+        isRunning = false
+        setMediaRunning(false)
+        setClaudeRunning(false)
+    }
+
+    /// Brings the running subsystems in line with the active mode.
+    private func applyMode() {
+        setMediaRunning(settings.effectiveMode.showsMusic)
+        setClaudeRunning(settings.effectiveMode.showsClaude)
+    }
+
+    private func setMediaRunning(_ running: Bool) {
+        guard running != mediaRunning else { return }
+        mediaRunning = running
+        if running {
+            adapter.start()
+            spotify.start()
+            audio.start()
+        } else {
+            adapter.stop()
+            spotify.stop()
+            audio.stop()
+        }
+    }
+
+    private func setClaudeRunning(_ running: Bool) {
+        guard running != claudeRunning else { return }
+        claudeRunning = running
+        if running {
+            claudeWatcher.start()
+        } else {
+            claudeWatcher.stop()
+            doneRevertTask?.cancel()
+            doneRevertTask = nil
+            stopWorkingWords()
+            claudeState = .disconnected
+            claudeProject = nil
+            claudeSessionId = nil
+            claudeAction = nil
+            claudeTarget = nil
+            claudeUpdatedAt = nil
+        }
+    }
+
+    /// Applies a fresh status from the watcher. Keeps the `done` checkmark on
+    /// screen briefly, then eases it back to `idle` so it behaves like a toast.
+    private func applyClaudeStatus(_ status: ClaudeStatus) {
+        doneRevertTask?.cancel()
+        doneRevertTask = nil
+
+        // The glyph's cross-fade between states (BreathingShapeView ->
+        // CheckmarkBurstView and back) rides `.animation(value:)` inside
+        // ClaudeStatusGlyphView, but that only fires for changes made in a
+        // SwiftUI transaction. This assignment comes from the watcher's async
+        // callback, so wrap it explicitly — see the note in
+        // ClaudeStatusGlyphView.swift.
+        withAnimation(.easeInOut(duration: 0.25)) {
+            claudeState = status.state
+        }
+        claudeProject = status.project
+        claudeSessionId = status.sessionId
+        claudeAction = status.action
+        claudeTarget = status.target
+        claudeUpdatedAt = status.state == .disconnected ? nil : Date()
+
+        // Rotate the "thinking" word only while actually working.
+        if status.state == .working {
+            startWorkingWords()
+        } else {
+            stopWorkingWords()
+        }
+
+        guard status.state == .done else { return }
+        let duration = settings.doneToastSeconds
+        doneRevertTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(duration))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: 0.25)) {
+                self?.claudeState = .idle
+            }
+        }
     }
 
     /// Picks which source drives the notch and feeds it through `apply`.
@@ -109,9 +333,37 @@ final class NotchViewModel: ObservableObject {
             effective.playbackRate = poll.playbackRate
         }
 
+        holdOptimisticTransport(&effective)
+
         guard effective != lastApplied else { return }
         lastApplied = effective
         apply(effective)
+    }
+
+    /// Keeps the user's last play/pause or seek in place until a source agrees
+    /// (or the grace window passes), so a stale poll can't undo it.
+    private func holdOptimisticTransport(_ model: inout MediaPlaybackModel) {
+        let now = Date()
+        let expired = now >= pendingCommandDeadline
+
+        if let want = pendingPlayState {
+            if model.isPlaying == want || expired {
+                pendingPlayState = nil            // confirmed, or gave up
+            } else {
+                model.isPlaying = want
+                model.playbackRate = want ? 1 : 0
+            }
+        }
+
+        if let target = pendingSeekTarget {
+            // Landed once the source reports within a couple seconds of the seek.
+            if abs(model.elapsed(at: now) - target) < 2.0 || expired {
+                pendingSeekTarget = nil
+            } else {
+                model.reportedElapsed = target
+                model.timestamp = now
+            }
+        }
     }
 
     // MARK: - Haptics
@@ -196,9 +448,10 @@ final class NotchViewModel: ObservableObject {
     ///
     /// Only `needsApproval` interrupts. `working` and `done` are ambient —
     /// they show in the collapsed glyph but must not pop the panel open, or
-    /// the notch would flap open on every tool call.
+    /// the notch would flap open on every tool call. Suppressed entirely when
+    /// the active mode doesn't show Claude.
     var hasLiveActivity: Bool {
-        claudeState == .needsApproval
+        settings.effectiveMode.showsClaude && claudeState.isAttention
     }
 
     var state: NotchState {
@@ -208,19 +461,94 @@ final class NotchViewModel: ObservableObject {
         )
     }
 
+    /// Whether the expanded panel shows the Music/Claude segmented switcher —
+    /// only in `.both` mode; single-source modes show that one source.
+    var showsTabBar: Bool {
+        settings.effectiveMode == .both
+    }
+
+    /// Which content the expanded panel should render right now. In `.both`
+    /// mode this is the user's selected tab, except that a `needsApproval`
+    /// interrupt forces the Claude tab — without mutating `activeTab`, so the
+    /// user's choice is restored automatically once the approval clears.
+    var expandedTab: IsleTab {
+        switch settings.effectiveMode {
+        case .music: return .music
+        case .claude: return .claude
+        case .both: return hasLiveActivity ? .claude : activeTab
+        }
+    }
+
     var hasMusicActivity: Bool {
-        media.hasTrack
+        settings.effectiveMode.showsMusic && media.hasTrack
     }
 
     /// Claude has something worth showing in the collapsed notch.
     var hasClaudeActivity: Bool {
-        claudeState != .disconnected && claudeState != .idle
+        settings.effectiveMode.showsClaude
+            && claudeState != .disconnected && claudeState != .idle
     }
 
     /// Both sources live at once — collapsed view splits (spec 3.1), unless
     /// Claude needs approval, which takes the full width.
     var shouldSplitCollapsed: Bool {
         hasMusicActivity && hasClaudeActivity && claudeState != .needsApproval
+    }
+
+    /// Content widths either side of the camera cutout in the collapsed notch,
+    /// including the small gap that separates each cluster from the camera.
+    /// Music (album + waveform) groups on the left, Claude (dots + status text)
+    /// on the right. Everything is sized to the actual content — including the
+    /// measured width of the status word — so the island grows and shrinks with
+    /// what's shown (e.g. "Working" → "Done" narrows it) rather than sitting at
+    /// a fixed width. The notch shape is sized and shifted from these — see
+    /// NotchRootView.
+    var collapsedSideWidths: (leading: CGFloat, trailing: CGFloat) {
+        let s = CollapsedSize.self
+        let g = s.cutoutGap
+
+        if claudeState.isAttention {
+            return (s.approvalDots + g, hasMusicActivity ? s.ring + g : s.minSide)
+        }
+        if shouldSplitCollapsed {
+            let leading = s.album + (showWaveform ? s.gap + s.waveSplit : 0) + g
+            return (leading, s.dots + statusSlot + g)
+        }
+        if hasClaudeActivity {
+            return (s.claudeSoloLeading, s.dots + statusSlot + g)
+        }
+        if hasMusicActivity {
+            return (s.album + g, s.waveSolo + g)
+        }
+        return (s.minSide, s.minSide)   // resting
+    }
+
+    /// Extra trailing width for the status word beside the dots — the gap plus
+    /// the word's measured width, or zero when there's no word.
+    private var statusSlot: CGFloat {
+        let width = Self.textWidth(collapsedStatusText)
+        return width > 0 ? CollapsedSize.gap + width : 0
+    }
+
+    /// A short, stable word for the collapsed notch — deliberately *not* the
+    /// per-tool action (that changes every tool call and would make the island
+    /// resize constantly). The expanded view shows the detailed "Editing …".
+    var collapsedStatusText: String {
+        switch claudeState {
+        case .working: return "Working"
+        case .needsApproval: return "Approve"
+        case .needsQuestion: return "Question"
+        case .waitingInput: return "Waiting"
+        case .done: return "Done"
+        case .idle: return "Ready"
+        case .disconnected: return ""
+        }
+    }
+
+    private static func textWidth(_ string: String) -> CGFloat {
+        guard !string.isEmpty else { return 0 }
+        let font = NSFont.systemFont(ofSize: CollapsedSize.statusFontSize, weight: .semibold)
+        return ceil((string as NSString).size(withAttributes: [.font: font]).width)
     }
 
     // MARK: - Transport
@@ -244,6 +572,11 @@ final class NotchViewModel: ObservableObject {
         media.playbackRate = media.isPlaying ? 1 : 0
         anchorRate = media.playbackRate
         lastApplied = media
+
+        // Hold this state until a source confirms it, so the next poll can't
+        // flicker it back before Spotify has processed the command.
+        pendingPlayState = media.isPlaying
+        pendingCommandDeadline = Date().addingTimeInterval(Self.commandGrace)
     }
 
     func nextTrack() { spotify.nextTrack() }
@@ -269,6 +602,11 @@ final class NotchViewModel: ObservableObject {
         anchorDate = Date()
         lastApplied = media
         self.scrubTarget = nil
+
+        // Hold the seek target so a stale poll can't snap the bar back to the
+        // pre-seek position before Spotify reports the new one.
+        pendingSeekTarget = seconds
+        pendingCommandDeadline = Date().addingTimeInterval(Self.commandGrace)
     }
 
     /// Progress to render: the drag target while scrubbing, else the smoothed

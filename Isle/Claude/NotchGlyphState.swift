@@ -16,7 +16,16 @@ enum ClaudeCodeState: Equatable {
     case idle
     case working
     case needsApproval
+    case needsQuestion
+    case waitingInput
     case done
+
+    /// States that warrant interrupting the user — opening the notch and
+    /// taking over the collapsed island. Approval and questions qualify;
+    /// idle-waiting is calmer and stays ambient.
+    var isAttention: Bool {
+        self == .needsApproval || self == .needsQuestion
+    }
 }
 
 struct GlyphConfig: Equatable {
@@ -52,6 +61,11 @@ struct GlyphConfig: Equatable {
             // status file read on app launch.
             return GlyphConfig(period: 1.6, minScale: 0.95, maxScale: 1.0, minOpacity: 0.8, maxOpacity: 1.0,
                                 color: .green, nsColor: .systemGreen)
+        default:
+            // needsQuestion / waitingInput — this legacy config is unused now
+            // (markers render via DotMatrixView), so a neutral fallback is fine.
+            return GlyphConfig(period: 1.4, minScale: 0.85, maxScale: 1.0, minOpacity: 0.55, maxOpacity: 1.0,
+                                color: .blue, nsColor: .systemBlue)
         }
     }
 }

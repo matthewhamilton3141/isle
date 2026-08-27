@@ -87,13 +87,22 @@ path — so it ships as a plain resource.
 Isle relies on a private framework and AppleScript automation, which rules out
 the Mac App Store. It's distributed as a sideloaded build.
 
-## Claude Code awareness (coming soon)
+## Claude Code awareness
 
-Isle is also designed to surface the live status of a [Claude Code](https://claude.com/claude-code)
-session in the notch — expanding on its own when Claude is waiting on you. The
-glyph is built and the hook bridge in `integration/claude-code-hooks/` is ready
-to install, but the app doesn't watch its status file yet. See
-[PROJECT_BRIEF.md](PROJECT_BRIEF.md) for the full roadmap.
+Isle surfaces the live status of a [Claude Code](https://claude.com/claude-code)
+session in the notch — expanding on its own when Claude is waiting on you.
+Claude's hooks write a small status file (`~/.isle/claude-status.json`) via the
+bundled `isle-cli` helper, and Isle watches it with file-system events, mapping
+`working` / `needs_approval` / `done` to the glyph. `needs_approval` pops the
+notch open even when the pointer is elsewhere; `done` shows a checkmark and
+settles back on its own.
+
+Install the hook from the menu bar (**Install Claude Code Hook…**), which drops
+the helper into `~/.isle/bin` and merges the hook entries into your
+`~/.claude/settings.json` without disturbing existing hooks. Which sources the
+notch runs — music, Claude, or both — is set by the app's mode (chosen at first
+launch; a Settings switcher is on the way). See
+[ROADMAP.md](ROADMAP.md) for what's built and what's next.
 
 ## Project layout
 

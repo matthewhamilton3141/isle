@@ -27,9 +27,30 @@ struct NotchRootView: View {
     /// content and the cutout hit-test, so neither jumps ahead of the frame.
     @State private var liveWidth: CGFloat = 0
 
+    /// Horizontal padding inside the collapsed shape: 10 (root) + 4 (collapsed
+    /// view), each side. Used to turn content widths into a shape width.
+    private static let collapsedHPadding: CGFloat = 28
+
     private var size: CGSize {
-        viewModel.metrics?.windowSize(for: state)
-            ?? NotchMetrics.expandedSize
+        guard let metrics = viewModel.metrics else { return NotchMetrics.expandedSize }
+        if state == .collapsed {
+            // Sized to the per-side content: music on the left, Claude on the
+            // right, so the shape grows exactly as much as it needs.
+            let sides = viewModel.collapsedSideWidths
+            return CGSize(
+                width: metrics.notchSize.width + sides.leading + sides.trailing + Self.collapsedHPadding,
+                height: metrics.notchSize.height
+            )
+        }
+        return metrics.windowSize(for: state)
+    }
+
+    /// The collapsed sides are asymmetric (Claude's side is usually wider), so
+    /// shift the shape to keep the camera cutout centred under the housing.
+    private var collapsedShift: CGFloat {
+        guard state == .collapsed else { return 0 }
+        let sides = viewModel.collapsedSideWidths
+        return (sides.trailing - sides.leading) / 2
     }
 
     /// 0 when fully collapsed, 1 when fully expanded, tracking the animation.
@@ -51,6 +72,22 @@ struct NotchRootView: View {
         ArtworkColors.palette(from: viewModel.media.artwork)
     }
 
+    /// The expanded panel is currently showing the Claude tab.
+    private var showingClaude: Bool {
+        viewModel.expandedTab == .claude
+    }
+
+    /// The current Claude marker's colour — its fixed hue, or the artwork accent
+    /// for palette-tinted markers — so the wash matches the dots.
+    private var claudeMarkerColor: Color {
+        let design = MarkerStore.shared.design(for: MarkerKind(state: viewModel.claudeState))
+        return design.colorMode == .fixed ? Color(hex: design.fixedColorHex) : palette.accent
+    }
+
+    // The ambient wash colours: the Claude marker on its tab, else the artwork.
+    private var washPrimary: Color { showingClaude ? claudeMarkerColor : palette.primary }
+    private var washSecondary: Color { showingClaude ? claudeMarkerColor : palette.secondary }
+
     /// Height of the physical camera housing. Content in the expanded panel
     /// has to start below this. Falls back to the common 32pt housing if
     /// metrics aren't available yet, which is safer than falling back to 0 —
@@ -62,6 +99,7 @@ struct NotchRootView: View {
     var body: some View {
         VStack(spacing: 0) {
             notch
+                .offset(x: collapsedShift)
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -101,19 +139,17 @@ struct NotchRootView: View {
                             // panel. Still strictly one direction: it only
                             // ever gets stronger toward the bottom.
                             .init(color: .clear, location: 0.40),
-                            .init(color: palette.secondary.opacity(0.10), location: 0.64),
-                            .init(color: palette.primary.opacity(0.24), location: 1.0),
+                            .init(color: washSecondary.opacity(0.10), location: 0.64),
+                            .init(color: washPrimary.opacity(0.24), location: 1.0),
                         ],
                         startPoint: .top,
                         endPoint: .bottom
                     )
                 )
-                // Artwork palettes are pulled from album covers, which are
-                // often heavily saturated — taken neat the wash read as a
-                // colour cast over the panel rather than ambient light. Pulling
-                // saturation down keeps the hue association without the glare.
-                .saturation(0.35)
-                .opacity(state.isExpanded ? 1 : 0)
+                .saturation(0.3)
+                // Only the Claude tab carries the wash now — the music tab has
+                // it removed, so its panel stays flat black under the artwork.
+                .opacity(state.isExpanded && showingClaude ? 1 : 0)
             }
 
             content
@@ -124,6 +160,22 @@ struct NotchRootView: View {
                 // invisible rather than merely obscured.
                 .padding(.top, state.isExpanded ? notchBandHeight + 2 : 0)
                 .padding(.bottom, state.isExpanded ? 8 : 0)
+
+            // The Music/Claude switcher, parked in the housing band to the
+            // right of the physical cutout (only in `.both` mode). It sits in
+            // the band rather than below it — the band right of the camera is
+            // ordinary screen, not hardware. Inside the ZStack so it clips to
+            // the notch outline; opacity-gated so it fades in with the rest of
+            // the expanded content instead of popping mid-animation.
+            if state.isExpanded && viewModel.showsTabBar {
+                tabBar
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .padding(.trailing, 44)
+                    // Centred within the housing band, so it sits at the same
+                    // level as the physical camera cutout.
+                    .padding(.top, max(2, (notchBandHeight - Self.tabBarHeight) / 2))
+                    .opacity(expandedContentOpacity)
+            }
         }
         .frame(width: size.width, height: size.height)
         // Clip everything to the notch outline. The expanded content is laid
@@ -171,6 +223,54 @@ struct NotchRootView: View {
         } else {
             CollapsedNotchView(viewModel: viewModel, palette: palette)
                 .transition(.opacity)
+        }
+    }
+
+    // MARK: - Tab switcher
+
+    /// Height of the segmented pill: 22pt buttons + 4pt padding each side.
+    private static let tabBarHeight: CGFloat = 30
+
+    private var tabBar: some View {
+        HStack(spacing: 4) {
+            ForEach(IsleTab.allCases) { tab in
+                let selected = viewModel.expandedTab == tab
+                Button {
+                    // No withAnimation here: the content cross-fade is handled
+                    // by ExpandedNotchView's own `.animation(value: expandedTab)`.
+                    // Wrapping the change in a transaction here was rippling into
+                    // the tab bar's layout and nudging the buttons on select.
+                    viewModel.activeTab = tab
+                } label: {
+                    // Both icons share one fixed footprint so the pill can never
+                    // reflow between tabs.
+                    tabIcon(for: tab, selected: selected)
+                        .frame(width: 28, height: 22)
+                        .background(Capsule().fill(selected ? .white.opacity(0.22) : .clear))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(tab.title)
+            }
+        }
+        .padding(4)
+        .background(Capsule().fill(.black.opacity(0.35)))
+        .animation(.easeInOut(duration: 0.15), value: viewModel.expandedTab)
+    }
+
+    /// Music keeps its SF Symbol; Claude uses the 5x5 dot mark.
+    @ViewBuilder
+    private func tabIcon(for tab: IsleTab, selected: Bool) -> some View {
+        let color: Color = selected ? .white : .white.opacity(0.45)
+        switch tab {
+        case .music:
+            Image(systemName: tab.symbolName)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(color)
+        case .claude:
+            // A simpler 3x3 grid reads better than 5x5 at tab-icon size.
+            DotGridIcon(color: color, dimension: 3)
+                .frame(width: 16, height: 16)
         }
     }
 

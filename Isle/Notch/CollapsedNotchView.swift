@@ -5,7 +5,11 @@
 //
 //  Nothing may be drawn in the middle — that's where the actual camera is.
 //  So this is a left cluster, a spacer the width of the cutout, and a right
-//  cluster. The split rule from spec 3.1 decides what goes in each.
+//  cluster. The camera itself acts as the divider: music (album + waveform)
+//  groups on the left, Claude (dots + a short status word) on the right, so
+//  the two sources read as two mini-displays rather than a jumbled row. The
+//  per-side widths come from the view model (CollapsedSize) so the shape is
+//  sized and centred to match.
 //
 
 import SwiftUI
@@ -19,38 +23,41 @@ struct CollapsedNotchView: View {
     }
 
     var body: some View {
+        let sides = viewModel.collapsedSideWidths
         HStack(spacing: 0) {
-            // Both clusters align *toward* the cutout so they tuck against the
-            // camera housing rather than stranding at the far ends. The two
-            // cutout-side insets are tuned so the album (22pt) and the wider
-            // waveform (26pt) end up the *same* distance — 18pt — from their
-            // outer edge, which is what reads as balanced. The waveform runs a
-            // hair closer to the cutout as a result; against the housing that
-            // difference isn't noticeable.
+            // The cutout gap sits between each cluster and the camera, so the
+            // clusters tuck against the housing with a little air and the album
+            // pulls back toward the outer edge (rather than sitting flush).
             leading
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .padding(.trailing, 6)
+                .padding(.trailing, CollapsedSize.cutoutGap)
+                .frame(width: sides.leading, alignment: .trailing)
 
             // Dead zone over the camera housing.
             Color.clear
                 .frame(width: cutoutWidth)
 
             trailing
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 2)
+                .padding(.leading, CollapsedSize.cutoutGap)
+                .frame(width: sides.trailing, alignment: .leading)
         }
         .padding(.horizontal, 4)
     }
 
-    // MARK: - Sides
+    // MARK: - Left (music)
 
-    /// Left side: album art thumbnail. Suppressed entirely when Claude needs
-    /// approval, which per spec takes over the whole collapsed notch.
     @ViewBuilder
     private var leading: some View {
-        if viewModel.claudeState == .needsApproval {
-            ClaudeStatusGlyphView(state: viewModel.claudeState)
-                .frame(width: 18, height: 18)
+        if viewModel.claudeState.isAttention {
+            // Approval takes over the whole notch; the "!" leads.
+            claudeDots(size: 18)
+        } else if viewModel.shouldSplitCollapsed {
+            // Music cluster: album + waveform, waveform tucked toward the camera.
+            HStack(spacing: CollapsedSize.gap) {
+                artworkThumbnail
+                if viewModel.showWaveform {
+                    equalizer(width: CollapsedSize.waveSplit)
+                }
+            }
         } else if viewModel.hasMusicActivity {
             artworkThumbnail
         } else {
@@ -58,57 +65,79 @@ struct CollapsedNotchView: View {
         }
     }
 
-    /// Right side: equalizer, the Claude glyph, or both split.
+    // MARK: - Right (Claude / waveform)
+
     @ViewBuilder
     private var trailing: some View {
-        if viewModel.claudeState == .needsApproval {
-            // Music demotes to a thin tinted ring so the approval state can't
-            // be missed (spec 3.1).
+        if viewModel.claudeState.isAttention {
+            // Music demotes to a thin tinted ring so approval can't be missed.
             if viewModel.hasMusicActivity {
                 Circle()
                     .stroke(palette.accent.opacity(0.8), lineWidth: 2)
                     .frame(width: 8, height: 8)
             }
-        } else if viewModel.shouldSplitCollapsed {
-            HStack(spacing: 6) {
-                EqualizerView(
-                    palette: palette,
-                    isPlaying: viewModel.media.isPlaying,
-                    levels: viewModel.audioLevels
-                )
-                    .frame(width: 22, height: 13)
-                ClaudeStatusGlyphView(state: viewModel.claudeState)
-                    .frame(width: 14, height: 14)
+        } else if viewModel.shouldSplitCollapsed
+                    || (viewModel.hasClaudeActivity && !viewModel.hasMusicActivity) {
+            // Claude cluster: dots next to the camera, status word beside them,
+            // text coloured to match the marker.
+            HStack(spacing: CollapsedSize.gap) {
+                claudeDots(size: CollapsedSize.dots)
+                statusText
             }
-        } else if viewModel.hasClaudeActivity {
-            ClaudeStatusGlyphView(state: viewModel.claudeState)
-                .frame(width: 16, height: 16)
         } else if viewModel.hasMusicActivity {
-            EqualizerView(
-                palette: palette,
-                isPlaying: viewModel.media.isPlaying,
-                levels: viewModel.audioLevels
-            )
-                .frame(width: 26, height: 14)
+            if viewModel.showWaveform {
+                equalizer(width: CollapsedSize.waveSolo)
+            }
         } else {
             EmptyView()
         }
+    }
+
+    // MARK: - Pieces
+
+    private func claudeDots(size: CGFloat) -> some View {
+        ClaudeStatusGlyphView(state: viewModel.claudeState, palette: palette)
+            .frame(width: size, height: size)
+    }
+
+    private var statusText: some View {
+        // Matches the width the view model measured for sizing, so the text
+        // fits its slot exactly.
+        Text(viewModel.collapsedStatusText)
+            .font(.system(size: CollapsedSize.statusFontSize, weight: .semibold))
+            .foregroundStyle(markerColor)
+            .lineLimit(1)
+            .fixedSize()
+    }
+
+    /// The marker's colour, so the status text matches the dots: its fixed hue,
+    /// or the artwork accent for palette-tinted markers.
+    private var markerColor: Color {
+        let design = MarkerStore.shared.design(for: MarkerKind(state: viewModel.claudeState))
+        return design.colorMode == .fixed ? Color(hex: design.fixedColorHex) : palette.accent
+    }
+
+    private func equalizer(width: CGFloat) -> some View {
+        EqualizerView(
+            palette: palette,
+            isPlaying: viewModel.media.isPlaying,
+            levels: viewModel.audioLevels
+        )
+        .frame(width: width, height: 14)
     }
 
     private var artworkThumbnail: some View {
         Group {
             if let artwork = viewModel.media.artwork {
                 // High interpolation is load-bearing here: this is a ~640px
-                // bitmap being drawn into 18pt, and the default filter
-                // aliases badly at that reduction.
+                // bitmap being drawn into 22pt, and the default filter aliases
+                // badly at that reduction.
                 Image(nsImage: artwork)
                     .resizable()
                     .interpolation(.high)
                     .antialiased(true)
                     .aspectRatio(contentMode: .fill)
             } else {
-                // Keep the layout stable while artwork loads rather than
-                // letting the row jump when it arrives.
                 LinearGradient(
                     colors: [palette.primary, palette.secondary],
                     startPoint: .topLeading,
@@ -116,10 +145,7 @@ struct CollapsedNotchView: View {
                 )
             }
         }
-        // 22 in a 32pt-tall collapsed notch leaves 5pt of breathing room top
-        // and bottom, which is about as large as this can go before it starts
-        // touching the edges of the pill.
-        .frame(width: 22, height: 22)
+        .frame(width: CollapsedSize.album, height: CollapsedSize.album)
         .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
     }
 }
