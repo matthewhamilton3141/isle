@@ -23,6 +23,9 @@ enum ClaudeCodeState: Equatable {
     /// rate limit, overloaded, server error, …). The specific `error_type`
     /// rides alongside on the view model rather than in the case itself.
     case failed
+    /// Claude is compacting the conversation context (the `PreCompact` hook).
+    /// Ambient, like `working` — surfaces in the island, doesn't interrupt.
+    case compacting
 
     /// States that warrant interrupting the user — opening the notch and
     /// taking over the collapsed island. Approval and questions qualify;

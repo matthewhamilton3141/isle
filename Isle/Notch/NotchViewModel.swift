@@ -653,6 +653,7 @@ final class NotchViewModel: ObservableObject {
         case .done: return "Done"
         case .idle: return "Ready"
         case .failed: return claudeError.short
+        case .compacting: return "Compacting"
         case .disconnected: return ""
         }
     }

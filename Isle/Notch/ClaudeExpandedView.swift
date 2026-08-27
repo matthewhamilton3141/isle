@@ -101,6 +101,7 @@ struct ClaudeExpandedView: View {
         case .waitingInput: return "Waiting for you"
         case .done: return "Done"
         case .failed: return viewModel.claudeError.title
+        case .compacting: return "Compacting"
         }
     }
 
@@ -122,6 +123,8 @@ struct ClaudeExpandedView: View {
             return "Session ready"
         case .failed:
             return viewModel.claudeError.detail
+        case .compacting:
+            return "Compacting the conversation to free up context"
         case .disconnected:
             return "Install the Claude Code hook to connect a session"
         }

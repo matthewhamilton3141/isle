@@ -45,6 +45,10 @@ enum HookInstaller {
         // server error, …); `Stop` never fires in that case. Surfaces the
         // failure in the notch instead of leaving it frozen on "working".
         ("StopFailure", "fail"),
+        // Fires before Claude compacts the conversation context; shows the
+        // compacting marker in the island. Cleared by the next event once
+        // compaction finishes.
+        ("PreCompact", "set-state compacting"),
         ("SessionStart", "set-state idle"),
     ]
 

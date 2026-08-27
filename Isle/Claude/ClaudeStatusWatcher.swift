@@ -195,6 +195,7 @@ private struct StatusPayload: Decodable {
         case "waiting_input": return .waitingInput
         case "done": return .done
         case "error": return .failed
+        case "compacting": return .compacting
         default: return .disconnected
         }
     }

@@ -18,6 +18,9 @@
     "StopFailure": [
       { "hooks": [{ "type": "command", "command": "isle-cli fail" }] }
     ],
+    "PreCompact": [
+      { "hooks": [{ "type": "command", "command": "isle-cli set-state compacting" }] }
+    ],
     "SessionStart": [
       { "hooks": [{ "type": "command", "command": "isle-cli set-state idle" }] }
     ]
