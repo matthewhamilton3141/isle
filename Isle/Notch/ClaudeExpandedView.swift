@@ -61,6 +61,11 @@ struct ClaudeExpandedView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .foregroundStyle(.white)
+        // Click the alert panel to retract it (no-op unless an alert is live and
+        // dismissing is enabled). contentShape so taps land on the whole card,
+        // not just the glyph and text.
+        .contentShape(Rectangle())
+        .onTapGesture { viewModel.dismissAlert() }
     }
 
     /// The project chip and the elapsed time, grouped together on the left so

@@ -40,6 +40,17 @@ final class NotchViewModel: ObservableObject {
     /// region has fully shrunk before hover can fire again.
     private static let collapseLockDuration: TimeInterval = 0.32
 
+    /// The user retracted the current alert's auto-opened panel (hovered away or
+    /// clicked it). The panel collapses to the island but the alert glyph stays
+    /// until the state resolves; re-armed for the next alert. Ignored unless
+    /// `settings.dismissAlertPanel` is on.
+    @Published private(set) var alertDismissed = false
+
+    /// The pointer entered the panel during the current alert — a prerequisite
+    /// for hover-away to count as a dismiss (so an untouched auto-open isn't
+    /// dismissed by a stray move nearby).
+    private var alertWasHovered = false
+
     /// Claude Code state from the hook bridge, driven by `ClaudeStatusWatcher`.
     /// Stays `.disconnected` when the active mode doesn't show Claude, or when
     /// there's no live session.
@@ -292,6 +303,13 @@ final class NotchViewModel: ObservableObject {
         // SwiftUI transaction. This assignment comes from the watcher's async
         // callback, so wrap it explicitly — see the note in
         // ClaudeStatusGlyphView.swift.
+        // Re-arm the dismiss state whenever the actual state changes, so a fresh
+        // alert opens even if the previous one was dismissed — but a re-write of
+        // the same state (e.g. a still-pending approval) stays dismissed.
+        if status.state != claudeState {
+            alertDismissed = false
+            alertWasHovered = false
+        }
         withAnimation(.easeInOut(duration: 0.25)) {
             claudeState = status.state
         }
@@ -486,7 +504,7 @@ final class NotchViewModel: ObservableObject {
     /// open on its own. `hasLiveActivity` itself stays true so a manual expand
     /// still lands on the Claude tab (see `expandedTab`).
     private var autoExpandsForActivity: Bool {
-        hasLiveActivity && settings.expandOnAlert
+        hasLiveActivity && settings.expandOnAlert && !alertDismissed
     }
 
     var state: NotchState {
@@ -504,16 +522,37 @@ final class NotchViewModel: ObservableObject {
     /// interrupt is unaffected: it opens through `hasLiveActivity`, not hover.
     func setHovering(_ hovering: Bool) {
         if hovering {
+            // Remember that this alert's panel was actually visited, so hovering
+            // back off it can count as a dismiss.
+            if hasLiveActivity { alertWasHovered = true }
             guard !collapseLocked, !isHovering else { return }
             isHovering = true
         } else {
             guard isHovering else { return }
             isHovering = false
+            // Hovering away from an auto-opened alert the user has visited
+            // retracts the panel (if they allow it); the glyph stays in the
+            // island until the alert resolves.
+            if hasLiveActivity, alertWasHovered, settings.dismissAlertPanel {
+                alertDismissed = true
+            }
             collapseLocked = true
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.collapseLockDuration) { [weak self] in
                 self?.collapseLocked = false
             }
         }
+    }
+
+    /// Retract the current alert's panel now (a click on it). No-op unless an
+    /// alert is live and the user allows dismissing; the glyph stays until the
+    /// alert resolves.
+    func dismissAlert() {
+        guard hasLiveActivity, settings.dismissAlertPanel else { return }
+        alertDismissed = true
+        // The pointer is still over the (large) panel at click time, so drop the
+        // hover explicitly or it'd stay open as a hover-expand. The hover region
+        // shrinks to the collapsed island, which the pointer is now outside of.
+        isHovering = false
     }
 
     /// Whether the expanded panel shows the Music/Claude segmented switcher —

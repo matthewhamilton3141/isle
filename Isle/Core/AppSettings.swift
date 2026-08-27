@@ -24,6 +24,7 @@ final class AppSettings: ObservableObject {
     private static let showScrubberKey = "isle.showScrubber"
     private static let doneToastKey = "isle.doneToastSeconds"
     private static let expandOnAlertKey = "isle.expandOnAlert"
+    private static let dismissAlertPanelKey = "isle.dismissAlertPanel"
 
     /// The user's chosen mode, or `nil` until onboarding sets one
     /// (Milestone 2). Persisted on change.
@@ -74,6 +75,15 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(expandOnAlert, forKey: Self.expandOnAlertKey) }
     }
 
+    /// When an auto-opened alert panel can be dismissed by hovering away or
+    /// clicking it — retracting to the collapsed island while the alert glyph
+    /// stays until it's resolved. Off pins the panel open until the underlying
+    /// state clears (the original behaviour). Either way, answering still
+    /// auto-collapses it. Only relevant when `expandOnAlert` is on.
+    @Published var dismissAlertPanel: Bool {
+        didSet { defaults.set(dismissAlertPanel, forKey: Self.dismissAlertPanelKey) }
+    }
+
     /// Whether the user has ever picked a mode. Onboarding keys off this.
     var hasChosenMode: Bool { mode != nil }
 
@@ -95,5 +105,6 @@ final class AppSettings: ObservableObject {
         showScrubber = defaults.object(forKey: Self.showScrubberKey) as? Bool ?? true
         doneToastSeconds = defaults.object(forKey: Self.doneToastKey) as? Double ?? 4
         expandOnAlert = defaults.object(forKey: Self.expandOnAlertKey) as? Bool ?? true
+        dismissAlertPanel = defaults.object(forKey: Self.dismissAlertPanelKey) as? Bool ?? true
     }
 }
