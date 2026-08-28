@@ -29,6 +29,12 @@ struct ClaudeStatus: Equatable {
     /// For `.failed`, the API `error_type` from `StopFailure` (rate_limit,
     /// overloaded, server_error, …). Nil otherwise.
     var errorType: String?
+    /// For a `.needsApproval` raised by the `ask` (PermissionRequest) hook, the
+    /// id of the blocked request. The notch writes this back in its decision
+    /// file so the hook only honours a click meant for *this* call. Nil when the
+    /// approval didn't come from `ask` (e.g. the plain `Notification` path) or
+    /// after the hook has timed out and cleared it.
+    var requestId: String?
 
     static let disconnected = ClaudeStatus(state: .disconnected, project: nil, sessionId: nil)
 }
@@ -167,7 +173,8 @@ final class ClaudeStatusWatcher {
             sessionId: payload.session_id,
             action: payload.action.flatMap { $0.isEmpty ? nil : $0 },
             target: payload.target.flatMap { $0.isEmpty ? nil : $0 },
-            errorType: payload.error_type.flatMap { $0.isEmpty ? nil : $0 }
+            errorType: payload.error_type.flatMap { $0.isEmpty ? nil : $0 },
+            requestId: payload.request_id.flatMap { $0.isEmpty ? nil : $0 }
         )
     }
 }
@@ -185,6 +192,7 @@ private struct StatusPayload: Decodable {
     let action: String?
     let target: String?
     let error_type: String?
+    let request_id: String?
 
     var claudeState: ClaudeCodeState {
         switch state {

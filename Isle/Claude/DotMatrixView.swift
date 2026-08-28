@@ -20,6 +20,10 @@ import AppKit
 struct DotMatrixView: View {
     var design: MarkerDesign
     var palette: ArtworkPalette
+    /// Overrides the design's colour entirely, keeping its shape and animation.
+    /// Used to paint the working marker warm (thinking = yellow, working =
+    /// orange) without touching the user's saved marker design.
+    var tint: Color?
 
     private static let morphDuration: Double = 0.45
 
@@ -27,9 +31,10 @@ struct DotMatrixView: View {
     @State private var toLevels: [Double]
     @State private var transitionStart: Date = .distantPast
 
-    init(design: MarkerDesign, palette: ArtworkPalette = .fallback) {
+    init(design: MarkerDesign, palette: ArtworkPalette = .fallback, tint: Color? = nil) {
         self.design = design
         self.palette = palette
+        self.tint = tint
         let levels = Self.levels(for: design)
         _fromLevels = State(initialValue: levels)
         _toLevels = State(initialValue: levels)
@@ -94,8 +99,12 @@ struct DotMatrixView: View {
         let primary = RGBA(palette.primary)
         let accent = RGBA(palette.accent)
         let secondary = RGBA(palette.secondary)
-        let fixed = RGBA(Color(hex: design.fixedColorHex))
+        // A tint overrides the design colour but keeps its shape/animation, so
+        // the dots read as a single chosen hue with the same lively brightness
+        // variation the fixed path already gives.
+        let fixed = RGBA(tint ?? Color(hex: design.fixedColorHex))
         let fixedLift = fixed.lightened(0.35)
+        let forceFixed = tint != nil
 
         // Whole-grid animation drivers shared by the non-shimmer modes.
         let pulse = 0.5 + 0.5 * sin(clock * speed)
@@ -138,7 +147,7 @@ struct DotMatrixView: View {
                 let color = dotColor(
                     row: row, col: col, clock: clock,
                     primary: primary, accent: accent, secondary: secondary,
-                    fixed: fixed, fixedLift: fixedLift
+                    fixed: fixed, fixedLift: fixedLift, forceFixed: forceFixed
                 )
                 .opacity(0.10 + 0.90 * min(1, intensity))
 
@@ -150,8 +159,13 @@ struct DotMatrixView: View {
     private func dotColor(
         row: Int, col: Int, clock: Double,
         primary: RGBA, accent: RGBA, secondary: RGBA,
-        fixed: RGBA, fixedLift: RGBA
+        fixed: RGBA, fixedLift: RGBA, forceFixed: Bool
     ) -> Color {
+        // A tint forces the fixed path regardless of the design's colour mode.
+        if forceFixed {
+            let u = 0.5 + 0.5 * sin(clock * 0.9 + Double(row + col) * 0.5)
+            return fixed.lerp(to: fixedLift, u * 0.6)
+        }
         switch design.colorMode {
         case .palette:
             // A colour that drifts along the palette and differs per dot, so

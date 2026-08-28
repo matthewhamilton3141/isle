@@ -51,6 +51,12 @@ final class NotchViewModel: ObservableObject {
     /// dismissed by a stray move nearby).
     private var alertWasHovered = false
 
+    /// The user manually picked a tab while the current alert was live, so the
+    /// auto-jump to the Claude tab (see `expandedTab`) should stop overriding
+    /// their choice for the rest of this alert. Re-armed on the next state
+    /// change, so a fresh interrupt still grabs the Claude tab once.
+    private var tabOverriddenDuringAlert = false
+
     /// Claude Code state from the hook bridge, driven by `ClaudeStatusWatcher`.
     /// Stays `.disconnected` when the active mode doesn't show Claude, or when
     /// there's no live session.
@@ -62,6 +68,17 @@ final class NotchViewModel: ObservableObject {
 
     /// Session id from the status file, when the installed `isle-cli` emits it.
     @Published private(set) var claudeSessionId: String?
+
+    /// For an approval raised by the `ask` (PermissionRequest) hook, the id of
+    /// the blocked request. Present only while that hook is waiting; the notch's
+    /// Approve/Deny writes it back so the hook honours only a click meant for
+    /// this exact call. Nil for a plain `Notification` approval or after timeout.
+    @Published private(set) var claudeRequestId: String?
+
+    /// True from the moment the user clicks Approve/Deny until the resulting
+    /// state change lands, so the buttons disable and a double-click can't write
+    /// a second decision file.
+    @Published private(set) var isDeciding = false
 
     /// The tool Claude is currently running (Edit / Bash / …) and its target,
     /// for the "what it's doing" line in the expanded view.
@@ -284,6 +301,8 @@ final class NotchViewModel: ObservableObject {
             claudeState = .disconnected
             claudeProject = nil
             claudeSessionId = nil
+            claudeRequestId = nil
+            isDeciding = false
             claudeAction = nil
             claudeTarget = nil
             claudeErrorType = nil
@@ -309,12 +328,19 @@ final class NotchViewModel: ObservableObject {
         if status.state != claudeState {
             alertDismissed = false
             alertWasHovered = false
+            // Re-arm the Claude-tab auto-jump: a fresh interrupt gets to grab
+            // the tab once again, even if the user overrode the previous one.
+            tabOverriddenDuringAlert = false
+            // The pending decision (if any) resolved into this new state — the
+            // hook has moved on, so re-arm the buttons for the next approval.
+            isDeciding = false
         }
         withAnimation(.easeInOut(duration: 0.25)) {
             claudeState = status.state
         }
         claudeProject = status.project
         claudeSessionId = status.sessionId
+        claudeRequestId = status.requestId
         claudeAction = status.action
         claudeTarget = status.target
         claudeErrorType = status.errorType
@@ -555,6 +581,46 @@ final class NotchViewModel: ObservableObject {
         isHovering = false
     }
 
+    /// Whether the expanded Claude panel can resolve the current approval from
+    /// the notch — i.e. it was raised by the `ask` (PermissionRequest) hook,
+    /// which is blocked waiting for a decision keyed by `claudeRequestId`. False
+    /// for a plain `Notification` approval (no live hook to answer) and once a
+    /// click is in flight.
+    var canDecide: Bool {
+        claudeState == .needsApproval
+            && claudeRequestId != nil
+            && claudeSessionId != nil
+            && !isDeciding
+    }
+
+    /// Approve or deny the pending tool call from the notch. Writes the decision
+    /// file the blocked `ask` hook is polling for; the hook validates the
+    /// `request_id`, prints the matching allow/deny to Claude, and flips the
+    /// status to `working` — which the watcher delivers back here, retracting the
+    /// panel. A no-op unless `canDecide` (so a stale click can't misfire).
+    func decide(_ allow: Bool) {
+        guard canDecide, let sessionId = claudeSessionId, let requestId = claudeRequestId
+        else { return }
+        isDeciding = true
+
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".isle", isDirectory: true)
+        let decisionURL = dir.appendingPathComponent("claude-decision-\(sessionId).json")
+        let payload: [String: String] = [
+            "request_id": requestId,
+            "decision": allow ? "allow" : "deny",
+        ]
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let data = try JSONSerialization.data(withJSONObject: payload, options: [])
+            try data.write(to: decisionURL, options: .atomic)
+        } catch {
+            // Couldn't hand the decision back — leave the hook to time out and
+            // fall back to the terminal rather than wedging the button.
+            isDeciding = false
+        }
+    }
+
     /// Whether the expanded panel shows the Music/Claude segmented switcher —
     /// only in `.both` mode; single-source modes show that one source.
     var showsTabBar: Bool {
@@ -569,18 +635,57 @@ final class NotchViewModel: ObservableObject {
         switch settings.effectiveMode {
         case .music: return .music
         case .claude: return .claude
-        case .both: return hasLiveActivity ? .claude : activeTab
+        case .both:
+            // An alert auto-jumps to Claude, but a manual tab tap during the
+            // alert sticks (see `selectTab`) so the user can still look at music.
+            return (hasLiveActivity && !tabOverriddenDuringAlert) ? .claude : activeTab
         }
+    }
+
+    /// A user tap on the Music/Claude switcher. Records the pick and, when an
+    /// alert is live, marks it as a manual override so `expandedTab` stops
+    /// forcing the Claude tab for the rest of this alert.
+    func selectTab(_ tab: IsleTab) {
+        if hasLiveActivity { tabOverriddenDuringAlert = true }
+        activeTab = tab
+        // `activeTab`'s change publishes, but publish explicitly too: if the tap
+        // re-selects the already-active tab, only the override flag moved and the
+        // view still needs to re-read `expandedTab`.
+        objectWillChange.send()
     }
 
     var hasMusicActivity: Bool {
         settings.effectiveMode.showsMusic && media.hasTrack
     }
 
+    /// Nothing worth showing in the collapsed island — no music, no Claude. In
+    /// this state the notch shrinks to the physical cutout so it disappears into
+    /// the hardware; it stays hoverable (see NotchWindowController's pointer
+    /// backstop), so hovering the notch still reveals it.
+    var isCollapsedIdle: Bool {
+        !hasMusicActivity && !hasClaudeActivity
+    }
+
     /// Claude has something worth showing in the collapsed notch.
     var hasClaudeActivity: Bool {
         settings.effectiveMode.showsClaude
             && claudeState != .disconnected && claudeState != .idle
+    }
+
+    /// The collapsed island is showing Claude alone (no music). Drives the
+    /// dots-left / status-right layout and the warm thinking/working colouring —
+    /// when music shares the island the Claude cluster stays compact on the
+    /// right and keeps the artwork tint.
+    var isClaudeSolo: Bool {
+        hasClaudeActivity && !hasMusicActivity
+    }
+
+    /// Warm status colour for the working phases in the Claude-solo island:
+    /// yellow while thinking (no tool yet), orange once a tool is running. Nil
+    /// for every other state and layout, so those keep their marker colour.
+    var workingTint: Color? {
+        guard isClaudeSolo, claudeState == .working else { return nil }
+        return isThinking ? Color(hex: "#F2C14E") : Color(hex: "#E8842B")
     }
 
     /// Both sources live at once — collapsed view splits (spec 3.1): music keeps
@@ -608,7 +713,14 @@ final class NotchViewModel: ObservableObject {
             return (leading, s.dots + statusSlot + g)
         }
         if hasClaudeActivity {
-            return (s.claudeSoloLeading, s.dots + statusSlot + g)
+            // Claude solo: the dot glyph moves to the *left* of the camera and
+            // the status word sits on the *right*, so the two straddle the
+            // cutout instead of crowding together on one side. The glyph takes
+            // the album's footprint (not the smaller split-view dots) so it
+            // lands in exactly the spot the album cover occupies in music mode.
+            let word = Self.textWidth(collapsedStatusText)
+            let trailing = word > 0 ? word + g : s.minSide
+            return (s.album + g, trailing)
         }
         if hasMusicActivity {
             return (s.album + g, s.waveSolo + g)
@@ -662,19 +774,23 @@ final class NotchViewModel: ObservableObject {
     /// so the collapsed word, the expanded headline, and its detail agree.
     var claudeError: (short: String, title: String, detail: String) {
         switch claudeErrorType {
-        case "rate_limit":
-            return ("Rate limit", "Rate limited", "Usage limit reached — resend once it resets.")
-        case "overloaded":
+        case "usage_limit":
+            // The subscription/usage cap — distinct from a transient 429. It
+            // resets on a schedule rather than being worth an immediate retry.
+            return ("Limit", "Usage limit reached", "You’ve hit your Claude usage limit — it resets on a schedule.")
+        case "rate_limit", "rate_limit_error":
+            return ("Rate limit", "Rate limited", "Too many requests — wait a moment, then resend.")
+        case "overloaded", "overloaded_error":
             return ("Busy", "Overloaded", "The API is busy right now — resend to retry.")
-        case "server_error":
+        case "server_error", "api_error":
             return ("Server", "Server error", "The API returned a 5xx — resend to retry.")
-        case "authentication_failed", "oauth_org_not_allowed":
+        case "authentication_failed", "authentication_error", "oauth_org_not_allowed", "permission_error":
             return ("Auth", "Auth failed", "Re-authenticate Claude Code, then retry.")
         case "billing_error":
             return ("Billing", "Billing issue", "Check your plan or billing, then retry.")
         case "max_output_tokens":
             return ("Length", "Response too long", "Hit the output limit — narrow the ask and resend.")
-        case "invalid_request", "model_not_found":
+        case "invalid_request", "invalid_request_error", "model_not_found", "not_found_error":
             return ("Error", "Request rejected", "The API rejected the request.")
         default:
             return ("Error", "API error", "The turn stopped on an API error — resend to retry.")
@@ -688,8 +804,8 @@ final class NotchViewModel: ObservableObject {
     var claudeMarkerKind: MarkerKind {
         guard claudeState == .failed else { return MarkerKind(state: claudeState) }
         switch claudeErrorType {
-        case "rate_limit": return .rateLimited
-        case "server_error", "overloaded": return .serverError
+        case "usage_limit", "rate_limit", "rate_limit_error", "rate_limited": return .rateLimited
+        case "server_error", "api_error", "overloaded", "overloaded_error": return .serverError
         default: return .apiError
         }
     }

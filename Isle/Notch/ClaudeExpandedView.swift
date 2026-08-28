@@ -22,11 +22,13 @@ struct ClaudeExpandedView: View {
         // width-spanning info row so the panel doesn't read as empty.
         HStack(spacing: 14) {
             ClaudeStatusGlyphView(state: state, kind: viewModel.claudeMarkerKind, palette: palette)
-                // A touch smaller than the album, and only slightly raised, so
-                // the top dots stay on the island instead of running off the
-                // top edge into the camera band.
-                .frame(width: 100, height: 100)
-                .offset(y: -4)
+                // Occupies the album cover's exact footprint (size + raise), so
+                // the glyph reads as the same block on both tabs and the dots
+                // scale up to fill it — the frame is the only cap on dot size.
+                // Safe to raise into the housing band: the glyph sits left of
+                // the camera cutout, on ordinary screen, just like the album.
+                .frame(width: 114, height: 114)
+                .offset(y: -10)
 
             VStack(alignment: .leading, spacing: 0) {
                 Spacer(minLength: 0)
@@ -52,7 +54,14 @@ struct ClaudeExpandedView: View {
 
                 Spacer().frame(height: 11)
 
-                infoRow
+                // When the approval came from the `ask` hook (which is blocked
+                // waiting), offer the decision inline; otherwise the usual
+                // project/elapsed row.
+                if viewModel.canDecide {
+                    approvalActions
+                } else {
+                    infoRow
+                }
 
                 Spacer(minLength: 0)
             }
@@ -89,6 +98,48 @@ struct ClaudeExpandedView: View {
         }
     }
 
+    /// Approve / Deny for a live tool permission request, shown in place of the
+    /// info row while the `ask` hook blocks. Real `Button`s so their taps are
+    /// consumed and don't fall through to the card's dismiss gesture.
+    private var approvalActions: some View {
+        HStack(spacing: 8) {
+            decisionButton(
+                title: "Approve",
+                symbol: "checkmark",
+                tint: .green,
+                allow: true
+            )
+            decisionButton(
+                title: "Deny",
+                symbol: "xmark",
+                tint: .red,
+                allow: false
+            )
+            Spacer(minLength: 0)
+        }
+        .disabled(viewModel.isDeciding)
+        .opacity(viewModel.isDeciding ? 0.5 : 1)
+    }
+
+    private func decisionButton(
+        title: String,
+        symbol: String,
+        tint: Color,
+        allow: Bool
+    ) -> some View {
+        Button {
+            viewModel.decide(allow)
+        } label: {
+            Label(title, systemImage: symbol)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(tint.opacity(0.9)))
+        }
+        .buttonStyle(.plain)
+    }
+
     // MARK: - Text
 
     private var headline: String {
@@ -112,7 +163,9 @@ struct ClaudeExpandedView: View {
             // No tool running → Claude is reasoning, not acting.
             return actionText ?? "Thinking…"
         case .needsApproval:
-            return "Waiting for your go-ahead"
+            // Name the exact tool + target so the decision is informed
+            // ("Running npm", "Editing App.swift"); fall back when unknown.
+            return actionText ?? "Waiting for your go-ahead"
         case .needsQuestion:
             return "Answer to keep it moving"
         case .waitingInput:

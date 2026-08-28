@@ -27,6 +27,9 @@ struct IsleApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var notchController: NotchWindowController?
+    /// The "Pop out notch for alerts" checkbox, refreshed each time the menu
+    /// opens so it always reflects the current setting.
+    private var expandAlertsItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setUpStatusItem()
@@ -55,11 +58,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
 
         let menu = NSMenu()
+        menu.delegate = self   // keeps the alert checkbox in sync on open
         menu.addItem(
             withTitle: "Toggle Notch",
             action: #selector(toggleNotch),
             keyEquivalent: ""
         ).target = self
+
+        // Quick access to the "expand for alerts" preference without opening
+        // Settings — a checkbox that mirrors AppSettings.expandOnAlert.
+        let alertsItem = NSMenuItem(
+            title: "Pop out notch for alerts",
+            action: #selector(toggleExpandOnAlert),
+            keyEquivalent: ""
+        )
+        alertsItem.target = self
+        alertsItem.state = AppSettings.shared.expandOnAlert ? .on : .off
+        menu.addItem(alertsItem)
+        expandAlertsItem = alertsItem
+
+        menu.addItem(.separator())
+
         menu.addItem(
             withTitle: "Settings…",
             action: #selector(openSettings),
@@ -97,6 +116,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleNotch() {
         guard let notchController else { return }
         notchController.isVisible ? notchController.hide() : notchController.show()
+    }
+
+    @objc private func toggleExpandOnAlert() {
+        AppSettings.shared.expandOnAlert.toggle()
+        expandAlertsItem?.state = AppSettings.shared.expandOnAlert ? .on : .off
     }
 
     // MARK: - Onboarding / Setup
@@ -213,5 +237,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+// MARK: - Menu delegate
+
+extension AppDelegate: NSMenuDelegate {
+    /// The setting can change from the Settings window too, so re-read it every
+    /// time the menu opens rather than trusting the last toggle.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        expandAlertsItem?.state = AppSettings.shared.expandOnAlert ? .on : .off
     }
 }

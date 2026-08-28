@@ -17,8 +17,9 @@ struct NotchRootView: View {
     @ObservedObject var viewModel: NotchViewModel
 
     /// Reports the currently occupied rect (in this view's coordinate space)
-    /// so the window can restrict hit-testing to it.
-    var onActiveRectChange: ((CGRect) -> Void)?
+    /// so the window can restrict hit-testing to it. Optional so previews can
+    /// build the view without the window controller's hit-test plumbing.
+    var onActiveRectChange: ((CGRect) -> Void)? = nil
 
     private var state: NotchState { viewModel.state }
 
@@ -34,6 +35,13 @@ struct NotchRootView: View {
     private var size: CGSize {
         guard let metrics = viewModel.metrics else { return NotchMetrics.expandedSize }
         if state == .collapsed {
+            // Nothing active: collapse to exactly the physical cutout so the
+            // island vanishes into the hardware notch. Hover still expands it
+            // (the window keeps a hot margin around the notch), so it remains
+            // discoverable rather than truly gone.
+            if viewModel.isCollapsedIdle {
+                return metrics.notchSize
+            }
             // Sized to the per-side content: music on the left, Claude on the
             // right, so the shape grows exactly as much as it needs.
             let sides = viewModel.collapsedSideWidths
@@ -257,7 +265,7 @@ struct NotchRootView: View {
                     // by ExpandedNotchView's own `.animation(value: expandedTab)`.
                     // Wrapping the change in a transaction here was rippling into
                     // the tab bar's layout and nudging the buttons on select.
-                    viewModel.activeTab = tab
+                    viewModel.selectTab(tab)
                 } label: {
                     // Both icons share one fixed footprint so the pill can never
                     // reflow between tabs.
@@ -292,3 +300,58 @@ struct NotchRootView: View {
     }
 
 }
+
+// MARK: - Previews
+
+#if DEBUG
+/// Full-app canvas preview of the notch overlay. Live and interactive — the
+/// Music/Claude switcher works, so the alert tab-override fix can be exercised
+/// right in the canvas. No subsystems start (the view model is only
+/// constructed, never `start()`ed), so nothing touches audio or the adapter.
+private enum NotchPreview {
+    @MainActor
+    static func viewModel(_ configure: (NotchViewModel) -> Void = { _ in }) -> NotchViewModel {
+        // Isolated defaults so a preview never reads or writes the real prefs.
+        let settings = AppSettings(defaults: UserDefaults(suiteName: "isle.preview")!)
+        settings.mode = .both            // show both sources + the tab switcher
+        let vm = NotchViewModel(settings: settings)
+        if let screen = NSScreen.main {
+            vm.metrics = NotchMetrics(screen: screen)
+        }
+        configure(vm)
+        return vm
+    }
+}
+
+/// Backdrop so the black notch reads against something, sized to the panel's
+/// full width with room below for the expanded panel to hang into.
+private struct NotchPreviewStage<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        content()
+            .frame(width: NotchMetrics.expandedSize.width + 120, height: 300)
+            .background(
+                LinearGradient(
+                    colors: [Color(white: 0.32), Color(white: 0.06)],
+                    startPoint: .top, endPoint: .bottom
+                )
+            )
+    }
+}
+
+#Preview("Notch — live alert (tab switch)") {
+    NotchPreviewStage {
+        NotchRootView(viewModel: NotchPreview.viewModel { vm in
+            // A live approval auto-jumps to the Claude tab; click Music in the
+            // canvas to confirm the manual override now sticks.
+            vm.claudeState = .needsApproval
+        })
+    }
+}
+
+#Preview("Notch — resting") {
+    NotchPreviewStage {
+        NotchRootView(viewModel: NotchPreview.viewModel())
+    }
+}
+#endif

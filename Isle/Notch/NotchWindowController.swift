@@ -166,7 +166,16 @@ final class NotchWindowController {
             height: rect.height
         )
         let hot = screenRect.insetBy(dx: -6, dy: -6)
-        window.ignoresMouseEvents = !hot.contains(NSEvent.mouseLocation)
+        let inside = hot.contains(NSEvent.mouseLocation)
+        window.ignoresMouseEvents = !inside
+
+        // Drive expansion straight off the pointer rather than waiting for the
+        // panel's SwiftUI `.onHover`: that only fires once the window is already
+        // in the event path (i.e. after this flip), so a quick move onto the
+        // notch could land a frame before hover registered and feel dead. The
+        // collapse side stays with the generous frame backstop in
+        // `observePointer`, giving open-small / stay-open-large hysteresis.
+        if inside { viewModel.setHovering(true) }
     }
 
     // MARK: - Screen changes
