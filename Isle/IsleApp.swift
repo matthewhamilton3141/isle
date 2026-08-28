@@ -34,6 +34,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         setUpStatusItem()
 
+        // If Isle's hooks were installed by an older build, quietly bring the
+        // helper and hook set up to date (e.g. to pick up the SessionEnd hook
+        // that clears the island when a session closes). No-op if not installed.
+        HookInstaller.refreshIfNeeded()
+
         notchController = NotchWindowController()
         notchController?.show()
 

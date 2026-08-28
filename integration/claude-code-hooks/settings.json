@@ -26,6 +26,9 @@
     ],
     "SessionStart": [
       { "hooks": [{ "type": "command", "command": "isle-cli set-state idle" }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "isle-cli end" }] }
     ]
   }
 }

@@ -55,7 +55,20 @@ enum HookInstaller {
         // compaction finishes.
         ("PreCompact", "set-state compacting"),
         ("SessionStart", "set-state idle"),
+        // Fires when a session ends (exit, Ctrl-D, terminal closed). Clears the
+        // island back to disconnected — otherwise a session closed mid-work
+        // leaves the last state (e.g. "working") frozen on the notch, since no
+        // Stop fires on an abrupt close. Guarded in `end` so one session ending
+        // can't wipe another's live status (single shared status file).
+        ("SessionEnd", "end"),
     ]
+
+    /// Bumped whenever the embedded script or the hook set changes, so an
+    /// install from an older Isle refreshes itself on next launch instead of
+    /// running a stale helper. See `refreshIfNeeded`. (v2: added the SessionEnd
+    /// hook / `end` verb so a closed session clears the island.)
+    private static let currentVersion = 2
+    private static let versionKey = "HookInstaller.installedVersion"
 
     private static var home: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -78,6 +91,21 @@ enum HookInstaller {
     static func install() throws {
         try writeScript()
         try mergeHooks()
+        UserDefaults.standard.set(currentVersion, forKey: versionKey)
+    }
+
+    /// Re-applies the hooks and helper when Isle is already installed but on an
+    /// older version — e.g. an install predating the SessionEnd hook. The merge
+    /// is idempotent (it replaces only its own entries) and the script is
+    /// overwritten wholesale, so this refreshes Isle's side without touching the
+    /// user's other hooks. No-op when not installed (the user opts in via
+    /// Onboarding/Settings) or already current. Call once at launch.
+    static func refreshIfNeeded() {
+        guard isInstalled else { return }
+        guard UserDefaults.standard.integer(forKey: versionKey) < currentVersion else { return }
+        // Best effort: if the refresh fails, leave the working (older) hooks in
+        // place — the user can still re-install from Settings.
+        try? install()
     }
 
     private static func writeScript() throws {
@@ -200,6 +228,7 @@ enum HookInstaller {
     #   isle-cli set-state <disconnected|idle|working|done>   # state comes from the hook
     #   isle-cli notify                                        # classify a Notification
     #   isle-cli ask                                           # block for a notch Approve/Deny
+    #   isle-cli end                                           # session ended — clear the island
     #
     # Kept in sync with Isle's embedded HookInstaller.scriptBody.
 
@@ -251,8 +280,11 @@ enum HookInstaller {
       ask)
         STATE=""   # handled entirely in the `ask` block below
         ;;
+      end)
+        STATE="disconnected"   # SessionEnd — clear the island (guarded below)
+        ;;
       *)
-        echo "Usage: isle-cli <set-state <state> | notify | fail | ask>" >&2
+        echo "Usage: isle-cli <set-state <state> | notify | fail | ask | end>" >&2
         exit 1
         ;;
     esac
@@ -386,6 +418,20 @@ enum HookInstaller {
         *usage*limit*|*limit*reached*|*quota*)
           STATE="error"; ERROR_TYPE="usage_limit" ;;
       esac
+    fi
+
+    # `end` (SessionEnd hook): only clear the island if the session that just
+    # ended is the one the status file is currently showing. The status file is
+    # shared by every session (last writer wins), so a background session closing
+    # must not wipe a different session's live status. If the current file names
+    # a *different* session, leave it untouched. A missing/unparseable file or a
+    # matching id both fall through to the disconnected write below.
+    if [ "$CMD" = "end" ] && [ -f "$STATUS_FILE" ] && [ -n "$SESSION_ID" ]; then
+      CUR_SID="$(grep -oE '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATUS_FILE" \
+        | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+      if [ -n "$CUR_SID" ] && [ "$CUR_SID" != "$SESSION_ID" ]; then
+        exit 0   # a different session owns the island; leave it alone
+      fi
     fi
 
     write_status "$STATE" ""
