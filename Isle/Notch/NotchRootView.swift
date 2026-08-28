@@ -253,48 +253,40 @@ struct NotchRootView: View {
 
     // MARK: - Tab switcher
 
-    /// Height of the segmented pill: 22pt buttons + 4pt padding each side.
-    private static let tabBarHeight: CGFloat = 30
+    /// Diameter of the single toggle button.
+    private static let tabBarHeight: CGFloat = 28
 
+    /// A single toggle rather than a two-segment pill: it shows the *other*
+    /// tab's icon (the one you'd switch to), so on Music it's the 3x3 Claude
+    /// mark and on Claude it's the music note. Tapping flips to that tab.
     private var tabBar: some View {
-        HStack(spacing: 4) {
-            ForEach(IsleTab.allCases) { tab in
-                let selected = viewModel.expandedTab == tab
-                Button {
-                    // No withAnimation here: the content cross-fade is handled
-                    // by ExpandedNotchView's own `.animation(value: expandedTab)`.
-                    // Wrapping the change in a transaction here was rippling into
-                    // the tab bar's layout and nudging the buttons on select.
-                    viewModel.selectTab(tab)
-                } label: {
-                    // Both icons share one fixed footprint so the pill can never
-                    // reflow between tabs.
-                    tabIcon(for: tab, selected: selected)
-                        .frame(width: 28, height: 22)
-                        .background(Capsule().fill(selected ? .white.opacity(0.22) : .clear))
-                        .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(tab.title)
-            }
+        let target = viewModel.expandedTab.other
+        return Button {
+            // No withAnimation here: the content cross-fade is handled by
+            // ExpandedNotchView's own `.animation(value: expandedTab)`.
+            viewModel.selectTab(target)
+        } label: {
+            tabIcon(for: target)
+                .frame(width: Self.tabBarHeight, height: Self.tabBarHeight)
+                .background(Circle().fill(.black.opacity(0.35)))
+                .contentShape(Circle())
         }
-        .padding(4)
-        .background(Capsule().fill(.black.opacity(0.35)))
+        .buttonStyle(.plain)
+        .accessibilityLabel("Switch to \(target.title)")
         .animation(.easeInOut(duration: 0.15), value: viewModel.expandedTab)
     }
 
-    /// Music keeps its SF Symbol; Claude uses the 5x5 dot mark.
+    /// Music keeps its SF Symbol; Claude uses the dot mark.
     @ViewBuilder
-    private func tabIcon(for tab: IsleTab, selected: Bool) -> some View {
-        let color: Color = selected ? .white : .white.opacity(0.45)
+    private func tabIcon(for tab: IsleTab) -> some View {
         switch tab {
         case .music:
             Image(systemName: tab.symbolName)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(color)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white)
         case .claude:
             // A simpler 3x3 grid reads better than 5x5 at tab-icon size.
-            DotGridIcon(color: color, dimension: 3)
+            DotGridIcon(color: .white, dimension: 3)
                 .frame(width: 16, height: 16)
         }
     }

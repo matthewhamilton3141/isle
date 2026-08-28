@@ -134,8 +134,15 @@ final class NotchViewModel: ObservableObject {
 
     /// Reverts a `done` glyph back to `idle` after a beat, so the checkmark
     /// reads as a toast rather than sticking until the next prompt. Cancelled
-    /// if any other status arrives first.
+    /// if any other status arrives first. Also times out a lingering
+    /// `needs_question` (see `applyClaudeStatus`).
     private var doneRevertTask: Task<Void, Never>?
+
+    /// How long a `needs_question` lingers before easing back to idle, so a
+    /// declined or ignored terminal question can't wedge the island on
+    /// "Question". Long enough to notice; short enough that an abandoned one
+    /// clears on its own.
+    private static let questionRevertSeconds: TimeInterval = 45
 
     // MARK: - Working words
 
@@ -360,6 +367,12 @@ final class NotchViewModel: ObservableObject {
         switch status.state {
         case .done: revertDelay = settings.doneToastSeconds
         case .failed: revertDelay = max(settings.doneToastSeconds, 6)
+        case .needsQuestion:
+            // A question is answered in the terminal, and nothing clears it if
+            // you decline or ignore it (Claude Code fires no hook for a declined
+            // tool). So ease it back to idle after a spell rather than letting
+            // "Question" wedge the island until the next prompt.
+            revertDelay = Self.questionRevertSeconds
         default: return
         }
         doneRevertTask = Task { [weak self] in
@@ -753,12 +766,17 @@ final class NotchViewModel: ObservableObject {
         claudeState == .working && claudeActivity == nil
     }
 
-    /// A short, stable word for the collapsed notch — deliberately *not* the
-    /// per-tool action (that changes every tool call and would make the island
-    /// resize constantly). The expanded view shows the detailed "Editing …".
+    /// The word for the collapsed notch. During the no-tool reasoning phase it's
+    /// an honest "Thinking"; once a tool is actually running it becomes the same
+    /// rotating word the expanded panel shows (`workingWord`) — "Coalescing",
+    /// "Percolating", … — so the label stays truthful about the phase while the
+    /// working phase still gets the CLI spinner's personality. Deliberately *not*
+    /// the per-tool action (that changes every tool call); the rotating word
+    /// turns over on a slow 15s timer, so the occasional resize is gentle, not
+    /// churn. The expanded view shows the detailed "Editing …" line separately.
     var collapsedStatusText: String {
         switch claudeState {
-        case .working: return isThinking ? "Thinking" : "Working"
+        case .working: return isThinking ? "Thinking" : workingWord
         case .needsApproval: return "Approve"
         case .needsQuestion: return "Question"
         case .waitingInput: return "Waiting"

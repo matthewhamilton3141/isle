@@ -111,6 +111,10 @@ struct CollapsedNotchView: View {
             .foregroundStyle(markerColor)
             .lineLimit(1)
             .fixedSize()
+            // Crossfade the word as it rotates ("Coalescing" → "Percolating"),
+            // matching the expanded headline, so the swap reads as a soft change
+            // rather than a hard cut while the island resizes around it.
+            .contentTransition(.opacity)
     }
 
     /// The status text colour, matched to the dots: the warm thinking/working
