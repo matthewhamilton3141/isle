@@ -15,6 +15,14 @@ enum IsleTab: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// The other tab — the one a toggle button switches you to.
+    var other: IsleTab {
+        switch self {
+        case .music: return .claude
+        case .claude: return .music
+        }
+    }
+
     var title: String {
         switch self {
         case .music: return "Music"

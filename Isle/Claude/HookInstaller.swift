@@ -34,6 +34,11 @@ enum HookInstaller {
     private static let hookEvents: [(event: String, args: String)] = [
         ("UserPromptSubmit", "set-state working"),
         ("PreToolUse", "set-state working"),
+        // Fires only when a tool call actually needs a permission decision (not
+        // on auto-allowed tools). `ask` opens the notch approval and blocks
+        // until you click Approve/Deny — or times out and lets Claude fall back
+        // to its own terminal prompt. This is the M7 "act from the notch" path.
+        ("PermissionRequest", "ask"),
         // PostToolUse clears an attention state the moment a tool completes —
         // above all, it's what closes the notch when an AskUserQuestion is
         // answered. The `AskUserQuestion → needs_question` conversion is gated
@@ -45,6 +50,10 @@ enum HookInstaller {
         // server error, …); `Stop` never fires in that case. Surfaces the
         // failure in the notch instead of leaving it frozen on "working".
         ("StopFailure", "fail"),
+        // Fires before Claude compacts the conversation context; shows the
+        // compacting marker in the island. Cleared by the next event once
+        // compaction finishes.
+        ("PreCompact", "set-state compacting"),
         ("SessionStart", "set-state idle"),
     ]
 
@@ -182,18 +191,47 @@ enum HookInstaller {
     private static let scriptBody = #"""
     #!/bin/bash
     #
-    # isle-cli — the bridge script Claude Code's hooks call. Writes a small
-    # JSON status file that Isle watches with DispatchSource. Installed by
-    # Isle's HookInstaller; kept in sync with integration/claude-code-hooks.
+    # isle-cli — the bridge script Claude Code's hooks call. Writes a small JSON
+    # status file (~/.isle/claude-status.json) that Isle watches with DispatchSource.
+    # Dependency-free (no jq/python) so a missing tool can never break a hook. Does
+    # NOT require Isle.app to be running — it just writes a file (exit 0 either way).
     #
     # Usage:
-    #   isle-cli set-state <disconnected|idle|working|done>
-    #   isle-cli notify                                       # classify a Notification
+    #   isle-cli set-state <disconnected|idle|working|done>   # state comes from the hook
+    #   isle-cli notify                                        # classify a Notification
+    #   isle-cli ask                                           # block for a notch Approve/Deny
+    #
+    # Kept in sync with Isle's embedded HookInstaller.scriptBody.
 
     set -euo pipefail
 
     STATUS_DIR="$HOME/.isle"
     STATUS_FILE="$STATUS_DIR/claude-status.json"
+
+    # Timeout (in 0.1s ticks) the `ask` verb blocks for a notch decision before
+    # giving up and letting Claude fall back to its own terminal prompt. 300 = 30s.
+    ASK_TICKS=300
+
+    # Writes the status file Isle watches. $1 = state, $2 = request id (empty for
+    # every verb except `ask`). Computes its own timestamp so `ask`'s repeated
+    # writes each carry a fresh "… ago".
+    write_status() {
+      local ts
+      ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      mkdir -p "$STATUS_DIR"
+      cat > "$STATUS_FILE" <<EOF
+    {
+      "state": "$1",
+      "project": "$PROJECT",
+      "session_id": "$SESSION_ID",
+      "action": "$ACTION",
+      "target": "$TARGET",
+      "error_type": "$ERROR_TYPE",
+      "request_id": "$2",
+      "updated_at": "$ts"
+    }
+    EOF
+    }
 
     CMD="${1:-}"
     case "$CMD" in
@@ -205,13 +243,16 @@ enum HookInstaller {
         fi
         ;;
       notify)
-        STATE=""
+        STATE=""   # decided from the notification message below
         ;;
       fail)
-        STATE="error"
+        STATE="error"   # the turn ended on an API error (StopFailure hook)
+        ;;
+      ask)
+        STATE=""   # handled entirely in the `ask` block below
         ;;
       *)
-        echo "Usage: isle-cli <set-state <state> | notify | fail>" >&2
+        echo "Usage: isle-cli <set-state <state> | notify | fail | ask>" >&2
         exit 1
         ;;
     esac
@@ -219,8 +260,9 @@ enum HookInstaller {
     PROJECT="$(basename "$PWD")"
     TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-    # Pull fields from the hook's stdin JSON without jq. Each `|| true` swallows a
-    # no-match exit so set -e/pipefail can't abort before the file is written.
+    # Pull fields out of the hook's stdin JSON without jq. Each `|| true` swallows a
+    # no-match exit so set -e/pipefail can't abort before the file is written (a
+    # matched value is already on stdout, so a real value is never clobbered).
     SESSION_ID=""
     ACTION=""
     TARGET=""
@@ -260,9 +302,59 @@ enum HookInstaller {
         | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
     fi
 
+    # `ask` (PermissionRequest hook): Claude needs a decision for this exact tool.
+    # Open the notch approval, then block until the notch writes a matching decision
+    # file or we time out — at which point we emit nothing so Claude falls back to
+    # its own terminal prompt. PermissionRequest fires only when a decision is truly
+    # needed, so this never blocks an auto-allowed tool.
+    if [ "$CMD" = "ask" ]; then
+      DECISION_FILE="$STATUS_DIR/claude-decision-$SESSION_ID.json"
+      REQUEST_ID="$(date +%s)-$$-${RANDOM:-0}"
+      mkdir -p "$STATUS_DIR"
+      rm -f "$DECISION_FILE"                        # clear any stale decision
+      write_status "needs_approval" "$REQUEST_ID"   # pop the notch prompt
+
+      i=0
+      while [ "$i" -lt "$ASK_TICKS" ]; do
+        if [ -f "$DECISION_FILE" ]; then
+          d_req="$(grep -oE '"request_id"[[:space:]]*:[[:space:]]*"[^"]*"' "$DECISION_FILE" \
+            | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+          d_dec="$(grep -oE '"decision"[[:space:]]*:[[:space:]]*"[^"]*"' "$DECISION_FILE" \
+            | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+          # Only honour a decision minted for *this* request, so a stale click or
+          # another session's file can never resolve this call.
+          if [ "$d_req" = "$REQUEST_ID" ] && { [ "$d_dec" = "allow" ] || [ "$d_dec" = "deny" ]; }; then
+            rm -f "$DECISION_FILE"
+            write_status "working" ""   # clear the red glyph; the panel retracts
+            if [ "$d_dec" = "allow" ]; then
+              reason="Approved from the Isle notch"
+            else
+              reason="Denied from the Isle notch"
+            fi
+            printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":"%s","permissionDecisionReason":"%s"}}\n' \
+              "$d_dec" "$reason"
+            exit 0
+          fi
+        fi
+        sleep 0.1
+        i=$((i + 1))
+      done
+
+      # Timed out (or Isle never answered). Drop the request id so the now-dead
+      # buttons hide, and print nothing so Claude proceeds through its own prompt.
+      # Never auto-allow.
+      write_status "needs_approval" ""
+      exit 0
+    fi
+
+    # Classify a Notification from its message: a permission prompt is an approval,
+    # an idle "waiting for your input" nudge is calmer, everything else defaults to
+    # approval (some attention is needed).
     if [ "$CMD" = "notify" ]; then
-      # Keep an active question: don't let the follow-up notification downgrade
-      # it to a plain approval. It clears when Claude moves on (next tool / Stop).
+      # Keep an active question: a question (from the AskUserQuestion tool) is the
+      # more specific signal, and the notification that follows it is just "waiting
+      # on you" for the same prompt — don't let it downgrade to a plain approval.
+      # The question clears on its own when Claude moves on (next tool use / Stop).
       if [ -f "$STATUS_FILE" ] && grep -q '"state": "needs_question"' "$STATUS_FILE" 2>/dev/null; then
         exit 0
       fi
@@ -274,28 +366,28 @@ enum HookInstaller {
       esac
     fi
 
-    # Surface AskUserQuestion as a question only while it's being *asked*
-    # (PreToolUse). Its PostToolUse fires when the question is answered; letting
-    # that convert too would re-raise the question and the notch would never
-    # close. Absent hook_event_name we keep converting, so a lone PreToolUse
-    # still opens.
+    # A tool that asks the user a question surfaces as a question, not plain work —
+    # but only while it's being *asked* (PreToolUse). The matching PostToolUse fires
+    # when the question is answered; letting it convert too would re-raise the
+    # question forever and the notch would never close. Absent hook_event_name we
+    # keep the old behaviour (convert), so a lone PreToolUse still opens.
     if [ "$CMD" = "set-state" ] && [ "$STATE" = "working" ] \
        && [ "$ACTION" = "AskUserQuestion" ] && [ "$HOOK_EVENT" != "PostToolUse" ]; then
       STATE="needs_question"
     fi
 
-    mkdir -p "$STATUS_DIR"
+    # The Claude usage/subscription limit is distinct from a transient API error:
+    # it resets on a schedule rather than being worth an immediate retry. Detect it
+    # from the error type or message (either the failure or a notification can carry
+    # it) and surface it as a named failure the app labels "Usage limit reached".
+    if [ "$CMD" = "fail" ] || [ "$CMD" = "notify" ]; then
+      lc_all="$(printf '%s %s' "$ERROR_TYPE" "$MESSAGE" | tr '[:upper:]' '[:lower:]')"
+      case "$lc_all" in
+        *usage*limit*|*limit*reached*|*quota*)
+          STATE="error"; ERROR_TYPE="usage_limit" ;;
+      esac
+    fi
 
-    cat > "$STATUS_FILE" <<EOF
-    {
-      "state": "$STATE",
-      "project": "$PROJECT",
-      "session_id": "$SESSION_ID",
-      "action": "$ACTION",
-      "target": "$TARGET",
-      "error_type": "$ERROR_TYPE",
-      "updated_at": "$TIMESTAMP"
-    }
-    EOF
+    write_status "$STATE" ""
     """#
 }

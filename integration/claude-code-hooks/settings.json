@@ -6,6 +6,9 @@
     "PreToolUse": [
       { "hooks": [{ "type": "command", "command": "isle-cli set-state working" }] }
     ],
+    "PermissionRequest": [
+      { "hooks": [{ "type": "command", "command": "isle-cli ask" }] }
+    ],
     "PostToolUse": [
       { "hooks": [{ "type": "command", "command": "isle-cli set-state working" }] }
     ],
@@ -17,6 +20,9 @@
     ],
     "StopFailure": [
       { "hooks": [{ "type": "command", "command": "isle-cli fail" }] }
+    ],
+    "PreCompact": [
+      { "hooks": [{ "type": "command", "command": "isle-cli set-state compacting" }] }
     ],
     "SessionStart": [
       { "hooks": [{ "type": "command", "command": "isle-cli set-state idle" }] }

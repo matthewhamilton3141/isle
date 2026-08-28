@@ -17,8 +17,9 @@ struct NotchRootView: View {
     @ObservedObject var viewModel: NotchViewModel
 
     /// Reports the currently occupied rect (in this view's coordinate space)
-    /// so the window can restrict hit-testing to it.
-    var onActiveRectChange: ((CGRect) -> Void)?
+    /// so the window can restrict hit-testing to it. Optional so previews can
+    /// build the view without the window controller's hit-test plumbing.
+    var onActiveRectChange: ((CGRect) -> Void)? = nil
 
     private var state: NotchState { viewModel.state }
 
@@ -34,6 +35,13 @@ struct NotchRootView: View {
     private var size: CGSize {
         guard let metrics = viewModel.metrics else { return NotchMetrics.expandedSize }
         if state == .collapsed {
+            // Nothing active: collapse to exactly the physical cutout so the
+            // island vanishes into the hardware notch. Hover still expands it
+            // (the window keeps a hot margin around the notch), so it remains
+            // discoverable rather than truly gone.
+            if viewModel.isCollapsedIdle {
+                return metrics.notchSize
+            }
             // Sized to the per-side content: music on the left, Claude on the
             // right, so the shape grows exactly as much as it needs.
             let sides = viewModel.collapsedSideWidths
@@ -80,7 +88,7 @@ struct NotchRootView: View {
     /// The current Claude marker's colour — its fixed hue, or the artwork accent
     /// for palette-tinted markers — so the wash matches the dots.
     private var claudeMarkerColor: Color {
-        let design = MarkerStore.shared.design(for: MarkerKind(state: viewModel.claudeState))
+        let design = MarkerStore.shared.design(for: viewModel.claudeMarkerKind)
         return design.colorMode == .fixed ? Color(hex: design.fixedColorHex) : palette.accent
     }
 
@@ -245,50 +253,97 @@ struct NotchRootView: View {
 
     // MARK: - Tab switcher
 
-    /// Height of the segmented pill: 22pt buttons + 4pt padding each side.
-    private static let tabBarHeight: CGFloat = 30
+    /// Diameter of the single toggle button.
+    private static let tabBarHeight: CGFloat = 28
 
+    /// A single toggle rather than a two-segment pill: it shows the *other*
+    /// tab's icon (the one you'd switch to), so on Music it's the 3x3 Claude
+    /// mark and on Claude it's the music note. Tapping flips to that tab.
     private var tabBar: some View {
-        HStack(spacing: 4) {
-            ForEach(IsleTab.allCases) { tab in
-                let selected = viewModel.expandedTab == tab
-                Button {
-                    // No withAnimation here: the content cross-fade is handled
-                    // by ExpandedNotchView's own `.animation(value: expandedTab)`.
-                    // Wrapping the change in a transaction here was rippling into
-                    // the tab bar's layout and nudging the buttons on select.
-                    viewModel.activeTab = tab
-                } label: {
-                    // Both icons share one fixed footprint so the pill can never
-                    // reflow between tabs.
-                    tabIcon(for: tab, selected: selected)
-                        .frame(width: 28, height: 22)
-                        .background(Capsule().fill(selected ? .white.opacity(0.22) : .clear))
-                        .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(tab.title)
-            }
+        let target = viewModel.expandedTab.other
+        return Button {
+            // No withAnimation here: the content cross-fade is handled by
+            // ExpandedNotchView's own `.animation(value: expandedTab)`.
+            viewModel.selectTab(target)
+        } label: {
+            tabIcon(for: target)
+                .frame(width: Self.tabBarHeight, height: Self.tabBarHeight)
+                .background(Circle().fill(.black.opacity(0.35)))
+                .contentShape(Circle())
         }
-        .padding(4)
-        .background(Capsule().fill(.black.opacity(0.35)))
+        .buttonStyle(.plain)
+        .accessibilityLabel("Switch to \(target.title)")
         .animation(.easeInOut(duration: 0.15), value: viewModel.expandedTab)
     }
 
-    /// Music keeps its SF Symbol; Claude uses the 5x5 dot mark.
+    /// Music keeps its SF Symbol; Claude uses the dot mark.
     @ViewBuilder
-    private func tabIcon(for tab: IsleTab, selected: Bool) -> some View {
-        let color: Color = selected ? .white : .white.opacity(0.45)
+    private func tabIcon(for tab: IsleTab) -> some View {
         switch tab {
         case .music:
             Image(systemName: tab.symbolName)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(color)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white)
         case .claude:
             // A simpler 3x3 grid reads better than 5x5 at tab-icon size.
-            DotGridIcon(color: color, dimension: 3)
+            DotGridIcon(color: .white, dimension: 3)
                 .frame(width: 16, height: 16)
         }
     }
 
 }
+
+// MARK: - Previews
+
+#if DEBUG
+/// Full-app canvas preview of the notch overlay. Live and interactive — the
+/// Music/Claude switcher works, so the alert tab-override fix can be exercised
+/// right in the canvas. No subsystems start (the view model is only
+/// constructed, never `start()`ed), so nothing touches audio or the adapter.
+private enum NotchPreview {
+    @MainActor
+    static func viewModel(_ configure: (NotchViewModel) -> Void = { _ in }) -> NotchViewModel {
+        // Isolated defaults so a preview never reads or writes the real prefs.
+        let settings = AppSettings(defaults: UserDefaults(suiteName: "isle.preview")!)
+        settings.mode = .both            // show both sources + the tab switcher
+        let vm = NotchViewModel(settings: settings)
+        if let screen = NSScreen.main {
+            vm.metrics = NotchMetrics(screen: screen)
+        }
+        configure(vm)
+        return vm
+    }
+}
+
+/// Backdrop so the black notch reads against something, sized to the panel's
+/// full width with room below for the expanded panel to hang into.
+private struct NotchPreviewStage<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        content()
+            .frame(width: NotchMetrics.expandedSize.width + 120, height: 300)
+            .background(
+                LinearGradient(
+                    colors: [Color(white: 0.32), Color(white: 0.06)],
+                    startPoint: .top, endPoint: .bottom
+                )
+            )
+    }
+}
+
+#Preview("Notch — live alert (tab switch)") {
+    NotchPreviewStage {
+        NotchRootView(viewModel: NotchPreview.viewModel { vm in
+            // A live approval auto-jumps to the Claude tab; click Music in the
+            // canvas to confirm the manual override now sticks.
+            vm.claudeState = .needsApproval
+        })
+    }
+}
+
+#Preview("Notch — resting") {
+    NotchPreviewStage {
+        NotchRootView(viewModel: NotchPreview.viewModel())
+    }
+}
+#endif

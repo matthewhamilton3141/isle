@@ -18,10 +18,11 @@ struct ExpandedNotchView: View {
         // The Music/Claude switcher itself lives in NotchRootView, positioned
         // to the right of the physical cutout — see NotchRootView.tabBar.
         content
-            // Cross-fade content on any tab change, including the
-            // interrupt-driven switch to Claude that doesn't go through the
-            // tab button's animation.
-            .animation(.easeInOut(duration: 0.2), value: viewModel.expandedTab)
+            // A clean cross-dissolve: nothing moves, the old tab just fades out
+            // as the new one fades in, in place. Covers the interrupt-driven
+            // switch to Claude too, which doesn't go through the tab button's
+            // own animation.
+            .animation(.easeInOut(duration: 0.28), value: viewModel.expandedTab)
     }
 
     @ViewBuilder
@@ -152,13 +153,36 @@ struct ExpandedNotchView: View {
     }
 
     private var idlePlaceholder: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        // Mirror the Claude tab's headline/detail block exactly — same font
+        // sizes, weights, colours, and vertical placement (leading + trailing
+        // spacers centre it, with a filler standing in for Claude's info row) —
+        // so switching between the two tabs doesn't jump the text around.
+        VStack(alignment: .leading, spacing: 0) {
+            Spacer(minLength: 0)
+
             Text("Nothing playing")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 24, weight: .bold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+
+            Spacer().frame(height: 2)
+
             Text("Start something in Spotify or Music")
-                .font(.system(size: 11))
-                .foregroundStyle(.white.opacity(0.6))
+                .font(.system(size: 12.5, weight: .regular))
+                .foregroundStyle(.white.opacity(0.72))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .truncationMode(.middle)
+
+            Spacer().frame(height: 11)
+            // Stands in for the height of Claude's project/elapsed info row so
+            // the two text lines sit at the same vertical position on both tabs.
+            Color.clear.frame(height: 22)
+
+            Spacer(minLength: 0)
         }
+        .frame(maxHeight: .infinity)
     }
 
     // MARK: - Scrubber

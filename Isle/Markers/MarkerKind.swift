@@ -129,6 +129,7 @@ enum MarkerKind: String, CaseIterable, Identifiable, Codable {
         // from `error_type` on the view model; the lifecycle mapping just needs
         // a sensible default marker.
         case .failed: self = .apiError
+        case .compacting: self = .compacting
         }
     }
 }

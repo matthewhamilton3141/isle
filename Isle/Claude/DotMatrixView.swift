@@ -20,6 +20,10 @@ import AppKit
 struct DotMatrixView: View {
     var design: MarkerDesign
     var palette: ArtworkPalette
+    /// Overrides the design's colour entirely, keeping its shape and animation.
+    /// Used to paint the working marker warm (thinking = yellow, working =
+    /// orange) without touching the user's saved marker design.
+    var tint: Color?
 
     private static let morphDuration: Double = 0.45
 
@@ -27,9 +31,10 @@ struct DotMatrixView: View {
     @State private var toLevels: [Double]
     @State private var transitionStart: Date = .distantPast
 
-    init(design: MarkerDesign, palette: ArtworkPalette = .fallback) {
+    init(design: MarkerDesign, palette: ArtworkPalette = .fallback, tint: Color? = nil) {
         self.design = design
         self.palette = palette
+        self.tint = tint
         let levels = Self.levels(for: design)
         _fromLevels = State(initialValue: levels)
         _toLevels = State(initialValue: levels)
@@ -94,8 +99,12 @@ struct DotMatrixView: View {
         let primary = RGBA(palette.primary)
         let accent = RGBA(palette.accent)
         let secondary = RGBA(palette.secondary)
-        let fixed = RGBA(Color(hex: design.fixedColorHex))
+        // A tint overrides the design colour but keeps its shape/animation, so
+        // the dots read as a single chosen hue with the same lively brightness
+        // variation the fixed path already gives.
+        let fixed = RGBA(tint ?? Color(hex: design.fixedColorHex))
         let fixedLift = fixed.lightened(0.35)
+        let forceFixed = tint != nil
 
         // Whole-grid animation drivers shared by the non-shimmer modes.
         let pulse = 0.5 + 0.5 * sin(clock * speed)
@@ -121,6 +130,8 @@ struct DotMatrixView: View {
                     anim = blinkOn ? 1.0 : 0.12
                 case .motion:
                     anim = motionValue(row: row, col: col, clock: clock, speed: speed)
+                case .compact:
+                    anim = compactValue(row: row, clock: clock, speed: speed)
                 }
 
                 let intensity = design.intensity * level * anim
@@ -136,7 +147,7 @@ struct DotMatrixView: View {
                 let color = dotColor(
                     row: row, col: col, clock: clock,
                     primary: primary, accent: accent, secondary: secondary,
-                    fixed: fixed, fixedLift: fixedLift
+                    fixed: fixed, fixedLift: fixedLift, forceFixed: forceFixed
                 )
                 .opacity(0.10 + 0.90 * min(1, intensity))
 
@@ -148,8 +159,13 @@ struct DotMatrixView: View {
     private func dotColor(
         row: Int, col: Int, clock: Double,
         primary: RGBA, accent: RGBA, secondary: RGBA,
-        fixed: RGBA, fixedLift: RGBA
+        fixed: RGBA, fixedLift: RGBA, forceFixed: Bool
     ) -> Color {
+        // A tint forces the fixed path regardless of the design's colour mode.
+        if forceFixed {
+            let u = 0.5 + 0.5 * sin(clock * 0.9 + Double(row + col) * 0.5)
+            return fixed.lerp(to: fixedLift, u * 0.6)
+        }
         switch design.colorMode {
         case .palette:
             // A colour that drifts along the palette and differs per dot, so
@@ -191,6 +207,26 @@ struct DotMatrixView: View {
 
         let v = (w1 + w2 + w3) / 3          // -1…1
         return 0.18 + 0.82 * (0.5 + 0.5 * v)
+    }
+
+    /// "Compacting": a full box collapses one line at a time from the top, down
+    /// to a single row, then refills back to full — a triangle over the cycle so
+    /// it loops without a hard snap. Rows are lit from the bottom up; the number
+    /// lit tracks `fillCount`, and each row's edge is softened over ~one row so
+    /// lines fade in/out rather than blink. Only the row matters (every dot in a
+    /// line shares the level), so a filled marker reads as lines being compacted.
+    private func compactValue(row: Int, clock: Double, speed: Double) -> Double {
+        let n = Double(MarkerDesign.dimension)
+        let frac = fract(clock * speed * 0.18)
+        let tri = abs(2 * frac - 1)            // 1 → 0 → 1  (full, compact, full)
+        let fillCount = 1 + tri * (n - 1)      // 1…n rows lit, from the bottom
+        let cutoff = n - fillCount             // rows with index ≥ cutoff are lit
+
+        // Soft one-row edge at the cutoff so a line eases off instead of blinking.
+        let e = Double(row) - (cutoff - 0.5)
+        let t = min(1, max(0, e))
+        let on = t * t * (3 - 2 * t)           // smoothstep
+        return 0.10 + 0.90 * on
     }
 }
 

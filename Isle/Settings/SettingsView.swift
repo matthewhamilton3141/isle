@@ -117,6 +117,17 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Dismiss alert panel on hover-out / click", isOn: $settings.dismissAlertPanel)
+                Text(settings.dismissAlertPanel
+                     ? "Hover away or click to retract the panel; the alert stays in the island until resolved."
+                     : "The panel stays open until the alert resolves (e.g. you answer).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .disabled(!settings.expandOnAlert)
         }
     }
 

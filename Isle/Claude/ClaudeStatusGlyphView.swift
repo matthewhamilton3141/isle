@@ -19,9 +19,18 @@ import SwiftUI
 struct ClaudeStatusGlyphView: View {
     var state: ClaudeCodeState
 
+    /// An explicit marker to draw, overriding the lifecycle mapping — used to
+    /// pick a specific failure marker (rate-limit / server / generic) from the
+    /// error type. Nil falls back to the plain state marker.
+    var kind: MarkerKind? = nil
+
     /// Artwork colours to tint the dots with, so the indicator matches the
     /// waveform. Falls back to a neutral palette when none is available.
     var palette: ArtworkPalette = .fallback
+
+    /// Overrides the marker's colour with a single hue (shape/animation kept).
+    /// Used for the warm thinking/working colouring in the Claude-solo island.
+    var tint: Color? = nil
 
     /// The designs are read from the shared store, so editing a marker in the
     /// editor updates the live notch immediately.
@@ -29,8 +38,9 @@ struct ClaudeStatusGlyphView: View {
 
     var body: some View {
         DotMatrixView(
-            design: markers.design(for: MarkerKind(state: state)),
-            palette: palette
+            design: markers.design(for: kind ?? MarkerKind(state: state)),
+            palette: palette,
+            tint: tint
         )
     }
 }

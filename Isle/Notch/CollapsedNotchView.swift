@@ -57,6 +57,10 @@ struct CollapsedNotchView: View {
                     equalizer(width: CollapsedSize.waveSplit)
                 }
             }
+        } else if viewModel.isClaudeSolo {
+            // Claude solo: the dot glyph sits to the left of the camera, in the
+            // album cover's footprint so switching music↔Claude keeps it put.
+            claudeDots(size: CollapsedSize.album)
         } else if viewModel.hasMusicActivity {
             artworkThumbnail
         } else {
@@ -68,16 +72,16 @@ struct CollapsedNotchView: View {
 
     @ViewBuilder
     private var trailing: some View {
-        if viewModel.shouldSplitCollapsed
-            || (viewModel.hasClaudeActivity && !viewModel.hasMusicActivity) {
-            // Claude cluster: dots next to the camera, status word beside them,
-            // text coloured to match the marker. Alerts (approval / question /
-            // error) render here too — the pulsing red glyph and word carry the
-            // urgency without shoving the music aside.
+        if viewModel.shouldSplitCollapsed {
+            // Split: the Claude cluster rides on the right beside the music —
+            // dots next to the camera, status word beside them.
             HStack(spacing: CollapsedSize.gap) {
                 claudeDots(size: CollapsedSize.dots)
                 statusText
             }
+        } else if viewModel.isClaudeSolo {
+            // Claude solo: only the status word here; the dots are on the left.
+            statusText
         } else if viewModel.hasMusicActivity {
             if viewModel.showWaveform {
                 equalizer(width: CollapsedSize.waveSolo)
@@ -90,8 +94,13 @@ struct CollapsedNotchView: View {
     // MARK: - Pieces
 
     private func claudeDots(size: CGFloat) -> some View {
-        ClaudeStatusGlyphView(state: viewModel.claudeState, palette: palette)
-            .frame(width: size, height: size)
+        ClaudeStatusGlyphView(
+            state: viewModel.claudeState,
+            kind: viewModel.claudeMarkerKind,
+            palette: palette,
+            tint: viewModel.workingTint
+        )
+        .frame(width: size, height: size)
     }
 
     private var statusText: some View {
@@ -102,12 +111,17 @@ struct CollapsedNotchView: View {
             .foregroundStyle(markerColor)
             .lineLimit(1)
             .fixedSize()
+            // Crossfade the word as it rotates ("Coalescing" → "Percolating"),
+            // matching the expanded headline, so the swap reads as a soft change
+            // rather than a hard cut while the island resizes around it.
+            .contentTransition(.opacity)
     }
 
-    /// The marker's colour, so the status text matches the dots: its fixed hue,
-    /// or the artwork accent for palette-tinted markers.
+    /// The status text colour, matched to the dots: the warm thinking/working
+    /// tint when it applies, else the marker's fixed hue or the artwork accent.
     private var markerColor: Color {
-        let design = MarkerStore.shared.design(for: MarkerKind(state: viewModel.claudeState))
+        if let tint = viewModel.workingTint { return tint }
+        let design = MarkerStore.shared.design(for: viewModel.claudeMarkerKind)
         return design.colorMode == .fixed ? Color(hex: design.fixedColorHex) : palette.accent
     }
 
