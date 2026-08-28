@@ -32,7 +32,7 @@ enum IsleTab: String, CaseIterable, Identifiable {
 
     var symbolName: String {
         switch self {
-        case .music: return "music.note"
+        case .music: return "waveform"
         case .claude: return "sparkle"
         }
     }

@@ -281,9 +281,10 @@ struct NotchRootView: View {
     private func tabIcon(for tab: IsleTab) -> some View {
         switch tab {
         case .music:
-            Image(systemName: tab.symbolName)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white)
+            // A 4-bar waveform, sized to the same 16x16 box as the Claude dot
+            // grid so neither icon outweighs the other in the toggle.
+            WaveformIcon(color: .white)
+                .frame(width: 16, height: 16)
         case .claude:
             // A simpler 3x3 grid reads better than 5x5 at tab-icon size.
             DotGridIcon(color: .white, dimension: 3)

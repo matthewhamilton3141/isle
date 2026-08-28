@@ -218,7 +218,7 @@ private struct TabCrossfadeDemo: View {
                 if showClaude {
                     claudeLabel.transition(.opacity)
                 } else {
-                    label("Music", Image(systemName: "music.note")).transition(.opacity)
+                    label("Music", WaveformIcon(color: .white).frame(width: 16, height: 16)).transition(.opacity)
                 }
             }
             .frame(width: 200, height: 64)
