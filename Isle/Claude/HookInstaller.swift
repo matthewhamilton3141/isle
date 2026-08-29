@@ -29,15 +29,15 @@ enum HookInstaller {
     }
 
     /// Hook event → the `isle-cli` arguments for it. `Notification` uses the
-    /// `notify` subcommand, which classifies the message into approval /
-    /// question / waiting; the rest set a fixed state.
+    /// `notify` subcommand, which classifies the message into question /
+    /// waiting; the rest set a fixed state.
     private static let hookEvents: [(event: String, args: String)] = [
         ("UserPromptSubmit", "set-state working"),
         ("PreToolUse", "set-state working"),
         // Fires only when a tool call actually needs a permission decision (not
-        // on auto-allowed tools). `ask` opens the notch approval and blocks
-        // until you click Approve/Deny — or times out and lets Claude fall back
-        // to its own terminal prompt. This is the M7 "act from the notch" path.
+        // on auto-allowed tools). Isle has no Approve/Deny UI, so `ask` just
+        // surfaces a question in the notch and returns immediately — the decision
+        // is made in the terminal.
         ("PermissionRequest", "ask"),
         // PostToolUse clears an attention state the moment a tool completes —
         // above all, it's what closes the notch when an AskUserQuestion is
@@ -51,8 +51,9 @@ enum HookInstaller {
         // failure in the notch instead of leaving it frozen on "working".
         ("StopFailure", "fail"),
         // Fires before Claude compacts the conversation context; shows the
-        // compacting marker in the island. Cleared by the next event once
-        // compaction finishes.
+        // compacting marker in the island. A finished compaction clears it via
+        // the SessionStart (source=compact) event below; a *cancelled* one fires
+        // nothing, so the view model also eases it back to idle on a timeout.
         ("PreCompact", "set-state compacting"),
         ("SessionStart", "set-state idle"),
         // Fires when a session ends (exit, Ctrl-D, terminal closed). Clears the
@@ -67,8 +68,10 @@ enum HookInstaller {
     /// install from an older Isle refreshes itself on next launch instead of
     /// running a stale helper. See `refreshIfNeeded`. (v2: added the SessionEnd
     /// hook / `end` verb so a closed session clears the island. v3: emit
-    /// `reset_at` for a usage limit so the island can count down to the reset.)
-    private static let currentVersion = 3
+    /// `reset_at` for a usage limit so the island can count down to the reset.
+    /// v4: dropped the Approve/Deny flow — `ask` and notifications surface a
+    /// non-blocking question instead of an approval.)
+    private static let currentVersion = 4
     private static let versionKey = "HookInstaller.installedVersion"
 
     private static var home: URL {
@@ -228,7 +231,7 @@ enum HookInstaller {
     # Usage:
     #   isle-cli set-state <disconnected|idle|working|done>   # state comes from the hook
     #   isle-cli notify                                        # classify a Notification
-    #   isle-cli ask                                           # block for a notch Approve/Deny
+    #   isle-cli ask                                           # permission → surface a question
     #   isle-cli end                                           # session ended — clear the island
     #
     # Kept in sync with Isle's embedded HookInstaller.scriptBody.
@@ -238,13 +241,9 @@ enum HookInstaller {
     STATUS_DIR="$HOME/.isle"
     STATUS_FILE="$STATUS_DIR/claude-status.json"
 
-    # Timeout (in 0.1s ticks) the `ask` verb blocks for a notch decision before
-    # giving up and letting Claude fall back to its own terminal prompt. 300 = 30s.
-    ASK_TICKS=300
-
-    # Writes the status file Isle watches. $1 = state, $2 = request id (empty for
-    # every verb except `ask`). Computes its own timestamp so `ask`'s repeated
-    # writes each carry a fresh "… ago".
+    # Writes the status file Isle watches. $1 = state, $2 = request id (always
+    # empty now — the notch no longer resolves decisions). Computes its own
+    # timestamp so each write carries a fresh "… ago".
     write_status() {
       local ts
       ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -337,67 +336,29 @@ enum HookInstaller {
         | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
     fi
 
-    # `ask` (PermissionRequest hook): Claude needs a decision for this exact tool.
-    # Open the notch approval, then block until the notch writes a matching decision
-    # file or we time out — at which point we emit nothing so Claude falls back to
-    # its own terminal prompt. PermissionRequest fires only when a decision is truly
-    # needed, so this never blocks an auto-allowed tool.
+    # `ask` (PermissionRequest hook): Claude needs the user's attention for this
+    # tool. Isle has no Approve/Deny UI — every prompt is surfaced as a question
+    # and answered in the terminal — so never block: write the question state and
+    # emit nothing, so Claude shows its own prompt right away.
     if [ "$CMD" = "ask" ]; then
-      DECISION_FILE="$STATUS_DIR/claude-decision-$SESSION_ID.json"
-      REQUEST_ID="$(date +%s)-$$-${RANDOM:-0}"
-      mkdir -p "$STATUS_DIR"
-      rm -f "$DECISION_FILE"                        # clear any stale decision
-      write_status "needs_approval" "$REQUEST_ID"   # pop the notch prompt
-
-      i=0
-      while [ "$i" -lt "$ASK_TICKS" ]; do
-        if [ -f "$DECISION_FILE" ]; then
-          d_req="$(grep -oE '"request_id"[[:space:]]*:[[:space:]]*"[^"]*"' "$DECISION_FILE" \
-            | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
-          d_dec="$(grep -oE '"decision"[[:space:]]*:[[:space:]]*"[^"]*"' "$DECISION_FILE" \
-            | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
-          # Only honour a decision minted for *this* request, so a stale click or
-          # another session's file can never resolve this call.
-          if [ "$d_req" = "$REQUEST_ID" ] && { [ "$d_dec" = "allow" ] || [ "$d_dec" = "deny" ]; }; then
-            rm -f "$DECISION_FILE"
-            write_status "working" ""   # clear the red glyph; the panel retracts
-            if [ "$d_dec" = "allow" ]; then
-              reason="Approved from the Isle notch"
-            else
-              reason="Denied from the Isle notch"
-            fi
-            printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":"%s","permissionDecisionReason":"%s"}}\n' \
-              "$d_dec" "$reason"
-            exit 0
-          fi
-        fi
-        sleep 0.1
-        i=$((i + 1))
-      done
-
-      # Timed out (or Isle never answered). Drop the request id so the now-dead
-      # buttons hide, and print nothing so Claude proceeds through its own prompt.
-      # Never auto-allow.
-      write_status "needs_approval" ""
+      write_status "needs_question" ""
       exit 0
     fi
 
-    # Classify a Notification from its message: a permission prompt is an approval,
-    # an idle "waiting for your input" nudge is calmer, everything else defaults to
-    # approval (some attention is needed).
+    # Classify a Notification from its message: an idle "waiting for your input"
+    # nudge is calmer; everything else is a question (some attention is needed).
     if [ "$CMD" = "notify" ]; then
       # Keep an active question: a question (from the AskUserQuestion tool) is the
       # more specific signal, and the notification that follows it is just "waiting
-      # on you" for the same prompt — don't let it downgrade to a plain approval.
+      # on you" for the same prompt — don't let it downgrade.
       # The question clears on its own when Claude moves on (next tool use / Stop).
       if [ -f "$STATUS_FILE" ] && grep -q '"state": "needs_question"' "$STATUS_FILE" 2>/dev/null; then
         exit 0
       fi
       lower="$(printf '%s' "$MESSAGE" | tr '[:upper:]' '[:lower:]')"
       case "$lower" in
-        *permission*|*approve*|*allow*) STATE="needs_approval" ;;
-        *waiting*)                      STATE="waiting_input" ;;
-        *)                              STATE="needs_approval" ;;
+        *waiting*) STATE="waiting_input" ;;
+        *)         STATE="needs_question" ;;
       esac
     fi
 

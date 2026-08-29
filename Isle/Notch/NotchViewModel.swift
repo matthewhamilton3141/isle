@@ -69,17 +69,6 @@ final class NotchViewModel: ObservableObject {
     /// Session id from the status file, when the installed `isle-cli` emits it.
     @Published private(set) var claudeSessionId: String?
 
-    /// For an approval raised by the `ask` (PermissionRequest) hook, the id of
-    /// the blocked request. Present only while that hook is waiting; the notch's
-    /// Approve/Deny writes it back so the hook honours only a click meant for
-    /// this exact call. Nil for a plain `Notification` approval or after timeout.
-    @Published private(set) var claudeRequestId: String?
-
-    /// True from the moment the user clicks Approve/Deny until the resulting
-    /// state change lands, so the buttons disable and a double-click can't write
-    /// a second decision file.
-    @Published private(set) var isDeciding = false
-
     /// The tool Claude is currently running (Edit / Bash / …) and its target,
     /// for the "what it's doing" line in the expanded view.
     @Published private(set) var claudeAction: String?
@@ -149,6 +138,13 @@ final class NotchViewModel: ObservableObject {
     /// clears on its own.
     private static let questionRevertSeconds: TimeInterval = 45
 
+    /// How long the `compacting` glyph runs before easing back to idle. Only the
+    /// `PreCompact` hook fires — Claude Code emits nothing when compaction ends
+    /// or is cancelled — so without this a cancelled compact animates forever.
+    /// A finished compaction is normally cleared sooner by the next real event
+    /// (a tool call / prompt); this is the backstop for the cancelled/idle case.
+    private static let compactingRevertSeconds: TimeInterval = 25
+
     // MARK: - Working words
 
     /// A rotating "thinking" word shown in the expanded view while working,
@@ -187,9 +183,6 @@ final class NotchViewModel: ObservableObject {
     }
 
     // MARK: - Settings passthrough
-
-    /// Show the animated waveform in the collapsed notch (Settings).
-    var showWaveform: Bool { settings.showWaveform }
 
     /// Show the seekable scrubber in the expanded panel (Settings).
     var showScrubber: Bool { settings.showScrubber }
@@ -318,8 +311,6 @@ final class NotchViewModel: ObservableObject {
             claudeState = .disconnected
             claudeProject = nil
             claudeSessionId = nil
-            claudeRequestId = nil
-            isDeciding = false
             claudeAction = nil
             claudeTarget = nil
             claudeErrorType = nil
@@ -349,16 +340,12 @@ final class NotchViewModel: ObservableObject {
             // Re-arm the Claude-tab auto-jump: a fresh interrupt gets to grab
             // the tab once again, even if the user overrode the previous one.
             tabOverriddenDuringAlert = false
-            // The pending decision (if any) resolved into this new state — the
-            // hook has moved on, so re-arm the buttons for the next approval.
-            isDeciding = false
         }
         withAnimation(.easeInOut(duration: 0.25)) {
             claudeState = status.state
         }
         claudeProject = status.project
         claudeSessionId = status.sessionId
-        claudeRequestId = status.requestId
         claudeAction = status.action
         claudeTarget = status.target
         claudeErrorType = status.errorType
@@ -396,6 +383,11 @@ final class NotchViewModel: ObservableObject {
             // tool). So ease it back to idle after a spell rather than letting
             // "Question" wedge the island until the next prompt.
             revertDelay = Self.questionRevertSeconds
+        case .compacting:
+            // Only PreCompact fires — a cancelled compaction sends no follow-up,
+            // so ease back to idle rather than animating forever. A finished
+            // compaction is usually cleared sooner by the next real event.
+            revertDelay = Self.compactingRevertSeconds
         default: return
         }
         doneRevertTask = Task { [weak self] in
@@ -648,46 +640,6 @@ final class NotchViewModel: ObservableObject {
         isHovering = false
     }
 
-    /// Whether the expanded Claude panel can resolve the current approval from
-    /// the notch — i.e. it was raised by the `ask` (PermissionRequest) hook,
-    /// which is blocked waiting for a decision keyed by `claudeRequestId`. False
-    /// for a plain `Notification` approval (no live hook to answer) and once a
-    /// click is in flight.
-    var canDecide: Bool {
-        claudeState == .needsApproval
-            && claudeRequestId != nil
-            && claudeSessionId != nil
-            && !isDeciding
-    }
-
-    /// Approve or deny the pending tool call from the notch. Writes the decision
-    /// file the blocked `ask` hook is polling for; the hook validates the
-    /// `request_id`, prints the matching allow/deny to Claude, and flips the
-    /// status to `working` — which the watcher delivers back here, retracting the
-    /// panel. A no-op unless `canDecide` (so a stale click can't misfire).
-    func decide(_ allow: Bool) {
-        guard canDecide, let sessionId = claudeSessionId, let requestId = claudeRequestId
-        else { return }
-        isDeciding = true
-
-        let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".isle", isDirectory: true)
-        let decisionURL = dir.appendingPathComponent("claude-decision-\(sessionId).json")
-        let payload: [String: String] = [
-            "request_id": requestId,
-            "decision": allow ? "allow" : "deny",
-        ]
-        do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let data = try JSONSerialization.data(withJSONObject: payload, options: [])
-            try data.write(to: decisionURL, options: .atomic)
-        } catch {
-            // Couldn't hand the decision back — leave the hook to time out and
-            // fall back to the terminal rather than wedging the button.
-            isDeciding = false
-        }
-    }
-
     /// Whether the expanded panel shows the Music/Claude segmented switcher —
     /// only in `.both` mode; single-source modes show that one source.
     var showsTabBar: Bool {
@@ -695,9 +647,9 @@ final class NotchViewModel: ObservableObject {
     }
 
     /// Which content the expanded panel should render right now. In `.both`
-    /// mode this is the user's selected tab, except that a `needsApproval`
-    /// interrupt forces the Claude tab — without mutating `activeTab`, so the
-    /// user's choice is restored automatically once the approval clears.
+    /// mode this is the user's selected tab, except that a live Claude interrupt
+    /// (a question / error) forces the Claude tab — without mutating `activeTab`,
+    /// so the user's choice is restored automatically once the alert clears.
     var expandedTab: IsleTab {
         switch settings.effectiveMode {
         case .music: return .music
@@ -776,7 +728,9 @@ final class NotchViewModel: ObservableObject {
         let g = s.cutoutGap
 
         if shouldSplitCollapsed {
-            let leading = s.album + (showWaveform ? s.gap + s.waveSplit : 0) + g
+            // Music cluster is album + waveform, with the waveform tucked toward
+            // the camera so the album sits outboard, clear of the housing.
+            let leading = s.album + s.gap + s.waveSplit + g
             return (leading, s.dots + statusSlot + g)
         }
         if hasClaudeActivity {
@@ -831,75 +785,17 @@ final class NotchViewModel: ObservableObject {
     var collapsedStatusText: String {
         switch claudeState {
         case .working: return isThinking ? "Thinking" : workingWord
-        case .needsApproval: return "Approve"
-        case .needsQuestion: return "Question"
+        // Approvals are surfaced as a question — the expanded panel still offers
+        // the Approve/Deny buttons for a live `ask`, but the word is unified.
+        case .needsApproval, .needsQuestion: return "Question"
         case .waitingInput: return "Waiting"
         case .done: return "Done"
         case .idle: return "Ready"
-        case .failed:
-            // The usage limit is pinned, so pair it with the reset clock when we
-            // have one — a fixed absolute time, so it needs no live ticking here
-            // (the expanded panel shows the live "in 42m" countdown).
-            if isUsageLimit, let reset = claudeResetAt {
-                return "Limit · \(Self.clockString(reset))"
-            }
-            return claudeError.short
+        // Every failure reads as one thing — a usage limit and a transient API
+        // error are indistinguishable to the user, so both just say "Error".
+        case .failed: return "Error"
         case .compacting: return "Compacting"
         case .disconnected: return ""
-        }
-    }
-
-    // MARK: - Usage-limit formatting
-
-    private static let resetClockFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.setLocalizedDateFormatFromTemplate("hmma")
-        return f
-    }()
-
-    /// The reset moment as a short local clock time, e.g. "3:00 PM".
-    static func clockString(_ date: Date) -> String {
-        resetClockFormatter.string(from: date)
-    }
-
-    /// The expanded panel's live reset line — "Resets at 3:00 PM · in 42m",
-    /// recomputed each tick from `now`. Collapses to "…in 8s" in the last minute.
-    static func resetCountdown(to reset: Date, now: Date) -> String {
-        let remaining = max(0, Int(reset.timeIntervalSince(now)))
-        let clock = clockString(reset)
-        if remaining >= 3600 {
-            return "Resets at \(clock) · in \(remaining / 3600)h \((remaining % 3600) / 60)m"
-        }
-        if remaining >= 60 {
-            return "Resets at \(clock) · in \(remaining / 60)m"
-        }
-        return "Resets at \(clock) · in \(remaining)s"
-    }
-
-    /// Human copy for an API failure, chosen from `claudeErrorType`. One place
-    /// so the collapsed word, the expanded headline, and its detail agree.
-    var claudeError: (short: String, title: String, detail: String) {
-        switch claudeErrorType {
-        case "usage_limit":
-            // The subscription/usage cap — distinct from a transient 429. It
-            // resets on a schedule rather than being worth an immediate retry.
-            return ("Limit", "Usage limit reached", "You’ve hit your Claude usage limit — it resets on a schedule.")
-        case "rate_limit", "rate_limit_error":
-            return ("Rate limit", "Rate limited", "Too many requests — wait a moment, then resend.")
-        case "overloaded", "overloaded_error":
-            return ("Busy", "Overloaded", "The API is busy right now — resend to retry.")
-        case "server_error", "api_error":
-            return ("Server", "Server error", "The API returned a 5xx — resend to retry.")
-        case "authentication_failed", "authentication_error", "oauth_org_not_allowed", "permission_error":
-            return ("Auth", "Auth failed", "Re-authenticate Claude Code, then retry.")
-        case "billing_error":
-            return ("Billing", "Billing issue", "Check your plan or billing, then retry.")
-        case "max_output_tokens":
-            return ("Length", "Response too long", "Hit the output limit — narrow the ask and resend.")
-        case "invalid_request", "invalid_request_error", "model_not_found", "not_found_error":
-            return ("Error", "Request rejected", "The API rejected the request.")
-        default:
-            return ("Error", "API error", "The turn stopped on an API error — resend to retry.")
         }
     }
 

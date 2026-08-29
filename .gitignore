@@ -28,3 +28,6 @@ xcuserdata/
 # The .pl driver and the upstream BSD-3 license text ARE tracked: they're small,
 # readable, and keeping the license in-repo preserves attribution.
 Vendor/mediaremote-adapter/MediaRemoteAdapter.framework/
+
+# Release artifacts (built by scripts/sign-release.sh)
+dist/

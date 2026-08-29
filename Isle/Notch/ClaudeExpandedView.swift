@@ -57,14 +57,7 @@ struct ClaudeExpandedView: View {
 
                 Spacer().frame(height: 11)
 
-                // When the approval came from the `ask` hook (which is blocked
-                // waiting), offer the decision inline; otherwise the usual
-                // project/elapsed row.
-                if viewModel.canDecide {
-                    approvalActions
-                } else {
-                    infoRow
-                }
+                infoRow
 
                 Spacer(minLength: 0)
             }
@@ -103,48 +96,6 @@ struct ClaudeExpandedView: View {
         }
     }
 
-    /// Approve / Deny for a live tool permission request, shown in place of the
-    /// info row while the `ask` hook blocks. Real `Button`s so their taps are
-    /// consumed and don't fall through to the card's dismiss gesture.
-    private var approvalActions: some View {
-        HStack(spacing: 8) {
-            decisionButton(
-                title: "Approve",
-                symbol: "checkmark",
-                tint: .green,
-                allow: true
-            )
-            decisionButton(
-                title: "Deny",
-                symbol: "xmark",
-                tint: .red,
-                allow: false
-            )
-            Spacer(minLength: 0)
-        }
-        .disabled(viewModel.isDeciding)
-        .opacity(viewModel.isDeciding ? 0.5 : 1)
-    }
-
-    private func decisionButton(
-        title: String,
-        symbol: String,
-        tint: Color,
-        allow: Bool
-    ) -> some View {
-        Button {
-            viewModel.decide(allow)
-        } label: {
-            Label(title, systemImage: symbol)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
-                .background(Capsule().fill(tint.opacity(0.9)))
-        }
-        .buttonStyle(.plain)
-    }
-
     // MARK: - Text
 
     private var headline: String {
@@ -152,27 +103,18 @@ struct ClaudeExpandedView: View {
         case .disconnected: return "No active session"
         case .idle: return "Ready"
         case .working: return viewModel.workingWord   // rotating gerund
-        case .needsApproval: return "Needs your approval"
-        case .needsQuestion: return "Has a question"
+        case .needsApproval, .needsQuestion: return "Has a question"
         case .waitingInput: return "Waiting for you"
         case .done: return "Done"
-        case .failed: return viewModel.claudeError.title
+        case .failed: return "Error"
         case .compacting: return "Compacting"
         }
     }
 
-    /// The detail line, live for a usage limit with a known reset time (a
-    /// once-a-second "Resets at 3:00 PM · in 42m" countdown) and a plain string
-    /// otherwise. The shared text modifiers are applied by the caller.
-    @ViewBuilder
+    /// The detail line under the headline. The shared text modifiers are
+    /// applied by the caller.
     private var detailLine: some View {
-        if viewModel.isUsageLimit, let reset = viewModel.claudeResetAt, reset > Date() {
-            TimelineView(.periodic(from: Date(), by: 1)) { context in
-                Text(NotchViewModel.resetCountdown(to: reset, now: context.date))
-            }
-        } else {
-            Text(detail)
-        }
+        Text(detail)
     }
 
     /// The secondary line under the headline — what's actually happening.
@@ -181,12 +123,11 @@ struct ClaudeExpandedView: View {
         case .working:
             // No tool running → Claude is reasoning, not acting.
             return actionText ?? "Thinking…"
-        case .needsApproval:
-            // Name the exact tool + target so the decision is informed
-            // ("Running npm", "Editing App.swift"); fall back when unknown.
-            return actionText ?? "Waiting for your go-ahead"
-        case .needsQuestion:
-            return "Answer to keep it moving"
+        case .needsApproval, .needsQuestion:
+            // For a live permission `ask`, name the exact tool + target so the
+            // decision is informed ("Running npm", "Editing App.swift"); fall
+            // back to the generic prompt for a plain question.
+            return actionText ?? "Answer to keep it moving"
         case .waitingInput:
             return "It's ready for your next prompt"
         case .done:
@@ -194,7 +135,7 @@ struct ClaudeExpandedView: View {
         case .idle:
             return "Session ready"
         case .failed:
-            return viewModel.claudeError.detail
+            return "The turn stopped on an error — resend to retry."
         case .compacting:
             return "Compacting the conversation to free up context"
         case .disconnected:

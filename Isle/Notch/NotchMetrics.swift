@@ -46,10 +46,11 @@ struct NotchMetrics {
     /// Height accounts for the dead band under the camera housing: the top
     /// `notchSize.height` points of the expanded panel sit behind the physical
     /// cutout and can't show anything, so the usable content area is that much
-    /// shorter than the panel. At 156 the usable content area is 114pt, which
-    /// is what the artwork size in ExpandedNotchView is sized against — the
-    /// two numbers move together.
-    static let expandedSize = CGSize(width: 520, height: 156)
+    /// shorter than the panel. At 146 the usable content area is ~104pt; the
+    /// 114pt artwork stays that size and takes up the shortfall by protruding
+    /// up into the housing band, which is safe above the album (no hardware
+    /// there — see the x-span note in ExpandedNotchView).
+    static let expandedSize = CGSize(width: 520, height: 146)
 
     /// Fraction of the collapsed width given to music when both music and a
     /// Claude Code activity are live. See the split-view rule in spec 3.1 —

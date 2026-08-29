@@ -47,6 +47,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !AppSettings.shared.hasChosenMode {
             openSetup()
         }
+
+        // Silent check-on-launch: an unreachable/unconfigured endpoint stays
+        // quiet. If it finds a newer build the user hasn't dismissed, prompt.
+        Task {
+            await Updater.shared.check(silent: true)
+            presentUpdatePromptIfNeeded()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -57,10 +64,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setUpStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(
-            systemSymbolName: "rectangle.topthird.inset.filled",
-            accessibilityDescription: "Isle"
-        )
+        item.button?.image = StatusBarIcon.image
+        item.button?.setAccessibilityLabel("Isle")
 
         let menu = NSMenu()
         menu.delegate = self   // keeps the alert checkbox in sync on open
@@ -92,6 +97,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(
             withTitle: "Setup…",
             action: #selector(openSetup),
+            keyEquivalent: ""
+        ).target = self
+        menu.addItem(
+            withTitle: "Check for Updates…",
+            action: #selector(checkForUpdates),
             keyEquivalent: ""
         ).target = self
         menu.addItem(.separator())
@@ -242,6 +252,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // MARK: - Updates
+
+    /// Manual "Check for Updates…": open Settings so the result (and any
+    /// download progress) is visible, then run a *non-silent* check — errors
+    /// surface here, unlike the quiet check-on-launch.
+    @objc private func checkForUpdates() {
+        openSettings()
+        Task { await Updater.shared.check() }
+    }
+
+    /// After the silent launch check, prompt only for a newer build the user
+    /// hasn't already dismissed. "Later" remembers this version so it won't
+    /// nag again until a newer one ships.
+    private func presentUpdatePromptIfNeeded() {
+        guard Updater.shared.shouldPrompt,
+              case let .available(version, notes) = Updater.shared.phase else { return }
+        let alert = NSAlert()
+        alert.messageText = "Update available — \(version)"
+        let trimmed = notes?.trimmingCharacters(in: .whitespacesAndNewlines)
+        alert.informativeText = (trimmed?.isEmpty == false)
+            ? trimmed!
+            : "A newer version of Isle is ready to install."
+        alert.addButton(withTitle: "Update & Restart")
+        alert.addButton(withTitle: "Later")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            Task { await Updater.shared.install() }
+        } else {
+            Updater.shared.dismiss()
+        }
     }
 }
 

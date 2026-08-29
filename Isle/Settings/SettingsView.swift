@@ -11,6 +11,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
+    @ObservedObject private var updater = Updater.shared
 
     @State private var hookInstalled = HookInstaller.isInstalled
     @State private var hookMessage: String?
@@ -26,9 +27,85 @@ struct SettingsView: View {
             if settings.effectiveMode.showsClaude {
                 claudeSection
             }
+
+            updatesSection
         }
         .formStyle(.grouped)
         .frame(width: 460, height: 440)
+    }
+
+    // MARK: - Updates
+
+    /// Mirrors Retermina's Version tab: the app version, a "Check for Updates"
+    /// button whose errors surface here (unlike the silent launch check), and
+    /// the live download/ready states off the shared `Updater` phase.
+    @ViewBuilder
+    private var updatesSection: some View {
+        Section("Updates") {
+            LabeledContent("Version", value: appVersion)
+
+            switch updater.phase {
+            case .downloading(let pct):
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Downloading update…").font(.caption)
+                    ProgressView(value: Double(pct), total: 100)
+                }
+            case .ready:
+                Text("Update installed — relaunching…")
+                    .font(.caption)
+                    .foregroundStyle(Color.accentColor)
+            default:
+                HStack(spacing: 10) {
+                    Button {
+                        Task { await updater.check() }
+                    } label: {
+                        if case .checking = updater.phase {
+                            Label("Checking…", systemImage: "arrow.triangle.2.circlepath")
+                        } else {
+                            Text("Check for Updates")
+                        }
+                    }
+                    .disabled(updaterIsBusy)
+
+                    if case let .available(version, _) = updater.phase {
+                        Button("Install \(version)") {
+                            Task { await updater.install() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+
+                if case .upToDate = updater.phase {
+                    Text("You're on the latest version.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if case let .available(_, notes) = updater.phase,
+                   let notes, !notes.isEmpty {
+                    Text(notes)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if case let .error(message) = updater.phase {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+    }
+
+    private var updaterIsBusy: Bool {
+        switch updater.phase {
+        case .checking, .downloading: return true
+        default: return false
+        }
     }
 
     // MARK: - Mode
@@ -61,7 +138,6 @@ struct SettingsView: View {
 
     private var musicSection: some View {
         Section("Music") {
-            Toggle("Show waveform when collapsed", isOn: $settings.showWaveform)
             Toggle("Show scrubber", isOn: $settings.showScrubber)
             Toggle("Show shuffle & repeat", isOn: $settings.showShuffleRepeat)
         }
@@ -112,7 +188,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Toggle("Expand notch for alerts", isOn: $settings.expandOnAlert)
                 Text(settings.expandOnAlert
-                     ? "Approvals, questions, and API errors pop the notch open."
+                     ? "Questions and errors pop the notch open."
                      : "Delivered minimized — the collapsed island shows the alert; hover to open.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
