@@ -45,7 +45,7 @@ struct ClaudeExpandedView: View {
 
                 Spacer().frame(height: 2)
 
-                Text(detail)
+                detailLine
                     .font(.system(size: 12.5, weight: .regular))
                     .foregroundStyle(.white.opacity(0.72))
                     .lineLimit(1)
@@ -158,6 +158,20 @@ struct ClaudeExpandedView: View {
         case .done: return "Done"
         case .failed: return viewModel.claudeError.title
         case .compacting: return "Compacting"
+        }
+    }
+
+    /// The detail line, live for a usage limit with a known reset time (a
+    /// once-a-second "Resets at 3:00 PM · in 42m" countdown) and a plain string
+    /// otherwise. The shared text modifiers are applied by the caller.
+    @ViewBuilder
+    private var detailLine: some View {
+        if viewModel.isUsageLimit, let reset = viewModel.claudeResetAt, reset > Date() {
+            TimelineView(.periodic(from: Date(), by: 1)) { context in
+                Text(NotchViewModel.resetCountdown(to: reset, now: context.date))
+            }
+        } else {
+            Text(detail)
         }
     }
 

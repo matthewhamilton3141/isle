@@ -63,6 +63,7 @@ struct SettingsView: View {
         Section("Music") {
             Toggle("Show waveform when collapsed", isOn: $settings.showWaveform)
             Toggle("Show scrubber", isOn: $settings.showScrubber)
+            Toggle("Show shuffle & repeat", isOn: $settings.showShuffleRepeat)
         }
     }
 

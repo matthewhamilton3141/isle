@@ -37,6 +37,7 @@ write_status() {
   "action": "$ACTION",
   "target": "$TARGET",
   "error_type": "$ERROR_TYPE",
+  "reset_at": "$RESET_AT",
   "request_id": "$2",
   "updated_at": "$ts"
 }
@@ -82,6 +83,7 @@ TARGET=""
 MESSAGE=""
 HOOK_EVENT=""
 ERROR_TYPE=""
+RESET_AT=""
 if [ ! -t 0 ]; then
   STDIN_JSON="$(cat)"
   HOOK_EVENT="$(printf '%s' "$STDIN_JSON" \
@@ -199,6 +201,15 @@ if [ "$CMD" = "fail" ] || [ "$CMD" = "notify" ]; then
     *usage*limit*|*limit*reached*|*quota*)
       STATE="error"; ERROR_TYPE="usage_limit" ;;
   esac
+fi
+
+# When the failure is the usage/subscription limit, try to recover the moment it
+# resets so the island can count down to it. Claude's limit message carries that
+# moment as a Unix epoch (e.g. "...reached|1719849600"), so pull the first 10–13
+# digit run out of the message. Absent one, RESET_AT stays empty and the app just
+# pins "Limit reached" with no timer.
+if [ "$ERROR_TYPE" = "usage_limit" ]; then
+  RESET_AT="$(printf '%s' "$MESSAGE" | grep -oE '[0-9]{10,13}' | head -1 || true)"
 fi
 
 # `end` (SessionEnd hook): only clear the island if the session that just ended

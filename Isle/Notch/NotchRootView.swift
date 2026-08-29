@@ -23,10 +23,10 @@ struct NotchRootView: View {
 
     private var state: NotchState { viewModel.state }
 
-    /// The notch's *live* width, sampled from the animating layout rather than
+    /// The notch's *live* frame, sampled from the animating layout rather than
     /// the discrete target `size`. Drives both the reveal of the expanded
-    /// content and the cutout hit-test, so neither jumps ahead of the frame.
-    @State private var liveWidth: CGFloat = 0
+    /// content and the hit-test, so neither jumps ahead of the frame.
+    @State private var liveSize: CGSize = .zero
 
     /// Horizontal padding inside the collapsed shape: 10 (root) + 4 (collapsed
     /// view), each side. Used to turn content widths into a shape width.
@@ -65,8 +65,8 @@ struct NotchRootView: View {
     private var expandProgress: CGFloat {
         let collapsed = viewModel.metrics?.windowSize(for: .collapsed).width ?? 0
         let expanded = NotchMetrics.expandedSize.width
-        guard expanded > collapsed, liveWidth > 0 else { return state.isExpanded ? 1 : 0 }
-        return min(max((liveWidth - collapsed) / (expanded - collapsed), 0), 1)
+        guard expanded > collapsed, liveSize.width > 0 else { return state.isExpanded ? 1 : 0 }
+        return min(max((liveSize.width - collapsed) / (expanded - collapsed), 0), 1)
     }
 
     /// The expanded content stays fully hidden until the notch is ~65% open,
@@ -166,12 +166,13 @@ struct NotchRootView: View {
         }
         .background(
             GeometryReader { proxy in
-                // Tracks only the *animating* width, for the content reveal.
-                // The clickable rect is computed deterministically (see
-                // `activeRect`) so it can never get stuck on a stale value.
+                // Tracks the *animating* frame, for the content reveal and the
+                // hit box (see `activeRect`). Unioned with the discrete target
+                // there, so a dropped final sample can never leave the region
+                // stuck smaller than the settled notch.
                 Color.clear
-                    .onAppear { liveWidth = proxy.size.width }
-                    .onChange(of: proxy.size.width) { _, w in liveWidth = w }
+                    .onAppear { liveSize = proxy.size }
+                    .onChange(of: proxy.size) { _, s in liveSize = s }
             }
         )
         .onAppear { onActiveRectChange?(activeRect) }
@@ -179,12 +180,24 @@ struct NotchRootView: View {
     }
 
     /// The notch's clickable region in the hosting view's coordinate space
-    /// (top-left origin). Derived from the current size + shift rather than
-    /// read back from a GeometryReader, so it collapses immediately with the
-    /// state and never leaves the expanded footprint swallowing clicks.
+    /// (top-left origin). The union of the discrete target frame and the live
+    /// animating frame, so the hit box *follows the animation* instead of
+    /// snapping: on open the target leads, so it's interactive at full size at
+    /// once; on close the live frame lags the target down, so the shrinking
+    /// panel stays hittable (and clicks pass through the area it has vacated)
+    /// right until it settles — rather than the region collapsing out from under
+    /// a panel that's still visibly on screen. The union also self-heals if a
+    /// final animation sample is dropped: the target keeps the settled size live.
     private var activeRect: CGRect {
+        let target = frameRect(for: size)
+        guard liveSize.width > 0, liveSize.height > 0 else { return target }
+        return target.union(frameRect(for: liveSize))
+    }
+
+    /// A centred notch frame of the given size, in the hosting view's top-left
+    /// space, carrying the collapsed shift that keeps the cutout under the camera.
+    private func frameRect(for s: CGSize) -> CGRect {
         let hostWidth = viewModel.metrics?.maximumFrame.width ?? NotchMetrics.expandedSize.width
-        let s = size
         return CGRect(
             x: (hostWidth - s.width) / 2 + collapsedShift,
             y: 0,

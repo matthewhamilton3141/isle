@@ -89,6 +89,11 @@ final class NotchViewModel: ObservableObject {
     /// notch can name the failure. Nil in every other state.
     @Published private(set) var claudeErrorType: String?
 
+    /// For a `usage_limit` failure, the moment the limit resets (when the helper
+    /// could recover it). Drives the pinned island's reset clock and the expanded
+    /// countdown; the display eases back to idle at this moment. Nil when unknown.
+    @Published private(set) var claudeResetAt: Date?
+
     /// When the last Claude status change arrived, for the "… ago" line in the
     /// Claude expanded view. `nil` when disconnected.
     @Published private(set) var claudeUpdatedAt: Date?
@@ -189,6 +194,9 @@ final class NotchViewModel: ObservableObject {
     /// Show the seekable scrubber in the expanded panel (Settings).
     var showScrubber: Bool { settings.showScrubber }
 
+    /// Show the shuffle/repeat toggles in the expanded panel (Settings).
+    var showShuffleRepeat: Bool { settings.showShuffleRepeat }
+
     // The two now-playing sources, kept separately and merged in
     // `recomputeSource`. The adapter (MediaRemote) is preferred when Spotify
     // owns the system session — it pushes updates and ships artwork as bytes.
@@ -204,6 +212,8 @@ final class NotchViewModel: ObservableObject {
     // the scrubber to the pre-seek position, which reads as lag.
     private var pendingPlayState: Bool?
     private var pendingSeekTarget: TimeInterval?
+    private var pendingShuffle: Bool?
+    private var pendingRepeat: RepeatMode?
     private var pendingCommandDeadline: Date = .distantPast
     private static let commandGrace: TimeInterval = 1.5
 
@@ -313,6 +323,7 @@ final class NotchViewModel: ObservableObject {
             claudeAction = nil
             claudeTarget = nil
             claudeErrorType = nil
+            claudeResetAt = nil
             claudeUpdatedAt = nil
         }
     }
@@ -351,6 +362,7 @@ final class NotchViewModel: ObservableObject {
         claudeAction = status.action
         claudeTarget = status.target
         claudeErrorType = status.errorType
+        claudeResetAt = status.resetAt
         claudeUpdatedAt = status.state == .disconnected ? nil : Date()
 
         // Rotate the "thinking" word only while actually working.
@@ -366,7 +378,18 @@ final class NotchViewModel: ObservableObject {
         let revertDelay: TimeInterval
         switch status.state {
         case .done: revertDelay = settings.doneToastSeconds
-        case .failed: revertDelay = max(settings.doneToastSeconds, 6)
+        case .failed:
+            if status.errorType == "usage_limit" {
+                // The usage/subscription limit is pinned, not a transient toast:
+                // it stays on the island until it resets. When the reset moment is
+                // known, ease back to idle exactly then (clearing at once if it's
+                // already past); when it isn't, leave it pinned with no timer —
+                // the next real session activity replaces it.
+                guard let reset = status.resetAt else { return }
+                revertDelay = max(0, reset.timeIntervalSinceNow)
+            } else {
+                revertDelay = max(settings.doneToastSeconds, 6)
+            }
         case .needsQuestion:
             // A question is answered in the terminal, and nothing clears it if
             // you decline or ignore it (Claude Code fires no hook for a declined
@@ -410,6 +433,12 @@ final class NotchViewModel: ObservableObject {
             effective.timestamp = poll.timestamp
             effective.isPlaying = poll.isPlaying
             effective.playbackRate = poll.playbackRate
+            // Shuffle/repeat come from the poll too: the MediaRemote adapter
+            // doesn't report them for Spotify (they're absent from its payload),
+            // so without this the toggles would read permanently off and never
+            // light up even when Spotify has them on.
+            effective.isShuffled = poll.isShuffled
+            effective.repeatMode = poll.repeatMode
         }
 
         holdOptimisticTransport(&effective)
@@ -441,6 +470,22 @@ final class NotchViewModel: ObservableObject {
             } else {
                 model.reportedElapsed = target
                 model.timestamp = now
+            }
+        }
+
+        if let want = pendingShuffle {
+            if model.isShuffled == want || expired {
+                pendingShuffle = nil            // confirmed, or gave up
+            } else {
+                model.isShuffled = want
+            }
+        }
+
+        if let want = pendingRepeat {
+            if model.repeatMode == want || expired {
+                pendingRepeat = nil
+            } else {
+                model.repeatMode = want
             }
         }
     }
@@ -530,11 +575,20 @@ final class NotchViewModel: ObservableObject {
     /// the notch would flap open on every tool call. Suppressed entirely when
     /// the active mode doesn't show Claude.
     var hasLiveActivity: Bool {
-        // Approvals/questions interrupt; a failure also pops the panel so the
-        // stopped turn is noticed (it auto-reverts to idle — see
-        // applyClaudeStatus).
-        settings.effectiveMode.showsClaude
-            && (claudeState.isAttention || claudeState == .failed)
+        // Approvals/questions interrupt; a transient failure also pops the panel
+        // so the stopped turn is noticed (it auto-reverts to idle — see
+        // applyClaudeStatus). The usage limit is the exception: it's pinned
+        // ambient info, shown in the island but never taking over the panel, so
+        // it doesn't sit maximized for however long the limit lasts.
+        guard settings.effectiveMode.showsClaude else { return false }
+        if claudeState.isAttention { return true }
+        return claudeState == .failed && !isUsageLimit
+    }
+
+    /// The current failure is the Claude usage/subscription limit (pinned, resets
+    /// on a schedule) rather than a transient API error.
+    var isUsageLimit: Bool {
+        claudeState == .failed && claudeErrorType == "usage_limit"
     }
 
     /// A live activity takes over the panel only when the user hasn't chosen to
@@ -782,10 +836,44 @@ final class NotchViewModel: ObservableObject {
         case .waitingInput: return "Waiting"
         case .done: return "Done"
         case .idle: return "Ready"
-        case .failed: return claudeError.short
+        case .failed:
+            // The usage limit is pinned, so pair it with the reset clock when we
+            // have one — a fixed absolute time, so it needs no live ticking here
+            // (the expanded panel shows the live "in 42m" countdown).
+            if isUsageLimit, let reset = claudeResetAt {
+                return "Limit · \(Self.clockString(reset))"
+            }
+            return claudeError.short
         case .compacting: return "Compacting"
         case .disconnected: return ""
         }
+    }
+
+    // MARK: - Usage-limit formatting
+
+    private static let resetClockFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.setLocalizedDateFormatFromTemplate("hmma")
+        return f
+    }()
+
+    /// The reset moment as a short local clock time, e.g. "3:00 PM".
+    static func clockString(_ date: Date) -> String {
+        resetClockFormatter.string(from: date)
+    }
+
+    /// The expanded panel's live reset line — "Resets at 3:00 PM · in 42m",
+    /// recomputed each tick from `now`. Collapses to "…in 8s" in the last minute.
+    static func resetCountdown(to reset: Date, now: Date) -> String {
+        let remaining = max(0, Int(reset.timeIntervalSince(now)))
+        let clock = clockString(reset)
+        if remaining >= 3600 {
+            return "Resets at \(clock) · in \(remaining / 3600)h \((remaining % 3600) / 60)m"
+        }
+        if remaining >= 60 {
+            return "Resets at \(clock) · in \(remaining / 60)m"
+        }
+        return "Resets at \(clock) · in \(remaining)s"
     }
 
     /// Human copy for an API failure, chosen from `claudeErrorType`. One place
@@ -842,6 +930,11 @@ final class NotchViewModel: ObservableObject {
     var canControlPlayback: Bool { media.hasTrack }
     var canSeek: Bool { media.hasTrack && media.duration > 0 }
 
+    /// Shuffle/repeat state for the transport buttons, read from the merged
+    /// model so the optimistic hold in `holdOptimisticTransport` shows through.
+    var isShuffled: Bool { media.isShuffled }
+    var repeatMode: RepeatMode { media.repeatMode }
+
     func togglePlayPause() {
         spotify.playPause()
         // Optimistic: flip locally so the icon and scrubber react at once
@@ -864,6 +957,30 @@ final class NotchViewModel: ObservableObject {
 
     func nextTrack() { spotify.nextTrack() }
     func previousTrack() { spotify.previousTrack() }
+
+    /// Toggle shuffle, optimistically, then hold it until a source confirms so a
+    /// stale 1 Hz poll can't flicker it back before Spotify processes the flip.
+    func toggleShuffle() {
+        guard canControlPlayback else { return }
+        spotify.toggleShuffle()
+        let want = !media.isShuffled
+        media.isShuffled = want
+        lastApplied = media
+        pendingShuffle = want
+        pendingCommandDeadline = Date().addingTimeInterval(Self.commandGrace)
+    }
+
+    /// Toggle repeat, optimistically. Spotify's AppleScript has no repeat-one, so
+    /// this is a boolean off↔all — matching what the poll can read back.
+    func toggleRepeat() {
+        guard canControlPlayback else { return }
+        spotify.toggleRepeat()
+        let want: RepeatMode = media.repeatMode == .off ? .all : .off
+        media.repeatMode = want
+        lastApplied = media
+        pendingRepeat = want
+        pendingCommandDeadline = Date().addingTimeInterval(Self.commandGrace)
+    }
 
     /// Commits a scrub. Called on drag end, not continuously — seeking on
     /// every drag sample makes the source app stutter.
