@@ -20,7 +20,6 @@ final class AppSettings: ObservableObject {
     private let defaults: UserDefaults
     private static let modeKey = "isle.mode"
     private static let tabKey = "isle.lastTab"
-    private static let showWaveformKey = "isle.showWaveform"
     private static let showScrubberKey = "isle.showScrubber"
     private static let showShuffleRepeatKey = "isle.showShuffleRepeat"
     private static let doneToastKey = "isle.doneToastSeconds"
@@ -49,12 +48,6 @@ final class AppSettings: ObservableObject {
     }
 
     // MARK: - Media controls (spec 3.4)
-
-    /// Show the animated waveform in the collapsed notch. Off falls back to
-    /// plain album art with no equalizer.
-    @Published var showWaveform: Bool {
-        didSet { defaults.set(showWaveform, forKey: Self.showWaveformKey) }
-    }
 
     /// Show the seekable scrubber in the expanded panel.
     @Published var showScrubber: Bool {
@@ -108,7 +101,6 @@ final class AppSettings: ObservableObject {
             mode = IsleMode(rawValue: raw)
         }
         lastTab = IsleTab(rawValue: defaults.string(forKey: Self.tabKey) ?? "") ?? .music
-        showWaveform = defaults.object(forKey: Self.showWaveformKey) as? Bool ?? true
         showScrubber = defaults.object(forKey: Self.showScrubberKey) as? Bool ?? true
         showShuffleRepeat = defaults.object(forKey: Self.showShuffleRepeatKey) as? Bool ?? true
         doneToastSeconds = defaults.object(forKey: Self.doneToastKey) as? Double ?? 4

@@ -96,8 +96,10 @@ struct MarkerDesign: Codable, Equatable {
                                 animation: .solid, speed: 2.0, intensity: 1.0, ghost: true)
 
         case .needsApproval:
-            return MarkerDesign(dots: exclamation, colorMode: .fixed, fixedColorHex: Hex.amber,
-                                animation: .pulse, speed: 5.0, intensity: 1.0, ghost: true)
+            // Isle no longer distinguishes approvals — they surface as questions,
+            // so this mirrors needsQuestion (a blue "?") for any residual use.
+            return MarkerDesign(dots: question, colorMode: .fixed, fixedColorHex: Hex.blue,
+                                animation: .pulse, speed: 3.5, intensity: 1.0, ghost: true)
         case .needsQuestion:
             return MarkerDesign(dots: question, colorMode: .fixed, fixedColorHex: Hex.blue,
                                 animation: .pulse, speed: 3.5, intensity: 1.0, ghost: true)

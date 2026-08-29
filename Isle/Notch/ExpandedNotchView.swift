@@ -69,7 +69,7 @@ struct ExpandedNotchView: View {
                 // camera cutout starts at x 167 — there is no hardware above
                 // the album. `offset` rather than negative padding so the
                 // text column's own position is left undisturbed.
-                .offset(y: -10)
+                .offset(y: -11)
 
             // Spacers rather than fixed gaps: the row's height is driven by
             // the artwork, and letting the text/scrubber/controls distribute
@@ -143,7 +143,7 @@ struct ExpandedNotchView: View {
                 }
             }
         }
-        // Sized to fill the usable content height (panel 170 minus the
+        // Sized to fill the usable content height (panel 146 minus the
         // reserved housing band and vertical padding). Raising this without
         // also raising NotchMetrics.expandedSize will clip it.
         .frame(width: 114, height: 114)
