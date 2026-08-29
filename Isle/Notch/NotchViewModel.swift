@@ -194,6 +194,9 @@ final class NotchViewModel: ObservableObject {
     /// Show the seekable scrubber in the expanded panel (Settings).
     var showScrubber: Bool { settings.showScrubber }
 
+    /// Show the shuffle/repeat toggles in the expanded panel (Settings).
+    var showShuffleRepeat: Bool { settings.showShuffleRepeat }
+
     // The two now-playing sources, kept separately and merged in
     // `recomputeSource`. The adapter (MediaRemote) is preferred when Spotify
     // owns the system session — it pushes updates and ships artwork as bytes.
@@ -209,6 +212,8 @@ final class NotchViewModel: ObservableObject {
     // the scrubber to the pre-seek position, which reads as lag.
     private var pendingPlayState: Bool?
     private var pendingSeekTarget: TimeInterval?
+    private var pendingShuffle: Bool?
+    private var pendingRepeat: RepeatMode?
     private var pendingCommandDeadline: Date = .distantPast
     private static let commandGrace: TimeInterval = 1.5
 
@@ -428,6 +433,12 @@ final class NotchViewModel: ObservableObject {
             effective.timestamp = poll.timestamp
             effective.isPlaying = poll.isPlaying
             effective.playbackRate = poll.playbackRate
+            // Shuffle/repeat come from the poll too: the MediaRemote adapter
+            // doesn't report them for Spotify (they're absent from its payload),
+            // so without this the toggles would read permanently off and never
+            // light up even when Spotify has them on.
+            effective.isShuffled = poll.isShuffled
+            effective.repeatMode = poll.repeatMode
         }
 
         holdOptimisticTransport(&effective)
@@ -459,6 +470,22 @@ final class NotchViewModel: ObservableObject {
             } else {
                 model.reportedElapsed = target
                 model.timestamp = now
+            }
+        }
+
+        if let want = pendingShuffle {
+            if model.isShuffled == want || expired {
+                pendingShuffle = nil            // confirmed, or gave up
+            } else {
+                model.isShuffled = want
+            }
+        }
+
+        if let want = pendingRepeat {
+            if model.repeatMode == want || expired {
+                pendingRepeat = nil
+            } else {
+                model.repeatMode = want
             }
         }
     }
@@ -903,6 +930,11 @@ final class NotchViewModel: ObservableObject {
     var canControlPlayback: Bool { media.hasTrack }
     var canSeek: Bool { media.hasTrack && media.duration > 0 }
 
+    /// Shuffle/repeat state for the transport buttons, read from the merged
+    /// model so the optimistic hold in `holdOptimisticTransport` shows through.
+    var isShuffled: Bool { media.isShuffled }
+    var repeatMode: RepeatMode { media.repeatMode }
+
     func togglePlayPause() {
         spotify.playPause()
         // Optimistic: flip locally so the icon and scrubber react at once
@@ -925,6 +957,30 @@ final class NotchViewModel: ObservableObject {
 
     func nextTrack() { spotify.nextTrack() }
     func previousTrack() { spotify.previousTrack() }
+
+    /// Toggle shuffle, optimistically, then hold it until a source confirms so a
+    /// stale 1 Hz poll can't flicker it back before Spotify processes the flip.
+    func toggleShuffle() {
+        guard canControlPlayback else { return }
+        spotify.toggleShuffle()
+        let want = !media.isShuffled
+        media.isShuffled = want
+        lastApplied = media
+        pendingShuffle = want
+        pendingCommandDeadline = Date().addingTimeInterval(Self.commandGrace)
+    }
+
+    /// Toggle repeat, optimistically. Spotify's AppleScript has no repeat-one, so
+    /// this is a boolean off↔all — matching what the poll can read back.
+    func toggleRepeat() {
+        guard canControlPlayback else { return }
+        spotify.toggleRepeat()
+        let want: RepeatMode = media.repeatMode == .off ? .all : .off
+        media.repeatMode = want
+        lastApplied = media
+        pendingRepeat = want
+        pendingCommandDeadline = Date().addingTimeInterval(Self.commandGrace)
+    }
 
     /// Commits a scrub. Called on drag end, not continuously — seeking on
     /// every drag sample makes the source app stutter.

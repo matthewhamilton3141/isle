@@ -267,11 +267,19 @@ struct ExpandedNotchView: View {
     // MARK: - Controls
 
     private var controls: some View {
-        // Just the three transport keys, centred. Shuffle and repeat were
-        // dropped: Spotify only exposes them over AppleScript, they never
-        // worked cleanly, and they weren't worth the automation friction.
-        HStack(spacing: 18) {
+        // Shuffle · prev · play/pause · next · repeat, centred. Shuffle and
+        // repeat toggle over Spotify's AppleScript; repeat is boolean there
+        // (no repeat-one), so it lights for .all and clears for .off. The two
+        // toggles show white when on and grey when off; the transport keys
+        // stay white throughout (they aren't stateful).
+        HStack(spacing: 16) {
             Spacer(minLength: 0)
+
+            if viewModel.showShuffleRepeat {
+                controlButton("shuffle", size: 15, active: viewModel.isShuffled) {
+                    viewModel.toggleShuffle()
+                }
+            }
 
             controlButton("backward.fill", size: 21) { viewModel.previousTrack() }
 
@@ -284,6 +292,16 @@ struct ExpandedNotchView: View {
 
             controlButton("forward.fill", size: 21) { viewModel.nextTrack() }
 
+            if viewModel.showShuffleRepeat {
+                controlButton(
+                    viewModel.repeatMode == .one ? "repeat.1" : "repeat",
+                    size: 15,
+                    active: viewModel.repeatMode != .off
+                ) {
+                    viewModel.toggleRepeat()
+                }
+            }
+
             Spacer(minLength: 0)
         }
         .disabled(!viewModel.canControlPlayback)
@@ -293,14 +311,19 @@ struct ExpandedNotchView: View {
     private func controlButton(
         _ symbol: String,
         size: CGFloat = 13,
+        active: Bool = true,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: size, weight: .medium))
-                .foregroundStyle(.white)
+                // White when on, grey when off — so the shuffle/repeat toggles
+                // read their state at a glance. Transport keys default `active`
+                // to true, so they stay white.
+                .foregroundStyle(active ? .white : .white.opacity(0.35))
                 .frame(width: size + 7, height: size + 7)
                 .contentShape(Rectangle())
+                .animation(.easeInOut(duration: 0.15), value: active)
         }
         .buttonStyle(.plain)
     }

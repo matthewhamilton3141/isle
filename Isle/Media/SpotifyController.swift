@@ -67,6 +67,13 @@ final class SpotifyController {
     func previousTrack() { run("previous track") }
     func seek(to seconds: TimeInterval) { run("set player position to \(max(0, seconds))") }
 
+    /// Shuffle and repeat are both plain booleans in Spotify's AppleScript — it
+    /// exposes no repeat-one, so repeat is only off↔on (surfaced as .off/.all,
+    /// see `emit`). We flip the value in-place with `not` rather than passing a
+    /// target, so a stale local read can't fight what Spotify actually has.
+    func toggleShuffle() { run("set shuffling to not shuffling") }
+    func toggleRepeat() { run("set repeating to not repeating") }
+
     private func run(_ statement: String) {
         let source = "tell application \"Spotify\" to \(statement)"
         Self.queue.async {

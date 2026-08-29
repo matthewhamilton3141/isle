@@ -22,6 +22,7 @@ final class AppSettings: ObservableObject {
     private static let tabKey = "isle.lastTab"
     private static let showWaveformKey = "isle.showWaveform"
     private static let showScrubberKey = "isle.showScrubber"
+    private static let showShuffleRepeatKey = "isle.showShuffleRepeat"
     private static let doneToastKey = "isle.doneToastSeconds"
     private static let expandOnAlertKey = "isle.expandOnAlert"
     private static let dismissAlertPanelKey = "isle.dismissAlertPanel"
@@ -58,6 +59,12 @@ final class AppSettings: ObservableObject {
     /// Show the seekable scrubber in the expanded panel.
     @Published var showScrubber: Bool {
         didSet { defaults.set(showScrubber, forKey: Self.showScrubberKey) }
+    }
+
+    /// Show the shuffle and repeat toggles alongside the transport keys in the
+    /// expanded panel. Off leaves just prev / play-pause / next.
+    @Published var showShuffleRepeat: Bool {
+        didSet { defaults.set(showShuffleRepeat, forKey: Self.showShuffleRepeatKey) }
     }
 
     // MARK: - Claude
@@ -103,6 +110,7 @@ final class AppSettings: ObservableObject {
         lastTab = IsleTab(rawValue: defaults.string(forKey: Self.tabKey) ?? "") ?? .music
         showWaveform = defaults.object(forKey: Self.showWaveformKey) as? Bool ?? true
         showScrubber = defaults.object(forKey: Self.showScrubberKey) as? Bool ?? true
+        showShuffleRepeat = defaults.object(forKey: Self.showShuffleRepeatKey) as? Bool ?? true
         doneToastSeconds = defaults.object(forKey: Self.doneToastKey) as? Double ?? 4
         expandOnAlert = defaults.object(forKey: Self.expandOnAlertKey) as? Bool ?? true
         dismissAlertPanel = defaults.object(forKey: Self.dismissAlertPanelKey) as? Bool ?? true
