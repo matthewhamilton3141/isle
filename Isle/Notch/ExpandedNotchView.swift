@@ -23,6 +23,24 @@ struct ExpandedNotchView: View {
             // switch to Claude too, which doesn't go through the tab button's
             // own animation.
             .animation(.easeInOut(duration: 0.28), value: viewModel.expandedTab)
+            // The waveform is pinned to ONE fixed spot in the panel and drawn
+            // outside the tab switch, so it holds the exact same real position
+            // on Music and Claude instead of re-aligning to each tab's text —
+            // switching tabs no longer makes it hop. Gated on a live track;
+            // non-interactive so it never swallows a seek or dismiss tap.
+            .overlay(alignment: .topTrailing) {
+                if media.hasTrack {
+                    EqualizerView(
+                        palette: palette,
+                        isPlaying: media.isPlaying,
+                        levels: viewModel.audioLevels
+                    )
+                    .frame(width: 30, height: 24)
+                    .padding(.top, 10)
+                    .padding(.trailing, 4)
+                    .allowsHitTesting(false)
+                }
+            }
     }
 
     @ViewBuilder
@@ -65,7 +83,10 @@ struct ExpandedNotchView: View {
                     // and the controls down — the group drifted apart instead
                     // of staying together and centring.
                     Spacer(minLength: 0)
+                    // Trailing inset keeps the title/artist clear of the fixed
+                    // waveform pinned at the panel's top-right (see body).
                     trackLabels
+                        .padding(.trailing, 36)
                     if viewModel.showScrubber {
                         Spacer().frame(height: 6)
                         scrubber
