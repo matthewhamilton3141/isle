@@ -165,17 +165,18 @@ final class NotchWindowController {
             width: rect.width,
             height: rect.height
         )
+        // Keep clicks routed to Isle a hair before the pointer reaches the
+        // visible notch (the pad), so the first hover-in is never missed.
         let hot = screenRect.insetBy(dx: -6, dy: -6)
-        let inside = hot.contains(NSEvent.mouseLocation)
-        window.ignoresMouseEvents = !inside
+        window.ignoresMouseEvents = !hot.contains(NSEvent.mouseLocation)
 
-        // Drive expansion straight off the pointer rather than waiting for the
-        // panel's SwiftUI `.onHover`: that only fires once the window is already
-        // in the event path (i.e. after this flip), so a quick move onto the
-        // notch could land a frame before hover registered and feel dead. The
-        // collapse side stays with the generous frame backstop in
-        // `observePointer`, giving open-small / stay-open-large hysteresis.
-        if inside { viewModel.setHovering(true) }
+        // Expansion, though, only arms when the pointer is genuinely *over* the
+        // drawn notch — no outward pad — so merely passing near it (the earlier
+        // behaviour, which popped the panel before you'd reached it) doesn't
+        // count. Driven straight off the pointer for immediacy; the collapse side
+        // stays with the generous frame backstop in `observePointer`, giving
+        // open-small / stay-open-large hysteresis.
+        if screenRect.contains(NSEvent.mouseLocation) { viewModel.setHovering(true) }
     }
 
     // MARK: - Screen changes

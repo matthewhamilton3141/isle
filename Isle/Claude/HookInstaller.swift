@@ -66,8 +66,9 @@ enum HookInstaller {
     /// Bumped whenever the embedded script or the hook set changes, so an
     /// install from an older Isle refreshes itself on next launch instead of
     /// running a stale helper. See `refreshIfNeeded`. (v2: added the SessionEnd
-    /// hook / `end` verb so a closed session clears the island.)
-    private static let currentVersion = 2
+    /// hook / `end` verb so a closed session clears the island. v3: emit
+    /// `reset_at` for a usage limit so the island can count down to the reset.)
+    private static let currentVersion = 3
     private static let versionKey = "HookInstaller.installedVersion"
 
     private static var home: URL {
@@ -256,6 +257,7 @@ enum HookInstaller {
       "action": "$ACTION",
       "target": "$TARGET",
       "error_type": "$ERROR_TYPE",
+      "reset_at": "$RESET_AT",
       "request_id": "$2",
       "updated_at": "$ts"
     }
@@ -301,6 +303,7 @@ enum HookInstaller {
     MESSAGE=""
     HOOK_EVENT=""
     ERROR_TYPE=""
+    RESET_AT=""
     if [ ! -t 0 ]; then
       STDIN_JSON="$(cat)"
       HOOK_EVENT="$(printf '%s' "$STDIN_JSON" \
@@ -418,6 +421,15 @@ enum HookInstaller {
         *usage*limit*|*limit*reached*|*quota*)
           STATE="error"; ERROR_TYPE="usage_limit" ;;
       esac
+    fi
+
+    # When the failure is the usage/subscription limit, try to recover the moment
+    # it resets so the island can count down to it. Claude's limit message carries
+    # that moment as a Unix epoch (e.g. "...reached|1719849600"), so pull the first
+    # 10–13 digit run out of the message. Absent one, RESET_AT stays empty and the
+    # app just pins "Limit reached" with no timer.
+    if [ "$ERROR_TYPE" = "usage_limit" ]; then
+      RESET_AT="$(printf '%s' "$MESSAGE" | grep -oE '[0-9]{10,13}' | head -1 || true)"
     fi
 
     # `end` (SessionEnd hook): only clear the island if the session that just

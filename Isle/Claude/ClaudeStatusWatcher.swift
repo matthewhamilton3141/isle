@@ -29,6 +29,10 @@ struct ClaudeStatus: Equatable {
     /// For `.failed`, the API `error_type` from `StopFailure` (rate_limit,
     /// overloaded, server_error, …). Nil otherwise.
     var errorType: String?
+    /// For a `usage_limit` failure, the moment the limit resets, recovered from
+    /// the limit message's embedded Unix epoch. Nil when the message carried no
+    /// reset time (the island then pins "Limit reached" with no countdown).
+    var resetAt: Date?
     /// For a `.needsApproval` raised by the `ask` (PermissionRequest) hook, the
     /// id of the blocked request. The notch writes this back in its decision
     /// file so the hook only honours a click meant for *this* call. Nil when the
@@ -174,6 +178,7 @@ final class ClaudeStatusWatcher {
             action: payload.action.flatMap { $0.isEmpty ? nil : $0 },
             target: payload.target.flatMap { $0.isEmpty ? nil : $0 },
             errorType: payload.error_type.flatMap { $0.isEmpty ? nil : $0 },
+            resetAt: payload.resetDate,
             requestId: payload.request_id.flatMap { $0.isEmpty ? nil : $0 }
         )
     }
@@ -192,7 +197,17 @@ private struct StatusPayload: Decodable {
     let action: String?
     let target: String?
     let error_type: String?
+    let reset_at: String?
     let request_id: String?
+
+    /// The usage-limit reset moment, parsed from the epoch string the helper
+    /// writes. Accepts seconds (10-digit) or milliseconds (13-digit); anything
+    /// else — empty, non-numeric, older helper with no field — is nil.
+    var resetDate: Date? {
+        guard let raw = reset_at, let value = Double(raw), value > 0 else { return nil }
+        let seconds = value > 1_000_000_000_000 ? value / 1000 : value
+        return Date(timeIntervalSince1970: seconds)
+    }
 
     var claudeState: ClaudeCodeState {
         switch state {

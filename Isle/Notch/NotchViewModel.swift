@@ -89,6 +89,11 @@ final class NotchViewModel: ObservableObject {
     /// notch can name the failure. Nil in every other state.
     @Published private(set) var claudeErrorType: String?
 
+    /// For a `usage_limit` failure, the moment the limit resets (when the helper
+    /// could recover it). Drives the pinned island's reset clock and the expanded
+    /// countdown; the display eases back to idle at this moment. Nil when unknown.
+    @Published private(set) var claudeResetAt: Date?
+
     /// When the last Claude status change arrived, for the "… ago" line in the
     /// Claude expanded view. `nil` when disconnected.
     @Published private(set) var claudeUpdatedAt: Date?
@@ -313,6 +318,7 @@ final class NotchViewModel: ObservableObject {
             claudeAction = nil
             claudeTarget = nil
             claudeErrorType = nil
+            claudeResetAt = nil
             claudeUpdatedAt = nil
         }
     }
@@ -351,6 +357,7 @@ final class NotchViewModel: ObservableObject {
         claudeAction = status.action
         claudeTarget = status.target
         claudeErrorType = status.errorType
+        claudeResetAt = status.resetAt
         claudeUpdatedAt = status.state == .disconnected ? nil : Date()
 
         // Rotate the "thinking" word only while actually working.
@@ -366,7 +373,18 @@ final class NotchViewModel: ObservableObject {
         let revertDelay: TimeInterval
         switch status.state {
         case .done: revertDelay = settings.doneToastSeconds
-        case .failed: revertDelay = max(settings.doneToastSeconds, 6)
+        case .failed:
+            if status.errorType == "usage_limit" {
+                // The usage/subscription limit is pinned, not a transient toast:
+                // it stays on the island until it resets. When the reset moment is
+                // known, ease back to idle exactly then (clearing at once if it's
+                // already past); when it isn't, leave it pinned with no timer —
+                // the next real session activity replaces it.
+                guard let reset = status.resetAt else { return }
+                revertDelay = max(0, reset.timeIntervalSinceNow)
+            } else {
+                revertDelay = max(settings.doneToastSeconds, 6)
+            }
         case .needsQuestion:
             // A question is answered in the terminal, and nothing clears it if
             // you decline or ignore it (Claude Code fires no hook for a declined
@@ -530,11 +548,20 @@ final class NotchViewModel: ObservableObject {
     /// the notch would flap open on every tool call. Suppressed entirely when
     /// the active mode doesn't show Claude.
     var hasLiveActivity: Bool {
-        // Approvals/questions interrupt; a failure also pops the panel so the
-        // stopped turn is noticed (it auto-reverts to idle — see
-        // applyClaudeStatus).
-        settings.effectiveMode.showsClaude
-            && (claudeState.isAttention || claudeState == .failed)
+        // Approvals/questions interrupt; a transient failure also pops the panel
+        // so the stopped turn is noticed (it auto-reverts to idle — see
+        // applyClaudeStatus). The usage limit is the exception: it's pinned
+        // ambient info, shown in the island but never taking over the panel, so
+        // it doesn't sit maximized for however long the limit lasts.
+        guard settings.effectiveMode.showsClaude else { return false }
+        if claudeState.isAttention { return true }
+        return claudeState == .failed && !isUsageLimit
+    }
+
+    /// The current failure is the Claude usage/subscription limit (pinned, resets
+    /// on a schedule) rather than a transient API error.
+    var isUsageLimit: Bool {
+        claudeState == .failed && claudeErrorType == "usage_limit"
     }
 
     /// A live activity takes over the panel only when the user hasn't chosen to
@@ -782,10 +809,44 @@ final class NotchViewModel: ObservableObject {
         case .waitingInput: return "Waiting"
         case .done: return "Done"
         case .idle: return "Ready"
-        case .failed: return claudeError.short
+        case .failed:
+            // The usage limit is pinned, so pair it with the reset clock when we
+            // have one — a fixed absolute time, so it needs no live ticking here
+            // (the expanded panel shows the live "in 42m" countdown).
+            if isUsageLimit, let reset = claudeResetAt {
+                return "Limit · \(Self.clockString(reset))"
+            }
+            return claudeError.short
         case .compacting: return "Compacting"
         case .disconnected: return ""
         }
+    }
+
+    // MARK: - Usage-limit formatting
+
+    private static let resetClockFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.setLocalizedDateFormatFromTemplate("hmma")
+        return f
+    }()
+
+    /// The reset moment as a short local clock time, e.g. "3:00 PM".
+    static func clockString(_ date: Date) -> String {
+        resetClockFormatter.string(from: date)
+    }
+
+    /// The expanded panel's live reset line — "Resets at 3:00 PM · in 42m",
+    /// recomputed each tick from `now`. Collapses to "…in 8s" in the last minute.
+    static func resetCountdown(to reset: Date, now: Date) -> String {
+        let remaining = max(0, Int(reset.timeIntervalSince(now)))
+        let clock = clockString(reset)
+        if remaining >= 3600 {
+            return "Resets at \(clock) · in \(remaining / 3600)h \((remaining % 3600) / 60)m"
+        }
+        if remaining >= 60 {
+            return "Resets at \(clock) · in \(remaining / 60)m"
+        }
+        return "Resets at \(clock) · in \(remaining)s"
     }
 
     /// Human copy for an API failure, chosen from `claudeErrorType`. One place
