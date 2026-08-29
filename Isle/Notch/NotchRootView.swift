@@ -80,22 +80,6 @@ struct NotchRootView: View {
         ArtworkColors.palette(from: viewModel.media.artwork)
     }
 
-    /// The expanded panel is currently showing the Claude tab.
-    private var showingClaude: Bool {
-        viewModel.expandedTab == .claude
-    }
-
-    /// The current Claude marker's colour — its fixed hue, or the artwork accent
-    /// for palette-tinted markers — so the wash matches the dots.
-    private var claudeMarkerColor: Color {
-        let design = MarkerStore.shared.design(for: viewModel.claudeMarkerKind)
-        return design.colorMode == .fixed ? Color(hex: design.fixedColorHex) : palette.accent
-    }
-
-    // The ambient wash colours: the Claude marker on its tab, else the artwork.
-    private var washPrimary: Color { showingClaude ? claudeMarkerColor : palette.primary }
-    private var washSecondary: Color { showingClaude ? claudeMarkerColor : palette.secondary }
-
     /// Height of the physical camera housing. Content in the expanded panel
     /// has to start below this. Falls back to the common 32pt housing if
     /// metrics aren't available yet, which is safer than falling back to 0 —
@@ -127,38 +111,9 @@ struct NotchRootView: View {
                 topCornerRadius: state.isExpanded ? 12 : 8,
                 bottomCornerRadius: state.isExpanded ? 22 : 12
             )
+            // Flat black on both tabs — the ambient artwork/Claude wash was
+            // removed, so nothing tints the panel behind the content.
             .fill(.black)
-            // A single directional wash from one artwork colour to the other,
-            // travelling upward: secondary at the top, primary pooling at the
-            // bottom. Both ends are real colours rather than fading to clear,
-            // so the ramp reads as one continuous direction instead of
-            // brightening toward the middle and falling away again.
-            .overlay {
-                NotchShape(
-                    topCornerRadius: state.isExpanded ? 12 : 8,
-                    bottomCornerRadius: state.isExpanded ? 22 : 12
-                )
-                .fill(
-                    LinearGradient(
-                        stops: [
-                            // Nothing above 0.40 — that lands roughly on the
-                            // artist line, so the wash starts below the text
-                            // rather than running the full height of the
-                            // panel. Still strictly one direction: it only
-                            // ever gets stronger toward the bottom.
-                            .init(color: .clear, location: 0.40),
-                            .init(color: washSecondary.opacity(0.10), location: 0.64),
-                            .init(color: washPrimary.opacity(0.24), location: 1.0),
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .saturation(0.3)
-                // Only the Claude tab carries the wash now — the music tab has
-                // it removed, so its panel stays flat black under the artwork.
-                .opacity(state.isExpanded && showingClaude ? 1 : 0)
-            }
 
             content
                 .padding(.horizontal, state.isExpanded ? 22 : 10)
@@ -177,11 +132,12 @@ struct NotchRootView: View {
             // the expanded content instead of popping mid-animation.
             if state.isExpanded && viewModel.showsTabBar {
                 tabBar
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                    .padding(.trailing, 44)
-                    // Centred within the housing band, so it sits at the same
-                    // level as the physical camera cutout.
-                    .padding(.top, max(2, (notchBandHeight - Self.tabBarHeight) / 2))
+                    // Parked in the bottom-right corner of the panel rather than
+                    // up in the housing band — inset enough to clear the rounded
+                    // bottom corner and the transport keys, which stay centred.
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(.trailing, 22)
+                    .padding(.bottom, 16)
                     .opacity(expandedContentOpacity)
             }
         }
@@ -254,7 +210,7 @@ struct NotchRootView: View {
     // MARK: - Tab switcher
 
     /// Diameter of the single toggle button.
-    private static let tabBarHeight: CGFloat = 28
+    private static let tabBarHeight: CGFloat = 34
 
     /// A single toggle rather than a two-segment pill: it shows the *other*
     /// tab's icon (the one you'd switch to), so on Music it's the 3x3 Claude
@@ -281,13 +237,14 @@ struct NotchRootView: View {
     private func tabIcon(for tab: IsleTab) -> some View {
         switch tab {
         case .music:
-            Image(systemName: tab.symbolName)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white)
+            // A 4-bar waveform, sized to the same 16x16 box as the Claude dot
+            // grid so neither icon outweighs the other in the toggle.
+            WaveformIcon(color: .white)
+                .frame(width: 18, height: 18)
         case .claude:
             // A simpler 3x3 grid reads better than 5x5 at tab-icon size.
             DotGridIcon(color: .white, dimension: 3)
-                .frame(width: 16, height: 16)
+                .frame(width: 18, height: 18)
         }
     }
 

@@ -39,6 +39,9 @@ struct ClaudeExpandedView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                     .contentTransition(.opacity)
+                    // Clear the waveform pinned at the panel's top-right by
+                    // ExpandedNotchView, so the headline stops short of it.
+                    .padding(.trailing, 36)
 
                 Spacer().frame(height: 2)
 
@@ -66,7 +69,9 @@ struct ClaudeExpandedView: View {
                 Spacer(minLength: 0)
             }
             .frame(minWidth: 340, maxWidth: 340, maxHeight: .infinity, alignment: .leading)
-            .offset(y: -1)
+            // Nudged up so the headline/detail/info block sits higher in the
+            // panel.
+            .offset(y: -21)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .foregroundStyle(.white)

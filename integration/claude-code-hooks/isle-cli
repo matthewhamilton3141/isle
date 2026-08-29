@@ -9,6 +9,7 @@
 #   isle-cli set-state <disconnected|idle|working|done>   # state comes from the hook
 #   isle-cli notify                                        # classify a Notification
 #   isle-cli ask                                           # block for a notch Approve/Deny
+#   isle-cli end                                           # session ended — clear the island
 #
 # Kept in sync with Isle's embedded HookInstaller.scriptBody.
 
@@ -60,8 +61,11 @@ case "$CMD" in
   ask)
     STATE=""   # handled entirely in the `ask` block below
     ;;
+  end)
+    STATE="disconnected"   # SessionEnd — clear the island (guarded below)
+    ;;
   *)
-    echo "Usage: isle-cli <set-state <state> | notify | fail | ask>" >&2
+    echo "Usage: isle-cli <set-state <state> | notify | fail | ask | end>" >&2
     exit 1
     ;;
 esac
@@ -195,6 +199,20 @@ if [ "$CMD" = "fail" ] || [ "$CMD" = "notify" ]; then
     *usage*limit*|*limit*reached*|*quota*)
       STATE="error"; ERROR_TYPE="usage_limit" ;;
   esac
+fi
+
+# `end` (SessionEnd hook): only clear the island if the session that just ended
+# is the one the status file is currently showing. The status file is shared by
+# every session (last writer wins), so a background session closing must not
+# wipe a different session's live status. If the current file names a *different*
+# session, leave it untouched. A missing/unparseable file or a matching id both
+# fall through to the disconnected write below.
+if [ "$CMD" = "end" ] && [ -f "$STATUS_FILE" ] && [ -n "$SESSION_ID" ]; then
+  CUR_SID="$(grep -oE '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATUS_FILE" \
+    | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+  if [ -n "$CUR_SID" ] && [ "$CUR_SID" != "$SESSION_ID" ]; then
+    exit 0   # a different session owns the island; leave it alone
+  fi
 fi
 
 write_status "$STATE" ""
