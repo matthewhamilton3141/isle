@@ -70,8 +70,14 @@ enum HookInstaller {
     /// hook / `end` verb so a closed session clears the island. v3: emit
     /// `reset_at` for a usage limit so the island can count down to the reset.
     /// v4: dropped the Approve/Deny flow — `ask` and notifications surface a
-    /// non-blocking question instead of an approval.)
-    private static let currentVersion = 4
+    /// non-blocking question instead of an approval. v5: read the failure kind
+    /// from StopFailure's `error` field — `error_type` is never sent, so every
+    /// API failure used to arrive kind-less and no usage limit was ever
+    /// recognised. v6: emit `tool_active` so the app can tell a tool that is
+    /// genuinely running from a model that has gone quiet. v7: one status file
+    /// per session under ~/.isle/sessions — the single shared file let any
+    /// session's event overwrite every other session's state.)
+    private static let currentVersion = 7
     private static let versionKey = "HookInstaller.installedVersion"
 
     private static var home: URL {
@@ -239,16 +245,25 @@ enum HookInstaller {
     set -euo pipefail
 
     STATUS_DIR="$HOME/.isle"
-    STATUS_FILE="$STATUS_DIR/claude-status.json"
+    # One file per session. A single shared file meant any session's event
+    # overwrote every other session's state — so a background session going
+    # quiet (Stop, or the idle notification) would wipe the state of the
+    # session you were actually watching. The app now reads the whole directory
+    # and picks which session owns the island.
+    SESSION_DIR="$STATUS_DIR/sessions"
 
     # Writes the status file Isle watches. $1 = state, $2 = request id (always
     # empty now — the notch no longer resolves decisions). Computes its own
     # timestamp so each write carries a fresh "… ago".
     write_status() {
-      local ts
+      local ts sf
       ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      mkdir -p "$STATUS_DIR"
-      cat > "$STATUS_FILE" <<EOF
+      mkdir -p "$SESSION_DIR"
+      # Keyed by session id. Absent one (a hook payload without stdin), fall
+      # back to a fixed name so the write still lands somewhere predictable
+      # rather than creating an unbounded set of files.
+      sf="$SESSION_DIR/${SESSION_ID:-unknown}.json"
+      cat > "$sf" <<EOF
     {
       "state": "$1",
       "project": "$PROJECT",
@@ -256,6 +271,7 @@ enum HookInstaller {
       "action": "$ACTION",
       "target": "$TARGET",
       "error_type": "$ERROR_TYPE",
+      "tool_active": $TOOL_ACTIVE,
       "reset_at": "$RESET_AT",
       "request_id": "$2",
       "updated_at": "$ts"
@@ -302,15 +318,34 @@ enum HookInstaller {
     MESSAGE=""
     HOOK_EVENT=""
     ERROR_TYPE=""
+    LAST_MSG=""
     RESET_AT=""
+    # True only between a PreToolUse and its PostToolUse — i.e. a tool is
+    # actually executing right now. A long Bash or a slow MCP call goes minutes
+    # with no hook write and no transcript growth, which is indistinguishable
+    # from a stalled model unless the app knows a tool is running. Written as a
+    # bare JSON boolean, so it is unquoted in the status file.
+    TOOL_ACTIVE=false
     if [ ! -t 0 ]; then
       STDIN_JSON="$(cat)"
       HOOK_EVENT="$(printf '%s' "$STDIN_JSON" \
         | grep -oE '"hook_event_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
         | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+      if [ "$HOOK_EVENT" = "PreToolUse" ]; then TOOL_ACTIVE=true; fi
       ERROR_TYPE="$(printf '%s' "$STDIN_JSON" \
         | grep -oE '"error_type"[[:space:]]*:[[:space:]]*"[^"]*"' \
         | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+      # StopFailure names the failure `error`, not `error_type` — one of
+      # rate_limit / overloaded / server_error / invalid_request /
+      # model_not_found / max_output_tokens / unknown. Without this fallback
+      # every failure arrived kind-less and the island could only ever show the
+      # generic error marker. Gated to `fail` so a tool payload that happens to
+      # carry an "error" key can't stamp a kind onto a non-failure write.
+      if [ -z "$ERROR_TYPE" ] && [ "$CMD" = "fail" ]; then
+        ERROR_TYPE="$(printf '%s' "$STDIN_JSON" \
+          | grep -oE '"error"[[:space:]]*:[[:space:]]*"[^"]*"' \
+          | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+      fi
       SESSION_ID="$(printf '%s' "$STDIN_JSON" \
         | grep -oE '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' \
         | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
@@ -334,6 +369,12 @@ enum HookInstaller {
       MESSAGE="$(printf '%s' "$STDIN_JSON" \
         | grep -oE '"message"[[:space:]]*:[[:space:]]*"[^"]*"' \
         | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+      # StopFailure carries no `message`: the text Claude actually showed
+      # ("You've hit your weekly limit · resets …") rides in
+      # `last_assistant_message`. The classification below reads both.
+      LAST_MSG="$(printf '%s' "$STDIN_JSON" \
+        | grep -oE '"last_assistant_message"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
     fi
 
     # `ask` (PermissionRequest hook): Claude needs the user's attention for this
@@ -352,7 +393,8 @@ enum HookInstaller {
       # more specific signal, and the notification that follows it is just "waiting
       # on you" for the same prompt — don't let it downgrade.
       # The question clears on its own when Claude moves on (next tool use / Stop).
-      if [ -f "$STATUS_FILE" ] && grep -q '"state": "needs_question"' "$STATUS_FILE" 2>/dev/null; then
+      if [ -f "$SESSION_DIR/${SESSION_ID:-unknown}.json" ] \
+         && grep -q '"state": "needs_question"' "$SESSION_DIR/${SESSION_ID:-unknown}.json" 2>/dev/null; then
         exit 0
       fi
       lower="$(printf '%s' "$MESSAGE" | tr '[:upper:]' '[:lower:]')"
@@ -377,9 +419,13 @@ enum HookInstaller {
     # from the error type or message (either the failure or a notification can carry
     # it) and surface it as a named failure the app labels "Usage limit reached".
     if [ "$CMD" = "fail" ] || [ "$CMD" = "notify" ]; then
-      lc_all="$(printf '%s %s' "$ERROR_TYPE" "$MESSAGE" | tr '[:upper:]' '[:lower:]')"
+      lc_all="$(printf '%s %s %s' "$ERROR_TYPE" "$MESSAGE" "$LAST_MSG" \
+        | tr '[:upper:]' '[:lower:]')"
+      # Claude sends `rate_limit` for both a transient 429 and the subscription
+      # limit, so the wording is what separates them: the subscription limit
+      # always reads "You've hit your <session|weekly|monthly spend> limit".
       case "$lc_all" in
-        *usage*limit*|*limit*reached*|*quota*)
+        *usage*limit*|*limit*reached*|*quota*|*"hit your"*limit*)
           STATE="error"; ERROR_TYPE="usage_limit" ;;
       esac
     fi
@@ -390,21 +436,17 @@ enum HookInstaller {
     # 10–13 digit run out of the message. Absent one, RESET_AT stays empty and the
     # app just pins "Limit reached" with no timer.
     if [ "$ERROR_TYPE" = "usage_limit" ]; then
-      RESET_AT="$(printf '%s' "$MESSAGE" | grep -oE '[0-9]{10,13}' | head -1 || true)"
+      RESET_AT="$(printf '%s %s' "$MESSAGE" "$LAST_MSG" \
+        | grep -oE '[0-9]{10,13}' | head -1 || true)"
     fi
 
-    # `end` (SessionEnd hook): only clear the island if the session that just
-    # ended is the one the status file is currently showing. The status file is
-    # shared by every session (last writer wins), so a background session closing
-    # must not wipe a different session's live status. If the current file names
-    # a *different* session, leave it untouched. A missing/unparseable file or a
-    # matching id both fall through to the disconnected write below.
-    if [ "$CMD" = "end" ] && [ -f "$STATUS_FILE" ] && [ -n "$SESSION_ID" ]; then
-      CUR_SID="$(grep -oE '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATUS_FILE" \
-        | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
-      if [ -n "$CUR_SID" ] && [ "$CUR_SID" != "$SESSION_ID" ]; then
-        exit 0   # a different session owns the island; leave it alone
-      fi
+    # `end` (SessionEnd hook): drop this session's file and stop. With one file
+    # per session there's nothing to guard against any more — removing your own
+    # record can't affect anyone else's. (The old shared-file version had to
+    # check whether it still owned the island before clearing it.)
+    if [ "$CMD" = "end" ]; then
+      rm -f "$SESSION_DIR/${SESSION_ID:-unknown}.json"
+      exit 0
     fi
 
     write_status "$STATE" ""
