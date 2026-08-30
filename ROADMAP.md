@@ -44,9 +44,19 @@ work below is wiring, persistence, and UI, not re-architecture.
 ## Bridge reliability — what the hooks can and can't tell us
 
 Shipped outside the milestone sequence, after the island was seen reporting
-`Thinking` through a six-minute API retry storm. Most of what follows was found
-by instrumenting a forced failure, not by reading code — the hook surface
-behaves differently from how it reads.
+`Thinking` while the CLI showed an API error.
+
+**The reported symptom turned out to be the multi-session bug, not a missing
+retry detector.** The failing session wrote `error`, and a *second* session's
+next `PreToolUse` overwrote the shared status file with `working` — the island
+was showing the wrong session. Urgency ranking (below) is the fix: `failed`
+outranks `working`, so the errored session now wins regardless of write order.
+
+The rest of what follows was found while chasing that misdiagnosis, by
+instrumenting a forced failure rather than by reading code — the hook surface
+behaves differently from how it reads. Those findings are real and independently
+verified, but note the no-response detector addresses a gap adjacent to the
+original report, not the report itself.
 
 ### Claude Code behaviours worth not rediscovering
 
