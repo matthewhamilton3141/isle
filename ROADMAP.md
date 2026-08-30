@@ -81,10 +81,24 @@ original report, not the report itself.
   displace an active one, however recently it moved.
 - **Session registry** as the liveness spine — a `SIGKILL`'d session fires no
   `SessionEnd`, and used to freeze the island on `Thinking` forever.
-- **No-response detection**: island `working`/`waiting`, no tool running, and
-  the transcript's last conversation entry is a `user` turn older than 45s →
-  `No response · 45s`, dimmed. It reports the observation, never a cause — a
-  long think is indistinguishable from a retry and the label is true for both.
+- **No-response detection** — *added, then removed.* Island `working`/`waiting`,
+  no tool running, and the transcript's last conversation entry a `user` turn
+  older than a threshold → `No response · 45s`, dimmed. It reported the
+  observation rather than a cause, on the theory that the label was true for
+  both a retry and a long think. In practice that was the problem: a single
+  reasoning block is written to the transcript only when it *finishes*, so an
+  unbroken deep think is silent on every signal Isle has and got labelled as a
+  stall. Raising the threshold (45s → 180s → 360s) only traded the frequency of
+  the false positive for a slower true one, and a wrong "No response" is more
+  confusing than no label at all.
+- **The staleness fade** went with it, for the same reason. Hook silence past
+  180s dimmed the island to 45%, which is the same inference in a quieter
+  register — and equally wrong during a long think. Isle now makes no claim
+  about silence at all, in text or in treatment: it holds the last state it was
+  actually told about, at full strength, until something tells it otherwise.
+  The 5s timer stays on for its other job (re-running selection, so an
+  interrupt's stuck record still gets retired), and the transcript tail reader
+  survives because reconciliation depends on it.
 - **`tool_active`** on the wire so a long `Bash` isn't read as a stalled model.
 - **Interrupt reconciliation** (`NotchViewModel.reconciled`): a `working`
   record whose session the CLI no longer calls busy, and whose transcript shows
@@ -99,21 +113,20 @@ original report, not the report itself.
 A forced retry storm (local always-500 server via `ANTHROPIC_BASE_URL`) held the
 island for 73 consecutive ticks, crossed at 48s, throttled to one update per
 minute, and reset cleanly when retries exhausted — through both events that
-previously stole the island.
+previously stole the island. That verified the detection that has since been
+removed; the selection and liveness behaviour it exercised still stands.
 
 ### Outstanding
 
-- **The `waitingInput` label path is unverified.** Print-mode sessions never
-  fire the idle notification, so covering it needs an interactive run. It is the
-  case where the signal is most certain, so it matters.
 - **`status: "api_retry"`** appears in the CLI binary. If the session registry
-  ever reports it, it replaces this entire inference chain with a direct signal.
-  Worth checking before investing further here.
+  ever reports it, it replaces the whole inference chain with a direct signal —
+  and is the only thing that would justify bringing a "stalled" label back.
+  Note the registry already discriminates weakly: a backing-off session reports
+  `idle` while a real think reports `busy` (`ClaudeSession.status`), which is a
+  cheaper starting point than the transcript was.
 - **Stale session files** accumulate: a `SIGKILL`'d session leaves its
   `~/.isle/sessions/<id>.json` behind. Selection hides it by dead pid, but
   nothing prunes disk. A sweep at launch is a few lines.
-- **Calmer glyph while unresponsive** — a slower, dimmer pulse needs staleness
-  threaded through `NotchGlyphState` into both the SwiftUI and CALayer renderers.
 - `~/.claude/sessions` is undocumented internal surface. Every field is optional
   and a bad record is skipped, so a schema change degrades to "no registry"
   rather than breaking the island — but it can break.

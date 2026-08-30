@@ -152,28 +152,6 @@ final class NotchViewModel: ObservableObject {
     /// (a tool call / prompt); this is the backstop for the cancelled/idle case.
     private static let compactingRevertSeconds: TimeInterval = 25
 
-    // MARK: - Staleness
-
-    /// How long a live state (`working` / `compacting`) may go without a hook
-    /// write before the island stops asserting it as fresh. Claude Code fires
-    /// nothing while it retries an API error — the "API error · Retrying in 5s"
-    /// banner is TUI-only, with no hook and no transcript entry — so silence is
-    /// the only signal we get. It's deliberately not read as "stalled": a long
-    /// tool-free reasoning turn fires no hooks either and looks identical. The
-    /// island just shows how long it's been since anything was confirmed.
-    /// 90s is comfortably past a normal tool-call cadence.
-    private static let staleAfterSeconds: TimeInterval = 90
-
-    /// How long the transcript may go without growing — while the CLI still
-    /// reports the session busy and no tool is running — before the island
-    /// stops claiming a live model. Claude Code appends to the transcript per
-    /// *content block*, not per message, so an active tool-free turn writes a
-    /// line every few to ~15s even though it fires no hooks. Nothing lands at
-    /// all while the API is being retried, which is what makes this the signal
-    /// that separates "thinking" from "getting nowhere". 45s is several times
-    /// the observed block cadence.
-    private static let noResponseSeconds: TimeInterval = 45
-
     /// Every session that currently has a status file, as last published by
     /// the watcher. Retained so selection can be re-run when the *registry*
     /// changes without waiting for a status write.
@@ -256,128 +234,36 @@ final class NotchViewModel: ObservableObject {
     /// pid simply stops existing here.
     @Published private(set) var claudeSessions: [ClaudeSession] = []
 
-    /// The registry record for the session the island is currently showing,
-    /// matched by the session id the hook bridge reported.
-    var displayedSession: ClaudeSession? {
-        guard let id = claudeSessionId else { return nil }
-        return claudeSessions.first { $0.sessionId == id }
-    }
+    private var reselectTimer: Timer?
 
-    /// Seconds since the displayed session's transcript last grew, while it is
-    /// busy with no tool running. Zero whenever the question doesn't apply.
-    @Published private(set) var claudeNoResponseFor: TimeInterval = 0
-
-    /// The CLI says busy, no tool is running, and nothing has been produced for
-    /// a while. Overwhelmingly an API retry or a network stall — but it is an
-    /// inference, not a fact, so the island reports the observation ("no
-    /// response for 45s") rather than naming a cause, and wears the calm
-    /// working treatment rather than the error marker.
-    var claudeIsUnresponsive: Bool {
-        (claudeState == .working || claudeState == .waitingInput)
-            && claudeNoResponseFor >= Self.noResponseSeconds
-    }
-
-    /// Seconds since the last hook write, while a live state is showing. Ticks
-    /// on a coarse timer — the label it feeds is minute-grained.
-    @Published private(set) var claudeSilentFor: TimeInterval = 0
-
-    private var stalenessTimer: Timer?
-
-    /// When the displayed session's transcript last gained a conversation
-    /// entry. A recovering turn produces output long before it fires another
-    /// hook, so this counts as liveness alongside `claudeUpdatedAt` — otherwise
-    /// the island keeps showing a stale "· 3m" after everything is fine again.
-    private var claudeLastTranscriptAt: Date?
-
-    /// The island is still claiming Claude is working, but nothing has confirmed
-    /// it for a while. Drives the dimmed treatment and the "· 2m" suffix.
-    var claudeIsStale: Bool {
-        claudeState == .working && claudeSilentFor >= Self.staleAfterSeconds
-    }
-
-    /// Runs the staleness clock only for the states that claim work is in
-    /// progress; every other state is quiescent and doesn't go stale.
-    private func updateStalenessClock(for state: ClaudeCodeState) {
-        guard state == .working || state == .compacting || state == .waitingInput else {
-            stopStalenessClock()
-            return
-        }
-        claudeSilentFor = 0
-        guard stalenessTimer == nil else { return }
-        stalenessTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, let since = self.claudeUpdatedAt else { return }
-                // Runs first: it refreshes `claudeLastTranscriptAt`.
-                self.updateNoResponse()
-                // The registry's directory event normally re-runs selection on
-                // its own, but an interrupt can leave the CLI record untouched
-                // (already `idle`), and then nothing else would ever re-examine
-                // the stuck record. Re-apply only on a real change, so this
-                // can't reset the staleness clock every tick.
-                let resolved = self.selectStatus(from: self.claudeStatuses)
-                if resolved.state != self.claudeState {
-                    self.applyClaudeStatus(resolved)
-                    return
-                }
-                let lastActivity = max(since, self.claudeLastTranscriptAt ?? .distantPast)
-                let silent = Date().timeIntervalSince(lastActivity)
-                // Only publish when the label would actually change — once on
-                // crossing the threshold, then once a minute — so a 5s tick
-                // doesn't re-render the island for nothing.
-                let wasStale = self.claudeSilentFor >= Self.staleAfterSeconds
-                let isStale = silent >= Self.staleAfterSeconds
-                let sameMinute = Int(silent) / 60 == Int(self.claudeSilentFor) / 60
-                guard wasStale != isStale || (isStale && !sameMinute) else { return }
-                withAnimation(.easeInOut(duration: 0.4)) { self.claudeSilentFor = silent }
-            }
-        }
-    }
-
-    /// Measures how long the displayed session has produced nothing, and
-    /// publishes it when the answer would change what's on screen.
+    /// Re-runs selection on a coarse timer while a state that claims work is in
+    /// progress is showing.
     ///
-    /// Three conditions have to hold before silence means anything. The CLI has
-    /// to still call the session busy (otherwise it's simply finished); no tool
-    /// may be running (a long Bash is silent on every signal we have); and the
-    /// transcript has to have stopped growing (an active tool-free turn still
-    /// appends a block every few seconds). Any one of them failing resets the
-    /// clock, so this only accumulates in the narrow case it's meant for.
-    private func updateNoResponse() {
-        guard let session = displayedSession,
-              // `waiting` means a dialog is up — genuinely blocked on the user,
-              // not stalled. Every other status is fair game: notably the CLI
-              // reports a session as *idle* while it backs off between API
-              // retries, so this must not gate on `busy`.
-              session.status != .waiting,
-              !claudeToolActive,
-              let tail = transcriptTail(for: session),
-              // The turn is outstanding: the last thing written was an input
-              // (a prompt, or a tool result) with no model output after it.
-              // This is what separates a retry storm from a session sitting
-              // idle at the prompt — both are silent, but only one is owed a
-              // response.
-              tail.awaitingModel
-        else {
-            claudeLastTranscriptAt = transcriptTail(for: displayedSession).map(\.at)
-            if claudeNoResponseFor != 0 {
-                withAnimation(.easeInOut(duration: 0.4)) { claudeNoResponseFor = 0 }
-            }
+    /// Nothing here measures silence. Isle has no signal that separates a long
+    /// think from a stalled turn — both fire no hooks and write nothing — so it
+    /// makes no claim either way, in text or in treatment, and the island holds
+    /// the last state it was actually told about.
+    ///
+    /// The timer earns its place on the other job: the registry's directory
+    /// event normally re-runs selection itself, but an interrupt can leave the
+    /// CLI record untouched (already `idle`), and then nothing else would ever
+    /// re-examine the stuck record.
+    private func updateReselectTimer(for state: ClaudeCodeState) {
+        guard state == .working || state == .compacting || state == .waitingInput else {
+            stopReselectTimer()
             return
         }
-
-        claudeLastTranscriptAt = tail.at
-        let quiet = Date().timeIntervalSince(tail.at)
-        // Same publish discipline as the staleness clock: once on crossing the
-        // threshold, then once a minute.
-        let was = claudeNoResponseFor >= Self.noResponseSeconds
-        let now = quiet >= Self.noResponseSeconds
-        let sameMinute = Int(quiet) / 60 == Int(claudeNoResponseFor) / 60
-        guard was != now || (now && !sameMinute) else { return }
-        withAnimation(.easeInOut(duration: 0.4)) { claudeNoResponseFor = quiet }
-    }
-
-    private func transcriptTail(for session: ClaudeSession?) -> (awaitingModel: Bool, at: Date)? {
-        session.flatMap { transcriptTail(for: $0) }
+        guard reselectTimer == nil else { return }
+        reselectTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                // Apply only on a real change, so an unchanged state doesn't
+                // re-render the island every tick.
+                let resolved = self.selectStatus(from: self.claudeStatuses)
+                guard resolved.state != self.claudeState else { return }
+                self.applyClaudeStatus(resolved)
+            }
+        }
     }
 
     /// The transcript's last timestamped entry: whether it leaves the model
@@ -453,18 +339,18 @@ final class NotchViewModel: ObservableObject {
             ?? ISO8601DateFormatter().date(from: string)
     }
 
-    private func stopStalenessClock() {
-        stalenessTimer?.invalidate()
-        stalenessTimer = nil
-        claudeSilentFor = 0
-        claudeNoResponseFor = 0
+    private func stopReselectTimer() {
+        reselectTimer?.invalidate()
+        reselectTimer = nil
     }
 
     // MARK: - Working words
 
     /// A rotating "thinking" word shown in the expanded view while working,
     /// echoing the Claude Code CLI's spinner (the real word isn't exposed to
-    /// hooks, so this is our own set in the same spirit).
+    /// hooks, so this is our own set in the same spirit). Stored bare — the
+    /// trailing "…" is added where it's displayed, since the collapsed label
+    /// drops it when a duration follows the word.
     @Published private(set) var workingWord: String = "Working"
 
     private var workingWordTimer: Timer?
@@ -635,11 +521,10 @@ final class NotchViewModel: ObservableObject {
             claudeWatcher.stop()
             sessionRegistry.stop()
             claudeSessions = []
-            claudeNoResponseFor = 0
             doneRevertTask?.cancel()
             doneRevertTask = nil
             stopWorkingWords()
-            stopStalenessClock()
+            stopReselectTimer()
             claudeState = .disconnected
             claudeProject = nil
             claudeSessionId = nil
@@ -691,7 +576,7 @@ final class NotchViewModel: ObservableObject {
         } else {
             stopWorkingWords()
         }
-        updateStalenessClock(for: status.state)
+        updateReselectTimer(for: status.state)
 
         // `done` and `failed` are both terminal toasts: show them, then ease
         // back to idle so they don't stick until the next prompt. A failure
@@ -727,9 +612,8 @@ final class NotchViewModel: ObservableObject {
         doneRevertTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(revertDelay))
             guard !Task.isCancelled else { return }
-            // Idle is quiescent: stop the clock so a reverted toast can't go on
-            // to trip the give-up disconnect.
-            self?.stopStalenessClock()
+            // Idle is quiescent — nothing left to re-select for.
+            self?.stopReselectTimer()
             withAnimation(.easeInOut(duration: 0.25)) {
                 self?.claudeState = .idle
             }
@@ -1041,12 +925,11 @@ final class NotchViewModel: ObservableObject {
     /// for every other state and layout, so those keep their marker colour.
     var workingTint: Color? {
         guard isClaudeSolo, claudeState == .working else { return nil }
-        let tint = isThinking ? Color(hex: "#F2C14E") : Color(hex: "#E8842B")
-        // Unconfirmed for a while — fade it so the island reads as "still
-        // showing this" rather than "just heard this". Nothing being produced
-        // is the stronger signal of the two, so it fades further.
-        if claudeIsUnresponsive { return tint.opacity(0.3) }
-        return claudeIsStale ? tint.opacity(0.45) : tint
+        // Full strength for as long as the state stands. It used to fade once
+        // hooks had been quiet a while, but hook silence is normal during a
+        // long think, so the fade only ever second-guessed a state that was
+        // still true.
+        return isThinking ? Color(hex: "#F2C14E") : Color(hex: "#E8842B")
     }
 
     /// Both sources live at once — collapsed view splits (spec 3.1): music keeps
@@ -1127,30 +1010,17 @@ final class NotchViewModel: ObservableObject {
     var collapsedStatusText: String {
         switch claudeState {
         case .working:
-            // The CLI still calls it busy but nothing is coming out — report the
-            // observation, not a diagnosis. It reads the same whether the cause
-            // is an API retry, a network stall, or a very long think, and it's
-            // true in all three.
-            if claudeIsUnresponsive {
-                return "No response · \(Self.compactDuration(claudeNoResponseFor))"
-            }
-            let word = isThinking ? "Thinking" : workingWord
-            // Past the staleness threshold the word alone would be a claim we
-            // can't back up, so say how long it's been since anything confirmed
-            // it ("Thinking · 2m") rather than inventing a "stalled" verdict.
-            guard claudeIsStale else { return word }
-            return "\(word) · \(Self.compactDuration(claudeSilentFor))"
+            // No clock on the working word, in either phase. Hooks are silent
+            // through a whole reasoning turn and through a long tool call, so
+            // the number was only ever counting normal quiet, and a figure
+            // ticking up next to "Coalescing…" reads as a fault when nothing
+            // is wrong. Past the staleness threshold the word just dims
+            // (`claudeTint`) — the island says nothing it can't back up.
+            return (isThinking ? "Thinking" : workingWord) + "…"
         // Approvals are surfaced as a question — the expanded panel still offers
         // the Approve/Deny buttons for a live `ask`, but the word is unified.
         case .needsApproval, .needsQuestion: return "Question"
-        case .waitingInput:
-            // The CLI fires its idle notification ~60s into a retry storm, which
-            // lands the island here. "Waiting" would read as "it's your turn"
-            // when in fact nothing has come back yet, so the observation wins.
-            if claudeIsUnresponsive {
-                return "No response · \(Self.compactDuration(claudeNoResponseFor))"
-            }
-            return "Waiting"
+        case .waitingInput: return "Waiting"
         case .done: return "Done"
         case .idle: return "Ready"
         // Every failure reads as one thing — a usage limit and a transient API
@@ -1172,11 +1042,6 @@ final class NotchViewModel: ObservableObject {
         case "server_error", "api_error", "overloaded", "overloaded_error": return .serverError
         default: return .apiError
         }
-    }
-
-    /// "45s" under a minute, "2m" above — the island has no room for more.
-    private static func compactDuration(_ seconds: TimeInterval) -> String {
-        seconds < 60 ? "\(Int(seconds))s" : "\(Int(seconds) / 60)m"
     }
 
     private static func textWidth(_ string: String) -> CGFloat {
