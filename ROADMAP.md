@@ -58,6 +58,7 @@ behaves differently from how it reads.
 | Claude Code fires its "waiting for your input" Notification ~60s after going idle — **including mid-retry-storm** | Isle downgraded a stalled turn to `Waiting`, which reads as "your turn" when nothing has come back |
 | The transcript flushes per *content block*, not per message, and is interleaved with `queue-operation` / `attachment` / `file-history-snapshot` bookkeeping | A tool-free turn still appends every few seconds (so silence is meaningful), but only `user` / `assistant` entries answer "is a turn outstanding" |
 | `~/.claude/sessions/<pid>.json` is written by the CLI itself, hook-free, pid-keyed | Liveness is `kill(pid, 0)` rather than a timeout; survives broken or uninstalled hooks |
+| **An interrupt (ESC) fires no hook at all** — no `Stop`, no `PostToolUse` — and appends a synthetic `user` entry (`[Request interrupted by user]`) to the transcript | Every exit from `working` is hook-driven, so the record froze at `working`; and since that entry parses as a `user` turn, the no-response check read the ended turn as one still owed a response |
 
 ### What changed
 
@@ -75,6 +76,13 @@ behaves differently from how it reads.
   `No response · 45s`, dimmed. It reports the observation, never a cause — a
   long think is indistinguishable from a retry and the label is true for both.
 - **`tool_active`** on the wire so a long `Bash` isn't read as a stalled model.
+- **Interrupt reconciliation** (`NotchViewModel.reconciled`): a `working`
+  record whose session the CLI no longer calls busy, and whose transcript shows
+  the turn already closed, is demoted to `idle` during selection. Both signals
+  are required — a retry storm also reports `idle`, but its transcript still
+  owes a response — and the demotion happens in selection rather than on the
+  displayed state, so a stuck background record also stops outranking the
+  session the user is actually watching.
 
 ### Verified
 

@@ -194,11 +194,48 @@ final class NotchViewModel: ObservableObject {
             guard let id = status.sessionId else { return true }
             return claudeSessions.contains { $0.sessionId == id }
         }
-        let pool = live.isEmpty ? statuses : live
+        let pool = (live.isEmpty ? statuses : live).map(reconciled)
         return pool.max {
             (Self.urgency($0.state), $0.updatedAt ?? .distantPast)
                 < (Self.urgency($1.state), $1.updatedAt ?? .distantPast)
         } ?? .disconnected
+    }
+
+    /// Corrects a `working` record the hooks will never close out.
+    ///
+    /// Every exit from `working` is hook-driven — `Stop`, `SessionEnd`, a
+    /// notification — and an *interrupt fires none of them*. Pressing ESC ends
+    /// the turn silently, so the last `UserPromptSubmit` / `PreToolUse` write
+    /// stays the newest thing on disk and the session sits at `working`
+    /// forever. Because `working` outranks every quiescent state, that record
+    /// also keeps the island away from whichever session is genuinely live. A
+    /// hook that failed to run leaves exactly the same residue.
+    ///
+    /// Two independent signals have to agree before overriding the file, since
+    /// getting this wrong blanks a session that really is thinking: the CLI's
+    /// own record must no longer call the session busy, and its transcript must
+    /// show the turn already closed. The second is what keeps a retry storm
+    /// intact — a backing-off session reports `idle` too, but its transcript
+    /// still owes a response.
+    private func reconciled(_ status: ClaudeStatus) -> ClaudeStatus {
+        guard status.state == .working,
+              // A tool is mid-flight; the CLI can look idle while it runs.
+              !status.toolActive,
+              let id = status.sessionId,
+              let session = claudeSessions.first(where: { $0.sessionId == id }),
+              session.status == .idle,
+              // No readable transcript is no second signal — leave the record
+              // alone rather than guess.
+              let tail = transcriptTail(for: session),
+              !tail.awaitingModel
+        else {
+            return status
+        }
+        var corrected = status
+        corrected.state = .idle
+        corrected.action = nil
+        corrected.target = nil
+        return corrected
     }
 
     /// How much a state deserves the island. Higher wins.
@@ -272,6 +309,16 @@ final class NotchViewModel: ObservableObject {
                 guard let self, let since = self.claudeUpdatedAt else { return }
                 // Runs first: it refreshes `claudeLastTranscriptAt`.
                 self.updateNoResponse()
+                // The registry's directory event normally re-runs selection on
+                // its own, but an interrupt can leave the CLI record untouched
+                // (already `idle`), and then nothing else would ever re-examine
+                // the stuck record. Re-apply only on a real change, so this
+                // can't reset the staleness clock every tick.
+                let resolved = self.selectStatus(from: self.claudeStatuses)
+                if resolved.state != self.claudeState {
+                    self.applyClaudeStatus(resolved)
+                    return
+                }
                 let lastActivity = max(since, self.claudeLastTranscriptAt ?? .distantPast)
                 let silent = Date().timeIntervalSince(lastActivity)
                 // Only publish when the label would actually change — once on
@@ -369,10 +416,30 @@ final class NotchViewModel: ObservableObject {
             else { continue }
             // A `user` entry is either a fresh prompt or a tool result; both
             // leave the model owing output. An `assistant` entry means it has
-            // already answered.
-            return (awaitingModel: type == "user", at: at)
+            // already answered. The exception is an interruption: ESC appends a
+            // synthetic `user` entry and fires no hook at all, so reading it as
+            // an outstanding turn is precisely what pins the island on
+            // `Thinking` with nothing running.
+            return (awaitingModel: type == "user" && !Self.isInterruption(object), at: at)
         }
         return nil
+    }
+
+    /// Whether a transcript entry is the marker Claude Code writes when the
+    /// user interrupts a turn ("[Request interrupted by user]", and the
+    /// "…for tool use" variant). It arrives as a `user` entry but terminates a
+    /// turn rather than opening one.
+    private static func isInterruption(_ object: [String: Any]) -> Bool {
+        guard let message = object["message"] as? [String: Any] else { return false }
+        let texts: [String]
+        if let text = message["content"] as? String {
+            texts = [text]
+        } else if let blocks = message["content"] as? [[String: Any]] {
+            texts = blocks.compactMap { $0["text"] as? String }
+        } else {
+            return false
+        }
+        return texts.contains { $0.hasPrefix("[Request interrupted") }
     }
 
     private static let transcriptFormatter: ISO8601DateFormatter = {
