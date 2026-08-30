@@ -20,6 +20,15 @@
 //  *directory* only and re-reads every entry on each event. Several sessions
 //  can move at once, so events are coalesced into one scan.
 //
+//  The contract that makes that work: `isle-cli` must write each status file by
+//  **rename**, never in place. A directory vnode event fires when an entry is
+//  added, removed or renamed — not when the bytes inside an existing entry
+//  change. An in-place `cat > file` is therefore completely silent here, and
+//  the island simply keeps showing whatever it read last: every state change
+//  after a session\'s first write was invisible until some *other* session file
+//  happened to be created or deleted and triggered a full re-scan. If a state
+//  ever looks frozen on the island, check that end of the bridge first.
+//
 
 import Foundation
 

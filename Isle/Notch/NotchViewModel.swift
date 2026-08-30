@@ -105,6 +105,27 @@ final class NotchViewModel: ObservableObject {
 
     @Published private(set) var media = MediaPlaybackModel()
 
+    /// Colours pulled from the current cover, recomputed only when the cover
+    /// itself changes.
+    ///
+    /// This is cached rather than derived in the view because extraction is
+    /// not stable under re-running. It picks `ranked[0]` winner-take-all, and
+    /// on real covers the top cells are separated by well under 1% — the
+    /// current one by 0.7%. Two artwork sources feed this (the adapter's
+    /// embedded bytes and Spotify's CDN fetch) and their decodes differ
+    /// slightly, so re-deriving could hand back a different winner each time
+    /// and the notch visibly flashed between colours. Held steady here, the
+    /// selection runs once per cover and the near-tie stops mattering.
+    ///
+    /// It also has to be cached for cost: as a computed property on the view
+    /// it re-ran on every body evaluation, which is 30 times a second now that
+    /// audio levels publish at display rate.
+    @Published private(set) var palette: ArtworkPalette = .fallback
+
+    /// Identity of the cover `palette` was built from, to skip the work when
+    /// an update carries the same image.
+    private var paletteArtwork: NSImage?
+
     /// Position the user is dragging the scrubber to. Non-nil only mid-drag;
     /// while set, the scrubber renders this instead of the live position so
     /// the thumb doesn't fight the playback clock under the finger.
@@ -195,19 +216,36 @@ final class NotchViewModel: ObservableObject {
     /// show the turn already closed. The second is what keeps a retry storm
     /// intact — a backing-off session reports `idle` too, but its transcript
     /// still owes a response.
+    ///
+    /// Except when the transcript carries the interrupt marker, which decides
+    /// it on its own — see below.
     private func reconciled(_ status: ClaudeStatus) -> ClaudeStatus {
         guard status.state == .working,
-              // A tool is mid-flight; the CLI can look idle while it runs.
-              !status.toolActive,
               let id = status.sessionId,
               let session = claudeSessions.first(where: { $0.sessionId == id }),
-              session.status == .idle,
               // No readable transcript is no second signal — leave the record
               // alone rather than guess.
-              let tail = transcriptTail(for: session),
-              !tail.awaitingModel
+              let tail = transcriptTail(for: session)
         else {
             return status
+        }
+
+        // The marker is written for one reason only — the user ended the turn —
+        // so it outranks everything else we could ask, and it is the *only*
+        // thing that can retire a record frozen mid-tool. An interrupt during a
+        // tool call fires neither PostToolUse nor Stop, so `tool_active` stays
+        // true on disk forever; and since a tool that is genuinely still
+        // running leaves identical residue (working, tool active, and the CLI
+        // reporting idle while it waits), nothing weaker is safe to act on.
+        // Typing the next prompt supersedes this immediately: that writes a
+        // fresh `working` record and puts a new user turn at the tail.
+        if !tail.interrupted {
+            guard !status.toolActive,
+                  session.status == .idle,
+                  !tail.awaitingModel
+            else {
+                return status
+            }
         }
         var corrected = status
         corrected.state = .idle
@@ -267,13 +305,14 @@ final class NotchViewModel: ObservableObject {
     }
 
     /// The transcript's last timestamped entry: whether it leaves the model
-    /// owing a response, and when it was written.
+    /// owing a response, whether it's the marker an interrupt leaves behind,
+    /// and when it was written.
     ///
     /// Reads only the tail of the file — transcripts run to megabytes and this
     /// is called on a timer. Entries without a timestamp (`file-history-snapshot`
     /// and friends) are skipped rather than treated as the end, since they're
     /// interleaved with the real ones.
-    private func transcriptTail(for session: ClaudeSession) -> (awaitingModel: Bool, at: Date)? {
+    private func transcriptTail(for session: ClaudeSession) -> (awaitingModel: Bool, interrupted: Bool, at: Date)? {
         let slug = session.cwd.replacingOccurrences(of: "/", with: "-")
         let url = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects/\(slug)/\(session.sessionId).jsonl")
@@ -306,7 +345,12 @@ final class NotchViewModel: ObservableObject {
             // synthetic `user` entry and fires no hook at all, so reading it as
             // an outstanding turn is precisely what pins the island on
             // `Thinking` with nothing running.
-            return (awaitingModel: type == "user" && !Self.isInterruption(object), at: at)
+            let interrupted = type == "user" && Self.isInterruption(object)
+            return (
+                awaitingModel: type == "user" && !interrupted,
+                interrupted: interrupted,
+                at: at
+            )
         }
         return nil
     }
@@ -714,6 +758,7 @@ final class NotchViewModel: ObservableObject {
     /// could emit a burst of ticks that felt like a drum roll. The throttle
     /// collapses any such burst into the one click the gesture deserves.
     func playTransitionHaptic() {
+        guard settings.haptics else { return }
         let now = Date()
         guard now.timeIntervalSince(lastHapticDate) > 0.35 else { return }
         lastHapticDate = now
@@ -768,6 +813,15 @@ final class NotchViewModel: ObservableObject {
 
         anchorDate = now
         anchorRate = model.playbackRate
+
+        // Reference identity, not image equality: the sources hand over a new
+        // NSImage only when they actually fetched or decoded one, so this is
+        // exactly the question of whether the cover changed.
+        if model.artwork !== paletteArtwork {
+            paletteArtwork = model.artwork
+            palette = ArtworkColors.palette(from: model.artwork)
+        }
+
         media = model
     }
 

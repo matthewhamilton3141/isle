@@ -40,13 +40,33 @@ struct EqualizerView: View {
     private var usesRealLevels: Bool { levels.count >= barCount }
 
     var body: some View {
-        TimelineView(.animation(paused: !isPlaying && !usesRealLevels)) { context in
-            Canvas { canvasContext, size in
-                draw(
-                    in: canvasContext,
-                    size: size,
-                    time: context.date.timeIntervalSinceReferenceDate
-                )
+        Group {
+            if usesRealLevels {
+                // No TimelineView on this path. Real levels arrive as state at
+                // 30Hz and SwiftUI redraws on that by itself, so a timeline
+                // would only redraw the same bars again between updates.
+                //
+                // It used to wrap both paths, and its pause condition
+                // (`!isPlaying && !usesRealLevels`) could never be true once
+                // levels existed — so the canvas redrew at the display's full
+                // refresh rate forever, including while the music was paused
+                // and every bar was a motionless dot. Paused actually cost
+                // more CPU than playing.
+                Canvas { canvasContext, size in
+                    draw(in: canvasContext, size: size, time: 0)
+                }
+            } else {
+                // The fallback pattern is a function of time, so this one
+                // genuinely needs a timeline — and can rest when stopped.
+                TimelineView(.animation(paused: !isPlaying)) { context in
+                    Canvas { canvasContext, size in
+                        draw(
+                            in: canvasContext,
+                            size: size,
+                            time: context.date.timeIntervalSinceReferenceDate
+                        )
+                    }
+                }
             }
         }
         .accessibilityHidden(true)

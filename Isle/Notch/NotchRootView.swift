@@ -76,8 +76,11 @@ struct NotchRootView: View {
         Double(min(1, max(0, (expandProgress - 0.65) / 0.3)))
     }
 
+    /// Cached on the view model — see `NotchViewModel.palette`. Deriving it
+    /// here re-ran extraction on every body evaluation, which both cost real
+    /// CPU at 30fps and let a near-tied colour ranking flip frame to frame.
     private var palette: ArtworkPalette {
-        ArtworkColors.palette(from: viewModel.media.artwork)
+        viewModel.palette
     }
 
     /// Height of the physical camera housing. Content in the expanded panel
@@ -152,18 +155,17 @@ struct NotchRootView: View {
                 bottomCornerRadius: state.isExpanded ? 22 : 12
             )
         )
-        // Hover region is the full bounding rectangle, not the notch outline.
-        // The outline's top edge sits at the screen edge and its top corners
-        // are carved inward by the concave flares, so hovering the top of the
-        // island landed just *outside* the shape and collapsed it. The
-        // rectangle keeps the whole island — top edge and corners included —
-        // live, so the panel only closes once the pointer leaves it entirely.
+        // Hit region is the full bounding rectangle, not the notch outline. The
+        // outline's top edge sits at the screen edge and its top corners are
+        // carved inward by the concave flares, so the corners of the island
+        // would otherwise be dead to the mouse.
+        //
+        // Hover itself is not read here. `.onHover` knows only this rect, and
+        // both halves of the hover rule now live outside it: opening wants a
+        // lip below the island (and a sideways sweep across it *not* to count),
+        // closing wants a pad around the panel. NotchWindowController owns
+        // both — see `handlePointerMove`.
         .contentShape(Rectangle())
-        .onHover { hovering in
-            withAnimation(hovering ? .notchOpen : .notchClose) {
-                viewModel.setHovering(hovering)
-            }
-        }
         .background(
             GeometryReader { proxy in
                 // Tracks the *animating* frame, for the content reveal and the

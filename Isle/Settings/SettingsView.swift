@@ -20,6 +20,8 @@ struct SettingsView: View {
         Form {
             modeSection
 
+            notchSection
+
             if settings.effectiveMode.showsMusic {
                 musicSection
             }
@@ -132,6 +134,20 @@ struct SettingsView: View {
             get: { settings.effectiveMode },
             set: { settings.mode = $0 }
         )
+    }
+
+    // MARK: - Notch
+
+    private var notchSection: some View {
+        Section("Notch") {
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Haptic feedback", isOn: $settings.haptics)
+                Text("A soft tap from the trackpad each time the notch opens or closes. Macs without a Force Touch trackpad feel nothing either way.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     // MARK: - Music

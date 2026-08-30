@@ -76,8 +76,11 @@ enum HookInstaller {
     /// recognised. v6: emit `tool_active` so the app can tell a tool that is
     /// genuinely running from a model that has gone quiet. v7: one status file
     /// per session under ~/.isle/sessions — the single shared file let any
-    /// session's event overwrite every other session's state.)
-    private static let currentVersion = 7
+    /// session's event overwrite every other session's state. v8: write the
+    /// status file by rename instead of in place — Isle watches the directory,
+    /// and an in-place rewrite changes no directory entry, so every state
+    /// change after a session's first was invisible to the app.)
+    private static let currentVersion = 8
     private static let versionKey = "HookInstaller.installedVersion"
 
     private static var home: URL {
@@ -256,14 +259,21 @@ enum HookInstaller {
     # empty now — the notch no longer resolves decisions). Computes its own
     # timestamp so each write carries a fresh "… ago".
     write_status() {
-      local ts sf
+      local ts sf tmp
       ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       mkdir -p "$SESSION_DIR"
       # Keyed by session id. Absent one (a hook payload without stdin), fall
       # back to a fixed name so the write still lands somewhere predictable
       # rather than creating an unbounded set of files.
       sf="$SESSION_DIR/${SESSION_ID:-unknown}.json"
-      cat > "$sf" <<EOF
+      # Written to a temp file and renamed into place, never edited in place.
+      # Isle watches the *directory*, and rewriting an existing file changes no
+      # directory entry — so an in-place write fires no event and the app never
+      # learns the state changed. A rename does. (It also makes the write atomic,
+      # so Isle can never read a half-written record.) The temp name deliberately
+      # does not end in .json, so a scan mid-write can't pick it up as a session.
+      tmp="$sf.tmp.$$"
+      cat > "$tmp" <<EOF
     {
       "state": "$1",
       "project": "$PROJECT",
@@ -277,6 +287,7 @@ enum HookInstaller {
       "updated_at": "$ts"
     }
     EOF
+      mv -f "$tmp" "$sf"
     }
 
     CMD="${1:-}"

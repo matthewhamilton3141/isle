@@ -23,6 +23,7 @@ final class AppSettings: ObservableObject {
     private static let showScrubberKey = "isle.showScrubber"
     private static let showShuffleRepeatKey = "isle.showShuffleRepeat"
     private static let doneToastKey = "isle.doneToastSeconds"
+    private static let hapticsKey = "isle.haptics"
     private static let expandOnAlertKey = "isle.expandOnAlert"
     private static let dismissAlertPanelKey = "isle.dismissAlertPanel"
 
@@ -45,6 +46,16 @@ final class AppSettings: ObservableObject {
             guard lastTab != oldValue else { return }
             defaults.set(lastTab.rawValue, forKey: Self.tabKey)
         }
+    }
+
+    // MARK: - Notch
+
+    /// Whether opening and closing the notch taps the trackpad. Silent on Macs
+    /// without a Force Touch trackpad either way — `NSHapticFeedbackManager`
+    /// simply does nothing there — so this is only ever felt by the people it
+    /// can annoy.
+    @Published var haptics: Bool {
+        didSet { defaults.set(haptics, forKey: Self.hapticsKey) }
     }
 
     // MARK: - Media controls (spec 3.4)
@@ -101,6 +112,7 @@ final class AppSettings: ObservableObject {
             mode = IsleMode(rawValue: raw)
         }
         lastTab = IsleTab(rawValue: defaults.string(forKey: Self.tabKey) ?? "") ?? .music
+        haptics = defaults.object(forKey: Self.hapticsKey) as? Bool ?? true
         showScrubber = defaults.object(forKey: Self.showScrubberKey) as? Bool ?? true
         showShuffleRepeat = defaults.object(forKey: Self.showShuffleRepeatKey) as? Bool ?? true
         doneToastSeconds = defaults.object(forKey: Self.doneToastKey) as? Double ?? 4
