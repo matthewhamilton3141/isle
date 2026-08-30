@@ -1,0 +1,1665 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Isle</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400..800&family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Sans:wght@400;500;600&display=swap">
+<style>
+/* ============================================================
+   Isle — product site
+   Treatment: instrument datasheet. Paper ground, measured type,
+   dimension callouts. The only true black on the page is the
+   hardware itself.
+   ============================================================ */
+
+:root{
+  --paper:#E4E5E1;
+  --paper-2:#EFEFEC;
+  --paper-3:#DADBD6;
+  --ink:#101316;
+  --ink-2:#565C62;
+  --ink-3:#878C90;
+  --rule:#C7C8C3;
+  --rule-soft:#D5D6D1;
+  --signal:#1B39D8;
+  --signal-ink:#FFFFFF;
+
+  /* Hardware tokens — identical in both themes. The notch is black
+     because the bezel is black, not because the page is dark. */
+  --screen:#0A0B0C;
+  --screen-hi:#1A1D21;
+  --screen-ink:#EDEEEF;
+  --screen-ink-2:#8A9096;
+  --screen-rule:#2A2E33;
+  --hw:#000000;
+
+  /* Replaced at runtime by the playing track's artwork palette. */
+  --live:#8A8F93;
+  --live-2:#6F757A;
+
+  --font-display:"Archivo","Helvetica Neue",Helvetica,Arial,sans-serif;
+  --font-body:"Instrument Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --font-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --font-native:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;
+
+  --gut:clamp(20px,4vw,56px);
+  --spine:136px;
+}
+
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#0E0F11;
+    --paper-2:#16181B;
+    --paper-3:#1D2024;
+    --ink:#E9EAE7;
+    --ink-2:#9BA1A7;
+    --ink-3:#71777D;
+    --rule:#282C31;
+    --rule-soft:#1F2226;
+    --signal:#8298FF;
+    --signal-ink:#0E0F11;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0E0F11;
+  --paper-2:#16181B;
+  --paper-3:#1D2024;
+  --ink:#E9EAE7;
+  --ink-2:#9BA1A7;
+  --ink-3:#71777D;
+  --rule:#282C31;
+  --rule-soft:#1F2226;
+  --signal:#8298FF;
+  --signal-ink:#0E0F11;
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;
+  background:var(--paper);
+  color:var(--ink);
+  font-family:var(--font-body);
+  font-size:16px;
+  line-height:1.55;
+  -webkit-font-smoothing:antialiased;
+}
+::selection{background:var(--ink);color:var(--paper)}
+
+a{color:inherit}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--signal);outline-offset:3px;border-radius:2px}
+
+/* ---------- shared type ---------- */
+.mono{
+  font-family:var(--font-mono);
+  font-size:11px;
+  letter-spacing:.09em;
+  text-transform:uppercase;
+  color:var(--ink-3);
+  font-weight:500;
+}
+h1,h2,h3{
+  font-family:var(--font-display);
+  font-weight:700;
+  font-stretch:112%;
+  letter-spacing:-.022em;
+  line-height:1.02;
+  text-wrap:balance;
+  margin:0;
+}
+h1{font-size:clamp(38px,5.6vw,68px);font-weight:800;letter-spacing:-.032em}
+h2{font-size:clamp(27px,3.2vw,40px)}
+h3{font-size:17px;font-stretch:100%;letter-spacing:-.01em;line-height:1.25}
+p{margin:0}
+.lede{font-size:clamp(16px,1.5vw,19px);line-height:1.5;color:var(--ink-2);max-width:60ch}
+
+.wrap{max-width:1280px;margin:0 auto;padding:0 var(--gut)}
+
+/* ---------- top bar ---------- */
+.topbar{
+  position:sticky;top:0;z-index:60;
+  background:color-mix(in srgb,var(--paper) 88%,transparent);
+  backdrop-filter:saturate(140%) blur(12px);
+  border-bottom:1px solid var(--rule);
+}
+.topbar .wrap{display:flex;align-items:center;gap:26px;height:56px}
+.brand{display:flex;align-items:center;gap:10px;text-decoration:none;flex:none}
+.brand .mark{width:17px;height:17px;display:block}
+.brand .mark circle{fill:var(--ink)}
+.brand b{
+  font-family:var(--font-display);font-weight:700;font-stretch:118%;
+  font-size:17px;letter-spacing:-.02em;
+}
+.ver{
+  font-family:var(--font-mono);font-size:10.5px;color:var(--ink-3);
+  border:1px solid var(--rule);border-radius:2px;padding:1px 5px;
+  letter-spacing:.04em;
+}
+nav.top{display:flex;gap:22px;margin-left:auto}
+nav.top a{
+  font-family:var(--font-mono);font-size:11px;letter-spacing:.08em;
+  text-transform:uppercase;text-decoration:none;color:var(--ink-2);
+  padding:4px 0;border-bottom:1px solid transparent;
+}
+nav.top a:hover{color:var(--ink);border-bottom-color:var(--ink)}
+@media (max-width:880px){nav.top{display:none}}
+
+.btn{
+  display:inline-flex;align-items:center;gap:9px;
+  background:var(--ink);color:var(--paper);
+  text-decoration:none;border:1px solid var(--ink);
+  padding:8px 15px;border-radius:3px;
+  font-family:var(--font-mono);font-size:11.5px;letter-spacing:.04em;
+  font-weight:500;cursor:pointer;
+  transition:background .16s,color .16s,transform .16s;
+}
+.btn:hover{background:var(--signal);border-color:var(--signal);color:var(--signal-ink)}
+.btn:active{transform:translateY(1px)}
+.btn.ghost{background:transparent;color:var(--ink);border-color:var(--rule)}
+.btn.ghost:hover{background:transparent;border-color:var(--ink);color:var(--ink)}
+.btn.sm{padding:6px 12px;font-size:11px}
+
+/* ---------- section frame ---------- */
+section{border-bottom:1px solid var(--rule)}
+.sec{display:grid;grid-template-columns:var(--spine) minmax(0,1fr);gap:0 44px;padding:clamp(48px,7vw,96px) 0}
+.spine{position:relative}
+.spine .tag{position:sticky;top:84px;display:block}
+.spine .tag i{
+  display:block;width:22px;height:1px;background:var(--ink-3);margin-bottom:10px;
+}
+@media (max-width:820px){
+  .sec{grid-template-columns:1fr;gap:22px}
+  .spine .tag{position:static}
+}
+
+/* ---------- hero ---------- */
+.hero{padding:clamp(46px,7vw,88px) 0 clamp(34px,4vw,52px)}
+.hero-grid{display:grid;grid-template-columns:minmax(0,7fr) minmax(0,4fr);gap:0 clamp(28px,5vw,80px);align-items:start}
+@media (max-width:920px){.hero-grid{grid-template-columns:1fr;gap:38px}}
+.eyebrow{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-bottom:22px}
+.eyebrow span{white-space:nowrap}
+.eyebrow em{width:3px;height:3px;background:var(--ink-3);border-radius:50%;display:inline-block}
+.hero h1{margin-bottom:20px;max-width:16ch}
+.hero .lede{margin-bottom:28px}
+.hero-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.hero-actions .note{font-family:var(--font-mono);font-size:10.5px;color:var(--ink-3);letter-spacing:.03em}
+
+/* spec table in the hero's right column */
+.datasheet{border-top:1px solid var(--ink);padding-top:2px}
+.datasheet dl{display:grid;grid-template-columns:auto 1fr;margin:0}
+.datasheet dt,.datasheet dd{
+  font-family:var(--font-mono);font-size:11.5px;margin:0;
+  padding:9px 0;border-bottom:1px solid var(--rule-soft);
+}
+.datasheet dt{color:var(--ink-3);letter-spacing:.07em;text-transform:uppercase;padding-right:16px}
+.datasheet dd{color:var(--ink);text-align:right;font-variant-numeric:tabular-nums}
+
+/* ============================================================
+   DISPLAY MODULE — the mock MacBook screen
+   ============================================================ */
+.display{padding-bottom:clamp(30px,4vw,44px)}
+.stage{
+  position:relative;
+  background:var(--screen);
+  border-radius:12px 12px 0 0;
+  border:1px solid var(--screen-rule);
+  border-bottom:none;
+  overflow:hidden;
+  height:clamp(214px,25vw,296px);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.07);
+  -webkit-mask-image:linear-gradient(#000 76%,rgba(0,0,0,.55) 93%,transparent);
+  mask-image:linear-gradient(#000 76%,rgba(0,0,0,.55) 93%,transparent);
+}
+.wallpaper{
+  position:absolute;inset:0;
+  background:
+    radial-gradient(115% 85% at 50% -12%, #333B45 0%, #1E242B 38%, #12161A 72%, #0C0E11 100%);
+}
+.wallpaper::after{
+  content:"";position:absolute;inset:0;
+  background-image:radial-gradient(rgba(255,255,255,.07) 1px, transparent 1px);
+  background-size:22px 22px;
+  opacity:.6;
+}
+/* ambient bloom, tinted by the playing artwork */
+.bloom{
+  position:absolute;left:50%;top:0;transform:translateX(-50%);
+  width:min(760px,90%);height:220px;
+  background:radial-gradient(60% 100% at 50% 0%, var(--live) 0%, transparent 70%);
+  opacity:0;transition:opacity .8s ease;pointer-events:none;
+}
+.stage[data-playing="1"] .bloom{opacity:.20}
+
+.menubar{
+  position:absolute;top:0;left:0;right:0;height:34px;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 14px;color:var(--screen-ink);
+  font-family:var(--font-native);font-size:12.5px;
+}
+.menubar .grp{display:flex;align-items:center;gap:15px;opacity:.82}
+.menubar .grp.left b{font-weight:600}
+.menubar .grp span{font-weight:400}
+.menubar .clock{font-variant-numeric:tabular-nums;letter-spacing:.01em}
+.menubar .glyph{width:15px;height:11px;display:block;opacity:.9}
+@media (max-width:700px){.menubar .hide-sm{display:none}}
+
+/* --- the island --- */
+.notchwrap{
+  position:absolute;top:0;left:50%;z-index:5;
+  --nw:282px;--nh:34px;--nbr:14px;
+  transform:translateX(-50%) scale(var(--stage-scale,1));
+  transform-origin:top center;
+}
+.notch{
+  position:relative;
+  width:var(--nw);height:var(--nh);
+  background:var(--hw);
+  border-radius:0 0 var(--nbr) var(--nbr);
+  transition:width .42s cubic-bezier(.22,.86,.24,1), height .42s cubic-bezier(.22,.86,.24,1), border-radius .42s cubic-bezier(.22,.86,.24,1);
+  cursor:pointer;
+}
+/* concave flares where the shape meets the bezel — NotchShape.swift */
+.notch::before,.notch::after{
+  content:"";position:absolute;top:0;width:8px;height:8px;
+  background:radial-gradient(circle at var(--fx) 100%, transparent 7.6px, var(--hw) 8px);
+}
+.notch::before{left:-8px;--fx:0}
+.notch::after{right:-8px;--fx:100%}
+
+/* physical camera — stays put whatever the panel does */
+.camera{
+  position:absolute;top:11px;left:50%;transform:translateX(-50%);
+  width:7px;height:7px;border-radius:50%;
+  background:#121417;box-shadow:inset 0 0 0 1px #1E2226;
+  z-index:8;pointer-events:none;
+}
+.camera::after{
+  content:"";position:absolute;inset:2px;border-radius:50%;
+  background:radial-gradient(circle at 30% 30%, #34393E, #0C0E10 70%);
+}
+
+.face{position:absolute;inset:0;transition:opacity .22s ease}
+.notch[data-state="collapsed"] .face-expanded{opacity:0;pointer-events:none}
+.notch[data-state="expanded"] .face-collapsed{opacity:0;pointer-events:none}
+
+/* collapsed: left cluster | camera dead zone | right cluster */
+.face-collapsed{display:flex;align-items:center;padding:0 4px}
+.cl-left{width:46px;display:flex;justify-content:flex-end;padding-right:6px}
+.cl-gap{width:190px;flex:none}
+.cl-right{width:46px;display:flex;justify-content:flex-start;padding-left:6px}
+.thumb{width:22px;height:22px;border-radius:5px;background-size:cover;background-position:center;flex:none}
+.wave-mini{width:26px;height:14px;display:block}
+
+/* expanded panel */
+.face-expanded{display:flex;align-items:center;justify-content:center;gap:14px;padding-top:12px}
+.artwork{
+  width:114px;height:114px;border-radius:14px;flex:none;
+  background-size:cover;background-position:center;
+  transform:translateY(-11px);
+  box-shadow:0 8px 22px rgba(0,0,0,.5);
+}
+.panelcol{width:340px;flex:none;color:#fff;font-family:var(--font-native);transform:translateY(-1px)}
+.marquee{overflow:hidden;white-space:nowrap;position:relative}
+.marquee > span{display:inline-block;will-change:transform}
+.m-title{height:18px;font-size:14px;font-weight:600;line-height:18px;padding-right:36px}
+.m-artist{height:15px;font-size:11px;line-height:15px;color:rgba(255,255,255,.7);padding-right:36px}
+.scrub{margin-top:6px;transform:translateY(3px)}
+.track{
+  height:10px;display:flex;align-items:center;cursor:pointer;position:relative;
+}
+.track .rail{height:6px;border-radius:3px;background:rgba(255,255,255,.22);width:100%;overflow:hidden}
+.track .fill{height:100%;background:#fff;width:0%;border-radius:3px}
+.times{
+  display:flex;justify-content:space-between;margin-top:2px;
+  font-size:9px;font-weight:500;font-variant-numeric:tabular-nums;
+  color:rgba(255,255,255,.55);
+}
+.transport{display:flex;align-items:center;justify-content:center;gap:16px;margin-top:4px}
+.tbtn{
+  background:none;border:0;padding:0;cursor:pointer;color:#fff;
+  display:grid;place-items:center;border-radius:4px;
+  transition:color .15s,opacity .15s;
+}
+.tbtn svg{display:block;fill:currentColor}
+.tbtn[aria-pressed="false"]{color:rgba(255,255,255,.35)}
+.tbtn:hover{opacity:.75}
+.wave-big{position:absolute;top:10px;right:4px;width:30px;height:24px;pointer-events:none}
+
+/* --- CAD-style dimension callouts, drawn on the screen --- */
+.dim{position:absolute;color:var(--screen-ink-2);font-family:var(--font-mono);font-size:9.5px;letter-spacing:.06em;pointer-events:none;z-index:4}
+.dim-w{
+  left:0;width:100%;top:calc(var(--nh) + 16px);
+  display:flex;align-items:center;gap:8px;
+  transition:top .42s cubic-bezier(.22,.86,.24,1);
+}
+.dim-w i{flex:1;height:1px;background:var(--screen-rule);position:relative}
+.dim-w i::before,.dim-w i::after{content:"";position:absolute;top:-3px;width:1px;height:7px;background:var(--screen-rule)}
+.dim-w i::before{left:0}.dim-w i::after{right:0}
+.dim-h{
+  top:0;left:calc(100% + 22px);height:var(--nh);
+  display:flex;align-items:center;gap:8px;
+  transition:height .42s cubic-bezier(.22,.86,.24,1);
+}
+.dim-h i{width:1px;height:100%;background:var(--screen-rule);position:relative}
+.dim-h i::before,.dim-h i::after{content:"";position:absolute;left:-3px;width:7px;height:1px;background:var(--screen-rule)}
+.dim-h i::before{top:0}.dim-h i::after{bottom:0}
+@media (max-width:760px){.dim-h{display:none}}
+
+/* --- instrument panel under the screen --- */
+.console{
+  border:1px solid var(--rule);border-top:none;
+  background:var(--paper-2);
+  display:grid;grid-template-columns:auto 1fr auto;gap:18px;align-items:center;
+  padding:12px 16px;
+}
+@media (max-width:820px){.console{grid-template-columns:1fr;gap:14px}}
+.console .grp{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.playbtn{
+  display:inline-flex;align-items:center;gap:9px;
+  background:var(--ink);color:var(--paper);border:1px solid var(--ink);
+  border-radius:3px;padding:8px 14px;cursor:pointer;
+  font-family:var(--font-mono);font-size:11.5px;letter-spacing:.04em;font-weight:500;
+  transition:background .16s,border-color .16s;
+}
+.playbtn:hover{background:var(--signal);border-color:var(--signal);color:var(--signal-ink)}
+.playbtn svg{fill:currentColor;display:block}
+.vol{display:flex;align-items:center;gap:9px}
+.vol input[type=range]{width:96px;accent-color:var(--ink);background:transparent}
+
+.readout{
+  display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  font-family:var(--font-mono);font-size:10.5px;color:var(--ink-3);
+  letter-spacing:.04em;
+}
+.readout b{color:var(--ink-2);font-weight:500}
+.bands{display:flex;gap:7px;font-variant-numeric:tabular-nums}
+.bands span{color:var(--ink-2);min-width:30px;display:inline-block}
+.livedot{width:6px;height:6px;border-radius:50%;background:var(--rule);flex:none;transition:background .4s}
+.stage[data-playing="1"] ~ .console .livedot,.console.on .livedot{background:var(--live)}
+
+.caption{
+  display:flex;justify-content:space-between;gap:20px 40px;flex-wrap:wrap;
+  margin-top:14px;color:var(--ink-3);
+}
+.caption p{max-width:78ch;font-size:13px;line-height:1.55}
+.caption p b{font-family:var(--font-mono);font-size:12px;font-weight:500;color:var(--ink-2)}
+.caption p:last-child{
+  font-family:var(--font-mono);font-size:10.5px;letter-spacing:.06em;
+  text-transform:uppercase;white-space:nowrap;
+}
+
+/* ---------- capability grid ---------- */
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid var(--rule)}
+@media (max-width:900px){.grid3{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:600px){.grid3{grid-template-columns:1fr}}
+.cell{padding:22px 24px 26px;border-bottom:1px solid var(--rule-soft);border-right:1px solid var(--rule-soft)}
+.cell:nth-child(3n){border-right:none}
+@media (max-width:900px){.cell:nth-child(3n){border-right:1px solid var(--rule-soft)}.cell:nth-child(2n){border-right:none}}
+@media (max-width:600px){.cell{border-right:none!important}}
+.cell .k{font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;color:var(--ink-3);text-transform:uppercase;display:block;margin-bottom:12px}
+.cell h3{margin-bottom:7px}
+.cell p{font-size:14.5px;line-height:1.5;color:var(--ink-2)}
+
+/* ---------- mechanism diagram ---------- */
+.diagram{overflow-x:auto;padding-bottom:6px}
+.lane{
+  display:grid;grid-template-columns:104px 1fr;gap:0 20px;align-items:center;
+  padding:18px 0;border-bottom:1px solid var(--rule-soft);min-width:640px;
+}
+.lane:first-of-type{border-top:1px solid var(--rule)}
+.lane .lk{font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}
+.flow{display:flex;align-items:stretch;gap:0}
+.node{
+  border:1px solid var(--rule);background:var(--paper-2);
+  padding:9px 13px;border-radius:3px;
+  flex:1 1 0;min-width:0;
+}
+.node b{display:block;font-family:var(--font-mono);font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.node i{display:block;font-style:normal;font-size:11px;color:var(--ink-3);white-space:nowrap;margin-top:2px;overflow:hidden;text-overflow:ellipsis}
+.node.solid{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+.node.solid i{color:color-mix(in srgb, var(--paper) 60%, var(--ink))}
+.link{flex:0 0 clamp(48px,7vw,96px);display:flex;align-items:center;padding:0 5px;position:relative}
+.link i{flex:1;height:1px;background:var(--ink-3);opacity:.55}
+.link::after{content:"";width:0;height:0;border-left:5px solid var(--ink-3);border-top:3.5px solid transparent;border-bottom:3.5px solid transparent}
+.link b{
+  position:absolute;left:50%;top:-15px;transform:translateX(-50%);
+  font-family:var(--font-mono);font-size:9.5px;color:var(--ink-3);
+  font-weight:400;white-space:nowrap;letter-spacing:.04em;
+}
+
+.callout{
+  border-left:2px solid var(--signal);background:var(--paper-2);
+  padding:16px 20px;margin-top:26px;
+}
+.callout .k{font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--signal);display:block;margin-bottom:8px}
+.callout p{font-size:14.5px;color:var(--ink-2);line-height:1.55;max-width:72ch}
+.callout code{font-family:var(--font-mono);font-size:13px;color:var(--ink);background:var(--paper-3);padding:1px 4px;border-radius:2px}
+
+/* ---------- claude module ---------- */
+.claude-demo{display:grid;grid-template-columns:minmax(0,1fr) 262px;gap:0}
+@media (max-width:820px){.claude-demo{grid-template-columns:1fr}}
+.mini-stage{
+  position:relative;background:var(--screen);border:1px solid var(--screen-rule);
+  height:190px;overflow:hidden;
+}
+.statebar{
+  border:1px solid var(--rule);border-left:none;background:var(--paper-2);
+  display:flex;flex-direction:column;
+}
+@media (max-width:820px){.statebar{border-left:1px solid var(--rule);border-top:none}}
+.statebar button{
+  text-align:left;background:none;border:0;border-bottom:1px solid var(--rule-soft);
+  padding:13px 16px;cursor:pointer;font-family:var(--font-mono);font-size:11px;
+  letter-spacing:.05em;color:var(--ink-2);display:flex;align-items:center;gap:10px;
+  transition:background .14s,color .14s;flex:1;
+}
+.statebar button:hover{background:var(--paper-3);color:var(--ink)}
+.statebar button[aria-pressed="true"]{background:var(--ink);color:var(--paper)}
+.statebar button:last-child{border-bottom:none}
+.statebar .sw{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+
+.dots{display:grid;grid-template-columns:repeat(5,1fr);gap:2px;width:22px;height:22px}
+.dots u{display:block;width:100%;padding-bottom:100%;border-radius:50%;background:currentColor;opacity:.2}
+.statusword{
+  font-family:var(--font-native);font-size:11px;font-weight:600;
+  white-space:nowrap;transition:color .3s;
+}
+
+/* ---------- install ---------- */
+.steps{counter-reset:s;border-top:1px solid var(--rule)}
+.step{
+  display:grid;grid-template-columns:34px minmax(0,1fr);gap:0 18px;
+  padding:20px 0;border-bottom:1px solid var(--rule-soft);
+}
+.step::before{
+  counter-increment:s;content:counter(s,decimal-leading-zero);
+  font-family:var(--font-mono);font-size:11px;color:var(--ink-3);padding-top:2px;
+}
+.step h3{margin-bottom:5px}
+.step p{font-size:14.5px;color:var(--ink-2);max-width:66ch}
+pre{
+  margin:12px 0 0;padding:13px 15px;overflow-x:auto;
+  background:var(--screen);color:var(--screen-ink);
+  border-radius:4px;font-family:var(--font-mono);font-size:12.5px;line-height:1.6;
+}
+pre .c{color:var(--screen-ink-2)}
+.req{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 40px}
+@media (max-width:700px){.req{grid-template-columns:1fr}}
+.req div{padding:11px 0;border-bottom:1px solid var(--rule-soft);display:flex;justify-content:space-between;gap:18px;font-family:var(--font-mono);font-size:12px}
+.req span{color:var(--ink-3)}
+
+/* ---------- footer ---------- */
+footer{padding:44px 0 56px}
+.foot{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr) minmax(0,1fr);gap:34px}
+@media (max-width:760px){.foot{grid-template-columns:1fr;gap:26px}}
+.foot p{font-size:13px;color:var(--ink-3);max-width:52ch;line-height:1.6}
+.foot ul{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.foot a{font-family:var(--font-mono);font-size:11.5px;color:var(--ink-2);text-decoration:none;border-bottom:1px solid var(--rule)}
+.foot a:hover{color:var(--ink);border-bottom-color:var(--ink)}
+
+@media (prefers-reduced-motion: reduce){
+  *{animation-duration:.001ms!important;animation-iteration-count:1!important}
+  .notch,.dim-w,.dim-h{transition:none}
+}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="#top">
+      <svg class="mark" viewBox="0 0 1024 1024" aria-hidden="true">
+        <circle cx="302" cy="302" r="62"/><circle cx="512" cy="302" r="62"/><circle cx="722" cy="302" r="62"/>
+        <circle cx="302" cy="512" r="62"/><circle cx="512" cy="512" r="62"/><circle cx="722" cy="512" r="62"/>
+        <circle cx="302" cy="722" r="62"/><circle cx="512" cy="722" r="62"/><circle cx="722" cy="722" r="62"/>
+      </svg>
+      <b>Isle</b>
+      <span class="ver">0.1.3</span>
+    </a>
+    <nav class="top">
+      <a href="#demo">Demo</a>
+      <a href="#does">What it does</a>
+      <a href="#mechanism">Mechanism</a>
+      <a href="#claude">Claude Code</a>
+      <a href="#install">Install</a>
+    </nav>
+    <a class="btn sm" href="https://github.com/matthewhamilton3141/isle/releases/download/v0.1.3/Isle-0.1.3.dmg">Download</a>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- ============ HERO ============ -->
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <div class="eyebrow mono">
+          <span>macOS 14+</span><em></em>
+          <span>Menu bar app</span><em></em>
+          <span>Swift &amp; SwiftUI</span><em></em>
+          <span>Built for Spotify</span>
+        </div>
+        <h1>A live island in the dead space around your camera.</h1>
+        <p class="lede">Isle fills the black band either side of the MacBook notch with what Spotify
+          is playing — album art, a waveform driven by the actual audio signal, and transport
+          controls that unfold when your pointer gets close. It never takes focus, and it folds
+          back out of the way the moment you leave.</p>
+        <div class="hero-actions" style="margin-top:28px">
+          <a class="btn" href="https://github.com/matthewhamilton3141/isle/releases/download/v0.1.3/Isle-0.1.3.dmg">
+            Download Isle 0.1.3 &nbsp;·&nbsp; .dmg
+          </a>
+          <a class="btn ghost" href="#demo">Try it below</a>
+          <span class="note">Sideloaded build — not the App Store. Here's why.</span>
+        </div>
+      </div>
+
+      <div class="datasheet">
+        <dl>
+          <dt>Version</dt><dd>0.1.3</dd>
+          <dt>Requires</dt><dd>macOS 14.0</dd>
+          <dt>Waveform</dt><dd>macOS 14.4+</dd>
+          <dt>Source</dt><dd>Spotify</dd>
+          <dt>Panel</dt><dd>520 × 146 pt</dd>
+          <dt>Bands</dt><dd>6 · log-spaced</dd>
+          <dt>Dock icon</dt><dd>None</dd>
+          <dt>Price</dt><dd>Free</dd>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ DEMO ============ -->
+  <section id="demo" class="display">
+    <div class="wrap">
+
+      <div class="stage" id="stage" data-playing="0">
+        <div class="wallpaper"></div>
+        <div class="bloom"></div>
+
+        <div class="menubar">
+          <div class="grp left">
+            <svg class="glyph" viewBox="0 0 1024 1024" aria-hidden="true" style="width:12px;height:12px;fill:currentColor">
+              <circle cx="302" cy="302" r="90"/><circle cx="512" cy="302" r="90"/><circle cx="722" cy="302" r="90"/>
+              <circle cx="302" cy="512" r="90"/><circle cx="512" cy="512" r="90"/><circle cx="722" cy="512" r="90"/>
+              <circle cx="302" cy="722" r="90"/><circle cx="512" cy="722" r="90"/><circle cx="722" cy="722" r="90"/>
+            </svg>
+            <b>Spotify</b>
+            <span class="hide-sm">File</span><span class="hide-sm">Edit</span>
+            <span class="hide-sm">View</span><span class="hide-sm">Playback</span>
+          </div>
+          <div class="grp">
+            <span class="hide-sm" id="mbState">Isle</span>
+            <svg class="glyph" viewBox="0 0 24 16" aria-hidden="true" style="fill:none;stroke:currentColor;stroke-width:1.6">
+              <path d="M2 6.5a13 13 0 0 1 20 0M5.5 10a8.5 8.5 0 0 1 13 0"/><circle cx="12" cy="13.4" r="1" fill="currentColor" stroke="none"/>
+            </svg>
+            <svg class="glyph" viewBox="0 0 26 12" aria-hidden="true" style="fill:none;stroke:currentColor;stroke-width:1.4">
+              <rect x="1" y="1" width="20" height="10" rx="3"/><rect x="3" y="3" width="13" height="6" rx="1.5" fill="currentColor" stroke="none"/><path d="M23 4.5v3" stroke-linecap="round"/>
+            </svg>
+            <span class="clock" id="mbClock">9:41</span>
+          </div>
+        </div>
+
+        <div class="notchwrap">
+          <div class="notch" id="notch" data-state="collapsed" role="button" tabindex="0"
+               aria-label="Isle notch — click to expand or collapse">
+
+            <div class="face face-collapsed">
+              <div class="cl-left"><div class="thumb" id="thumbArt"></div></div>
+              <div class="cl-gap"></div>
+              <div class="cl-right"><canvas class="wave-mini" id="waveMini" width="52" height="28"></canvas></div>
+            </div>
+
+            <div class="face face-expanded">
+              <div class="artwork" id="bigArt"></div>
+              <div class="panelcol">
+                <div class="marquee m-title" id="mqTitle"><span>Long Exposure</span></div>
+                <div class="marquee m-artist" id="mqArtist"><span>Nocturne Bureau</span></div>
+                <div class="scrub">
+                  <div class="track" id="track" role="slider" tabindex="0" aria-label="Seek"
+                       aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                    <div class="rail"><div class="fill" id="fill"></div></div>
+                  </div>
+                  <div class="times"><span id="tElapsed">0:00</span><span id="tRemain">-3:34</span></div>
+                </div>
+                <div class="transport">
+                  <button class="tbtn" id="bShuffle" aria-pressed="false" aria-label="Shuffle">
+                    <svg width="15" height="15" viewBox="0 0 16 16"><path d="M11.2 2.3a.6.6 0 0 1 .85 0l2 2a.6.6 0 0 1 0 .85l-2 2a.6.6 0 0 1-.85-.85l.97-.97h-1.3c-.8 0-1.3.3-1.8 1L7.4 8l1.27 1.67c.5.7 1 1 1.8 1h1.3l-.97-.97a.6.6 0 0 1 .85-.85l2 2a.6.6 0 0 1 0 .85l-2 2a.6.6 0 1 1-.85-.85l.97-.97h-1.3c-1.2 0-2.1-.55-2.8-1.5L6.65 9 5.53 10.5c-.7.95-1.6 1.5-2.8 1.5H1.9a.6.6 0 0 1 0-1.2h.83c.8 0 1.3-.3 1.8-1L5.9 8 4.53 6.2c-.5-.7-1-1-1.8-1H1.9a.6.6 0 0 1 0-1.2h.83c1.2 0 2.1.55 2.8 1.5L6.65 7l1.12-1.5c.7-.95 1.6-1.5 2.8-1.5h1.3l-.97-.97a.6.6 0 0 1 0-.73z"/></svg>
+                  </button>
+                  <button class="tbtn" id="bPrev" aria-label="Previous track">
+                    <svg width="21" height="21" viewBox="0 0 22 22"><path d="M5.6 4.6c.5 0 .9.4.9.9v4.2l8.1-4.9c.8-.5 1.8.1 1.8 1v10.4c0 .9-1 1.5-1.8 1l-8.1-4.9v4.2c0 .5-.4.9-.9.9s-.9-.4-.9-.9V5.5c0-.5.4-.9.9-.9z"/></svg>
+                  </button>
+                  <button class="tbtn" id="bPlay" aria-label="Play">
+                    <svg width="28" height="28" viewBox="0 0 28 28" id="playIcon"><path d="M8.3 4.5c-.6-.4-1.4 0-1.4.8v17.4c0 .8.8 1.2 1.4.8l13.5-8.7c.5-.3.5-1.1 0-1.5L8.3 4.5z"/></svg>
+                  </button>
+                  <button class="tbtn" id="bNext" aria-label="Next track">
+                    <svg width="21" height="21" viewBox="0 0 22 22"><path d="M16.4 4.6c-.5 0-.9.4-.9.9v4.2L7.4 4.8c-.8-.5-1.8.1-1.8 1v10.4c0 .9 1 1.5 1.8 1l8.1-4.9v4.2c0 .5.4.9.9.9s.9-.4.9-.9V5.5c0-.5-.4-.9-.9-.9z"/></svg>
+                  </button>
+                  <button class="tbtn" id="bRepeat" aria-pressed="false" aria-label="Repeat">
+                    <svg width="15" height="15" viewBox="0 0 16 16"><path d="M4.6 3.2h6.2l-.9-.9a.6.6 0 0 1 .85-.85l1.95 1.95a.6.6 0 0 1 0 .85L10.75 6.2a.6.6 0 1 1-.85-.85l.9-.9H4.6c-1 0-1.7.7-1.7 1.7v1.3a.6.6 0 0 1-1.2 0V6.15c0-1.65 1.15-2.95 2.9-2.95zm6.8 4.5a.6.6 0 0 1 .6.6v1.55c0 1.65-1.15 2.95-2.9 2.95H2.9l.9.9a.6.6 0 1 1-.85.85L1 12.6a.6.6 0 0 1 0-.85l1.95-1.95a.6.6 0 1 1 .85.85l-.9.9h6.2c1 0 1.7-.7 1.7-1.7V8.3a.6.6 0 0 1 .6-.6z"/></svg>
+                  </button>
+                </div>
+              </div>
+              <canvas class="wave-big" id="waveBig" width="60" height="48"></canvas>
+            </div>
+          </div>
+          <div class="camera"></div>
+          <div class="dim dim-w" id="dimW"><i></i><span id="dimWLabel">282</span><i></i></div>
+          <div class="dim dim-h" id="dimH"><i></i><span id="dimHLabel">34</span></div>
+        </div>
+      </div>
+
+      <div class="console" id="console">
+        <div class="grp">
+          <button class="playbtn" id="bigPlay">
+            <svg width="11" height="12" viewBox="0 0 11 12" id="bigPlayIcon"><path d="M1 1.2c0-.5.5-.8 1-.5l8 4.8c.4.3.4.8 0 1l-8 4.8c-.5.3-1 0-1-.5V1.2z"/></svg>
+            <span id="bigPlayLabel">Play the demo</span>
+          </button>
+          <div class="vol">
+            <span class="mono" style="font-size:10px">VOL</span>
+            <input type="range" id="vol" min="0" max="100" value="62" aria-label="Demo volume">
+          </div>
+        </div>
+
+        <div class="readout">
+          <span class="livedot" id="liveDot"></span>
+          <span>STATE <b id="roState">COLLAPSED</b></span>
+          <span>PANEL <b id="roSize">282×34</b></span>
+          <span>BANDS</span>
+          <span class="bands" id="roBands">
+            <span>0.00</span><span>0.00</span><span>0.00</span><span>0.00</span><span>0.00</span><span>0.00</span>
+          </span>
+        </div>
+
+        <button class="btn ghost sm" id="bToggle">Expand panel</button>
+      </div>
+
+      <div class="caption">
+        <p>The waveform is not a loop. The demo synthesises its audio in your browser, runs an FFT
+          over the live output, and reduces the spectrum to six log-spaced bands, tilted so the high
+          bars stay alive — the same reduction <b>SystemAudioLevels.swift</b> runs on Spotify's
+          captured signal. Hover the island to expand it; drag the playbar to seek.</p>
+        <p style="text-align:right">Fig. 1 — Isle on a 14&quot; display, 1:1 scale</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ WHAT IT DOES ============ -->
+  <section id="does">
+    <div class="wrap sec">
+      <div class="spine"><span class="tag mono"><i></i>What it does</span></div>
+      <div>
+        <h2 style="max-width:22ch;margin-bottom:16px">Six things, each one sized to the space it has.</h2>
+        <p class="lede" style="margin-bottom:34px">The notch is roughly 190 points wide and 34 tall.
+          Everything below had to earn its place in that band, or in the panel that unfolds from it.</p>
+
+        <div class="grid3">
+          <div class="cell">
+            <span class="k">Collapsed</span>
+            <h3>Now playing at a glance</h3>
+            <p>Album art on the left of the camera, waveform on the right. The cutout itself is the
+              divider — nothing is ever drawn under the lens.</p>
+          </div>
+          <div class="cell">
+            <span class="k">Signal</span>
+            <h3>A waveform from the real audio</h3>
+            <p>A Core Audio process tap on Spotify feeds an FFT. The bars move with your track, not
+              with a timer, and not with anything else playing on the system.</p>
+          </div>
+          <div class="cell">
+            <span class="k">Expanded</span>
+            <h3>Full transport, on hover</h3>
+            <p>Play, pause, next, previous, shuffle, repeat, and a scrubbable playbar. The panel opens
+              under the pointer and closes when you leave.</p>
+          </div>
+          <div class="cell">
+            <span class="k">Artwork</span>
+            <h3>Cover art decoded sharp</h3>
+            <p>A 640 px sleeve drawn into 22 points aliases badly on the default filter. Isle decodes
+              at true pixel resolution, so the thumbnail stays crisp.</p>
+          </div>
+          <div class="cell">
+            <span class="k">Clock</span>
+            <h3>A playbar that doesn't stutter</h3>
+            <p>Position is smoothed against its own anchor and eased toward what Spotify reports, so
+              it stays continuous between coarse updates and through seeks.</p>
+          </div>
+          <div class="cell">
+            <span class="k">Window</span>
+            <h3>Never steals focus</h3>
+            <p>A borderless, non-activating panel with no Dock icon. It is created at full size and
+              only its contents animate, so the window server never has to reflow under your cursor.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ MECHANISM ============ -->
+  <section id="mechanism">
+    <div class="wrap sec">
+      <div class="spine"><span class="tag mono"><i></i>Mechanism</span></div>
+      <div>
+        <h2 style="max-width:20ch;margin-bottom:16px">Reading what's playing is the hard part.</h2>
+        <p class="lede" style="margin-bottom:34px">Apple gated the obvious API. Isle's media layer is
+          three separate paths because collapsing them into one would break the first thing you'd try.</p>
+
+        <div class="diagram">
+          <div class="lane">
+            <span class="lk">Read</span>
+            <div class="flow">
+              <div class="node solid"><b>Isle</b><i>MediaRemoteAdapterClient</i></div>
+              <div class="link"><b>spawn</b><i></i></div>
+              <div class="node"><b>/usr/bin/perl</b><i>Apple-signed, entitled</i></div>
+              <div class="link"><b>dlopen</b><i></i></div>
+              <div class="node"><b>MediaRemote</b><i>now-playing metadata</i></div>
+            </div>
+          </div>
+          <div class="lane">
+            <span class="lk">Control</span>
+            <div class="flow">
+              <div class="node solid"><b>Isle</b><i>SpotifyController</i></div>
+              <div class="link"><b>AppleScript</b><i></i></div>
+              <div class="node"><b>Spotify</b><i>play · pause · seek · next</i></div>
+              <div class="link"><b>1 Hz poll</b><i></i></div>
+              <div class="node"><b>Player position</b><i>owns the playback clock</i></div>
+            </div>
+          </div>
+          <div class="lane">
+            <span class="lk">Waveform</span>
+            <div class="flow">
+              <div class="node solid"><b>Isle</b><i>SystemAudioLevels</i></div>
+              <div class="link"><b>process tap</b><i></i></div>
+              <div class="node"><b>Core Audio</b><i>Spotify's PID only</i></div>
+              <div class="link"><b>vDSP FFT</b><i></i></div>
+              <div class="node"><b>6 bands</b><i>log-spaced, 0…1</i></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout">
+          <span class="k">The thing that costs everyone a day</span>
+          <p>Since roughly macOS 15.4, <code>MRMediaRemoteGetNowPlayingInfo</code> returns an
+            <em>empty dictionary</em> to unentitled apps rather than failing. The call succeeds, so an
+            app built the textbook way silently never shows a track and nothing in the logs says why.
+            Verified through macOS 26.5. Reads go through the adapter subprocess; commands, which
+            aren't gated, go straight to Spotify. The two paths stay separate on purpose.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ CLAUDE ============ -->
+  <section id="claude">
+    <div class="wrap sec">
+      <div class="spine"><span class="tag mono"><i></i>Claude Code</span></div>
+      <div>
+        <h2 style="max-width:21ch;margin-bottom:16px">The other thing worth putting up there.</h2>
+        <p class="lede" style="margin-bottom:30px">Isle watches a running Claude Code session and shows
+          its state in the same band. When Claude needs your approval, the island opens on its own —
+          you don't have to be looking at the terminal. Pick a state to see it.</p>
+
+        <div class="claude-demo">
+          <div class="mini-stage" id="miniStage">
+            <div class="wallpaper"></div>
+            <div class="menubar" style="opacity:.6">
+              <div class="grp left"><b>Terminal</b><span class="hide-sm">Shell</span><span class="hide-sm">Edit</span></div>
+              <div class="grp"><span class="clock">9:41</span></div>
+            </div>
+            <div class="notchwrap">
+              <div class="notch" id="cNotch" data-state="collapsed" style="--nw:282px;--nh:34px;--nbr:14px">
+                <div class="face face-collapsed">
+                  <div class="cl-left" style="align-items:center">
+                    <div class="dots" id="cDots" style="color:#E7E8E9"></div>
+                  </div>
+                  <div class="cl-gap"></div>
+                  <div class="cl-right"><span class="statusword" id="cWord" style="color:#E7E8E9">Thinking</span></div>
+                </div>
+                <div class="face face-expanded" style="justify-content:flex-start;padding:20px 26px 0 32px;align-items:flex-start">
+                  <div class="dots" id="cDotsBig" style="color:#E7E8E9;width:74px;height:74px;gap:5px;transform:translateY(2px)"></div>
+                  <div style="color:#fff;font-family:var(--font-native);margin-left:18px">
+                    <div id="cHead" style="font-size:24px;font-weight:700;letter-spacing:-.4px">Needs approval</div>
+                    <div id="cSub" style="font-size:12.5px;color:rgba(255,255,255,.72);margin-top:2px">Edit&nbsp;· Isle/Media/SystemAudioLevels.swift</div>
+                    <div style="display:flex;gap:16px;margin-top:11px;font-size:11px;color:rgba(255,255,255,.5);font-variant-numeric:tabular-nums">
+                      <span>isle</span><span id="cElapsed">4m 12s</span><span>opus-5</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="camera"></div>
+            </div>
+          </div>
+
+          <div class="statebar" id="cBar">
+            <button data-state="working" aria-pressed="true"><span class="sw"></span>Working</button>
+            <button data-state="approval" aria-pressed="false"><span class="sw"></span>Needs approval</button>
+            <button data-state="done" aria-pressed="false"><span class="sw"></span>Done</button>
+            <button data-state="idle" aria-pressed="false"><span class="sw"></span>No session</button>
+          </div>
+        </div>
+
+        <div class="caption">
+          <p>Claude's hooks write a small status file per session under <b>~/.isle/sessions/</b>; Isle
+            watches the directory with file-system events and ranks by urgency, so a background session
+            can't overwrite the one you're watching. Install the hook from the menu bar — it merges into
+            <b>~/.claude/settings.json</b> without disturbing what's already there.</p>
+          <p style="text-align:right">Fig. 2 — Claude mode</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ INSTALL ============ -->
+  <section id="install">
+    <div class="wrap sec">
+      <div class="spine"><span class="tag mono"><i></i>Install</span></div>
+      <div>
+        <h2 style="max-width:20ch;margin-bottom:16px">Two permissions, then it's out of your way.</h2>
+        <p class="lede" style="margin-bottom:30px">Isle uses a private framework and AppleScript
+          automation, which rules out the Mac App Store. It ships as a signed disk image you install
+          yourself, and it updates itself from there.</p>
+
+        <div class="steps">
+          <div class="step">
+            <div>
+              <h3>Download and drag to Applications</h3>
+              <p>A 0.1.3 disk image, universal. First launch is right-click → Open, since the build is
+                sideloaded rather than notarised through the Store.</p>
+              <div style="margin-top:14px"><a class="btn" href="https://github.com/matthewhamilton3141/isle/releases/download/v0.1.3/Isle-0.1.3.dmg">Isle-0.1.3.dmg</a></div>
+            </div>
+          </div>
+          <div class="step">
+            <div>
+              <h3>Allow it to control Spotify, and to hear it</h3>
+              <p>macOS asks twice: Automation, for the transport controls, and audio capture, for the
+                waveform. Decline the second and everything still works — the waveform falls back to a
+                procedural pattern rather than going dead.</p>
+            </div>
+          </div>
+          <div class="step">
+            <div>
+              <h3>Optional — wire up Claude Code</h3>
+              <p>From the menu bar, <b>Install Claude Code Hook…</b> drops a helper into
+                <b>~/.isle/bin</b> and merges the hook entries into your settings.</p>
+            </div>
+          </div>
+          <div class="step">
+            <div>
+              <h3>Or build it from source</h3>
+              <p>Xcode 16+. The build script fetches a pinned upstream tag of the adapter, compiles a
+                universal framework, and drops it into place.</p>
+              <pre><span class="c"># one-time: build the bundled now-playing bridge</span>
+./scripts/build-mediaremote-adapter.sh
+
+open Isle.xcodeproj   <span class="c"># then ⌘R</span></pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="req" style="margin-top:34px">
+          <div><span>Operating system</span><b>macOS 14 Sonoma</b></div>
+          <div><span>Waveform requires</span><b>macOS 14.4</b></div>
+          <div><span>Music source</span><b>Spotify</b></div>
+          <div><span>Displays</span><b>Built-in, notched or not</b></div>
+          <div><span>Menu bar</span><b>LSUIElement, no Dock icon</b></div>
+          <div><span>Updates</span><b>In-app, signed manifest</b></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <div>
+      <a class="brand" href="#top" style="margin-bottom:14px">
+        <svg class="mark" viewBox="0 0 1024 1024" aria-hidden="true">
+          <circle cx="302" cy="302" r="62"/><circle cx="512" cy="302" r="62"/><circle cx="722" cy="302" r="62"/>
+          <circle cx="302" cy="512" r="62"/><circle cx="512" cy="512" r="62"/><circle cx="722" cy="512" r="62"/>
+          <circle cx="302" cy="722" r="62"/><circle cx="512" cy="722" r="62"/><circle cx="722" cy="722" r="62"/>
+        </svg>
+        <b>Isle</b>
+      </a>
+      <p>Isle is its own codebase. The bundled <b>mediaremote-adapter</b> is BSD-3-Clause,
+        © 2025 Jonas van den Berg, and ships with its licence alongside it. boring.notch is
+        GPL-3.0 and was read as a technique reference only — no code from it is here.</p>
+    </div>
+    <div>
+      <span class="mono" style="display:block;margin-bottom:12px">Project</span>
+      <ul>
+        <li><a href="https://github.com/matthewhamilton3141/isle">Source on GitHub</a></li>
+        <li><a href="https://github.com/matthewhamilton3141/isle/releases">All releases</a></li>
+        <li><a href="https://github.com/matthewhamilton3141/isle/blob/main/ROADMAP.md">Roadmap</a></li>
+        <li><a href="https://github.com/matthewhamilton3141/isle/issues">Report an issue</a></li>
+      </ul>
+    </div>
+    <div>
+      <span class="mono" style="display:block;margin-bottom:12px">Build</span>
+      <ul>
+        <li><a href="https://github.com/matthewhamilton3141/isle/releases/download/v0.1.3/Isle-0.1.3.dmg">Isle-0.1.3.dmg</a></li>
+        <li><a href="https://github.com/ungive/mediaremote-adapter">mediaremote-adapter</a></li>
+        <li><a href="https://claude.com/claude-code">Claude Code</a></li>
+      </ul>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+"use strict";
+
+/* ============================================================
+   1. TRACKS
+   Three pieces of music generated in the browser. Each carries the
+   palette its "artwork" is drawn from — the same job ArtworkColors
+   does on a real sleeve, decided up front instead of sampled.
+   ============================================================ */
+
+var TRACKS = [
+  {
+    title: "Long Exposure",
+    artist: "Nocturne Bureau",
+    bpm: 92, duration: 214,
+    pal: { primary: "#3FA9C4", secondary: "#123A52", accent: "#8FE6D6" },
+    art: "arcs",
+    chords: [[57,60,64,67,71],[53,57,60,64],[48,52,55,59],[55,59,62,67]],
+    bass:   [45,41,36,43],
+    kick:   [1,0,0,0, 0,0,0,0, 1,0,0,0, 0,0,1,0],
+    snare:  [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0],
+    hat:    [0,0,1,0, 0,0,1,0, 0,0,1,0, 0,1,1,0],
+    lead:   [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0]
+  },
+  {
+    title: "Ferrite",
+    artist: "Halide Twin",
+    bpm: 118, duration: 187,
+    pal: { primary: "#E08A3C", secondary: "#5A2418", accent: "#F4D06F" },
+    art: "bands",
+    chords: [[50,53,57,60],[46,50,53,57],[53,57,60,65],[48,52,55,60]],
+    bass:   [38,34,41,36],
+    kick:   [1,0,0,0, 0,0,1,0, 1,0,0,0, 0,0,0,0],
+    snare:  [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,1],
+    hat:    [1,0,1,0, 1,0,1,0, 1,0,1,1, 1,0,1,0],
+    lead:   [1,0,0,1, 0,1,0,0, 1,0,0,1, 0,0,1,0]
+  },
+  {
+    title: "Slow Tide, Long Way Out",
+    artist: "Peninsula Sound Dept.",
+    bpm: 76, duration: 258,
+    pal: { primary: "#6FA86B", secondary: "#1E3325", accent: "#D7E08C" },
+    art: "grid",
+    chords: [[52,55,59,62],[48,52,55,59],[55,59,62,66],[50,54,57,62]],
+    bass:   [40,36,43,38],
+    kick:   [1,0,0,0, 0,0,0,0, 0,0,1,0, 0,0,0,0],
+    snare:  [0,0,0,0, 0,0,0,0, 1,0,0,0, 0,0,0,0],
+    hat:    [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,1],
+    lead:   [0,0,1,0, 0,0,0,0, 0,1,0,0, 0,0,0,0]
+  }
+];
+
+var BARS = 4, STEPS = 16;
+
+/* ============================================================
+   2. ARTWORK — drawn once per track, kept as a data URL
+   ============================================================ */
+
+function makeArt(track) {
+  var c = document.createElement("canvas");
+  c.width = c.height = 512;
+  var g = c.getContext("2d"), p = track.pal, i;
+
+  var bg = g.createLinearGradient(0, 0, 512, 512);
+  bg.addColorStop(0, p.secondary);
+  bg.addColorStop(1, shade(p.secondary, -0.35));
+  g.fillStyle = bg; g.fillRect(0, 0, 512, 512);
+
+  if (track.art === "arcs") {
+    g.lineCap = "round";
+    for (i = 0; i < 26; i++) {
+      g.beginPath();
+      g.strokeStyle = i % 4 === 0 ? p.accent : p.primary;
+      g.globalAlpha = 0.14 + (i % 5) * 0.11;
+      g.lineWidth = 1 + (i % 3) * 1.6;
+      g.arc(150, 430, 60 + i * 17, -Math.PI * 0.92, -Math.PI * 0.08);
+      g.stroke();
+    }
+    g.globalAlpha = 1;
+    g.fillStyle = p.accent;
+    g.beginPath(); g.arc(352, 148, 26, 0, 6.2832); g.fill();
+  } else if (track.art === "bands") {
+    g.save(); g.translate(256, 256); g.rotate(-0.42); g.translate(-256, -256);
+    for (i = -6; i < 22; i++) {
+      g.fillStyle = i % 3 === 0 ? p.accent : p.primary;
+      g.globalAlpha = i % 2 ? 0.9 : 0.42;
+      g.fillRect(-120, i * 34, 800, 8 + (i % 4) * 7);
+    }
+    g.restore(); g.globalAlpha = 1;
+    g.fillStyle = shade(p.secondary, -0.5);
+    g.fillRect(0, 300, 512, 212);
+  } else {
+    for (var r = 0; r < 9; r++) {
+      for (var col = 0; col < 9; col++) {
+        var d = Math.hypot(r - 4, col - 4);
+        g.globalAlpha = Math.max(0.08, 1 - d / 5.4);
+        g.fillStyle = (r + col) % 3 === 0 ? p.accent : p.primary;
+        g.beginPath();
+        g.arc(56 + col * 50, 56 + r * 50, 6 + (8 - d) * 2.1, 0, 6.2832);
+        g.fill();
+      }
+    }
+    g.globalAlpha = 1;
+  }
+  return c.toDataURL("image/png");
+}
+
+function shade(hex, amt) {
+  var n = parseInt(hex.slice(1), 16);
+  var r = (n >> 16) & 255, gg = (n >> 8) & 255, b = n & 255;
+  var f = function (v) { return Math.max(0, Math.min(255, Math.round(v + (amt < 0 ? v : 255 - v) * amt))); };
+  return "rgb(" + f(r) + "," + f(gg) + "," + f(b) + ")";
+}
+
+TRACKS.forEach(function (t) { t.artURL = makeArt(t); });
+
+/* ============================================================
+   3. AUDIO ENGINE
+   A small step sequencer. Position is real seconds against the
+   AudioContext clock, so seeking moves the pattern with it.
+   ============================================================ */
+
+var ctx = null, master, comp, analyser, freqData, noiseBuf;
+var playing = false, position = 0, anchorCtxTime = 0, anchorPos = 0;
+var trackIndex = 0, nextStep = 0, schedTimer = null;
+var shuffle = false, repeatMode = 0; // 0 off · 1 all · 2 one
+var volume = 0.62;
+
+function track() { return TRACKS[trackIndex]; }
+function stepDur() { return 60 / track().bpm / 4; }
+
+function ensureContext() {
+  if (ctx) return;
+  var AC = window.AudioContext || window.webkitAudioContext;
+  ctx = new AC();
+
+  master = ctx.createGain();
+  master.gain.value = volume * 0.5;
+
+  comp = ctx.createDynamicsCompressor();
+  comp.threshold.value = -18; comp.knee.value = 14;
+  comp.ratio.value = 5; comp.attack.value = 0.006; comp.release.value = 0.2;
+
+  analyser = ctx.createAnalyser();
+  // 1024 bins puts the lowest band at roughly 43-130 Hz — kick and bass
+  // land in bar one, the way they do on the app's own FFT size.
+  analyser.fftSize = 1024;
+  analyser.smoothingTimeConstant = 0;   // Isle does its own smoothing
+  freqData = new Float32Array(analyser.frequencyBinCount);
+
+  master.connect(comp); comp.connect(analyser); analyser.connect(ctx.destination);
+
+  var n = ctx.sampleRate * 2, d = ctx.createBuffer(1, n, ctx.sampleRate), ch = d.getChannelData(0);
+  for (var i = 0; i < n; i++) ch[i] = Math.random() * 2 - 1;
+  noiseBuf = d;
+}
+
+function hz(midi) { return 440 * Math.pow(2, (midi - 69) / 12); }
+
+function env(node, when, a, d, peak) {
+  var g = node.gain;
+  g.setValueAtTime(0.0001, when);
+  g.exponentialRampToValueAtTime(Math.max(0.0002, peak), when + a);
+  g.exponentialRampToValueAtTime(0.0001, when + a + d);
+}
+
+function kick(when) {
+  var o = ctx.createOscillator(), g = ctx.createGain();
+  o.type = "sine";
+  o.frequency.setValueAtTime(140, when);
+  o.frequency.exponentialRampToValueAtTime(44, when + 0.11);
+  env(g, when, 0.004, 0.3, 0.95);
+  o.connect(g); g.connect(master);
+  o.start(when); o.stop(when + 0.36);
+}
+
+function snare(when) {
+  var s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+  s.buffer = noiseBuf; s.loop = true;
+  f.type = "bandpass"; f.frequency.value = 1900; f.Q.value = 0.9;
+  env(g, when, 0.003, 0.16, 0.28);
+  s.connect(f); f.connect(g); g.connect(master);
+  s.start(when); s.stop(when + 0.22);
+}
+
+function hat(when, open) {
+  var s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+  s.buffer = noiseBuf; s.loop = true;
+  f.type = "highpass"; f.frequency.value = 7600;
+  env(g, when, 0.002, open ? 0.13 : 0.035, 0.13);
+  s.connect(f); f.connect(g); g.connect(master);
+  s.start(when); s.stop(when + 0.2);
+}
+
+function bass(when, midi, dur) {
+  var o = ctx.createOscillator(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+  o.type = "sawtooth"; o.frequency.value = hz(midi);
+  f.type = "lowpass"; f.Q.value = 6;
+  f.frequency.setValueAtTime(240, when);
+  f.frequency.exponentialRampToValueAtTime(90, when + dur);
+  env(g, when, 0.014, dur, 0.34);
+  o.connect(f); f.connect(g); g.connect(master);
+  o.start(when); o.stop(when + dur + 0.1);
+}
+
+function pad(when, notes, dur) {
+  var f = ctx.createBiquadFilter(), g = ctx.createGain();
+  f.type = "lowpass"; f.Q.value = 0.7;
+  f.frequency.setValueAtTime(620, when);
+  f.frequency.linearRampToValueAtTime(1500, when + dur * 0.5);
+  f.frequency.linearRampToValueAtTime(700, when + dur);
+  g.gain.setValueAtTime(0.0001, when);
+  g.gain.exponentialRampToValueAtTime(0.16, when + dur * 0.28);
+  g.gain.setValueAtTime(0.16, when + dur * 0.7);
+  g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+  f.connect(g); g.connect(master);
+  notes.forEach(function (m, i) {
+    [-6, 6].forEach(function (cents) {
+      var o = ctx.createOscillator();
+      o.type = i === 0 ? "triangle" : "sawtooth";
+      o.frequency.value = hz(m);
+      o.detune.value = cents;
+      o.connect(f); o.start(when); o.stop(when + dur + 0.15);
+    });
+  });
+}
+
+function pluck(when, midi) {
+  var o = ctx.createOscillator(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+  o.type = "triangle"; o.frequency.value = hz(midi);
+  f.type = "lowpass"; f.frequency.value = 3200;
+  env(g, when, 0.006, 0.5, 0.17);
+  o.connect(f); f.connect(g); g.connect(master);
+  o.start(when); o.stop(when + 0.6);
+}
+
+function playStep(index, when) {
+  var t = track();
+  var bar = Math.floor(index / STEPS) % BARS;
+  var s = index % STEPS;
+  var chord = t.chords[bar];
+
+  if (t.kick[s]) kick(when);
+  if (t.snare[s]) snare(when);
+  if (t.hat[s]) hat(when, s % 8 === 6);
+  if (s === 0) {
+    pad(when, chord, stepDur() * STEPS);
+    bass(when, t.bass[bar], stepDur() * 3.2);
+  }
+  if (s === 8) bass(when, t.bass[bar] + 12, stepDur() * 2.4);
+  if (t.lead[s]) pluck(when, chord[(index * 3) % chord.length] + 12);
+}
+
+function currentPosition() {
+  return playing ? anchorPos + (ctx.currentTime - anchorCtxTime) : position;
+}
+
+function scheduler() {
+  if (!playing) return;
+  var pos = currentPosition(), sd = stepDur();
+  while (nextStep * sd < pos + 0.16) {
+    var offset = nextStep * sd - pos;
+    if (offset > -0.04) playStep(nextStep, ctx.currentTime + Math.max(0, offset));
+    nextStep++;
+  }
+  if (pos >= track().duration) {
+    if (repeatMode === 2) seekTo(0);
+    else nextTrack(true);
+  }
+}
+
+function reanchor(pos) {
+  anchorPos = pos; anchorCtxTime = ctx ? ctx.currentTime : 0;
+  nextStep = Math.ceil(pos / stepDur());
+}
+
+function play() {
+  ensureContext();
+  if (ctx.state === "suspended") ctx.resume();
+  playing = true;
+  reanchor(position);
+  if (!schedTimer) schedTimer = setInterval(scheduler, 25);
+  syncTransport();
+}
+
+function pause() {
+  position = currentPosition();
+  playing = false;
+  if (schedTimer) { clearInterval(schedTimer); schedTimer = null; }
+  syncTransport();
+}
+
+function toggle() { playing ? pause() : play(); }
+
+function seekTo(pos) {
+  position = Math.max(0, Math.min(track().duration, pos));
+  if (playing) reanchor(position);
+  syncProgress(position);
+}
+
+function loadTrack(i, keepPlaying) {
+  trackIndex = (i + TRACKS.length) % TRACKS.length;
+  position = 0;
+  if (playing) reanchor(0);
+  applyTrack();
+  if (keepPlaying && !playing) play();
+}
+
+function nextTrack(auto) {
+  if (auto && repeatMode === 0 && trackIndex === TRACKS.length - 1) {
+    position = 0; pause(); syncProgress(0); return;
+  }
+  loadTrack(shuffle ? pickRandom() : trackIndex + 1, false);
+}
+
+function prevTrack() {
+  if (currentPosition() > 3) { seekTo(0); return; }
+  loadTrack(shuffle ? pickRandom() : trackIndex - 1, false);
+}
+
+function pickRandom() {
+  if (TRACKS.length < 2) return trackIndex;
+  var i = trackIndex;
+  while (i === trackIndex) i = Math.floor(Math.random() * TRACKS.length);
+  return i;
+}
+
+/* ============================================================
+   4. LEVELS — the reduction from SystemAudioLevels.swift
+   Log-spaced bands, dB with a 4 dB-per-band tilt, fast attack /
+   slow release. A gentle AGC keeps browser output in the same
+   window the Core Audio tap lands in.
+   ============================================================ */
+
+var BANDS = 6;
+// dB added per band so the top bars stay alive. The Swift uses 4 against
+// Core Audio magnitudes; browser output rolls off harder, so it needs more.
+var TILT = 13;
+var levels = [0, 0, 0, 0, 0, 0];
+var raw = [0, 0, 0, 0, 0, 0];
+var agc = 0.6;
+
+function readLevels() {
+  if (!analyser || !playing) {
+    for (var i = 0; i < BANDS; i++) levels[i] += (0 - levels[i]) * 0.12;
+    return;
+  }
+  analyser.getFloatFrequencyData(freqData);
+  var minBin = 1, maxBin = freqData.length - 1, peak = 0;
+
+  for (var b = 0; b < BANDS; b++) {
+    var lo = Math.round(minBin * Math.pow(maxBin / minBin, b / BANDS));
+    var hi = Math.max(lo + 1, Math.round(minBin * Math.pow(maxBin / minBin, (b + 1) / BANDS)));
+    var sum = 0, n = 0;
+    for (var bin = lo; bin < Math.min(hi, maxBin); bin++) {
+      sum += Math.pow(10, freqData[bin] / 20); n++;
+    }
+    var mean = sum / Math.max(1, n);
+    var db = 20 * Math.log10(Math.max(mean, 1e-7));
+    var norm = (db + b * TILT + 70) / 60;
+    raw[b] = Math.max(0, norm);
+    if (raw[b] > peak) peak = raw[b];
+  }
+
+  agc += (peak - agc) * (peak > agc ? 0.25 : 0.004);
+  var gain = Math.max(0.7, Math.min(2.6, 0.86 / Math.max(0.08, agc)));
+
+  for (var k = 0; k < BANDS; k++) {
+    var target = Math.max(0, Math.min(1, raw[k] * gain));
+    levels[k] += (target - levels[k]) * (target > levels[k] ? 0.55 : 0.12);
+  }
+}
+
+/* ============================================================
+   5. WAVEFORM — EqualizerView.swift, in a canvas
+   Bars grow symmetrically out of a centre line; silence resolves
+   to a row of dots. One gradient across the whole strip.
+   ============================================================ */
+
+function Wave(canvas, cssW, cssH) {
+  this.el = canvas; this.w = cssW; this.h = cssH;
+  this.g = canvas.getContext("2d");
+  this.resize();
+}
+Wave.prototype.resize = function () {
+  var dpr = Math.min(window.devicePixelRatio || 1, 3);
+  this.el.width = this.w * dpr; this.el.height = this.h * dpr;
+  this.el.style.width = this.w + "px"; this.el.style.height = this.h + "px";
+  this.g.setTransform(dpr, 0, 0, dpr, 0, 0);
+};
+Wave.prototype.draw = function () {
+  var g = this.g, w = this.w, h = this.h, spacing = 2.5, dot = 2.5;
+  var barW = Math.max(1, (w - spacing * (BANDS - 1)) / BANDS);
+  var p = track().pal;
+  g.clearRect(0, 0, w, h);
+  var grad = g.createLinearGradient(0, h, 0, 0);
+  grad.addColorStop(0, p.primary);
+  grad.addColorStop(1, p.accent);
+  g.fillStyle = grad;
+  for (var i = 0; i < BANDS; i++) {
+    var full = Math.max(dot, h * levels[i]);
+    var x = i * (barW + spacing), y = h / 2 - full / 2;
+    var r = Math.min(barW / 2, full / 2);
+    g.beginPath();
+    if (g.roundRect) g.roundRect(x, y, barW, full, r);
+    else g.rect(x, y, barW, full);
+    g.fill();
+  }
+};
+
+/* ============================================================
+   6. THE ISLAND
+   ============================================================ */
+
+var $ = function (id) { return document.getElementById(id); };
+var notch = $("notch"), wrap = notch.parentNode, stage = $("stage");
+var waveMini = new Wave($("waveMini"), 26, 14);
+var waveBig = new Wave($("waveBig"), 30, 24);
+
+var COLLAPSED = { w: 282, h: 34, r: 14 };
+var EXPANDED = { w: 520, h: 146, r: 22 };
+var expanded = false, pinned = false;
+
+function setState(open) {
+  expanded = open;
+  var d = open ? EXPANDED : COLLAPSED;
+  wrap.style.setProperty("--nw", d.w + "px");
+  wrap.style.setProperty("--nh", d.h + "px");
+  wrap.style.setProperty("--nbr", d.r + "px");
+  notch.setAttribute("data-state", open ? "expanded" : "collapsed");
+  $("dimWLabel").textContent = d.w;
+  $("dimHLabel").textContent = d.h;
+  $("roState").textContent = open ? "EXPANDED" : "COLLAPSED";
+  $("roSize").textContent = d.w + "×" + d.h;
+  $("bToggle").textContent = open ? "Collapse panel" : "Expand panel";
+}
+
+var finePointer = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+if (finePointer) {
+  wrap.addEventListener("mouseenter", function () { setState(true); });
+  wrap.addEventListener("mouseleave", function () { if (!pinned) setState(false); });
+}
+notch.addEventListener("click", function () {
+  if (!expanded) { pinned = true; setState(true); }
+  else { pinned = false; setState(false); }
+});
+notch.addEventListener("keydown", function (e) {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); notch.click(); }
+});
+$("bToggle").addEventListener("click", function () {
+  pinned = !expanded; setState(!expanded);
+});
+
+/* ---- track display ---- */
+
+function applyTrack() {
+  var t = track();
+  $("thumbArt").style.backgroundImage = "url(" + t.artURL + ")";
+  $("bigArt").style.backgroundImage = "url(" + t.artURL + ")";
+  setMarquee($("mqTitle"), t.title);
+  setMarquee($("mqArtist"), t.artist);
+  document.documentElement.style.setProperty("--live", t.pal.accent);
+  document.documentElement.style.setProperty("--live-2", t.pal.primary);
+  syncProgress(position);
+}
+
+function fmt(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  return Math.floor(sec / 60) + ":" + ("0" + (sec % 60)).slice(-2);
+}
+
+function syncProgress(pos) {
+  var d = track().duration, ratio = d ? Math.min(1, pos / d) : 0;
+  $("fill").style.width = (ratio * 100).toFixed(2) + "%";
+  $("tElapsed").textContent = fmt(pos);
+  $("tRemain").textContent = "-" + fmt(d - pos);
+  $("track").setAttribute("aria-valuenow", Math.round(ratio * 100));
+}
+
+function syncTransport() {
+  var icon = $("playIcon"), big = $("bigPlayIcon");
+  if (playing) {
+    icon.innerHTML = '<path d="M8.4 4h2.6c.6 0 1 .5 1 1v18c0 .6-.4 1-1 1H8.4c-.6 0-1-.4-1-1V5c0-.5.4-1 1-1zm8.6 0h2.6c.6 0 1 .5 1 1v18c0 .6-.4 1-1 1H17c-.6 0-1-.4-1-1V5c0-.5.4-1 1-1z"/>';
+    big.innerHTML = '<path d="M1 1h3v10H1zM7 1h3v10H7z"/>';
+    $("bPlay").setAttribute("aria-label", "Pause");
+    $("bigPlayLabel").textContent = "Pause";
+  } else {
+    icon.innerHTML = '<path d="M8.3 4.5c-.6-.4-1.4 0-1.4.8v17.4c0 .8.8 1.2 1.4.8l13.5-8.7c.5-.3.5-1.1 0-1.5L8.3 4.5z"/>';
+    big.innerHTML = '<path d="M1 1.2c0-.5.5-.8 1-.5l8 4.8c.4.3.4.8 0 1l-8 4.8c-.5.3-1 0-1-.5V1.2z"/>';
+    $("bPlay").setAttribute("aria-label", "Play");
+    $("bigPlayLabel").textContent = "Play the demo";
+  }
+  stage.setAttribute("data-playing", playing ? "1" : "0");
+  $("console").classList.toggle("on", playing);
+  $("mbState").textContent = playing ? "Isle ▸" : "Isle";
+}
+
+/* ---- marquee: offset animation with a pause at each end ---- */
+
+var marquees = [];
+function setMarquee(el, text) {
+  var span = el.firstElementChild;
+  span.textContent = text;
+  var entry = marquees.filter(function (m) { return m.el === el; })[0];
+  if (!entry) { entry = { el: el, span: span }; marquees.push(entry); }
+  entry.overflow = 0;
+  requestAnimationFrame(function () {
+    entry.overflow = Math.max(0, span.scrollWidth - el.clientWidth + 36);
+    entry.t0 = performance.now();
+  });
+}
+var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+function stepMarquees(now) {
+  if (reduced) return;
+  marquees.forEach(function (m) {
+    if (!m.overflow) { m.span.style.transform = "translateX(0)"; return; }
+    var travel = m.overflow / 30, cycle = (travel + 1.2) * 2;
+    var t = ((now - m.t0) / 1000) % cycle, x = 0;
+    if (t < 1.2) x = 0;
+    else if (t < 1.2 + travel) x = -(t - 1.2) / travel * m.overflow;
+    else if (t < 2.4 + travel) x = -m.overflow;
+    else x = -(1 - (t - 2.4 - travel) / travel) * m.overflow;
+    m.span.style.transform = "translateX(" + x.toFixed(1) + "px)";
+  });
+}
+
+/* ---- transport wiring ---- */
+
+$("bPlay").addEventListener("click", function (e) { e.stopPropagation(); toggle(); });
+$("bigPlay").addEventListener("click", function () { if (!playing) { setState(true); pinned = true; } toggle(); });
+$("bNext").addEventListener("click", function (e) { e.stopPropagation(); nextTrack(false); });
+$("bPrev").addEventListener("click", function (e) { e.stopPropagation(); prevTrack(); });
+$("bShuffle").addEventListener("click", function (e) {
+  e.stopPropagation(); shuffle = !shuffle;
+  this.setAttribute("aria-pressed", shuffle ? "true" : "false");
+});
+$("bRepeat").addEventListener("click", function (e) {
+  e.stopPropagation();
+  repeatMode = (repeatMode + 1) % 3;
+  this.setAttribute("aria-pressed", repeatMode ? "true" : "false");
+  this.innerHTML = repeatMode === 2
+    ? '<svg width="15" height="15" viewBox="0 0 16 16"><path d="M4.6 3.2h6.2l-.9-.9a.6.6 0 0 1 .85-.85l1.95 1.95a.6.6 0 0 1 0 .85L10.75 6.2a.6.6 0 1 1-.85-.85l.9-.9H4.6c-1 0-1.7.7-1.7 1.7v1.3a.6.6 0 0 1-1.2 0V6.15c0-1.65 1.15-2.95 2.9-2.95zm6.8 4.5a.6.6 0 0 1 .6.6v1.55c0 1.65-1.15 2.95-2.9 2.95H2.9l.9.9a.6.6 0 1 1-.85.85L1 12.6a.6.6 0 0 1 0-.85l1.95-1.95a.6.6 0 1 1 .85.85l-.9.9h6.2c1 0 1.7-.7 1.7-1.7V8.3a.6.6 0 0 1 .6-.6z"/><text x="8" y="10.4" text-anchor="middle" font-size="6.5" font-family="system-ui" font-weight="700" fill="currentColor">1</text></svg>'
+    : '<svg width="15" height="15" viewBox="0 0 16 16"><path d="M4.6 3.2h6.2l-.9-.9a.6.6 0 0 1 .85-.85l1.95 1.95a.6.6 0 0 1 0 .85L10.75 6.2a.6.6 0 1 1-.85-.85l.9-.9H4.6c-1 0-1.7.7-1.7 1.7v1.3a.6.6 0 0 1-1.2 0V6.15c0-1.65 1.15-2.95 2.9-2.95zm6.8 4.5a.6.6 0 0 1 .6.6v1.55c0 1.65-1.15 2.95-2.9 2.95H2.9l.9.9a.6.6 0 1 1-.85.85L1 12.6a.6.6 0 0 1 0-.85l1.95-1.95a.6.6 0 1 1 .85.85l-.9.9h6.2c1 0 1.7-.7 1.7-1.7V8.3a.6.6 0 0 1 .6-.6z"/></svg>';
+});
+
+$("vol").addEventListener("input", function () {
+  volume = this.value / 100;
+  if (master) master.gain.setTargetAtTime(volume * 0.5, ctx.currentTime, 0.02);
+});
+
+/* ---- scrubbing ---- */
+
+var scrubbing = false;
+var trackEl = $("track");
+function ratioFromEvent(e) {
+  var r = trackEl.getBoundingClientRect();
+  return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+}
+trackEl.addEventListener("pointerdown", function (e) {
+  e.stopPropagation(); scrubbing = true;
+  trackEl.setPointerCapture(e.pointerId);
+  syncProgress(ratioFromEvent(e) * track().duration);
+});
+trackEl.addEventListener("pointermove", function (e) {
+  if (scrubbing) syncProgress(ratioFromEvent(e) * track().duration);
+});
+trackEl.addEventListener("pointerup", function (e) {
+  if (!scrubbing) return;
+  scrubbing = false;
+  seekTo(ratioFromEvent(e) * track().duration);   // one seek on release
+});
+trackEl.addEventListener("keydown", function (e) {
+  if (e.key === "ArrowRight") { e.preventDefault(); seekTo(currentPosition() + 5); }
+  if (e.key === "ArrowLeft") { e.preventDefault(); seekTo(currentPosition() - 5); }
+});
+
+/* ---- responsive scale for both stages ---- */
+
+function fit(stageEl) {
+  var w = stageEl.clientWidth;
+  var s = Math.max(0.42, Math.min(1, (w - 56) / 580));
+  var wrp = stageEl.querySelector(".notchwrap");
+  if (wrp) wrp.style.setProperty("--stage-scale", s.toFixed(3));
+}
+function fitAll() { [stage, $("miniStage")].forEach(fit); }
+window.addEventListener("resize", fitAll);
+
+/* ---- menu bar clock ---- */
+
+function clock() {
+  var d = new Date(), h = d.getHours() % 12 || 12;
+  var s = h + ":" + ("0" + d.getMinutes()).slice(-2);
+  Array.prototype.forEach.call(document.querySelectorAll(".clock"), function (el) { el.textContent = s; });
+}
+clock(); setInterval(clock, 20000);
+
+/* ============================================================
+   7. CLAUDE MODE
+   The glyph is a 5×5 dot matrix. Working breathes, needs-approval
+   pulses and opens the island on its own, done resolves to a check.
+   ============================================================ */
+
+var cNotch = $("cNotch"), cDots = $("cDots"), cDotsBig = $("cDotsBig");
+var CHECK = [10, 16, 12, 8, 4];
+var C_STATES = {
+  working:  { color: "#E9A45C", words: ["Thinking", "Coalescing", "Percolating"], open: false,
+              head: "Working", sub: "Reading Isle/Media/SystemAudioLevels.swift" },
+  approval: { color: "#FF6A45", words: ["Approve?"], open: true,
+              head: "Needs approval", sub: "Edit · Isle/Media/SystemAudioLevels.swift" },
+  done:     { color: "#6ECF8E", words: ["Done"], open: false,
+              head: "Done", sub: "3 files changed · build passed" },
+  idle:     { color: "#5B6167", words: [""], open: false,
+              head: "No session", sub: "Nothing running" }
+};
+var cState = "working", cStart = Date.now(), cWordIndex = 0;
+
+for (var d = 0; d < 25; d++) {
+  cDots.appendChild(document.createElement("u"));
+  cDotsBig.appendChild(document.createElement("u"));
+}
+var cCells = cDots.children, cCellsBig = cDotsBig.children;
+
+function setClaude(name) {
+  cState = name;
+  var s = C_STATES[name];
+  cStart = Date.now(); cWordIndex = 0;
+  cDots.style.color = s.color; cDotsBig.style.color = s.color;
+  $("cWord").style.color = s.color;
+  $("cWord").textContent = s.words[0];
+  $("cHead").textContent = s.head;
+  $("cSub").textContent = s.sub;
+  var g = s.open ? { w: 520, h: 146, r: 22 } : { w: 282, h: 34, r: 14 };
+  cNotch.style.setProperty("--nw", g.w + "px");
+  cNotch.style.setProperty("--nh", g.h + "px");
+  cNotch.style.setProperty("--nbr", g.r + "px");
+  cNotch.setAttribute("data-state", s.open ? "expanded" : "collapsed");
+  Array.prototype.forEach.call($("cBar").children, function (b) {
+    b.setAttribute("aria-pressed", b.dataset.state === name ? "true" : "false");
+  });
+}
+Array.prototype.forEach.call($("cBar").children, function (b) {
+  b.addEventListener("click", function () { setClaude(b.dataset.state); });
+});
+
+function stepClaude(now) {
+  var t = (now - 0) / 1000, s = C_STATES[cState], i;
+  for (i = 0; i < 25; i++) {
+    var row = Math.floor(i / 5), col = i % 5, o;
+    if (cState === "done") {
+      o = CHECK.indexOf(i) >= 0 ? 1 : 0.07;
+    } else if (cState === "idle") {
+      o = 0.1;
+    } else if (cState === "approval") {
+      o = 0.25 + 0.75 * Math.pow((Math.sin(t * 5.2) + 1) / 2, 1.7);
+    } else {
+      var dist = Math.hypot(row - 2, col - 2);
+      o = 0.16 + 0.84 * Math.max(0, Math.sin(t * 2.1 - dist * 0.85));
+    }
+    cCells[i].style.opacity = o.toFixed(3);
+    cCellsBig[i].style.opacity = o.toFixed(3);
+  }
+  if (s.words.length > 1) {
+    var idx = Math.floor((now / 2600) % s.words.length);
+    if (idx !== cWordIndex) { cWordIndex = idx; $("cWord").textContent = s.words[idx]; }
+  }
+  var secs = Math.floor((Date.now() - cStart) / 1000);
+  $("cElapsed").textContent = Math.floor(secs / 60) + "m " + ("0" + (secs % 60)).slice(-2) + "s";
+}
+
+/* ============================================================
+   8. FRAME LOOP
+   ============================================================ */
+
+var frame = 0;
+function loop(now) {
+  readLevels();
+  waveMini.draw();
+  waveBig.draw();
+  stepMarquees(now);
+  stepClaude(now);
+
+  if (playing && !scrubbing) {
+    var pos = currentPosition();
+    if (pos >= track().duration) pos = track().duration;
+    syncProgress(pos);
+  }
+
+  if (++frame % 3 === 0) {
+    var out = $("roBands").children;
+    for (var i = 0; i < BANDS; i++) out[i].textContent = levels[i].toFixed(2);
+  }
+  requestAnimationFrame(loop);
+}
+
+/* ============================================================
+   9. INIT
+   ============================================================ */
+
+applyTrack();
+setState(false);
+syncTransport();
+setClaude("working");
+fitAll();
+window.addEventListener("load", fitAll);
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitAll);
+requestAnimationFrame(loop);
+
+/* Free the audio graph when the tab goes away. */
+document.addEventListener("visibilitychange", function () {
+  if (document.hidden && playing) pause();
+});
+})();
+</script>
+</body>
+</html>

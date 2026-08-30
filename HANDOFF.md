@@ -17,7 +17,7 @@ A native Swift/SwiftUI macOS menu-bar utility (`LSUIElement`, no Dock icon) that
 | Decision | Choice | Consequence |
 |---|---|---|
 | Distribution | Personal / sideloaded, **not** App Store | Free to use private MediaRemote APIs |
-| Claude sessions | One at a time for MVP | Flat status file, single glyph — no session multiplexing |
+| Claude sessions | ~~One at a time for MVP~~ **superseded** | Now one status file per session under `~/.isle/sessions/`, with urgency-ranked selection — the flat file let a background session wipe the watched session's state. See "Bridge reliability" in `ROADMAP.md` |
 | Phase order | Phase 1 first | Media before Claude integration |
 
 ---

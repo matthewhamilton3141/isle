@@ -25,7 +25,9 @@ ordered so nothing downstream is blocked. Milestones list **Goal**, **Scope**,
 | Media sync + transport (Spotify) | Shipped | `Isle/Media/` |
 | Audio-reactive waveform | Shipped | `Isle/Media/SystemAudioLevels.swift` |
 | Claude status glyph (breathing + checkmark) | Built, wired (M3) | `Isle/Claude/` |
-| Claude hook bridge (`isle-cli` + `settings.json`) | Watched (M3) | `Isle/Claude/ClaudeStatusWatcher.swift` |
+| Claude hook bridge (`isle-cli` + `settings.json`) | Watched (M3); per-session files, v7 | `Isle/Claude/ClaudeStatusWatcher.swift` |
+| Claude session registry (hook-free liveness) | Shipped | `Isle/Claude/ClaudeSessionRegistry.swift` |
+| Stall / no-response detection | Shipped, one path unverified | `Isle/Notch/NotchViewModel.swift` |
 | Claude hook installer | Done (M3) — menu-bar action, Settings wiring pending | `Isle/Claude/HookInstaller.swift` |
 | `NotchViewModel.claudeState` | Live from watcher, mode-gated (M3) | `Isle/Notch/NotchViewModel.swift` |
 | Settings pane | Empty `Settings` scene | `Isle/IsleApp.swift:20` |
@@ -36,6 +38,98 @@ The state machine (`NotchState`, `NotchStateResolver`) and the collapsed
 split-view rule (`CollapsedNotchView`) were already designed for two concurrent
 activity sources. That's the foundation the "Both" mode builds on — most of the
 work below is wiring, persistence, and UI, not re-architecture.
+
+---
+
+## Bridge reliability — what the hooks can and can't tell us
+
+Shipped outside the milestone sequence, after the island was seen reporting
+`Thinking` while the CLI showed an API error.
+
+**The reported symptom turned out to be the multi-session bug, not a missing
+retry detector.** The failing session wrote `error`, and a *second* session's
+next `PreToolUse` overwrote the shared status file with `working` — the island
+was showing the wrong session. Urgency ranking (below) is the fix: `failed`
+outranks `working`, so the errored session now wins regardless of write order.
+
+The rest of what follows was found while chasing that misdiagnosis, by
+instrumenting a forced failure rather than by reading code — the hook surface
+behaves differently from how it reads. Those findings are real and independently
+verified, but note the no-response detector addresses a gap adjacent to the
+original report, not the report itself.
+
+### Claude Code behaviours worth not rediscovering
+
+| Behaviour | Consequence |
+|---|---|
+| `StopFailure` names the failure `error`, not `error_type`, and carries `last_assistant_message` rather than `message` | Isle read the wrong field for months: every failure arrived kind-less, so no usage limit was ever pinned and the error marker was always generic |
+| **A session backing off between API retries reports `status: "idle"`**, not `busy` | Any "is it working?" check gated on `busy` is false in exactly the case it exists to catch |
+| Retryable API errors are an internal frame (`{type:"system", subtype:"api_error", retry_in_ms, retry_attempt, max_retries}`) rendered straight to the TUI | Never written to the transcript, no hook fires. Its wire twin `api_retry` reaches SDK/`stream-json` consumers only, so an interactive session cannot observe a retry directly |
+| Claude Code fires its "waiting for your input" Notification ~60s after going idle — **including mid-retry-storm** | Isle downgraded a stalled turn to `Waiting`, which reads as "your turn" when nothing has come back |
+| The transcript flushes per *content block*, not per message, and is interleaved with `queue-operation` / `attachment` / `file-history-snapshot` bookkeeping | A tool-free turn still appends every few seconds (so silence is meaningful), but only `user` / `assistant` entries answer "is a turn outstanding" |
+| `~/.claude/sessions/<pid>.json` is written by the CLI itself, hook-free, pid-keyed | Liveness is `kill(pid, 0)` rather than a timeout; survives broken or uninstalled hooks |
+| **An interrupt (ESC) fires no hook at all** — no `Stop`, no `PostToolUse` — and appends a synthetic `user` entry (`[Request interrupted by user]`) to the transcript | Every exit from `working` is hook-driven, so the record froze at `working`; and since that entry parses as a `user` turn, the no-response check read the ended turn as one still owed a response |
+
+### What changed
+
+- **Per-session status files** (`~/.isle/sessions/<session-id>.json`, helper v7).
+  The old single `claude-status.json` was last-writer-wins, so a background
+  session's `Stop` or idle notification silently wiped the state of the session
+  the user was watching.
+- **Urgency-ranked selection** (`NotchViewModel.selectStatus`): attention >
+  active > quiescent, ties broken by recency. A quiescent session can never
+  displace an active one, however recently it moved.
+- **Session registry** as the liveness spine — a `SIGKILL`'d session fires no
+  `SessionEnd`, and used to freeze the island on `Thinking` forever.
+- **No-response detection** — *added, then removed.* Island `working`/`waiting`,
+  no tool running, and the transcript's last conversation entry a `user` turn
+  older than a threshold → `No response · 45s`, dimmed. It reported the
+  observation rather than a cause, on the theory that the label was true for
+  both a retry and a long think. In practice that was the problem: a single
+  reasoning block is written to the transcript only when it *finishes*, so an
+  unbroken deep think is silent on every signal Isle has and got labelled as a
+  stall. Raising the threshold (45s → 180s → 360s) only traded the frequency of
+  the false positive for a slower true one, and a wrong "No response" is more
+  confusing than no label at all.
+- **The staleness fade** went with it, for the same reason. Hook silence past
+  180s dimmed the island to 45%, which is the same inference in a quieter
+  register — and equally wrong during a long think. Isle now makes no claim
+  about silence at all, in text or in treatment: it holds the last state it was
+  actually told about, at full strength, until something tells it otherwise.
+  The 5s timer stays on for its other job (re-running selection, so an
+  interrupt's stuck record still gets retired), and the transcript tail reader
+  survives because reconciliation depends on it.
+- **`tool_active`** on the wire so a long `Bash` isn't read as a stalled model.
+- **Interrupt reconciliation** (`NotchViewModel.reconciled`): a `working`
+  record whose session the CLI no longer calls busy, and whose transcript shows
+  the turn already closed, is demoted to `idle` during selection. Both signals
+  are required — a retry storm also reports `idle`, but its transcript still
+  owes a response — and the demotion happens in selection rather than on the
+  displayed state, so a stuck background record also stops outranking the
+  session the user is actually watching.
+
+### Verified
+
+A forced retry storm (local always-500 server via `ANTHROPIC_BASE_URL`) held the
+island for 73 consecutive ticks, crossed at 48s, throttled to one update per
+minute, and reset cleanly when retries exhausted — through both events that
+previously stole the island. That verified the detection that has since been
+removed; the selection and liveness behaviour it exercised still stands.
+
+### Outstanding
+
+- **`status: "api_retry"`** appears in the CLI binary. If the session registry
+  ever reports it, it replaces the whole inference chain with a direct signal —
+  and is the only thing that would justify bringing a "stalled" label back.
+  Note the registry already discriminates weakly: a backing-off session reports
+  `idle` while a real think reports `busy` (`ClaudeSession.status`), which is a
+  cheaper starting point than the transcript was.
+- **Stale session files** accumulate: a `SIGKILL`'d session leaves its
+  `~/.isle/sessions/<id>.json` behind. Selection hides it by dead pid, but
+  nothing prunes disk. A sweep at launch is a few lines.
+- `~/.claude/sessions` is undocumented internal surface. Every field is optional
+  and a bad record is skipped, so a schema change degrades to "no registry"
+  rather than breaking the island — but it can break.
 
 ---
 

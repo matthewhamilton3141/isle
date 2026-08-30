@@ -93,45 +93,156 @@ final class NotchWindowController {
         viewModel.stop()
     }
 
-    // MARK: - Pointer backstop
+    // MARK: - Hover zones
 
-    /// Tracks the pointer to do two things: keep clicks passing through the
-    /// dead area around the notch, and force-collapse the panel when the
-    /// pointer leaves it. Isle never becomes the active app, so a global
-    /// monitor (not a local one) is what sees these moves. `.mouseMoved`
-    /// monitoring needs no special permission.
+    /// How far *below* the island the open zone reaches.
+    ///
+    /// Idle, the island collapses to the bare camera cutout: a target flush
+    /// against the top edge of the screen, which the pointer can only approach
+    /// from underneath. The lip meets the pointer on the way up, so a
+    /// deliberate reach opens the panel a moment before landing on the notch
+    /// rather than demanding you hit hardware exactly.
+    private static let openLip: CGFloat = 14
+
+    /// How far outside the panel the pointer may stray before it collapses.
+    /// Deliberately lopsided: generous below and to the sides, where the
+    /// pointer overshoots on its way to a control, and tight up top, where
+    /// there is nothing to overshoot into.
+    private static let stayOpenPad = (top: CGFloat(10), side: CGFloat(16), bottom: CGFloat(26))
+
+    /// A move faster than this, and mostly sideways, is the pointer crossing
+    /// the island on its way to the menu bar rather than arriving at it.
+    private static let sweepSpeed: CGFloat = 900        // points per second
+    private static let sweepAspect: CGFloat = 2.5       // |dx| vs |dy|
+
+    /// How long after a suppressed sweep to look again. A sweep carries the
+    /// pointer clear in far less than this (900pt/s covers 72pt), so what's
+    /// left is a fast *approach* that stopped on the island — which stops
+    /// producing events, and so needs asking rather than waiting for.
+    private static let sweepRecheck: TimeInterval = 0.08
+
+    private var lastPointerTimestamp: TimeInterval = 0
+    private var sweepRecheckWork: DispatchWorkItem?
+
+    /// Tracks the pointer to do three things: keep clicks passing through the
+    /// dead area around the notch, open the panel when the pointer arrives on
+    /// the island, and collapse it once the pointer leaves for good. Isle never
+    /// becomes the active app, so a global monitor (not a local one) is what
+    /// sees these moves. `.mouseMoved` monitoring needs no special permission.
     private func observePointer() {
         guard pointerMonitor == nil else { return }
         pointerMonitor = NSEvent.addGlobalMonitorForEvents(
             matching: [.mouseMoved]
-        ) { [weak self] _ in
+        ) { [weak self] event in
             MainActor.assumeIsolated {
-                guard let self else { return }
-
-                // Every move: reconcile click-through, so the window server
-                // only routes clicks to Isle when the pointer is over the
-                // drawn notch and passes everything else to what's underneath.
-                self.updateClickThrough()
-
-                // Backstop for collapse: SwiftUI's `.onHover` occasionally
-                // misses a mouse-exit for a high-level overlay panel, leaving
-                // the panel stuck open. Once the pointer is well clear of the
-                // panel, hovering is false, full stop.
-                guard let window = self.window, self.viewModel.isHovering else { return }
-
-                // The window hugs the screen's top edge, so the pointer on the
-                // island's top row reports y == frame.maxY — which `contains`
-                // counts as *outside*, wrongly collapsing the panel the moment
-                // you touch the top. Pad the region (generously up top) so only
-                // a real departure from the island trips the backstop.
-                //
-                // NSEvent.mouseLocation and the frame are both screen coords,
-                // bottom-left origin, so they compare directly.
-                let region = window.frame.insetBy(dx: -6, dy: -12)
-                guard !region.contains(NSEvent.mouseLocation) else { return }
-                self.viewModel.setHovering(false)
+                self?.handlePointerMove(event)
             }
         }
+    }
+
+    /// The whole hover rule, in one place.
+    ///
+    /// Open and close use different zones on purpose. Opening asks for the
+    /// island itself plus a lip below it — small, so the panel doesn't leap out
+    /// at a pointer merely passing near. Closing asks for a much larger region
+    /// around the open panel, so a pointer that overshoots a control by a few
+    /// points doesn't shut it. The gap between the two is the hysteresis: easy
+    /// to commit to, hard to lose by accident.
+    private func handlePointerMove(_ event: NSEvent) {
+        // Every move: reconcile click-through, so the window server only routes
+        // clicks to Isle when the pointer is over the drawn notch and passes
+        // everything else to what's underneath.
+        updateClickThrough()
+
+        // Measured on every move, in zone or out: the reading is an interval
+        // between consecutive events, so sampling it only once the pointer is
+        // already over the island would date it from whenever the pointer was
+        // last there — and a sweep would clear the gate on its first frame.
+        let sweeping = isSweep(event)
+
+        guard let zones = hoverZones() else { return }
+        let pointer = NSEvent.mouseLocation
+
+        guard !viewModel.isHovering else {
+            // Open: only a real departure closes it. SwiftUI's `.onHover` sees
+            // the drawn rect and nothing more, which is why closing is owned
+            // here — it's the only place that knows about the pad.
+            if !zones.stayOpen.contains(pointer) {
+                cancelSweepRecheck()
+                viewModel.setHovering(false)
+            }
+            return
+        }
+
+        guard zones.open.contains(pointer) else {
+            cancelSweepRecheck()
+            return
+        }
+
+        // Arriving is instant; crossing is not. A fast sideways move through
+        // the island is the pointer on its way somewhere else — the single
+        // most common way this panel used to open when nobody asked it to.
+        if sweeping {
+            scheduleSweepRecheck()
+        } else {
+            cancelSweepRecheck()
+            viewModel.setHovering(true)
+        }
+    }
+
+    /// The open and stay-open regions in screen coordinates, or nil before the
+    /// first layout.
+    private func hoverZones() -> (open: CGRect, stayOpen: CGRect)? {
+        guard let drawn = drawnRectInScreen() else { return nil }
+        let pad = Self.stayOpenPad
+        return (
+            // Screen coords are bottom-left origin, so "below the island" is
+            // *lower* y — the lip hangs off `minY`.
+            open: CGRect(
+                x: drawn.minX,
+                y: drawn.minY - Self.openLip,
+                width: drawn.width,
+                height: drawn.height + Self.openLip
+            ),
+            stayOpen: CGRect(
+                x: drawn.minX - pad.side,
+                y: drawn.minY - pad.bottom,
+                width: drawn.width + pad.side * 2,
+                height: drawn.height + pad.bottom + pad.top
+            )
+        )
+    }
+
+    /// Speed and direction of this move. The first event after a pause has no
+    /// meaningful interval behind it, so it never counts as a sweep — which is
+    /// the safe way round: it opens.
+    private func isSweep(_ event: NSEvent) -> Bool {
+        let interval = event.timestamp - lastPointerTimestamp
+        lastPointerTimestamp = event.timestamp
+        guard interval > 0, interval < 0.2 else { return false }
+        let dx = abs(event.deltaX), dy = abs(event.deltaY)
+        return hypot(dx, dy) / interval > Self.sweepSpeed && dx > dy * Self.sweepAspect
+    }
+
+    private func scheduleSweepRecheck() {
+        guard sweepRecheckWork == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.sweepRecheckWork = nil
+                guard let zones = self.hoverZones(),
+                      zones.open.contains(NSEvent.mouseLocation)
+                else { return }
+                self.viewModel.setHovering(true)
+            }
+        }
+        sweepRecheckWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.sweepRecheck, execute: work)
+    }
+
+    private func cancelSweepRecheck() {
+        sweepRecheckWork?.cancel()
+        sweepRecheckWork = nil
     }
 
     /// Makes the panel transparent to the mouse everywhere except the drawn
@@ -150,33 +261,31 @@ final class NotchWindowController {
     private func updateClickThrough() {
         guard let window else { return }
 
-        guard let rect = activeRectInView else {
+        guard let screenRect = drawnRectInScreen() else {
             // No layout yet — err toward interactive so the notch is never dead.
             window.ignoresMouseEvents = false
             return
         }
 
+        // Keep clicks routed to Isle a hair before the pointer reaches the
+        // visible notch (the pad), so the first hover-in is never missed.
+        let hot = screenRect.insetBy(dx: -6, dy: -6)
+        window.ignoresMouseEvents = !hot.contains(NSEvent.mouseLocation)
+    }
+
+    /// The drawn notch in screen coordinates (bottom-left origin), which is
+    /// what `NSEvent.mouseLocation` speaks. Nil until SwiftUI reports a layout.
+    private func drawnRectInScreen() -> CGRect? {
+        guard let window, let rect = activeRectInView else { return nil }
         let frame = window.frame
         // `rect` is measured from the top of the window; the window's top edge
         // sits at `frame.maxY`.
-        let screenRect = CGRect(
+        return CGRect(
             x: frame.minX + rect.minX,
             y: frame.maxY - rect.maxY,
             width: rect.width,
             height: rect.height
         )
-        // Keep clicks routed to Isle a hair before the pointer reaches the
-        // visible notch (the pad), so the first hover-in is never missed.
-        let hot = screenRect.insetBy(dx: -6, dy: -6)
-        window.ignoresMouseEvents = !hot.contains(NSEvent.mouseLocation)
-
-        // Expansion, though, only arms when the pointer is genuinely *over* the
-        // drawn notch — no outward pad — so merely passing near it (the earlier
-        // behaviour, which popped the panel before you'd reached it) doesn't
-        // count. Driven straight off the pointer for immediacy; the collapse side
-        // stays with the generous frame backstop in `observePointer`, giving
-        // open-small / stay-open-large hysteresis.
-        if screenRect.contains(NSEvent.mouseLocation) { viewModel.setHovering(true) }
     }
 
     // MARK: - Screen changes

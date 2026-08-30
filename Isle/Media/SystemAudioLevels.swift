@@ -249,6 +249,21 @@ final class SystemAudioLevels: ObservableObject {
         }
         aggregateID = aggregate
 
+        // Band edges are frequencies, not bin indices, so the analyzer needs
+        // the real rate. Set before the IOProc starts, so the audio thread
+        // never sees it change.
+        var rateAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var rate = Double(0)
+        var rateSize = UInt32(MemoryLayout<Double>.size)
+        if AudioObjectGetPropertyData(aggregate, &rateAddress, 0, nil, &rateSize, &rate) == noErr,
+           rate > 0 {
+            analyzer.sampleRate = rate
+        }
+
         var procID: AudioDeviceIOProcID?
         // Capture the analyzer, not self: self is main-actor isolated and
         // must not be touched from the realtime thread at all.
@@ -312,11 +327,17 @@ final class SystemAudioLevels: ObservableObject {
         #if DEBUG
         diagnosticTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
             MainActor.assumeIsolated {
-                let (calls, peak) = analyzer.drainDiagnostics()
+                let (calls, peak, reference, levelPeaks, raw) = analyzer.drainDiagnostics()
                 let levels = analyzer.snapshot()
                     .map { String(format: "%.2f", $0) }
                     .joined(separator: " ")
-                let line = "calls=\(calls) peak=\(String(format: "%.5f", peak)) levels=[\(levels)]\n"
+                let peaks = levelPeaks
+                    .map { String(format: "%.2f", $0) }
+                    .joined(separator: " ")
+                let rawText = raw
+                    .map { String(format: "%.1f", $0) }
+                    .joined(separator: " ")
+                let line = "calls=\(calls) peak=\(String(format: "%.5f", peak)) ref=\(String(format: "%.1f", reference)) levels=[\(levels)] max=[\(peaks)] raw=[\(rawText)]\n"
                 // A file rather than NSLog: this app is LSUIElement and its
                 // NSLog output does not reach the unified log where it can be
                 // read back, which makes NSLog useless for diagnosing it.
@@ -339,7 +360,15 @@ final class SystemAudioLevels: ObservableObject {
             // assuming main-actor isolation here is sound — unlike in the audio
             // callback, where the same assumption traps.
             MainActor.assumeIsolated {
-                self?.levels = analyzer.snapshot()
+                guard let self else { return }
+                // Only publish a genuine change. @Published fires on every
+                // assignment, equal or not, and each one invalidates the whole
+                // notch body — so republishing an unchanged array of zeros
+                // kept the UI redrawing at 30Hz through silence and pauses.
+                let next = analyzer.snapshot()
+                if next != self.levels {
+                    self.levels = next
+                }
             }
         }
     }
@@ -356,6 +385,19 @@ final class SystemAudioLevels: ObservableObject {
 private final class AudioAnalyzer: @unchecked Sendable {
     private let bandCount: Int
 
+    /// Stream sample rate, needed to turn the band edges into real
+    /// frequencies. Set once before the IOProc starts, so the audio thread
+    /// only ever reads it.
+    var sampleRate: Double = 48_000
+
+    /// The spectrum is only followed up to here. Above it, music carries
+    /// little but air and cymbal wash, and at a 1024-point FFT everything
+    /// over ~10kHz lands in a single enormous band — 331 of 512 bins, whose
+    /// mean is so stable it barely moves. Cutting the top off gives six bands
+    /// that each cover musically distinct ground instead of five plus a
+    /// catch-all.
+    private static let topFrequency: Double = 10_000
+
     /// FFT scratch, sized once. Allocating inside the callback is the classic
     /// way to cause audio dropouts.
     private let fftSize = 1024
@@ -366,16 +408,83 @@ private final class AudioAnalyzer: @unchecked Sendable {
     private var magnitudes: [Float]
     private var sampleBuffer: [Float]
 
+    /// Slowly-adapting loudness reference, in the same tilted-dB units as the
+    /// band levels. Every band is measured *against* this rather than against
+    /// a fixed window, which is what makes the display independent of how
+    /// loud Spotify itself is playing. Audio-thread-only state, like the FFT
+    /// scratch above; the copy under `lock` exists purely for diagnostics.
+    private var reference: Double = AudioAnalyzer.referenceStart
+
+    /// How fast the reference chases the signal, per callback (~94/sec).
+    ///
+    /// Deliberately slow in both directions. The reference has to cancel a
+    /// volume change without also cancelling the music's own dynamics — if it
+    /// adapted in under a second, a loud chorus would be normalised away as
+    /// fast as it arrived and the meter would sit at one height forever.
+    /// These work out to roughly a 2s attack and a 5s release, so a volume
+    /// change settles over a few seconds while beat-level movement survives.
+    private static let referenceAttack = 0.006
+    private static let referenceRelease = 0.002
+
+    /// Per-band correction for music's falloff with frequency, in dB.
+    ///
+    /// Deliberately *under*-corrects. Music falls off about 3.6dB per band
+    /// here, and cancelling that exactly is what makes every bar the same
+    /// height — a correctly flattened spectrum is precisely a row of matching
+    /// lines. 2dB leaves a little over 1.5dB per band of real slope, so the
+    /// strip keeps the bass-heavy arc that reads as a spectrum.
+    ///
+    /// It is coupled to both the band count and the frequency range: fewer
+    /// bands, or a wider range, means each band spans more spectrum and falls
+    /// off harder. Re-measure if either changes. This was 7 when the bands
+    /// were mean-based and ran to 24kHz — against the current bands that
+    /// over-lifted the treble so far it inverted the display, bass at 0.33
+    /// under treble at 0.65.
+    private static let tiltPerBand: Double = 2
+
+    /// Where the reference starts, before any audio has been seen. Roughly the
+    /// level of ordinary music, so the first seconds of playback are already
+    /// close and settle from there. Starting at the floor instead would peg
+    /// every bar at full height until the reference caught up.
+    private static let referenceStart: Double = -45
+
+    /// The reference never sinks below this, so genuinely quiet material still
+    /// reads as quiet instead of being amplified to full height. Set well
+    /// below any real listening level — this is a guard against normalising
+    /// a noise floor, not a level control.
+    ///
+    /// Measured: Spotify at volume 25 settles the reference around -68, so a
+    /// floor of -72 would have started clamping — and shrinking the bars —
+    /// somewhere below volume 20. -84 leaves room under that.
+    ///
+    /// Below roughly volume 20 it stops mattering anyway: Spotify's volume
+    /// curve falls off a cliff, and at volume 10 its output measures under
+    /// -80dBFS — quieter than the residual noise on a paused stream. The
+    /// silence gate takes over there and the bars rest as dots, which is the
+    /// honest reading of a signal that quiet.
+    private static let referenceFloor: Double = -84
+
+    /// Below this RMS the input is treated as true silence: the bars release
+    /// to dots and the reference freezes. Without the freeze, the reference
+    /// would sink through a pause and the first frame of the next track would
+    /// slam every bar to full.
+    private static let silenceThreshold: Float = 1e-4
+
     private let lock = NSLock()
     private var smoothed: [Double]
 
     /// Diagnostics, guarded by the same lock as `smoothed`.
     private var callCount = 0
     private var peak: Float = 0
+    private var referenceReadout: Double = 0
+    private var levelPeaks: [Double]
+    private var rawReadout: [Double]
 
     init(bandCount: Int) {
         self.bandCount = bandCount
         self.smoothed = Array(repeating: 0, count: bandCount)
+        self.levelPeaks = Array(repeating: 0, count: bandCount)
+        self.rawReadout = Array(repeating: 0, count: bandCount)
 
         window = [Float](repeating: 0, count: fftSize)
         realParts = [Float](repeating: 0, count: fftSize / 2)
@@ -406,14 +515,17 @@ private final class AudioAnalyzer: @unchecked Sendable {
     /// UI: the IOProc never firing (tap/aggregate is broken) versus it firing
     /// with silent buffers (permission denied — Core Audio hands over zeroes
     /// rather than returning an error).
-    func drainDiagnostics() -> (calls: Int, peak: Float) {
+    func drainDiagnostics() -> (calls: Int, peak: Float, reference: Double, levelPeaks: [Double], raw: [Double]) {
         lock.lock()
+        let peaks = levelPeaks
+        let raw = rawReadout
         defer {
             callCount = 0
             peak = 0
+            levelPeaks = Array(repeating: 0, count: bandCount)
             lock.unlock()
         }
-        return (callCount, peak)
+        return (callCount, peak, referenceReadout, peaks, raw)
     }
 
     /// Called on the realtime audio thread.
@@ -448,6 +560,13 @@ private final class AudioAnalyzer: @unchecked Sendable {
         guard let fftSetup else { return }
 
         let n = min(count, fftSize)
+        // Broadband RMS, taken from the raw samples before the window scales
+        // them. This only drives the silence gate, so it wants the true input
+        // amplitude rather than a windowed one.
+        var rms: Float = 0
+        vDSP_rmsqv(samples, 1, &rms, vDSP_Length(n))
+        let isSilent = rms < Self.silenceThreshold
+
         // Zero-fill a short buffer rather than skipping it, so quiet passages
         // still produce output instead of freezing the meter.
         for index in 0..<fftSize {
@@ -486,45 +605,107 @@ private final class AudioAnalyzer: @unchecked Sendable {
         var scale = Float(1) / Float(2 * fftSize)
         vDSP_vsmul(magnitudes, 1, &scale, &magnitudes, 1, vDSP_Length(halfSize))
 
-        var newLevels = [Double](repeating: 0, count: bandCount)
+        var bandDb = [Double](repeating: 0, count: bandCount)
+        var rawDb = [Double](repeating: 0, count: bandCount)
         // Skip bin 0 (DC) — it carries no audible information and would peg
         // the first bar on any signal with an offset.
         let minBin = 1
-        let maxBin = halfSize - 1
+        let binWidth = sampleRate / Double(fftSize)
+        let maxBin = min(halfSize - 1, max(minBin + 1, Int(Self.topFrequency / binWidth)))
 
         for band in 0..<bandCount {
             let lowFraction = Double(band) / Double(bandCount)
             let highFraction = Double(band + 1) / Double(bandCount)
             let low = Int(Double(minBin) * pow(Double(maxBin) / Double(minBin), lowFraction))
             let high = max(low + 1, Int(Double(minBin) * pow(Double(maxBin) / Double(minBin), highFraction)))
+            let upper = min(high, halfSize)
 
-            var sum: Float = 0
-            for bin in low..<min(high, halfSize) {
-                sum += magnitudes[bin]
+            // The loudest bin in the band, not the average of them. A mean
+            // over a wide band is dominated by the many quiet bins beside the
+            // peak, which makes wide bands both quieter and far steadier than
+            // narrow ones — every bar ends up moving together and the whole
+            // strip reads as a row of matching lines. The peak tracks whatever
+            // is actually sounding in that range, so bands separate.
+            var bandPeak: Float = 0
+            magnitudes.withUnsafeBufferPointer { pointer in
+                vDSP_maxv(pointer.baseAddress! + low, 1, &bandPeak, vDSP_Length(upper - low))
             }
-            let mean = sum / Float(max(1, min(high, halfSize) - low))
 
-            // dB, then map a useful window onto 0...1. Amplitude is
-            // perceptually logarithmic, so a linear meter looks dead.
-            // Music's energy falls off steeply with frequency, so without a
-            // tilt the top bands sit near zero and the waveform looks like it
-            // only has three working bars. 4dB per band measured roughly flat
-            // across real tracks at bandCount 6 — note this is coupled to the
-            // band count, since fewer bands means each spans a wider range and
-            // needs more correction.
-            let tilt = Double(band) * 4
-            let db = 20 * log10(max(mean, 1e-7))
-            let normalised = (Double(db) + tilt + 70) / 60
-            newLevels[band] = min(max(normalised, 0), 1)
+            // Amplitude is perceptually logarithmic, so everything from here
+            // on is in dB — which also makes a volume change a constant
+            // offset, and so something the reference below can subtract out.
+            //
+            // The tilt goes in before the reference is taken, so it shapes the
+            // bands relative to each other without shifting the overall level.
+            rawDb[band] = 20 * log10(max(Double(bandPeak), 1e-7))
+            bandDb[band] = rawDb[band] + Double(band) * Self.tiltPerBand
+        }
+
+        // Adapt the reference toward this frame's overall level, then measure
+        // each band against it. This is what removes the dependence on
+        // Spotify's own volume: turning Spotify down drops every band by the
+        // same number of dB, the reference follows, and the difference — the
+        // shape and the dynamics, which is all the waveform was ever trying
+        // to show — is unchanged.
+        //
+        // Frozen during silence rather than left to sink, and floored, so a
+        // pause doesn't end with the noise floor normalised up to full height.
+        //
+        // Each band is clamped to within 40dB of the loudest before it counts
+        // toward the frame level. An empty band bottoms out at the 1e-7 guard,
+        // i.e. -140dB, and a raw mean would let one such band drag the frame
+        // level down ~16dB — inflating every *other* bar. A bass-heavy passage
+        // with nothing up top would visibly swell the whole display. The clamp
+        // rarely binds on real music and bounds the damage when it does.
+        let frameFloor = (bandDb.max() ?? Self.referenceFloor) - 40
+        let frameLevel = bandDb.reduce(0) { $0 + max($1, frameFloor) }
+            / Double(bandCount)
+        if !isSilent {
+            let coefficient = frameLevel > reference
+                ? Self.referenceAttack
+                : Self.referenceRelease
+            reference += (frameLevel - reference) * coefficient
+            reference = max(reference, Self.referenceFloor)
+        }
+
+        var newLevels = [Double](repeating: 0, count: bandCount)
+        if !isSilent {
+            for band in 0..<bandCount {
+                // +28 over a 53dB span puts a band sitting exactly at the
+                // reference just past half the strip's height, and pegs one
+                // running 25dB above it.
+                //
+                // This started at +30/50 — a 0.6 resting point with only 20dB
+                // of headroom. Measured against real playback, bands sit
+                // +15.5dB over the reference at p99, so the loudest passages
+                // were within 5dB of the ceiling: at full volume the bars'
+                // true peaks reached 0.97 of the strip and read as pinned.
+                // The span is the knob that buys headroom — 53dB keeps the
+                // loudest peaks around 0.88, clear of the ceiling but not so
+                // far down that the waveform goes limp.
+                let normalised = (bandDb[band] - reference + 28) / 53
+                newLevels[band] = min(max(normalised, 0), 1)
+            }
         }
 
         lock.lock()
+        referenceReadout = reference
+        rawReadout = rawDb
         for index in 0..<bandCount {
             let target = newLevels[index]
             // Fast attack, slow release — mirrors a physical VU meter and
             // stops the bars flickering on transients.
             let coefficient = target > smoothed[index] ? 0.55 : 0.12
             smoothed[index] += (target - smoothed[index]) * coefficient
+            // Snap to a true zero once the release decay is below a
+            // sub-pixel height. Exponential decay only approaches zero, and
+            // without this the values keep changing in the 15th decimal place
+            // forever — which reads as "changed" to the check above and
+            // defeats the idle path during silence.
+            if smoothed[index] < 0.0015 {
+                smoothed[index] = 0
+            }
+            levelPeaks[index] = max(levelPeaks[index], smoothed[index])
         }
         lock.unlock()
     }

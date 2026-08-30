@@ -78,6 +78,12 @@ final class NotchViewModel: ObservableObject {
     /// notch can name the failure. Nil in every other state.
     @Published private(set) var claudeErrorType: String?
 
+    /// A tool is executing right now (between `PreToolUse` and `PostToolUse`).
+    /// Only used to suppress the no-response inference — deliberately *not*
+    /// wired into `isThinking`, which stays on the lingering-action rule so the
+    /// collapsed word doesn't flap on every tool boundary.
+    @Published private(set) var claudeToolActive: Bool = false
+
     /// For a `usage_limit` failure, the moment the limit resets (when the helper
     /// could recover it). Drives the pinned island's reset clock and the expanded
     /// countdown; the display eases back to idle at this moment. Nil when unknown.
@@ -99,6 +105,27 @@ final class NotchViewModel: ObservableObject {
 
     @Published private(set) var media = MediaPlaybackModel()
 
+    /// Colours pulled from the current cover, recomputed only when the cover
+    /// itself changes.
+    ///
+    /// This is cached rather than derived in the view because extraction is
+    /// not stable under re-running. It picks `ranked[0]` winner-take-all, and
+    /// on real covers the top cells are separated by well under 1% — the
+    /// current one by 0.7%. Two artwork sources feed this (the adapter's
+    /// embedded bytes and Spotify's CDN fetch) and their decodes differ
+    /// slightly, so re-deriving could hand back a different winner each time
+    /// and the notch visibly flashed between colours. Held steady here, the
+    /// selection runs once per cover and the near-tie stops mattering.
+    ///
+    /// It also has to be cached for cost: as a computed property on the view
+    /// it re-ran on every body evaluation, which is 30 times a second now that
+    /// audio levels publish at display rate.
+    @Published private(set) var palette: ArtworkPalette = .fallback
+
+    /// Identity of the cover `palette` was built from, to skip the work when
+    /// an update carries the same image.
+    private var paletteArtwork: NSImage?
+
     /// Position the user is dragging the scrubber to. Non-nil only mid-drag;
     /// while set, the scrubber renders this instead of the live position so
     /// the thumb doesn't fight the playback clock under the finger.
@@ -111,6 +138,7 @@ final class NotchViewModel: ObservableObject {
     private let spotify = SpotifyController()
     private let audio = SystemAudioLevels()
     private let claudeWatcher = ClaudeStatusWatcher()
+    private let sessionRegistry = ClaudeSessionRegistry()
     private var cancellables = Set<AnyCancellable>()
 
     /// True between `start()` and `stop()` — i.e. while the notch window is
@@ -145,11 +173,228 @@ final class NotchViewModel: ObservableObject {
     /// (a tool call / prompt); this is the backstop for the cancelled/idle case.
     private static let compactingRevertSeconds: TimeInterval = 25
 
+    /// Every session that currently has a status file, as last published by
+    /// the watcher. Retained so selection can be re-run when the *registry*
+    /// changes without waiting for a status write.
+    private var claudeStatuses: [ClaudeStatus] = []
+
+    /// Picks which session owns the island.
+    ///
+    /// Not "most recent": that was the old single-file behaviour and it's what
+    /// let a background session's `Stop` or idle notification wipe the session
+    /// the user was watching. Rank by how much the state wants attention, and
+    /// only break ties by recency — so a quiescent session can never displace
+    /// an active one, however recently it moved.
+    private func selectStatus(from statuses: [ClaudeStatus]) -> ClaudeStatus {
+        // Drop records whose process is gone. Skipped entirely while the
+        // registry is empty (not yet scanned, or ~/.claude/sessions missing),
+        // since filtering against nothing would blank the island.
+        let live = claudeSessions.isEmpty ? statuses : statuses.filter { status in
+            guard let id = status.sessionId else { return true }
+            return claudeSessions.contains { $0.sessionId == id }
+        }
+        let pool = (live.isEmpty ? statuses : live).map(reconciled)
+        return pool.max {
+            (Self.urgency($0.state), $0.updatedAt ?? .distantPast)
+                < (Self.urgency($1.state), $1.updatedAt ?? .distantPast)
+        } ?? .disconnected
+    }
+
+    /// Corrects a `working` record the hooks will never close out.
+    ///
+    /// Every exit from `working` is hook-driven — `Stop`, `SessionEnd`, a
+    /// notification — and an *interrupt fires none of them*. Pressing ESC ends
+    /// the turn silently, so the last `UserPromptSubmit` / `PreToolUse` write
+    /// stays the newest thing on disk and the session sits at `working`
+    /// forever. Because `working` outranks every quiescent state, that record
+    /// also keeps the island away from whichever session is genuinely live. A
+    /// hook that failed to run leaves exactly the same residue.
+    ///
+    /// Two independent signals have to agree before overriding the file, since
+    /// getting this wrong blanks a session that really is thinking: the CLI's
+    /// own record must no longer call the session busy, and its transcript must
+    /// show the turn already closed. The second is what keeps a retry storm
+    /// intact — a backing-off session reports `idle` too, but its transcript
+    /// still owes a response.
+    ///
+    /// Except when the transcript carries the interrupt marker, which decides
+    /// it on its own — see below.
+    private func reconciled(_ status: ClaudeStatus) -> ClaudeStatus {
+        guard status.state == .working,
+              let id = status.sessionId,
+              let session = claudeSessions.first(where: { $0.sessionId == id }),
+              // No readable transcript is no second signal — leave the record
+              // alone rather than guess.
+              let tail = transcriptTail(for: session)
+        else {
+            return status
+        }
+
+        // The marker is written for one reason only — the user ended the turn —
+        // so it outranks everything else we could ask, and it is the *only*
+        // thing that can retire a record frozen mid-tool. An interrupt during a
+        // tool call fires neither PostToolUse nor Stop, so `tool_active` stays
+        // true on disk forever; and since a tool that is genuinely still
+        // running leaves identical residue (working, tool active, and the CLI
+        // reporting idle while it waits), nothing weaker is safe to act on.
+        // Typing the next prompt supersedes this immediately: that writes a
+        // fresh `working` record and puts a new user turn at the tail.
+        if !tail.interrupted {
+            guard !status.toolActive,
+                  session.status == .idle,
+                  !tail.awaitingModel
+            else {
+                return status
+            }
+        }
+        var corrected = status
+        corrected.state = .idle
+        corrected.action = nil
+        corrected.target = nil
+        return corrected
+    }
+
+    /// How much a state deserves the island. Higher wins.
+    private static func urgency(_ state: ClaudeCodeState) -> Int {
+        switch state {
+        // Blocked on the user, or ended badly — these are the whole point.
+        case .needsApproval, .needsQuestion, .failed: return 3
+        // Something is actually happening.
+        case .working, .compacting: return 2
+        // Alive but not doing anything; must never displace the tier above.
+        case .waitingInput, .done, .idle: return 1
+        case .disconnected: return 0
+        }
+    }
+
+    /// Live sessions as the CLI itself reports them, hook-free. Ground truth
+    /// for liveness: a session killed with SIGKILL fires no SessionEnd, and its
+    /// pid simply stops existing here.
+    @Published private(set) var claudeSessions: [ClaudeSession] = []
+
+    private var reselectTimer: Timer?
+
+    /// Re-runs selection on a coarse timer while a state that claims work is in
+    /// progress is showing.
+    ///
+    /// Nothing here measures silence. Isle has no signal that separates a long
+    /// think from a stalled turn — both fire no hooks and write nothing — so it
+    /// makes no claim either way, in text or in treatment, and the island holds
+    /// the last state it was actually told about.
+    ///
+    /// The timer earns its place on the other job: the registry's directory
+    /// event normally re-runs selection itself, but an interrupt can leave the
+    /// CLI record untouched (already `idle`), and then nothing else would ever
+    /// re-examine the stuck record.
+    private func updateReselectTimer(for state: ClaudeCodeState) {
+        guard state == .working || state == .compacting || state == .waitingInput else {
+            stopReselectTimer()
+            return
+        }
+        guard reselectTimer == nil else { return }
+        reselectTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                // Apply only on a real change, so an unchanged state doesn't
+                // re-render the island every tick.
+                let resolved = self.selectStatus(from: self.claudeStatuses)
+                guard resolved.state != self.claudeState else { return }
+                self.applyClaudeStatus(resolved)
+            }
+        }
+    }
+
+    /// The transcript's last timestamped entry: whether it leaves the model
+    /// owing a response, whether it's the marker an interrupt leaves behind,
+    /// and when it was written.
+    ///
+    /// Reads only the tail of the file — transcripts run to megabytes and this
+    /// is called on a timer. Entries without a timestamp (`file-history-snapshot`
+    /// and friends) are skipped rather than treated as the end, since they're
+    /// interleaved with the real ones.
+    private func transcriptTail(for session: ClaudeSession) -> (awaitingModel: Bool, interrupted: Bool, at: Date)? {
+        let slug = session.cwd.replacingOccurrences(of: "/", with: "-")
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects/\(slug)/\(session.sessionId).jsonl")
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+
+        guard let end = try? handle.seekToEnd() else { return nil }
+        let window: UInt64 = 64 * 1024
+        try? handle.seek(toOffset: end > window ? end - window : 0)
+        guard let data = try? handle.readToEnd(),
+              let text = String(data: data, encoding: .utf8)
+        else { return nil }
+
+        for line in text.split(separator: "\n").reversed() {
+            guard let lineData = line.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  let type = object["type"] as? String,
+                  // Only conversation turns answer the question. The transcript
+                  // is interleaved with bookkeeping — `queue-operation`,
+                  // `attachment`, `system`, `file-history-snapshot` — and any of
+                  // those landing after a prompt would otherwise mask it and
+                  // make an unanswered turn look answered.
+                  type == "user" || type == "assistant",
+                  let stamp = object["timestamp"] as? String,
+                  let at = Self.transcriptDate(stamp)
+            else { continue }
+            // A `user` entry is either a fresh prompt or a tool result; both
+            // leave the model owing output. An `assistant` entry means it has
+            // already answered. The exception is an interruption: ESC appends a
+            // synthetic `user` entry and fires no hook at all, so reading it as
+            // an outstanding turn is precisely what pins the island on
+            // `Thinking` with nothing running.
+            let interrupted = type == "user" && Self.isInterruption(object)
+            return (
+                awaitingModel: type == "user" && !interrupted,
+                interrupted: interrupted,
+                at: at
+            )
+        }
+        return nil
+    }
+
+    /// Whether a transcript entry is the marker Claude Code writes when the
+    /// user interrupts a turn ("[Request interrupted by user]", and the
+    /// "…for tool use" variant). It arrives as a `user` entry but terminates a
+    /// turn rather than opening one.
+    private static func isInterruption(_ object: [String: Any]) -> Bool {
+        guard let message = object["message"] as? [String: Any] else { return false }
+        let texts: [String]
+        if let text = message["content"] as? String {
+            texts = [text]
+        } else if let blocks = message["content"] as? [[String: Any]] {
+            texts = blocks.compactMap { $0["text"] as? String }
+        } else {
+            return false
+        }
+        return texts.contains { $0.hasPrefix("[Request interrupted") }
+    }
+
+    private static let transcriptFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private static func transcriptDate(_ string: String) -> Date? {
+        transcriptFormatter.date(from: string)
+            ?? ISO8601DateFormatter().date(from: string)
+    }
+
+    private func stopReselectTimer() {
+        reselectTimer?.invalidate()
+        reselectTimer = nil
+    }
+
     // MARK: - Working words
 
     /// A rotating "thinking" word shown in the expanded view while working,
     /// echoing the Claude Code CLI's spinner (the real word isn't exposed to
-    /// hooks, so this is our own set in the same spirit).
+    /// hooks, so this is our own set in the same spirit). Stored bare — the
+    /// trailing "…" is added where it's displayed, since the collapsed label
+    /// drops it when a duration follows the word.
     @Published private(set) var workingWord: String = "Working"
 
     private var workingWordTimer: Timer?
@@ -234,8 +479,20 @@ final class NotchViewModel: ObservableObject {
             self?.recomputeSource()
         }
 
-        claudeWatcher.onStatus = { [weak self] status in
-            self?.applyClaudeStatus(status)
+        claudeWatcher.onStatuses = { [weak self] statuses in
+            guard let self else { return }
+            self.claudeStatuses = statuses
+            self.applyClaudeStatus(self.selectStatus(from: statuses))
+        }
+
+        sessionRegistry.onSessions = { [weak self] sessions in
+            guard let self else { return }
+            self.claudeSessions = sessions
+            // A session dropping out of the registry is dead for real — its pid
+            // is gone. A clean exit removes its status file too, but a SIGKILL
+            // fires no SessionEnd, so the file lingers and no status event will
+            // ever arrive. Re-running selection here is what retires it.
+            self.applyClaudeStatus(self.selectStatus(from: self.claudeStatuses))
         }
 
         // Re-render notch views on any settings change (waveform/scrubber
@@ -303,11 +560,15 @@ final class NotchViewModel: ObservableObject {
         claudeRunning = running
         if running {
             claudeWatcher.start()
+            sessionRegistry.start()
         } else {
             claudeWatcher.stop()
+            sessionRegistry.stop()
+            claudeSessions = []
             doneRevertTask?.cancel()
             doneRevertTask = nil
             stopWorkingWords()
+            stopReselectTimer()
             claudeState = .disconnected
             claudeProject = nil
             claudeSessionId = nil
@@ -349,6 +610,7 @@ final class NotchViewModel: ObservableObject {
         claudeAction = status.action
         claudeTarget = status.target
         claudeErrorType = status.errorType
+        claudeToolActive = status.toolActive
         claudeResetAt = status.resetAt
         claudeUpdatedAt = status.state == .disconnected ? nil : Date()
 
@@ -358,6 +620,7 @@ final class NotchViewModel: ObservableObject {
         } else {
             stopWorkingWords()
         }
+        updateReselectTimer(for: status.state)
 
         // `done` and `failed` are both terminal toasts: show them, then ease
         // back to idle so they don't stick until the next prompt. A failure
@@ -393,6 +656,8 @@ final class NotchViewModel: ObservableObject {
         doneRevertTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(revertDelay))
             guard !Task.isCancelled else { return }
+            // Idle is quiescent — nothing left to re-select for.
+            self?.stopReselectTimer()
             withAnimation(.easeInOut(duration: 0.25)) {
                 self?.claudeState = .idle
             }
@@ -493,6 +758,7 @@ final class NotchViewModel: ObservableObject {
     /// could emit a burst of ticks that felt like a drum roll. The throttle
     /// collapses any such burst into the one click the gesture deserves.
     func playTransitionHaptic() {
+        guard settings.haptics else { return }
         let now = Date()
         guard now.timeIntervalSince(lastHapticDate) > 0.35 else { return }
         lastHapticDate = now
@@ -547,6 +813,15 @@ final class NotchViewModel: ObservableObject {
 
         anchorDate = now
         anchorRate = model.playbackRate
+
+        // Reference identity, not image equality: the sources hand over a new
+        // NSImage only when they actually fetched or decoded one, so this is
+        // exactly the question of whether the cover changed.
+        if model.artwork !== paletteArtwork {
+            paletteArtwork = model.artwork
+            palette = ArtworkColors.palette(from: model.artwork)
+        }
+
         media = model
     }
 
@@ -704,6 +979,10 @@ final class NotchViewModel: ObservableObject {
     /// for every other state and layout, so those keep their marker colour.
     var workingTint: Color? {
         guard isClaudeSolo, claudeState == .working else { return nil }
+        // Full strength for as long as the state stands. It used to fade once
+        // hooks had been quiet a while, but hook silence is normal during a
+        // long think, so the fade only ever second-guessed a state that was
+        // still true.
         return isThinking ? Color(hex: "#F2C14E") : Color(hex: "#E8842B")
     }
 
@@ -784,7 +1063,14 @@ final class NotchViewModel: ObservableObject {
     /// churn. The expanded view shows the detailed "Editing …" line separately.
     var collapsedStatusText: String {
         switch claudeState {
-        case .working: return isThinking ? "Thinking" : workingWord
+        case .working:
+            // No clock on the working word, in either phase. Hooks are silent
+            // through a whole reasoning turn and through a long tool call, so
+            // the number was only ever counting normal quiet, and a figure
+            // ticking up next to "Coalescing…" reads as a fault when nothing
+            // is wrong. Past the staleness threshold the word just dims
+            // (`claudeTint`) — the island says nothing it can't back up.
+            return (isThinking ? "Thinking" : workingWord) + "…"
         // Approvals are surfaced as a question — the expanded panel still offers
         // the Approve/Deny buttons for a live `ask`, but the word is unified.
         case .needsApproval, .needsQuestion: return "Question"

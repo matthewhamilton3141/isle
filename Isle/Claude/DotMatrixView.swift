@@ -41,7 +41,12 @@ struct DotMatrixView: View {
     }
 
     var body: some View {
-        TimelineView(.animation) { timeline in
+        // Capped rather than free-running. `.animation` alone redraws as fast
+        // as the display allows, which on a ProMotion panel is up to 120fps —
+        // far more than these need: the slowest marker breathes over seconds
+        // and the fastest blinks a few times a second, so 30fps carries every
+        // one of them with no visible difference.
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
             Canvas { context, size in
                 render(into: &context, size: size, now: timeline.date)
             }

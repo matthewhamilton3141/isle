@@ -8,7 +8,7 @@
 # Usage:
 #   isle-cli set-state <disconnected|idle|working|done>   # state comes from the hook
 #   isle-cli notify                                        # classify a Notification
-#   isle-cli ask                                           # block for a notch Approve/Deny
+#   isle-cli ask                                           # permission → surface a question
 #   isle-cli end                                           # session ended — clear the island
 #
 # Kept in sync with Isle's embedded HookInstaller.scriptBody.
@@ -16,20 +16,32 @@
 set -euo pipefail
 
 STATUS_DIR="$HOME/.isle"
-STATUS_FILE="$STATUS_DIR/claude-status.json"
+# One file per session. A single shared file meant any session's event
+# overwrote every other session's state — so a background session going
+# quiet (Stop, or the idle notification) would wipe the state of the
+# session you were actually watching. The app now reads the whole directory
+# and picks which session owns the island.
+SESSION_DIR="$STATUS_DIR/sessions"
 
-# Timeout (in 0.1s ticks) the `ask` verb blocks for a notch decision before
-# giving up and letting Claude fall back to its own terminal prompt. 300 = 30s.
-ASK_TICKS=300
-
-# Writes the status file Isle watches. $1 = state, $2 = request id (empty for
-# every verb except `ask`). Computes its own timestamp so `ask`'s repeated
-# writes each carry a fresh "… ago".
+# Writes the status file Isle watches. $1 = state, $2 = request id (always
+# empty now — the notch no longer resolves decisions). Computes its own
+# timestamp so each write carries a fresh "… ago".
 write_status() {
-  local ts
+  local ts sf tmp
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  mkdir -p "$STATUS_DIR"
-  cat > "$STATUS_FILE" <<EOF
+  mkdir -p "$SESSION_DIR"
+  # Keyed by session id. Absent one (a hook payload without stdin), fall
+  # back to a fixed name so the write still lands somewhere predictable
+  # rather than creating an unbounded set of files.
+  sf="$SESSION_DIR/${SESSION_ID:-unknown}.json"
+  # Written to a temp file and renamed into place, never edited in place.
+  # Isle watches the *directory*, and rewriting an existing file changes no
+  # directory entry — so an in-place write fires no event and the app never
+  # learns the state changed. A rename does. (It also makes the write atomic,
+  # so Isle can never read a half-written record.) The temp name deliberately
+  # does not end in .json, so a scan mid-write can't pick it up as a session.
+  tmp="$sf.tmp.$$"
+  cat > "$tmp" <<EOF
 {
   "state": "$1",
   "project": "$PROJECT",
@@ -37,11 +49,13 @@ write_status() {
   "action": "$ACTION",
   "target": "$TARGET",
   "error_type": "$ERROR_TYPE",
+  "tool_active": $TOOL_ACTIVE,
   "reset_at": "$RESET_AT",
   "request_id": "$2",
   "updated_at": "$ts"
 }
 EOF
+  mv -f "$tmp" "$sf"
 }
 
 CMD="${1:-}"
@@ -83,15 +97,34 @@ TARGET=""
 MESSAGE=""
 HOOK_EVENT=""
 ERROR_TYPE=""
+LAST_MSG=""
 RESET_AT=""
+# True only between a PreToolUse and its PostToolUse — i.e. a tool is
+# actually executing right now. A long Bash or a slow MCP call goes minutes
+# with no hook write and no transcript growth, which is indistinguishable
+# from a stalled model unless the app knows a tool is running. Written as a
+# bare JSON boolean, so it is unquoted in the status file.
+TOOL_ACTIVE=false
 if [ ! -t 0 ]; then
   STDIN_JSON="$(cat)"
   HOOK_EVENT="$(printf '%s' "$STDIN_JSON" \
     | grep -oE '"hook_event_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
     | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+  if [ "$HOOK_EVENT" = "PreToolUse" ]; then TOOL_ACTIVE=true; fi
   ERROR_TYPE="$(printf '%s' "$STDIN_JSON" \
     | grep -oE '"error_type"[[:space:]]*:[[:space:]]*"[^"]*"' \
     | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+  # StopFailure names the failure `error`, not `error_type` — one of
+  # rate_limit / overloaded / server_error / invalid_request /
+  # model_not_found / max_output_tokens / unknown. Without this fallback
+  # every failure arrived kind-less and the island could only ever show the
+  # generic error marker. Gated to `fail` so a tool payload that happens to
+  # carry an "error" key can't stamp a kind onto a non-failure write.
+  if [ -z "$ERROR_TYPE" ] && [ "$CMD" = "fail" ]; then
+    ERROR_TYPE="$(printf '%s' "$STDIN_JSON" \
+      | grep -oE '"error"[[:space:]]*:[[:space:]]*"[^"]*"' \
+      | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+  fi
   SESSION_ID="$(printf '%s' "$STDIN_JSON" \
     | grep -oE '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' \
     | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
@@ -115,69 +148,38 @@ if [ ! -t 0 ]; then
   MESSAGE="$(printf '%s' "$STDIN_JSON" \
     | grep -oE '"message"[[:space:]]*:[[:space:]]*"[^"]*"' \
     | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+  # StopFailure carries no `message`: the text Claude actually showed
+  # ("You've hit your weekly limit · resets …") rides in
+  # `last_assistant_message`. The classification below reads both.
+  LAST_MSG="$(printf '%s' "$STDIN_JSON" \
+    | grep -oE '"last_assistant_message"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
 fi
 
-# `ask` (PermissionRequest hook): Claude needs a decision for this exact tool.
-# Open the notch approval, then block until the notch writes a matching decision
-# file or we time out — at which point we emit nothing so Claude falls back to
-# its own terminal prompt. PermissionRequest fires only when a decision is truly
-# needed, so this never blocks an auto-allowed tool.
+# `ask` (PermissionRequest hook): Claude needs the user's attention for this
+# tool. Isle has no Approve/Deny UI — every prompt is surfaced as a question
+# and answered in the terminal — so never block: write the question state and
+# emit nothing, so Claude shows its own prompt right away.
 if [ "$CMD" = "ask" ]; then
-  DECISION_FILE="$STATUS_DIR/claude-decision-$SESSION_ID.json"
-  REQUEST_ID="$(date +%s)-$$-${RANDOM:-0}"
-  mkdir -p "$STATUS_DIR"
-  rm -f "$DECISION_FILE"                        # clear any stale decision
-  write_status "needs_approval" "$REQUEST_ID"   # pop the notch prompt
-
-  i=0
-  while [ "$i" -lt "$ASK_TICKS" ]; do
-    if [ -f "$DECISION_FILE" ]; then
-      d_req="$(grep -oE '"request_id"[[:space:]]*:[[:space:]]*"[^"]*"' "$DECISION_FILE" \
-        | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
-      d_dec="$(grep -oE '"decision"[[:space:]]*:[[:space:]]*"[^"]*"' "$DECISION_FILE" \
-        | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
-      # Only honour a decision minted for *this* request, so a stale click or
-      # another session's file can never resolve this call.
-      if [ "$d_req" = "$REQUEST_ID" ] && { [ "$d_dec" = "allow" ] || [ "$d_dec" = "deny" ]; }; then
-        rm -f "$DECISION_FILE"
-        write_status "working" ""   # clear the red glyph; the panel retracts
-        if [ "$d_dec" = "allow" ]; then
-          reason="Approved from the Isle notch"
-        else
-          reason="Denied from the Isle notch"
-        fi
-        printf '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":"%s","permissionDecisionReason":"%s"}}\n' \
-          "$d_dec" "$reason"
-        exit 0
-      fi
-    fi
-    sleep 0.1
-    i=$((i + 1))
-  done
-
-  # Timed out (or Isle never answered). Drop the request id so the now-dead
-  # buttons hide, and print nothing so Claude proceeds through its own prompt.
-  # Never auto-allow.
-  write_status "needs_approval" ""
+  write_status "needs_question" ""
   exit 0
 fi
 
-# Classify a Notification from its message: a permission prompt is an approval,
-# an idle "waiting for your input" nudge is calmer, everything else defaults to
-# approval (some attention is needed).
+# Classify a Notification from its message: an idle "waiting for your input"
+# nudge is calmer; everything else is a question (some attention is needed).
 if [ "$CMD" = "notify" ]; then
   # Keep an active question: a question (from the AskUserQuestion tool) is the
   # more specific signal, and the notification that follows it is just "waiting
-  # on you" for the same prompt — don't let it downgrade to a plain approval.
+  # on you" for the same prompt — don't let it downgrade.
   # The question clears on its own when Claude moves on (next tool use / Stop).
-  if [ -f "$STATUS_FILE" ] && grep -q '"state": "needs_question"' "$STATUS_FILE" 2>/dev/null; then
+  if [ -f "$SESSION_DIR/${SESSION_ID:-unknown}.json" ] \
+     && grep -q '"state": "needs_question"' "$SESSION_DIR/${SESSION_ID:-unknown}.json" 2>/dev/null; then
     exit 0
   fi
   lower="$(printf '%s' "$MESSAGE" | tr '[:upper:]' '[:lower:]')"
   case "$lower" in
-    *permission*|*approve*|*allow*) STATE="needs_approval" ;;
-    *waiting*)                      STATE="waiting_input" ;;
-    *)                              STATE="needs_approval" ;;
+    *waiting*) STATE="waiting_input" ;;
+    *)         STATE="needs_question" ;;
   esac
 fi
 
@@ -196,34 +198,34 @@ fi
 # from the error type or message (either the failure or a notification can carry
 # it) and surface it as a named failure the app labels "Usage limit reached".
 if [ "$CMD" = "fail" ] || [ "$CMD" = "notify" ]; then
-  lc_all="$(printf '%s %s' "$ERROR_TYPE" "$MESSAGE" | tr '[:upper:]' '[:lower:]')"
+  lc_all="$(printf '%s %s %s' "$ERROR_TYPE" "$MESSAGE" "$LAST_MSG" \
+    | tr '[:upper:]' '[:lower:]')"
+  # Claude sends `rate_limit` for both a transient 429 and the subscription
+  # limit, so the wording is what separates them: the subscription limit
+  # always reads "You've hit your <session|weekly|monthly spend> limit".
   case "$lc_all" in
-    *usage*limit*|*limit*reached*|*quota*)
+    *usage*limit*|*limit*reached*|*quota*|*"hit your"*limit*)
       STATE="error"; ERROR_TYPE="usage_limit" ;;
   esac
 fi
 
-# When the failure is the usage/subscription limit, try to recover the moment it
-# resets so the island can count down to it. Claude's limit message carries that
-# moment as a Unix epoch (e.g. "...reached|1719849600"), so pull the first 10–13
-# digit run out of the message. Absent one, RESET_AT stays empty and the app just
-# pins "Limit reached" with no timer.
+# When the failure is the usage/subscription limit, try to recover the moment
+# it resets so the island can count down to it. Claude's limit message carries
+# that moment as a Unix epoch (e.g. "...reached|1719849600"), so pull the first
+# 10–13 digit run out of the message. Absent one, RESET_AT stays empty and the
+# app just pins "Limit reached" with no timer.
 if [ "$ERROR_TYPE" = "usage_limit" ]; then
-  RESET_AT="$(printf '%s' "$MESSAGE" | grep -oE '[0-9]{10,13}' | head -1 || true)"
+  RESET_AT="$(printf '%s %s' "$MESSAGE" "$LAST_MSG" \
+    | grep -oE '[0-9]{10,13}' | head -1 || true)"
 fi
 
-# `end` (SessionEnd hook): only clear the island if the session that just ended
-# is the one the status file is currently showing. The status file is shared by
-# every session (last writer wins), so a background session closing must not
-# wipe a different session's live status. If the current file names a *different*
-# session, leave it untouched. A missing/unparseable file or a matching id both
-# fall through to the disconnected write below.
-if [ "$CMD" = "end" ] && [ -f "$STATUS_FILE" ] && [ -n "$SESSION_ID" ]; then
-  CUR_SID="$(grep -oE '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' "$STATUS_FILE" \
-    | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
-  if [ -n "$CUR_SID" ] && [ "$CUR_SID" != "$SESSION_ID" ]; then
-    exit 0   # a different session owns the island; leave it alone
-  fi
+# `end` (SessionEnd hook): drop this session's file and stop. With one file
+# per session there's nothing to guard against any more — removing your own
+# record can't affect anyone else's. (The old shared-file version had to
+# check whether it still owned the island before clearing it.)
+if [ "$CMD" = "end" ]; then
+  rm -f "$SESSION_DIR/${SESSION_ID:-unknown}.json"
+  exit 0
 fi
 
 write_status "$STATE" ""

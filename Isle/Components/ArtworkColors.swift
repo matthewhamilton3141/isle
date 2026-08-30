@@ -110,23 +110,39 @@ enum ArtworkColors {
         let side = gridSize
         var pixels = [UInt8](repeating: 0, count: side * side * 4)
 
-        guard let context = CGContext(
-            data: &pixels,
-            width: side,
-            height: side,
-            bitsPerComponent: 8,
-            bytesPerRow: side * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return nil }
+        // The draw and the read both have to happen *inside* this closure.
+        //
+        // CGContext does not copy the buffer it is handed — it keeps the
+        // pointer and writes through it on every draw. Passing `&pixels`
+        // straight to the initializer produced a pointer guaranteed valid
+        // only for the duration of that one call, and `draw` then wrote
+        // through it afterwards: undefined behaviour, and the kind that reads
+        // back as blocks of arbitrary colour rather than as a crash.
+        // `withUnsafeMutableBytes` is what actually pins the buffer for as
+        // long as the context is alive.
+        let drew: Bool = pixels.withUnsafeMutableBytes { raw -> Bool in
+            guard let base = raw.baseAddress,
+                  let context = CGContext(
+                    data: base,
+                    width: side,
+                    height: side,
+                    bitsPerComponent: 8,
+                    bytesPerRow: side * 4,
+                    space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                  )
+            else { return false }
 
-        // Drawing the whole image into an 8x8 context is the downscale — the
-        // interpolation does the averaging for us.
-        context.interpolationQuality = .medium
-        context.draw(
-            cgImage,
-            in: CGRect(x: 0, y: 0, width: side, height: side)
-        )
+            // Drawing the whole image into an 8x8 context is the downscale —
+            // the interpolation does the averaging for us.
+            context.interpolationQuality = .medium
+            context.draw(
+                cgImage,
+                in: CGRect(x: 0, y: 0, width: side, height: side)
+            )
+            return true
+        }
+        guard drew else { return nil }
 
         return stride(from: 0, to: pixels.count, by: 4).compactMap { index in
             let alpha = Double(pixels[index + 3]) / 255

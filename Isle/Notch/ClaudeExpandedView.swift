@@ -102,7 +102,7 @@ struct ClaudeExpandedView: View {
         switch state {
         case .disconnected: return "No active session"
         case .idle: return "Ready"
-        case .working: return viewModel.workingWord   // rotating gerund
+        case .working: return viewModel.workingWord + "…"   // rotating gerund
         case .needsApproval, .needsQuestion: return "Has a question"
         case .waitingInput: return "Waiting for you"
         case .done: return "Done"
