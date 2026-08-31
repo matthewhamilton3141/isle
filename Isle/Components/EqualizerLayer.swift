@@ -30,9 +30,19 @@ final class EqualizerLayerView: NSView {
     // MARK: - Geometry, matching the Canvas renderer this replaced
 
     private let barCount: Int
-    private let spacing: CGFloat
+    /// Thickness of a bar. Held constant across every strip the waveform is
+    /// drawn into, so the collapsed island's two layouts show the same object
+    /// at the same weight rather than a thick version and a thin one — the
+    /// spacing is what gives when the strip is narrower. Matched to
+    /// `dotHeight` so silence resolves to actual circles.
+    private let barThickness: CGFloat
     /// Height of a bar at complete silence — the "dot" resting state.
     private let dotHeight: CGFloat
+
+    /// Floor on the gap between bars. Below this the strip stops reading as
+    /// separate bars, so past it the thickness gives way instead — better a
+    /// thinner waveform than a solid block.
+    private static let minSpacing: CGFloat = 1.2
 
     /// Per-bar frequency multipliers for the fallback pattern. Deliberately not
     /// evenly spaced, or the bars visibly march in a wave.
@@ -72,9 +82,9 @@ final class EqualizerLayerView: NSView {
 
     // MARK: - Init
 
-    init(barCount: Int = 6, spacing: CGFloat = 2.0, dotHeight: CGFloat = 2.5) {
+    init(barCount: Int = 6, barThickness: CGFloat = 2.5, dotHeight: CGFloat = 2.5) {
         self.barCount = barCount
-        self.spacing = spacing
+        self.barThickness = barThickness
         self.dotHeight = dotHeight
         super.init(frame: .zero)
         wantsLayer = true
@@ -142,7 +152,7 @@ final class EqualizerLayerView: NSView {
         gradient.frame = CGRect(origin: .zero, size: size)
         barMask.frame = CGRect(origin: .zero, size: size)
 
-        let barWidth = self.barWidth(for: size)
+        let (barWidth, spacing) = geometry(for: size)
         for index in 0..<barCount {
             let bar = bars[index]
             bar.removeAllAnimations()
@@ -196,8 +206,20 @@ final class EqualizerLayerView: NSView {
 
     // MARK: - Bar geometry
 
-    private func barWidth(for size: CGSize) -> CGFloat {
-        max(1, (size.width - spacing * CGFloat(barCount - 1)) / CGFloat(barCount))
+    /// Bar thickness and the gap between bars for a given strip.
+    ///
+    /// The thickness is the fixed quantity and the spacing is derived, which is
+    /// the inverse of how this used to work — deriving the thickness from a
+    /// fixed spacing meant a narrower strip silently drew thinner bars, and the
+    /// island's two layouts ended up showing the same waveform at two different
+    /// weights.
+    private func geometry(for size: CGSize) -> (barWidth: CGFloat, spacing: CGFloat) {
+        let gaps = CGFloat(barCount - 1)
+        let spacing = (size.width - barThickness * CGFloat(barCount)) / gaps
+        guard spacing < Self.minSpacing else { return (barThickness, spacing) }
+        // Too narrow to seat full-weight bars: hold the gaps at the floor and
+        // let the bars take the shortfall.
+        return (max(1, (size.width - Self.minSpacing * gaps) / CGFloat(barCount)), Self.minSpacing)
     }
 
     /// The height a bar takes at a given level, and the radius that rounds it.
@@ -219,7 +241,7 @@ final class EqualizerLayerView: NSView {
     private func applyLiveLevels() {
         let size = builtSize
         guard size.width > 0, bars.count == barCount else { return }
-        let barWidth = self.barWidth(for: size)
+        let barWidth = geometry(for: size).barWidth
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for index in 0..<barCount {

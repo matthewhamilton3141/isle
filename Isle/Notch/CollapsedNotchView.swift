@@ -53,7 +53,7 @@ struct CollapsedNotchView: View {
             // right rather than displacing the music.
             HStack(spacing: CollapsedSize.gap) {
                 artworkThumbnail
-                equalizer(width: CollapsedSize.waveSplit)
+                equalizer(width: CollapsedSize.wave)
             }
         } else if viewModel.isClaudeSolo {
             // Claude solo: the dot glyph sits to the left of the camera, in the
@@ -81,7 +81,7 @@ struct CollapsedNotchView: View {
             // Claude solo: only the status word here; the dots are on the left.
             statusText
         } else if viewModel.hasMusicActivity {
-            equalizer(width: CollapsedSize.waveSolo)
+            equalizer(width: CollapsedSize.wave)
         } else {
             EmptyView()
         }
