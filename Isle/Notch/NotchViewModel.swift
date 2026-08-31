@@ -14,8 +14,12 @@ import Combine
 /// (NotchViewModel) and the layout (CollapsedNotchView) so they can't drift.
 enum CollapsedSize {
     static let album: CGFloat = 22
-    static let waveSplit: CGFloat = 22   // waveform when paired with the album
-    static let waveSolo: CGFloat = 26    // waveform when it's the only thing
+    /// The waveform, one size in every layout. It used to narrow to 22 when
+    /// the album shared the island, which drew the same waveform at a lighter
+    /// weight in the split view; the album never shrank for Claude, and
+    /// `NotchMetrics.collapsedClaudeExtra` says outright that the waveform
+    /// isn't meant to either. Costs 4pt of island width in the split view.
+    static let wave: CGFloat = 26
     static let dots: CGFloat = 16
     static let gap: CGFloat = 5          // between elements within a cluster
     static let cutoutGap: CGFloat = 6    // between a cluster and the camera
@@ -1077,7 +1081,7 @@ final class NotchViewModel: ObservableObject {
         if shouldSplitCollapsed {
             // Music cluster is album + waveform, with the waveform tucked toward
             // the camera so the album sits outboard, clear of the housing.
-            let leading = s.album + s.gap + s.waveSplit + g
+            let leading = s.album + s.gap + s.wave + g
             return (leading, s.dots + statusSlot + g)
         }
         if hasClaudeActivity {
@@ -1091,7 +1095,7 @@ final class NotchViewModel: ObservableObject {
             return (s.album + g, trailing)
         }
         if hasMusicActivity {
-            return (s.album + g, s.waveSolo + g)
+            return (s.album + g, s.wave + g)
         }
         return (s.minSide, s.minSide)   // resting
     }
