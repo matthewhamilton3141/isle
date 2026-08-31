@@ -121,14 +121,16 @@ struct AnimationGalleryView: View {
             VStack(alignment: .leading, spacing: 10) {
                 MarqueeText(
                     text: "A Very Long Song Title That Should Definitely Overflow And Scroll",
-                    font: .system(size: 14, weight: .semibold),
+                    fontSize: 14,
+                    weight: .semibold,
                     lineHeight: 18
                 )
                 .frame(width: 240)
 
                 MarqueeText(
                     text: "Short title",
-                    font: .system(size: 14, weight: .semibold),
+                    fontSize: 14,
+                    weight: .semibold,
                     lineHeight: 18
                 )
                 .frame(width: 240)
