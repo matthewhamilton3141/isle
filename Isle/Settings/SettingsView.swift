@@ -202,6 +202,16 @@ struct SettingsView: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
+                Toggle("Show “Waiting” in the island", isOn: $settings.showWaitingStatus)
+                Text(settings.showWaitingStatus
+                     ? "The island shows when Claude has handed the turn back to you."
+                     : "Waiting stays out of the island; the expanded panel still shows it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
                 Toggle("Expand notch for alerts", isOn: $settings.expandOnAlert)
                 Text(settings.expandOnAlert
                      ? "Questions and errors pop the notch open."

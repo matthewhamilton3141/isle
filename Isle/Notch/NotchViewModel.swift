@@ -1025,6 +1025,13 @@ final class NotchViewModel: ObservableObject {
     var hasClaudeActivity: Bool {
         settings.effectiveMode.showsClaude
             && claudeState != .disconnected && claudeState != .idle
+            // `waiting` is opt-out (settings > Claude Code): when it's off the
+            // state is ambient like `idle` — the expanded panel still says
+            // "Waiting for you", but the island stays with the music rather
+            // than splitting to seat the word. Selection is untouched: waiting
+            // already sits in the bottom urgency tier, so a working session
+            // elsewhere outranks it either way.
+            && (claudeState != .waitingInput || settings.showWaitingStatus)
     }
 
     /// The collapsed island is showing Claude alone (no music). Drives the
