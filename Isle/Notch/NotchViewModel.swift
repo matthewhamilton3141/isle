@@ -530,6 +530,14 @@ final class NotchViewModel: ObservableObject {
         applyMode()
     }
 
+    /// The termination path: stop everything, then give the audio teardown a
+    /// bounded moment to land before the process exits. See
+    /// `SystemAudioLevels.awaitTeardown`.
+    func shutdown() {
+        stop()
+        audio.awaitTeardown()
+    }
+
     func stop() {
         isRunning = false
         setMediaRunning(false)

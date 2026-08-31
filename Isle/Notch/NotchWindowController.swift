@@ -84,6 +84,13 @@ final class NotchWindowController {
         viewModel.start()
     }
 
+    /// Quit path. Hides as usual, then waits briefly for the audio tap to come
+    /// down rather than leaving it to the OS to reclaim on process death.
+    func shutdown() {
+        hide()
+        viewModel.shutdown()
+    }
+
     func hide() {
         window?.orderOut(nil)
         if let pointerMonitor {

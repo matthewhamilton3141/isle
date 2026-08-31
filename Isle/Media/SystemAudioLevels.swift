@@ -204,6 +204,28 @@ final class SystemAudioLevels: ObservableObject {
         levels = []
     }
 
+    /// Blocks until the pending teardown has actually run, or `timeout` passes.
+    ///
+    /// For termination only. `stop` deliberately doesn't wait — it's called
+    /// whenever the screen sleeps or Spotify quits, and none of those should
+    /// stall the main thread. But on the way out it's worth a moment to let the
+    /// tap go down explicitly rather than leaving it to the OS to reclaim.
+    ///
+    /// Bounded because the whole point of moving this off the main thread is
+    /// that these calls can block indefinitely when coreaudiod is wedged.
+    /// Waiting unbounded here would just move that hang from launch to quit.
+    /// A healthy teardown measures around 20ms, so the timeout is loose enough
+    /// to never bite in practice and short enough to be invisible when it does.
+    ///
+    /// The queue is serial, so a block enqueued now can only run once the
+    /// teardown ahead of it has finished — which is what makes this a wait on
+    /// the teardown without needing to reach into it.
+    func awaitTeardown(timeout: TimeInterval = 0.15) {
+        let landed = DispatchSemaphore(value: 0)
+        Self.captureQueue.async { landed.signal() }
+        _ = landed.wait(timeout: .now() + timeout)
+    }
+
     // MARK: - Capture setup
 
     // MARK: - Publishing
