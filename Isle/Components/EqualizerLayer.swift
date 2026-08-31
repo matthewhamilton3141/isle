@@ -72,7 +72,7 @@ final class EqualizerLayerView: NSView {
 
     // MARK: - Init
 
-    init(barCount: Int = 6, spacing: CGFloat = 2.5, dotHeight: CGFloat = 2.5) {
+    init(barCount: Int = 6, spacing: CGFloat = 2.0, dotHeight: CGFloat = 2.5) {
         self.barCount = barCount
         self.spacing = spacing
         self.dotHeight = dotHeight

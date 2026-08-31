@@ -127,7 +127,7 @@ struct CollapsedNotchView: View {
             palette: palette,
             isPlaying: viewModel.media.isPlaying
         )
-        .frame(width: width, height: 14)
+        .frame(width: width, height: 20)
     }
 
     private var artworkThumbnail: some View {
