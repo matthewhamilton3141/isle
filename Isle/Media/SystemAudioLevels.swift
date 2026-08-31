@@ -408,6 +408,14 @@ private final class AudioAnalyzer: @unchecked Sendable {
     private var magnitudes: [Float]
     private var sampleBuffer: [Float]
 
+    /// Per-band scratch, sized once for the same reason as the FFT buffers
+    /// above — these are written on every callback, ~94 times a second, on the
+    /// realtime audio thread. Allocated fresh each time they were three
+    /// malloc/free pairs per callback in exactly the place the comment on
+    /// `fftSize` warns about. Audio-thread-only, like the rest of the scratch.
+    private var bandDb: [Double]
+    private var newLevels: [Double]
+
     /// Slowly-adapting loudness reference, in the same tilted-dB units as the
     /// band levels. Every band is measured *against* this rather than against
     /// a fixed window, which is what makes the display independent of how
@@ -485,6 +493,9 @@ private final class AudioAnalyzer: @unchecked Sendable {
         self.smoothed = Array(repeating: 0, count: bandCount)
         self.levelPeaks = Array(repeating: 0, count: bandCount)
         self.rawReadout = Array(repeating: 0, count: bandCount)
+
+        bandDb = Array(repeating: 0, count: bandCount)
+        newLevels = Array(repeating: 0, count: bandCount)
 
         window = [Float](repeating: 0, count: fftSize)
         realParts = [Float](repeating: 0, count: fftSize / 2)
@@ -605,8 +616,13 @@ private final class AudioAnalyzer: @unchecked Sendable {
         var scale = Float(1) / Float(2 * fftSize)
         vDSP_vsmul(magnitudes, 1, &scale, &magnitudes, 1, vDSP_Length(halfSize))
 
-        var bandDb = [Double](repeating: 0, count: bandCount)
+        // `rawDb` feeds `rawReadout`, which only `drainDiagnostics` reads and
+        // only the DEBUG logging timer calls — so in a release build it was an
+        // array allocated on the realtime audio thread ~94 times a second to
+        // fill a readout nothing would ever look at. Built only where it's used.
+        #if DEBUG
         var rawDb = [Double](repeating: 0, count: bandCount)
+        #endif
         // Skip bin 0 (DC) — it carries no audible information and would peg
         // the first bar on any signal with an offset.
         let minBin = 1
@@ -637,8 +653,11 @@ private final class AudioAnalyzer: @unchecked Sendable {
             //
             // The tilt goes in before the reference is taken, so it shapes the
             // bands relative to each other without shifting the overall level.
-            rawDb[band] = 20 * log10(max(Double(bandPeak), 1e-7))
-            bandDb[band] = rawDb[band] + Double(band) * Self.tiltPerBand
+            let db = 20 * log10(max(Double(bandPeak), 1e-7))
+            bandDb[band] = db + Double(band) * Self.tiltPerBand
+            #if DEBUG
+            rawDb[band] = db
+            #endif
         }
 
         // Adapt the reference toward this frame's overall level, then measure
@@ -668,8 +687,9 @@ private final class AudioAnalyzer: @unchecked Sendable {
             reference = max(reference, Self.referenceFloor)
         }
 
-        var newLevels = [Double](repeating: 0, count: bandCount)
-        if !isSilent {
+        if isSilent {
+            for band in 0..<bandCount { newLevels[band] = 0 }
+        } else {
             for band in 0..<bandCount {
                 // +28 over a 53dB span puts a band sitting exactly at the
                 // reference just past half the strip's height, and pegs one
@@ -689,8 +709,10 @@ private final class AudioAnalyzer: @unchecked Sendable {
         }
 
         lock.lock()
+        #if DEBUG
         referenceReadout = reference
         rawReadout = rawDb
+        #endif
         for index in 0..<bandCount {
             let target = newLevels[index]
             // Fast attack, slow release — mirrors a physical VU meter and
@@ -705,7 +727,9 @@ private final class AudioAnalyzer: @unchecked Sendable {
             if smoothed[index] < 0.0015 {
                 smoothed[index] = 0
             }
+            #if DEBUG
             levelPeaks[index] = max(levelPeaks[index], smoothed[index])
+            #endif
         }
         lock.unlock()
     }

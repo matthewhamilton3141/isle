@@ -455,9 +455,17 @@ final class NotchViewModel: ObservableObject {
     private var pendingCommandDeadline: Date = .distantPast
     private static let commandGrace: TimeInterval = 1.5
 
-    /// Live per-band audio magnitudes. Empty when capture isn't running, which
-    /// EqualizerView reads as "use the procedural fallback".
-    @Published private(set) var audioLevels: [Double] = []
+    /// The live per-band magnitudes, handed out as the object that publishes
+    /// them rather than as a republished array.
+    ///
+    /// Deliberately *not* mirrored into an `@Published` here. Levels change 30
+    /// times a second, and republishing them on this view model invalidated
+    /// every view observing it — which is the whole notch, including the shape
+    /// sizing, the hit rect and the Claude glyph, none of which depend on audio.
+    /// Handing the source out directly means only the waveform itself (see
+    /// `LiveEqualizer`) redraws on a level change. Empty levels mean capture
+    /// isn't running, which EqualizerView reads as "use the procedural fallback".
+    var audioLevelSource: SystemAudioLevels { audio }
 
     /// Why audio capture isn't running, if it isn't.
     var audioFailureReason: String? { audio.failureReason }
@@ -503,14 +511,6 @@ final class NotchViewModel: ObservableObject {
             .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &cancellables)
 
-        // Republish rather than exposing `audio` directly: nesting an
-        // ObservableObject inside another doesn't propagate to SwiftUI.
-        audio.$levels
-            .sink { [weak self] levels in
-                self?.audioLevels = levels
-            }
-            .store(in: &cancellables)
-
         // React to a live mode change (Settings — Milestone 6): start or
         // stop the affected subsystems and re-derive the collapsed layout.
         self.settings.$mode
@@ -526,6 +526,7 @@ final class NotchViewModel: ObservableObject {
 
     func start() {
         isRunning = true
+        observeDisplayState()
         applyMode()
     }
 
@@ -533,12 +534,64 @@ final class NotchViewModel: ObservableObject {
         isRunning = false
         setMediaRunning(false)
         setClaudeRunning(false)
+        for (center, token) in displayObservers { center.removeObserver(token) }
+        displayObservers.removeAll()
     }
 
-    /// Brings the running subsystems in line with the active mode.
+    /// Brings the running subsystems in line with the active mode, and with
+    /// whether there's a display awake to show any of it on.
     private func applyMode() {
-        setMediaRunning(settings.effectiveMode.showsMusic)
+        setMediaRunning(settings.effectiveMode.showsMusic && !displayAsleep)
         setClaudeRunning(settings.effectiveMode.showsClaude)
+    }
+
+    // MARK: - Display sleep
+
+    /// The screen is off or locked, so nothing the media pipeline produces can
+    /// be seen.
+    ///
+    /// Worth gating on because the expensive half of that pipeline doesn't stop
+    /// by itself. The marker's animation does — it's driven off the display,
+    /// which isn't ticking — but audio capture is not: the tap keeps running,
+    /// the FFT keeps running ~94 times a second, and the levels keep publishing
+    /// at 30Hz, all to move a waveform on a dark screen. Music playing with the
+    /// lid shut is the normal case for this, not an edge case.
+    ///
+    /// Note that occlusion is deliberately *not* part of this. The notch window
+    /// is `.fullScreenAuxiliary` and sits above the menu bar, so it stays up over
+    /// full-screen apps and is never covered — there is no occluded state to
+    /// react to.
+    private var displayAsleep = false
+
+    private var displayObservers: [(NotificationCenter, NSObjectProtocol)] = []
+
+    /// Sleep and lock are watched separately because they're genuinely different
+    /// events: locking the screen doesn't put the display to sleep, and the
+    /// display sleeping doesn't lock. Either one means nobody can see the notch.
+    private func observeDisplayState() {
+        guard displayObservers.isEmpty else { return }
+
+        let workspace = NSWorkspace.shared.notificationCenter
+        let distributed = DistributedNotificationCenter.default()
+
+        func observe(_ center: NotificationCenter, _ name: Notification.Name, asleep: Bool) {
+            let token = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.setDisplayAsleep(asleep) }
+            }
+            displayObservers.append((center, token))
+        }
+
+        observe(workspace, NSWorkspace.screensDidSleepNotification, asleep: true)
+        observe(workspace, NSWorkspace.screensDidWakeNotification, asleep: false)
+        observe(distributed, Notification.Name("com.apple.screenIsLocked"), asleep: true)
+        observe(distributed, Notification.Name("com.apple.screenIsUnlocked"), asleep: false)
+    }
+
+    private func setDisplayAsleep(_ asleep: Bool) {
+        guard asleep != displayAsleep else { return }
+        displayAsleep = asleep
+        guard isRunning else { return }
+        applyMode()
     }
 
     private func setMediaRunning(_ running: Bool) {
@@ -1098,10 +1151,27 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
+    /// Measured widths, kept because this is on the hot path. `collapsedSideWidths`
+    /// is read several times per body evaluation (the shape's size, the shift that
+    /// re-centres the cutout, the hit rect, and the collapsed layout itself), and
+    /// laying out a string to measure it is not cheap — it was the single largest
+    /// main-thread cost in the app. The status word comes from a fixed handful
+    /// ("Thinking…", "Done", the rotating working words), so the cache stays tiny
+    /// and every read after the first is a dictionary hit.
+    private static var textWidthCache: [String: CGFloat] = [:]
+
+    /// The font is resolved once for the same reason — `systemFont(ofSize:weight:)`
+    /// is a lookup, not a constant.
+    private static let statusFont = NSFont.systemFont(
+        ofSize: CollapsedSize.statusFontSize, weight: .semibold
+    )
+
     private static func textWidth(_ string: String) -> CGFloat {
         guard !string.isEmpty else { return 0 }
-        let font = NSFont.systemFont(ofSize: CollapsedSize.statusFontSize, weight: .semibold)
-        return ceil((string as NSString).size(withAttributes: [.font: font]).width)
+        if let cached = textWidthCache[string] { return cached }
+        let width = ceil((string as NSString).size(withAttributes: [.font: statusFont]).width)
+        textWidthCache[string] = width
+        return width
     }
 
     // MARK: - Transport

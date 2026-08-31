@@ -128,6 +128,25 @@ struct EqualizerView: View {
     }
 }
 
+/// The waveform wired to the live capture, and the only view in the app that
+/// observes it.
+///
+/// The levels object is observed *here*, at the leaf, rather than being
+/// republished on the notch's view model. Levels arrive 30 times a second; when
+/// the view model carried them, every one of those invalidated the entire notch
+/// body — re-deriving the collapsed widths, the shape size and the hit rect, and
+/// redrawing the Claude glyph — for a change that only ever moves six bars.
+/// Scoping the observation to this wrapper keeps that work at the waveform.
+struct LiveEqualizer: View {
+    @ObservedObject var source: SystemAudioLevels
+    var palette: ArtworkPalette = .fallback
+    var isPlaying: Bool = true
+
+    var body: some View {
+        EqualizerView(palette: palette, isPlaying: isPlaying, levels: source.levels)
+    }
+}
+
 #Preview("Waveform") {
     VStack(spacing: 24) {
         // Silence — should read as a row of dots.

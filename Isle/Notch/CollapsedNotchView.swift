@@ -122,10 +122,10 @@ struct CollapsedNotchView: View {
     }
 
     private func equalizer(width: CGFloat) -> some View {
-        EqualizerView(
+        LiveEqualizer(
+            source: viewModel.audioLevelSource,
             palette: palette,
-            isPlaying: viewModel.media.isPlaying,
-            levels: viewModel.audioLevels
+            isPlaying: viewModel.media.isPlaying
         )
         .frame(width: width, height: 14)
     }
