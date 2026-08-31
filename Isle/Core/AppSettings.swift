@@ -26,6 +26,7 @@ final class AppSettings: ObservableObject {
     private static let hapticsKey = "isle.haptics"
     private static let expandOnAlertKey = "isle.expandOnAlert"
     private static let dismissAlertPanelKey = "isle.dismissAlertPanel"
+    private static let showWaitingKey = "isle.showWaiting"
 
     /// The user's chosen mode, or `nil` until onboarding sets one
     /// (Milestone 2). Persisted on change.
@@ -95,6 +96,16 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(dismissAlertPanel, forKey: Self.dismissAlertPanelKey) }
     }
 
+    /// Whether the `waiting` state — Claude has handed the turn back and is
+    /// waiting on you to type — claims the collapsed island. Off treats it like
+    /// `idle`: still shown in the expanded panel, but the island stays with the
+    /// music instead of splitting to seat a "Waiting" that says nothing you
+    /// don't already know, since you're the one it's waiting on. Every other
+    /// state (working, questions, errors) is unaffected.
+    @Published var showWaitingStatus: Bool {
+        didSet { defaults.set(showWaitingStatus, forKey: Self.showWaitingKey) }
+    }
+
     /// Whether the user has ever picked a mode. Onboarding keys off this.
     var hasChosenMode: Bool { mode != nil }
 
@@ -118,5 +129,6 @@ final class AppSettings: ObservableObject {
         doneToastSeconds = defaults.object(forKey: Self.doneToastKey) as? Double ?? 4
         expandOnAlert = defaults.object(forKey: Self.expandOnAlertKey) as? Bool ?? true
         dismissAlertPanel = defaults.object(forKey: Self.dismissAlertPanelKey) as? Bool ?? true
+        showWaitingStatus = defaults.object(forKey: Self.showWaitingKey) as? Bool ?? true
     }
 }
