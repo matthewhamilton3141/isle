@@ -2,6 +2,8 @@
 
 **A Dynamic Island for the MacBook notch — for Spotify and Claude Code.**
 
+![Isle in action](assets/isle-demo.gif)
+
 Isle turns the dead space around the camera housing into a live, interactive
 island. It shows what's playing and reacts to the music with a real audio
 waveform, and it reports what your Claude Code session is doing, opening on its

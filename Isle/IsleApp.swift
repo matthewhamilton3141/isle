@@ -30,6 +30,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The "Pop out notch for alerts" checkbox, refreshed each time the menu
     /// opens so it always reflects the current setting.
     private var expandAlertsItem: NSMenuItem?
+    /// The three mode radio items, restated each time the menu opens so a mode
+    /// picked in Settings (or onboarding) shows the right checkmark here.
+    private var modeItems: [NSMenuItem] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setUpStatusItem()
@@ -89,6 +92,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
+        // The same choice as Settings' segmented picker, one click from the
+        // menu bar. Radio-style: exactly one is checked, and `menuNeedsUpdate`
+        // re-reads it on open so a change made elsewhere is reflected.
+        menu.addItem(.sectionHeader(title: "Mode"))
+        for mode in IsleMode.allCases {
+            let item = NSMenuItem(
+                title: mode.title,
+                action: #selector(selectMode(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = mode.rawValue
+            menu.addItem(item)
+            modeItems.append(item)
+        }
+
+        menu.addItem(.separator())
+
         menu.addItem(
             withTitle: "Settings…",
             action: #selector(openSettings),
@@ -126,6 +147,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         item.menu = menu
         statusItem = item
+    }
+
+    /// Writes the picked mode straight through to `AppSettings`; every
+    /// subsystem already observes it, so the island reconfigures itself.
+    @objc private func selectMode(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let mode = IsleMode(rawValue: raw) else { return }
+        AppSettings.shared.mode = mode
     }
 
     @objc private func toggleNotch() {
@@ -294,5 +323,10 @@ extension AppDelegate: NSMenuDelegate {
     /// time the menu opens rather than trusting the last toggle.
     func menuNeedsUpdate(_ menu: NSMenu) {
         expandAlertsItem?.state = AppSettings.shared.expandOnAlert ? .on : .off
+
+        let active = AppSettings.shared.effectiveMode.rawValue
+        for item in modeItems {
+            item.state = (item.representedObject as? String) == active ? .on : .off
+        }
     }
 }

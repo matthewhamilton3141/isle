@@ -31,3 +31,6 @@ Vendor/mediaremote-adapter/MediaRemoteAdapter.framework/
 
 # Release artifacts (built by scripts/sign-release.sh)
 dist/
+
+# Video working files for the README demo (the GIF is tracked)
+assets/*.mp4
