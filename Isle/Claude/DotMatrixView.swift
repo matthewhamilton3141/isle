@@ -1,16 +1,27 @@
 //
 //  DotMatrixView.swift
 //
-//  Renders a marker: a 4x4 grid of dots described by a MarkerDesign. The
+//  Renders a marker: a 5x5 grid of dots described by a MarkerDesign. The
 //  design says which dots are lit, how they're coloured (artwork palette or a
-//  fixed hue), and how they animate (solid / shimmer / pulse / blink). Both
-//  the live notch and the marker editor use this same renderer, so what you
-//  design is exactly what shows up in the island.
+//  fixed hue), and how they animate (solid / shimmer / pulse / blink / motion /
+//  compact). Both the live notch and the marker editor use this same renderer,
+//  so what you design is exactly what shows up in the island.
 //
-//  Time-driven, like the waveform: a TimelineView feeds wall-clock time to a
-//  Canvas, so animation never drifts and needs no start/stop bookkeeping. When
-//  the lit dots change (a state change, or a keystroke in the editor) the grid
-//  morphs — the old layout eases into the new one — so dots slide on and off.
+//  Drawn by Core Animation, not per-frame by us. Every one of these animations
+//  is a function of wall-clock time, so instead of waking up 30 times a second
+//  to draw the next frame, we hand Core Animation the whole curve once and let
+//  the render server play it. The app then does nothing at all while the marker
+//  animates.
+//
+//  That matters because the per-frame cost was never the arithmetic — 25 circles
+//  is nothing. It was SwiftUI's pipeline around it: a view-graph update, a
+//  display-list rebuild and a Core Animation commit, 30 times a second, for as
+//  long as a marker was on screen. Measured, that was ~8% of a core; the marker
+//  now animates for approximately none.
+//
+//  The dots still morph when the design changes — the old layout eases into the
+//  new one over `morphDuration`, so dots slide on and off — which is why each
+//  dot gets a short one-shot transition animation ahead of its steady loop.
 //  This is an original mark, not a copy of Anthropic's.
 //
 
@@ -25,51 +36,60 @@ struct DotMatrixView: View {
     /// orange) without touching the user's saved marker design.
     var tint: Color?
 
-    private static let morphDuration: Double = 0.45
-
-    @State private var fromLevels: [Double]
-    @State private var toLevels: [Double]
-    @State private var transitionStart: Date = .distantPast
-
     init(design: MarkerDesign, palette: ArtworkPalette = .fallback, tint: Color? = nil) {
         self.design = design
         self.palette = palette
         self.tint = tint
-        let levels = Self.levels(for: design)
-        _fromLevels = State(initialValue: levels)
-        _toLevels = State(initialValue: levels)
     }
 
     var body: some View {
-        // Capped rather than free-running. `.animation` alone redraws as fast
-        // as the display allows, which on a ProMotion panel is up to 120fps —
-        // far more than these need: the slowest marker breathes over seconds
-        // and the fastest blinks a few times a second, so 30fps carries every
-        // one of them with no visible difference.
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-            Canvas { context, size in
-                render(into: &context, size: size, now: timeline.date)
-            }
-        }
-        .onChange(of: design) { _, newDesign in
-            // Only the lit-dot layout morphs; colour/animation changes are read
-            // straight from `design` each frame, so they update instantly.
-            let next = Self.levels(for: newDesign)
-            if next != toLevels {
-                fromLevels = currentLevels(at: Date())
-                toLevels = next
-                transitionStart = Date()
-            }
-        }
-        .accessibilityHidden(true)
+        DotMatrixLayerRepresentable(design: design, palette: palette, tint: tint)
+            .accessibilityHidden(true)
+    }
+}
+
+// MARK: - SwiftUI bridge
+
+private struct DotMatrixLayerRepresentable: NSViewRepresentable {
+    var design: MarkerDesign
+    var palette: ArtworkPalette
+    var tint: Color?
+
+    func makeNSView(context: Context) -> DotMatrixLayerView {
+        let view = DotMatrixLayerView()
+        view.apply(design: design, palette: palette, tint: tint, animateMorph: false)
+        return view
     }
 
-    // MARK: - Morph
+    func updateNSView(_ view: DotMatrixLayerView, context: Context) {
+        // Morph only the lit-dot layout; a colour or speed change just rebuilds
+        // the loop in place, matching the old renderer's behaviour of reading
+        // those straight from `design` rather than easing them.
+        view.apply(design: design, palette: palette, tint: tint, animateMorph: true)
+    }
+}
 
-    /// Target base level per dot: lit dots at 1, unlit as a faint ghost (or 0).
-    /// Bounds-checked against `dotCount` so a stale design of the wrong length
-    /// (e.g. a 4x4 file loaded after the switch to 5x5) can't index out of range.
-    private static func levels(for design: MarkerDesign) -> [Double] {
+// MARK: - Curves
+//
+// The single source of truth for what a dot looks like at a given instant.
+// Everything here is a pure function of time, which is exactly what lets the
+// whole thing be handed to Core Animation as keyframes.
+
+struct DotMatrixCurves {
+    var design: MarkerDesign
+    /// Base level per dot: lit dots at 1, unlit as a faint ghost (or 0).
+    var levels: [Double]
+    var colors: DotColors
+    /// Half the grid cell, needed because the dot radius has a constant term
+    /// and so isn't a pure ratio.
+    var cell: Double
+
+    static let morphDuration: Double = 0.45
+
+    /// Target base level per dot. Bounds-checked against `dotCount` so a stale
+    /// design of the wrong length (e.g. a 4x4 file loaded after the switch to
+    /// 5x5) can't index out of range.
+    static func levels(for design: MarkerDesign) -> [Double] {
         let ghost = design.ghost ? 0.08 : 0.0
         return (0..<MarkerDesign.dotCount).map { i in
             let lit = i < design.dots.count && design.dots[i]
@@ -77,118 +97,131 @@ struct DotMatrixView: View {
         }
     }
 
-    private func morphProgress(at now: Date) -> Double {
-        let raw = min(1, max(0, now.timeIntervalSince(transitionStart) / Self.morphDuration))
-        return raw * raw * (3 - 2 * raw)   // smoothstep
-    }
+    // MARK: Periods
+    //
+    // The loop each curve repeats on. These are the *exact* periods of the
+    // underlying functions, so a loop is seamless — the value and slope at the
+    // end match the start, and nothing jumps at the seam.
 
-    private func currentLevels(at now: Date) -> [Double] {
-        let t = morphProgress(at: now)
-        return (0..<MarkerDesign.dotCount).map {
-            fromLevels[$0] + (toLevels[$0] - fromLevels[$0]) * t
+    var animationPeriod: Double {
+        let speed = max(design.speed, 0.0001)
+        switch design.animation {
+        case .solid:
+            // Driven by `breathe`, which runs at half speed.
+            return 4 * .pi / speed
+        case .shimmer, .pulse, .blink:
+            return 2 * .pi / speed
+        case .compact:
+            return 1 / (speed * 0.18)
+        case .motion:
+            // The one curve with no short exact period: it superimposes three
+            // waves whose periods don't divide into each other, which is the
+            // whole point of it ("never settles into an obvious repeat"). Its
+            // true period is minutes long, far too much to hand over as
+            // keyframes, so it loops on a long window instead — long enough
+            // that a repeat isn't something you'd catch on a 16pt marker.
+            return 30
         }
     }
 
-    // MARK: - Rendering
+    /// Whether `animationPeriod` is a bake rather than the curve's own period.
+    var loopIsApproximate: Bool { design.animation == .motion }
 
-    private func render(into context: inout GraphicsContext, size: CGSize, now: Date) {
-        let n = MarkerDesign.dimension
-        let cell = min(size.width, size.height) / CGFloat(n)
-        let ox = (size.width - cell * CGFloat(n)) / 2
-        let oy = (size.height - cell * CGFloat(n)) / 2
+    /// How much of a baked loop's tail cross-fades back into its head.
+    ///
+    /// Without this the wrap is a hard cut. `motion` isn't periodic, so at the
+    /// end of the baked window the curve is nowhere near where it started —
+    /// measured, the worst dot jumps 0.50 in opacity across a single 50ms
+    /// keyframe, against a 0.08 largest step anywhere else in the loop. That
+    /// reads as a flick, once every 30 seconds, which is far worse than the
+    /// repeat the bake was accepted for. Lengthening the window doesn't help:
+    /// with no period to land on, every length lands somewhere arbitrary (0.44
+    /// at 10s, 0.50 at 30s, 0.55 at 60s).
+    ///
+    /// Cross-fading the tail into the head makes the loop close on itself by
+    /// construction, whatever the window. Both sides are the same plasma so the
+    /// blend reads as more of it; measured over the whole loop it takes the seam
+    /// to exactly zero and leaves the largest step unchanged at 0.08.
+    var loopBlend: Double { 3 }
 
-        let base = currentLevels(at: now)
-        let clock = now.timeIntervalSinceReferenceDate
+    /// Samples a curve at one point of the loop, cross-fading the tail back into
+    /// the head when the loop is a bake. `clock` is relative to the loop start.
+    func looped(_ clock: Double, _ value: (Double) -> Double) -> Double {
+        let base = value(clock)
+        guard loopIsApproximate else { return base }
+        let fadeStart = animationPeriod - loopBlend
+        guard clock > fadeStart else { return base }
+        let raw = min(1, (clock - fadeStart) / loopBlend)
+        let weight = raw * raw * (3 - 2 * raw)          // smoothstep
+        return base * (1 - weight) + value(clock - animationPeriod) * weight
+    }
+
+    var colorPeriod: Double {
+        if colors.forceFixed || design.colorMode == .fixed {
+            // 0.5 + 0.5 * sin(clock * 0.9 + …)
+            return 2 * .pi / 0.9
+        }
+        // fract(… + clock * 0.05)
+        return 1 / 0.05
+    }
+
+    // MARK: Per-dot values
+
+    /// The animation term for one dot, 0…1.
+    private func animation(row: Int, col: Int, clock: Double) -> Double {
         let speed = design.speed
-
-        let primary = RGBA(palette.primary)
-        let accent = RGBA(palette.accent)
-        let secondary = RGBA(palette.secondary)
-        // A tint overrides the design colour but keeps its shape/animation, so
-        // the dots read as a single chosen hue with the same lively brightness
-        // variation the fixed path already gives.
-        let fixed = RGBA(tint ?? Color(hex: design.fixedColorHex))
-        let fixedLift = fixed.lightened(0.35)
-        let forceFixed = tint != nil
-
-        // Whole-grid animation drivers shared by the non-shimmer modes.
-        let pulse = 0.5 + 0.5 * sin(clock * speed)
-        let breathe = 0.5 + 0.5 * sin(clock * speed * 0.5)
-        let blinkOn = sin(clock * speed) > 0
-
-        for row in 0..<n {
-            for col in 0..<n {
-                let index = row * n + col
-                let level = base[index]
-                guard level > 0.001 else { continue }
-
-                let anim: Double
-                switch design.animation {
-                case .solid:
-                    anim = 0.82 + 0.18 * breathe
-                case .shimmer:
-                    let phase = Double(row) * 0.8 + Double(col) * 0.55
-                    anim = 0.30 + 0.70 * (0.5 + 0.5 * sin(clock * speed + phase))
-                case .pulse:
-                    anim = 0.35 + 0.65 * pulse
-                case .blink:
-                    anim = blinkOn ? 1.0 : 0.12
-                case .motion:
-                    anim = motionValue(row: row, col: col, clock: clock, speed: speed)
-                case .compact:
-                    anim = compactValue(row: row, clock: clock, speed: speed)
-                }
-
-                let intensity = design.intensity * level * anim
-                guard intensity > 0.02 else { continue }
-
-                // A small bump on the radius so the dots read a little chunkier
-                // (especially the small collapsed marker) without moving them.
-                let radius = cell * 0.5 * (0.28 + 0.55 * min(1, intensity)) + 0.5
-                let cx = ox + (Double(col) + 0.5) * cell
-                let cy = oy + (Double(row) + 0.5) * cell
-                let rect = CGRect(x: cx - radius, y: cy - radius, width: radius * 2, height: radius * 2)
-
-                let color = dotColor(
-                    row: row, col: col, clock: clock,
-                    primary: primary, accent: accent, secondary: secondary,
-                    fixed: fixed, fixedLift: fixedLift, forceFixed: forceFixed
-                )
-                .opacity(0.10 + 0.90 * min(1, intensity))
-
-                context.fill(Path(ellipseIn: rect), with: .color(color))
-            }
+        switch design.animation {
+        case .solid:
+            let breathe = 0.5 + 0.5 * sin(clock * speed * 0.5)
+            return 0.82 + 0.18 * breathe
+        case .shimmer:
+            let phase = Double(row) * 0.8 + Double(col) * 0.55
+            return 0.30 + 0.70 * (0.5 + 0.5 * sin(clock * speed + phase))
+        case .pulse:
+            return 0.35 + 0.65 * (0.5 + 0.5 * sin(clock * speed))
+        case .blink:
+            return sin(clock * speed) > 0 ? 1.0 : 0.12
+        case .motion:
+            return motionValue(row: row, col: col, clock: clock, speed: speed)
+        case .compact:
+            return compactValue(row: row, clock: clock, speed: speed)
         }
     }
 
-    private func dotColor(
-        row: Int, col: Int, clock: Double,
-        primary: RGBA, accent: RGBA, secondary: RGBA,
-        fixed: RGBA, fixedLift: RGBA, forceFixed: Bool
-    ) -> Color {
-        // A tint forces the fixed path regardless of the design's colour mode.
-        if forceFixed {
-            let u = 0.5 + 0.5 * sin(clock * 0.9 + Double(row + col) * 0.5)
-            return fixed.lerp(to: fixedLift, u * 0.6)
-        }
-        switch design.colorMode {
-        case .palette:
-            // A colour that drifts along the palette and differs per dot, so
-            // different circles show different colours changing over time.
-            let u = fract(Double(row) * 0.19 + Double(col) * 0.13 + clock * 0.05)
-            return paletteRamp(u, primary, accent, secondary)
-        case .fixed:
-            // Subtle per-dot brightness variation so a fixed colour still lives.
-            let u = 0.5 + 0.5 * sin(clock * 0.9 + Double(row + col) * 0.5)
-            return fixed.lerp(to: fixedLift, u * 0.6)
-        }
+    /// `design.intensity * level * anim`, the quantity both the radius and the
+    /// alpha are derived from.
+    func intensity(row: Int, col: Int, clock: Double, level: Double) -> Double {
+        guard level > 0.001 else { return 0 }
+        return design.intensity * level * animation(row: row, col: col, clock: clock)
     }
 
-    private func paletteRamp(_ u: Double, _ primary: RGBA, _ accent: RGBA, _ secondary: RGBA) -> Color {
-        let stops = [primary, accent, secondary]
-        let seg = u * Double(stops.count)
-        let i = Int(floor(seg)) % stops.count
-        return stops[i].lerp(to: stops[(i + 1) % stops.count], seg - floor(seg))
+    /// The radius a dot is drawn at. A small bump on the radius so the dots read
+    /// a little chunkier (especially the small collapsed marker) without moving
+    /// them.
+    func radius(forIntensity intensity: Double) -> Double {
+        cell * 0.5 * (0.28 + 0.55 * min(1, intensity)) + 0.5
+    }
+
+    /// The largest radius any dot reaches, which is the size the layers are
+    /// built at — everything below it is a scale-down.
+    var maxRadius: Double { radius(forIntensity: 1) }
+
+    /// Final layer opacity for a dot. Zero below the cull threshold, matching
+    /// the old renderer, which skipped drawing those dots outright.
+    func opacity(row: Int, col: Int, clock: Double, level: Double) -> Double {
+        let value = intensity(row: row, col: col, clock: clock, level: level)
+        guard value > 0.02 else { return 0 }
+        let alpha = 0.10 + 0.90 * min(1, value)
+        // The colour's own alpha multiplies in, exactly as `Color.opacity`
+        // multiplied rather than replaced it.
+        return alpha * colors.alpha(row: row, col: col, clock: clock)
+    }
+
+    /// Layer scale for a dot, relative to `maxRadius`.
+    func scale(row: Int, col: Int, clock: Double, level: Double) -> Double {
+        let value = intensity(row: row, col: col, clock: clock, level: level)
+        guard value > 0.02 else { return 0 }
+        return radius(forIntensity: value) / maxRadius
     }
 
     /// An evolving "plasma" for the `motion` animation: a plane wave whose
@@ -235,10 +268,64 @@ struct DotMatrixView: View {
     }
 }
 
-// MARK: - Colour helpers
+// MARK: - Colour
 
-/// Straight-line RGBA colour so dots can interpolate between hues each frame.
-private struct RGBA {
+/// The frame-invariant colours a marker is drawn from, resolved once.
+///
+/// Turning a SwiftUI `Color` into components means bridging to NSColor and
+/// converting colour space, and `fixedColorHex` means parsing a string — none of
+/// which changes over the life of a design, so none of it belongs anywhere near
+/// a per-frame path.
+struct DotColors: Equatable {
+    var primary: RGBA
+    var accent: RGBA
+    var secondary: RGBA
+    /// A tint overrides the design colour but keeps its shape/animation, so the
+    /// dots read as a single chosen hue with the same lively brightness
+    /// variation the fixed path already gives.
+    var fixed: RGBA
+    var fixedLift: RGBA
+    var forceFixed: Bool
+    var colorMode: MarkerDesign.ColorMode
+
+    init(design: MarkerDesign, palette: ArtworkPalette, tint: Color?) {
+        primary = RGBA(palette.primary)
+        accent = RGBA(palette.accent)
+        secondary = RGBA(palette.secondary)
+        fixed = RGBA(tint ?? Color(hex: design.fixedColorHex))
+        fixedLift = fixed.lightened(0.35)
+        forceFixed = tint != nil
+        colorMode = design.colorMode
+    }
+
+    /// The hue for one dot at one instant, before the intensity alpha.
+    func rgba(row: Int, col: Int, clock: Double) -> RGBA {
+        // A tint forces the fixed path regardless of the design's colour mode.
+        if forceFixed || colorMode == .fixed {
+            // Subtle per-dot brightness variation so a fixed colour still lives.
+            let u = 0.5 + 0.5 * sin(clock * 0.9 + Double(row + col) * 0.5)
+            return fixed.lerp(to: fixedLift, u * 0.6)
+        }
+        // A colour that drifts along the palette and differs per dot, so
+        // different circles show different colours changing over time.
+        let u = fract(Double(row) * 0.19 + Double(col) * 0.13 + clock * 0.05)
+        return paletteRamp(u)
+    }
+
+    func alpha(row: Int, col: Int, clock: Double) -> Double {
+        rgba(row: row, col: col, clock: clock).a
+    }
+
+    private func paletteRamp(_ u: Double) -> RGBA {
+        let stops = [primary, accent, secondary]
+        let seg = u * Double(stops.count)
+        let i = Int(floor(seg)) % stops.count
+        return stops[i].lerped(to: stops[(i + 1) % stops.count], seg - floor(seg))
+    }
+}
+
+/// Straight-line RGBA colour so dots can interpolate between hues.
+struct RGBA: Equatable {
     var r, g, b, a: Double
 
     init(_ r: Double, _ g: Double, _ b: Double, _ a: Double) {
@@ -251,19 +338,24 @@ private struct RGBA {
                   Double(ns.blueComponent), Double(ns.alphaComponent))
     }
 
-    func lerp(to other: RGBA, _ t: Double) -> Color {
-        Color(
-            .sRGB,
-            red: r + (other.r - r) * t,
-            green: g + (other.g - g) * t,
-            blue: b + (other.b - b) * t,
-            opacity: a + (other.a - a) * t
-        )
+    func lerped(to other: RGBA, _ t: Double) -> RGBA {
+        RGBA(r + (other.r - r) * t,
+             g + (other.g - g) * t,
+             b + (other.b - b) * t,
+             a + (other.a - a) * t)
     }
+
+    func lerp(to other: RGBA, _ t: Double) -> RGBA { lerped(to: other, t) }
 
     func lightened(_ amount: Double) -> RGBA {
         RGBA(r + (1 - r) * amount, g + (1 - g) * amount, b + (1 - b) * amount, a)
     }
+
+    /// Opaque on purpose: the alpha travels on the layer's `opacity` instead, so
+    /// the intensity curve and the hue curve can loop on their own periods.
+    var opaqueCGColor: CGColor {
+        CGColor(srgbRed: r, green: g, blue: b, alpha: 1)
+    }
 }
 
-private func fract(_ x: Double) -> Double { x - floor(x) }
+func fract(_ x: Double) -> Double { x - floor(x) }

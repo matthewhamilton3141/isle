@@ -57,7 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        notchController?.hide()
+        notchController?.shutdown()
     }
 
     // MARK: - Menu bar

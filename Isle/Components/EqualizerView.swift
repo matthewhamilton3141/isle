@@ -15,9 +15,53 @@
 //  device — this falls back to the procedural sine pattern so the notch
 //  still looks alive rather than dead.
 //
+//  Both are drawn by Core Animation; see EqualizerLayer.swift. These are the
+//  SwiftUI faces of it: `LiveEqualizer` for the notch, which hands the layer
+//  view the levels source and then stays out of the way, and `EqualizerView`
+//  for the previews and the gallery, which pushes a fixed array.
+//
 
 import SwiftUI
 
+/// The waveform wired to the live capture, and the only view in the app that
+/// observes it.
+///
+/// Note what this deliberately does *not* do: observe the levels itself. Levels
+/// change 30 times a second, and an `@ObservedObject` here would put every one
+/// of those through the view graph — which is what the Canvas version cost, just
+/// scoped smaller. The layer view subscribes directly instead, so a level change
+/// moves six layers and never reaches SwiftUI at all.
+struct LiveEqualizer: View {
+    var source: SystemAudioLevels
+    var palette: ArtworkPalette = .fallback
+    var isPlaying: Bool = true
+
+    var body: some View {
+        LiveEqualizerRepresentable(source: source, palette: palette, isPlaying: isPlaying)
+            .accessibilityHidden(true)
+    }
+}
+
+private struct LiveEqualizerRepresentable: NSViewRepresentable {
+    var source: SystemAudioLevels
+    var palette: ArtworkPalette
+    var isPlaying: Bool
+
+    func makeNSView(context: Context) -> EqualizerLayerView {
+        let view = EqualizerLayerView()
+        view.attach(to: source)
+        view.configure(palette: palette, isPlaying: isPlaying)
+        return view
+    }
+
+    func updateNSView(_ view: EqualizerLayerView, context: Context) {
+        view.attach(to: source)
+        view.configure(palette: palette, isPlaying: isPlaying)
+    }
+}
+
+/// A waveform driven by a fixed set of levels, for the previews and the
+/// animation gallery. Empty levels mean the procedural pattern.
 struct EqualizerView: View {
     var palette: ArtworkPalette = .fallback
     var isPlaying: Bool = true
@@ -26,105 +70,27 @@ struct EqualizerView: View {
     /// the procedural pattern.
     var levels: [Double] = []
 
-    var barCount: Int = 6
-    var spacing: CGFloat = 2.5
-
-    /// Height of a bar at complete silence — the "dot" resting state.
-    var dotHeight: CGFloat = 2.5
-
-    /// Per-bar frequency multipliers for the fallback pattern. Deliberately
-    /// not evenly spaced, or the bars visibly march in a wave.
-    private static let frequencies: [Double] = [1.00, 1.37, 0.83, 1.61, 1.13, 0.71]
-    private static let phases: [Double] = [0.0, 0.9, 1.8, 0.45, 2.3, 1.35]
-
-    private var usesRealLevels: Bool { levels.count >= barCount }
-
     var body: some View {
-        Group {
-            if usesRealLevels {
-                // No TimelineView on this path. Real levels arrive as state at
-                // 30Hz and SwiftUI redraws on that by itself, so a timeline
-                // would only redraw the same bars again between updates.
-                //
-                // It used to wrap both paths, and its pause condition
-                // (`!isPlaying && !usesRealLevels`) could never be true once
-                // levels existed — so the canvas redrew at the display's full
-                // refresh rate forever, including while the music was paused
-                // and every bar was a motionless dot. Paused actually cost
-                // more CPU than playing.
-                Canvas { canvasContext, size in
-                    draw(in: canvasContext, size: size, time: 0)
-                }
-            } else {
-                // The fallback pattern is a function of time, so this one
-                // genuinely needs a timeline — and can rest when stopped.
-                TimelineView(.animation(paused: !isPlaying)) { context in
-                    Canvas { canvasContext, size in
-                        draw(
-                            in: canvasContext,
-                            size: size,
-                            time: context.date.timeIntervalSinceReferenceDate
-                        )
-                    }
-                }
-            }
-        }
-        .accessibilityHidden(true)
+        StaticEqualizerRepresentable(palette: palette, isPlaying: isPlaying, levels: levels)
+            .accessibilityHidden(true)
+    }
+}
+
+private struct StaticEqualizerRepresentable: NSViewRepresentable {
+    var palette: ArtworkPalette
+    var isPlaying: Bool
+    var levels: [Double]
+
+    func makeNSView(context: Context) -> EqualizerLayerView {
+        let view = EqualizerLayerView()
+        view.configure(palette: palette, isPlaying: isPlaying)
+        view.setStaticLevels(levels)
+        return view
     }
 
-    private func draw(in context: GraphicsContext, size: CGSize, time: TimeInterval) {
-        let totalSpacing = spacing * CGFloat(barCount - 1)
-        let barWidth = max(1, (size.width - totalSpacing) / CGFloat(barCount))
-        let midY = size.height / 2
-
-        // One gradient shading for the whole strip, sampled per bar, so the
-        // ramp is continuous across the waveform instead of restarting in
-        // each bar.
-        //
-        // Runs bottom-to-top. Because the bars are symmetric about the centre
-        // line, a top-to-bottom ramp made each bar read as mirrored — bright
-        // at the top, bright again at the bottom, darkest in the middle. This
-        // way the colour travels in a single direction across the strip.
-        let shading = GraphicsContext.Shading.linearGradient(
-            Gradient(colors: [palette.primary, palette.accent]),
-            startPoint: CGPoint(x: 0, y: size.height),
-            endPoint: CGPoint(x: 0, y: 0)
-        )
-
-        for index in 0..<barCount {
-            let level = level(for: index, at: time)
-
-            // Grow from the dot outward. Half above centre, half below.
-            let full = max(dotHeight, size.height * CGFloat(level))
-            let half = full / 2
-
-            let x = CGFloat(index) * (barWidth + spacing)
-            let rect = CGRect(
-                x: x,
-                y: midY - half,
-                width: barWidth,
-                height: full
-            )
-
-            context.fill(
-                Path(roundedRect: rect, cornerRadius: barWidth / 2),
-                with: shading
-            )
-        }
-    }
-
-    /// Normalised 0...1 height for a bar.
-    private func level(for index: Int, at time: TimeInterval) -> Double {
-        if usesRealLevels {
-            return min(max(levels[index], 0), 1)
-        }
-
-        guard isPlaying else { return 0 }
-
-        let frequency = Self.frequencies[index % Self.frequencies.count]
-        let phase = Self.phases[index % Self.phases.count]
-        let wave = sin(time * frequency * 3.1 + phase)
-        return 0.18 + (wave + 1) / 2 * 0.72
+    func updateNSView(_ view: EqualizerLayerView, context: Context) {
+        view.configure(palette: palette, isPlaying: isPlaying)
+        view.setStaticLevels(levels)
     }
 }
 

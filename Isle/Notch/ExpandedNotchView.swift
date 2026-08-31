@@ -30,10 +30,10 @@ struct ExpandedNotchView: View {
             // non-interactive so it never swallows a seek or dismiss tap.
             .overlay(alignment: .topTrailing) {
                 if media.hasTrack {
-                    EqualizerView(
+                    LiveEqualizer(
+                        source: viewModel.audioLevelSource,
                         palette: palette,
-                        isPlaying: media.isPlaying,
-                        levels: viewModel.audioLevels
+                        isPlaying: media.isPlaying
                     )
                     .frame(width: 30, height: 24)
                     .padding(.top, 10)
@@ -209,9 +209,12 @@ struct ExpandedNotchView: View {
     // MARK: - Scrubber
 
     private var scrubber: some View {
-        // Ticks at display rate so the elapsed label and thumb advance
-        // smoothly between the adapter's ~1s updates.
-        TimelineView(.animation(paused: !media.isPlaying)) { context in
+        // Ticks between the adapter's ~1s updates so the elapsed label and thumb
+        // advance smoothly rather than stepping once a second. Capped at 30fps
+        // like the rest of the app's timelines: the fill creeps across at a
+        // pixel or two a second, so redrawing it 120 times a second on a
+        // ProMotion panel buys nothing that can be seen.
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !media.isPlaying)) { context in
             let progress = viewModel.displayProgress(at: context.date)
             let elapsed = progress * media.duration
 

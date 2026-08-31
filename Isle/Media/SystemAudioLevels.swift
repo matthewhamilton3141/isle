@@ -37,9 +37,25 @@ final class SystemAudioLevels: ObservableObject {
 
     private let bandCount: Int
 
-    private var tapID: AudioObjectID = kAudioObjectUnknown
-    private var aggregateID: AudioObjectID = kAudioObjectUnknown
-    private var ioProcID: AudioDeviceIOProcID?
+    /// The Core Audio objects, and the only thing that touches them.
+    ///
+    /// Held here but never used from this actor: every call into it goes
+    /// through `Self.captureQueue`. See CaptureSession for why.
+    private let session = CaptureSession()
+
+    /// Serialises capture setup and teardown, and keeps both off the main
+    /// thread. Serial so a stop can never overtake the start it's undoing.
+    private static let captureQueue = DispatchQueue(
+        label: "com.isle.audio-capture", qos: .userInitiated
+    )
+
+    /// True from the moment a start is dispatched until a stop is. Guards
+    /// against starting twice while a slow setup is still in flight.
+    private var isCapturing = false
+
+    /// Bumped on every stop, so a setup that finishes after it can tell that
+    /// it's been superseded and stay quiet.
+    private var generation = 0
 
     /// All DSP lives in here, off the main actor entirely.
     ///
@@ -80,52 +96,53 @@ final class SystemAudioLevels: ObservableObject {
         // audio process object, changes across launches. Registered once.
         observeSpotifyLifecycle()
 
-        guard aggregateID == kAudioObjectUnknown else { return }
+        guard !isCapturing else { return }
 
-        guard let processObject = spotifyProcessObject() else {
+        // Which pid to tap is a cheap local lookup and stays here. Everything
+        // after it is Core Audio, and goes to the queue.
+        guard let app = NSRunningApplication
+            .runningApplications(withBundleIdentifier: SpotifyController.bundleID)
+            .first, app.processIdentifier > 0 else {
             // Spotify isn't running yet. Not an error — the launch observer
             // will start capture once it appears. Leave `levels` empty so the
             // waveform rests as dots rather than reacting to other apps.
             return
         }
 
-        do {
-            try startCapture(tapping: processObject)
+        isCapturing = true
+        let pid = app.processIdentifier
+        let analyzer = self.analyzer
+        let session = self.session
+        let generation = self.generation
+
+        Self.captureQueue.async { [weak self] in
+            let outcome = Result { try session.start(tapping: pid, analyzer: analyzer) }
+            Task { @MainActor in
+                self?.captureDidFinish(outcome, generation: generation)
+            }
+        }
+    }
+
+    /// Applies the result of a setup that ran on the capture queue. Ignores one
+    /// that a `stop` has already superseded — otherwise a slow start landing
+    /// after the user paused would restart the meter behind their back.
+    private func captureDidFinish(
+        _ outcome: Result<CaptureSession.Outcome, Error>, generation: Int
+    ) {
+        guard generation == self.generation, isCapturing else { return }
+        switch outcome {
+        case .success(.started):
             startPublishing()
             failureReason = nil
-        } catch {
+        case .success(.processUnavailable):
+            // Spotify went away between the pid lookup and the tap. The
+            // terminate observer will have cleaned up; nothing to report.
+            isCapturing = false
+        case .failure(let error):
             failureReason = "\(error.localizedDescription)"
             NSLog("Isle: audio capture unavailable — \(error.localizedDescription)")
             stop()
         }
-    }
-
-    /// Audio HAL process object for the running Spotify, or nil if Spotify
-    /// isn't running (or the translation fails).
-    private func spotifyProcessObject() -> AudioObjectID? {
-        guard let app = NSRunningApplication
-            .runningApplications(withBundleIdentifier: SpotifyController.bundleID)
-            .first else { return nil }
-
-        let pid = app.processIdentifier
-        guard pid > 0 else { return nil }
-
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var pidQualifier = pid
-        var processObject = AudioObjectID(kAudioObjectUnknown)
-        var size = UInt32(MemoryLayout<AudioObjectID>.size)
-        let status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            UInt32(MemoryLayout<pid_t>.size), &pidQualifier,
-            &size, &processObject
-        )
-        guard status == noErr, processObject != kAudioObjectUnknown else { return nil }
-        return processObject
     }
 
     // MARK: - Spotify lifecycle
@@ -175,6 +192,158 @@ final class SystemAudioLevels: ObservableObject {
         diagnosticTimer = nil
         #endif
 
+        isCapturing = false
+        generation &+= 1
+
+        // Teardown blocks on coreaudiod exactly as setup does, so it goes to
+        // the same queue. Serial ordering means it can't run before the start
+        // it's undoing, even when that start is still in flight.
+        let session = self.session
+        Self.captureQueue.async { session.tearDown() }
+
+        levels = []
+    }
+
+    /// Blocks until the pending teardown has actually run, or `timeout` passes.
+    ///
+    /// For termination only. `stop` deliberately doesn't wait — it's called
+    /// whenever the screen sleeps or Spotify quits, and none of those should
+    /// stall the main thread. But on the way out it's worth a moment to let the
+    /// tap go down explicitly rather than leaving it to the OS to reclaim.
+    ///
+    /// Bounded because the whole point of moving this off the main thread is
+    /// that these calls can block indefinitely when coreaudiod is wedged.
+    /// Waiting unbounded here would just move that hang from launch to quit.
+    /// A healthy teardown measures around 20ms, so the timeout is loose enough
+    /// to never bite in practice and short enough to be invisible when it does.
+    ///
+    /// The queue is serial, so a block enqueued now can only run once the
+    /// teardown ahead of it has finished — which is what makes this a wait on
+    /// the teardown without needing to reach into it.
+    func awaitTeardown(timeout: TimeInterval = 0.15) {
+        let landed = DispatchSemaphore(value: 0)
+        Self.captureQueue.async { landed.signal() }
+        _ = landed.wait(timeout: .now() + timeout)
+    }
+
+    // MARK: - Capture setup
+
+    // MARK: - Publishing
+
+    /// Republish at display rate rather than per audio callback — the
+    /// callback fires far more often than the screen refreshes, and driving
+    /// SwiftUI from it would be pure wasted work.
+    private func startPublishing() {
+        let analyzer = self.analyzer
+
+        #if DEBUG
+        diagnosticTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                let (calls, peak, reference, levelPeaks, raw) = analyzer.drainDiagnostics()
+                let levels = analyzer.snapshot()
+                    .map { String(format: "%.2f", $0) }
+                    .joined(separator: " ")
+                let peaks = levelPeaks
+                    .map { String(format: "%.2f", $0) }
+                    .joined(separator: " ")
+                let rawText = raw
+                    .map { String(format: "%.1f", $0) }
+                    .joined(separator: " ")
+                let line = "calls=\(calls) peak=\(String(format: "%.5f", peak)) ref=\(String(format: "%.1f", reference)) levels=[\(levels)] max=[\(peaks)] raw=[\(rawText)]\n"
+                // A file rather than NSLog: this app is LSUIElement and its
+                // NSLog output does not reach the unified log where it can be
+                // read back, which makes NSLog useless for diagnosing it.
+                if let data = line.data(using: .utf8) {
+                    let url = URL(fileURLWithPath: "/tmp/isle-audio.log")
+                    if let handle = try? FileHandle(forWritingTo: url) {
+                        handle.seekToEndOfFile()
+                        try? handle.write(contentsOf: data)
+                        try? handle.close()
+                    } else {
+                        try? data.write(to: url)
+                    }
+                }
+            }
+        }
+        #endif
+
+        displayTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            // Timer callbacks genuinely are delivered on the main run loop, so
+            // assuming main-actor isolation here is sound — unlike in the audio
+            // callback, where the same assumption traps.
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                // Only publish a genuine change. @Published fires on every
+                // assignment, equal or not, and each one invalidates the whole
+                // notch body — so republishing an unchanged array of zeros
+                // kept the UI redrawing at 30Hz through silence and pauses.
+                let next = analyzer.snapshot()
+                if next != self.levels {
+                    self.levels = next
+                }
+            }
+        }
+    }
+}
+
+
+// MARK: - Capture session
+
+/// Owns the Core Audio objects behind the meter: the process tap, the aggregate
+/// device that exposes it, and the IOProc that reads it.
+///
+/// Split out of `SystemAudioLevels` because none of this may run on the main
+/// thread. Every call here is synchronous IPC to `coreaudiod`, and when that
+/// daemon is slow to answer — a tap left behind by a crash, a device change
+/// mid-flight — the call simply blocks. It used to block inside
+/// `applicationDidFinishLaunching`, which meant Isle never finished launching:
+/// no notch, no menu bar, no way to quit it, and nothing on screen to explain
+/// why. A slow audio system should cost the waveform, not the whole app.
+///
+/// Not actor-isolated, and not thread-safe on its own: `SystemAudioLevels`
+/// drives it exclusively from one serial queue, which is what orders setup
+/// against teardown.
+private final class CaptureSession: @unchecked Sendable {
+    enum Outcome {
+        case started
+        /// Spotify vanished between the pid lookup and the tap.
+        case processUnavailable
+    }
+
+    private var tapID: AudioObjectID = kAudioObjectUnknown
+    private var aggregateID: AudioObjectID = kAudioObjectUnknown
+    private var ioProcID: AudioDeviceIOProcID?
+
+    func start(tapping pid: pid_t, analyzer: AudioAnalyzer) throws -> Outcome {
+        guard #available(macOS 14.4, *) else { return .processUnavailable }
+        guard aggregateID == kAudioObjectUnknown else { return .started }
+        guard let processObject = processObject(for: pid) else { return .processUnavailable }
+        try startCapture(tapping: processObject, analyzer: analyzer)
+        return .started
+    }
+
+    /// Audio HAL process object for a pid, or nil if the translation fails —
+    /// which is what happens when the process has already gone.
+    private func processObject(for pid: pid_t) -> AudioObjectID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var pidQualifier = pid
+        var processObject = AudioObjectID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            UInt32(MemoryLayout<pid_t>.size), &pidQualifier,
+            &size, &processObject
+        )
+        guard status == noErr, processObject != kAudioObjectUnknown else { return nil }
+        return processObject
+    }
+
+    func tearDown() {
         if aggregateID != kAudioObjectUnknown {
             if let ioProcID {
                 AudioDeviceStop(aggregateID, ioProcID)
@@ -194,14 +363,10 @@ final class SystemAudioLevels: ObservableObject {
             }
             tapID = kAudioObjectUnknown
         }
-
-        levels = []
     }
 
-    // MARK: - Capture setup
-
     @available(macOS 14.4, *)
-    private func startCapture(tapping processObject: AudioObjectID) throws {
+    private func startCapture(tapping processObject: AudioObjectID, analyzer: AudioAnalyzer) throws {
         let outputUID = try defaultOutputDeviceUID()
 
         // Scoped to Spotify's process alone, so the meter follows Spotify and
@@ -265,9 +430,8 @@ final class SystemAudioLevels: ObservableObject {
         }
 
         var procID: AudioDeviceIOProcID?
-        // Capture the analyzer, not self: self is main-actor isolated and
-        // must not be touched from the realtime thread at all.
-        let analyzer = self.analyzer
+        // The analyzer is what the realtime thread touches, and nothing else:
+        // it is deliberately a plain lock-guarded object for that reason.
         let procStatus = AudioDeviceCreateIOProcIDWithBlock(
             &procID,
             aggregate,
@@ -316,62 +480,6 @@ final class SystemAudioLevels: ObservableObject {
         return uid as String
     }
 
-    // MARK: - Publishing
-
-    /// Republish at display rate rather than per audio callback — the
-    /// callback fires far more often than the screen refreshes, and driving
-    /// SwiftUI from it would be pure wasted work.
-    private func startPublishing() {
-        let analyzer = self.analyzer
-
-        #if DEBUG
-        diagnosticTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
-            MainActor.assumeIsolated {
-                let (calls, peak, reference, levelPeaks, raw) = analyzer.drainDiagnostics()
-                let levels = analyzer.snapshot()
-                    .map { String(format: "%.2f", $0) }
-                    .joined(separator: " ")
-                let peaks = levelPeaks
-                    .map { String(format: "%.2f", $0) }
-                    .joined(separator: " ")
-                let rawText = raw
-                    .map { String(format: "%.1f", $0) }
-                    .joined(separator: " ")
-                let line = "calls=\(calls) peak=\(String(format: "%.5f", peak)) ref=\(String(format: "%.1f", reference)) levels=[\(levels)] max=[\(peaks)] raw=[\(rawText)]\n"
-                // A file rather than NSLog: this app is LSUIElement and its
-                // NSLog output does not reach the unified log where it can be
-                // read back, which makes NSLog useless for diagnosing it.
-                if let data = line.data(using: .utf8) {
-                    let url = URL(fileURLWithPath: "/tmp/isle-audio.log")
-                    if let handle = try? FileHandle(forWritingTo: url) {
-                        handle.seekToEndOfFile()
-                        try? handle.write(contentsOf: data)
-                        try? handle.close()
-                    } else {
-                        try? data.write(to: url)
-                    }
-                }
-            }
-        }
-        #endif
-
-        displayTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-            // Timer callbacks genuinely are delivered on the main run loop, so
-            // assuming main-actor isolation here is sound — unlike in the audio
-            // callback, where the same assumption traps.
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                // Only publish a genuine change. @Published fires on every
-                // assignment, equal or not, and each one invalidates the whole
-                // notch body — so republishing an unchanged array of zeros
-                // kept the UI redrawing at 30Hz through silence and pauses.
-                let next = analyzer.snapshot()
-                if next != self.levels {
-                    self.levels = next
-                }
-            }
-        }
-    }
 }
 
 // MARK: - Analysis
@@ -407,6 +515,14 @@ private final class AudioAnalyzer: @unchecked Sendable {
     private var imagParts: [Float]
     private var magnitudes: [Float]
     private var sampleBuffer: [Float]
+
+    /// Per-band scratch, sized once for the same reason as the FFT buffers
+    /// above — these are written on every callback, ~94 times a second, on the
+    /// realtime audio thread. Allocated fresh each time they were three
+    /// malloc/free pairs per callback in exactly the place the comment on
+    /// `fftSize` warns about. Audio-thread-only, like the rest of the scratch.
+    private var bandDb: [Double]
+    private var newLevels: [Double]
 
     /// Slowly-adapting loudness reference, in the same tilted-dB units as the
     /// band levels. Every band is measured *against* this rather than against
@@ -485,6 +601,9 @@ private final class AudioAnalyzer: @unchecked Sendable {
         self.smoothed = Array(repeating: 0, count: bandCount)
         self.levelPeaks = Array(repeating: 0, count: bandCount)
         self.rawReadout = Array(repeating: 0, count: bandCount)
+
+        bandDb = Array(repeating: 0, count: bandCount)
+        newLevels = Array(repeating: 0, count: bandCount)
 
         window = [Float](repeating: 0, count: fftSize)
         realParts = [Float](repeating: 0, count: fftSize / 2)
@@ -605,8 +724,13 @@ private final class AudioAnalyzer: @unchecked Sendable {
         var scale = Float(1) / Float(2 * fftSize)
         vDSP_vsmul(magnitudes, 1, &scale, &magnitudes, 1, vDSP_Length(halfSize))
 
-        var bandDb = [Double](repeating: 0, count: bandCount)
+        // `rawDb` feeds `rawReadout`, which only `drainDiagnostics` reads and
+        // only the DEBUG logging timer calls — so in a release build it was an
+        // array allocated on the realtime audio thread ~94 times a second to
+        // fill a readout nothing would ever look at. Built only where it's used.
+        #if DEBUG
         var rawDb = [Double](repeating: 0, count: bandCount)
+        #endif
         // Skip bin 0 (DC) — it carries no audible information and would peg
         // the first bar on any signal with an offset.
         let minBin = 1
@@ -637,8 +761,11 @@ private final class AudioAnalyzer: @unchecked Sendable {
             //
             // The tilt goes in before the reference is taken, so it shapes the
             // bands relative to each other without shifting the overall level.
-            rawDb[band] = 20 * log10(max(Double(bandPeak), 1e-7))
-            bandDb[band] = rawDb[band] + Double(band) * Self.tiltPerBand
+            let db = 20 * log10(max(Double(bandPeak), 1e-7))
+            bandDb[band] = db + Double(band) * Self.tiltPerBand
+            #if DEBUG
+            rawDb[band] = db
+            #endif
         }
 
         // Adapt the reference toward this frame's overall level, then measure
@@ -668,8 +795,9 @@ private final class AudioAnalyzer: @unchecked Sendable {
             reference = max(reference, Self.referenceFloor)
         }
 
-        var newLevels = [Double](repeating: 0, count: bandCount)
-        if !isSilent {
+        if isSilent {
+            for band in 0..<bandCount { newLevels[band] = 0 }
+        } else {
             for band in 0..<bandCount {
                 // +28 over a 53dB span puts a band sitting exactly at the
                 // reference just past half the strip's height, and pegs one
@@ -689,8 +817,10 @@ private final class AudioAnalyzer: @unchecked Sendable {
         }
 
         lock.lock()
+        #if DEBUG
         referenceReadout = reference
         rawReadout = rawDb
+        #endif
         for index in 0..<bandCount {
             let target = newLevels[index]
             // Fast attack, slow release — mirrors a physical VU meter and
@@ -705,7 +835,9 @@ private final class AudioAnalyzer: @unchecked Sendable {
             if smoothed[index] < 0.0015 {
                 smoothed[index] = 0
             }
+            #if DEBUG
             levelPeaks[index] = max(levelPeaks[index], smoothed[index])
+            #endif
         }
         lock.unlock()
     }
