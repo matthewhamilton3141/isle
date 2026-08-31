@@ -267,7 +267,14 @@ final class SystemAudioLevels: ObservableObject {
         }
         #endif
 
-        displayTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+        // .common, not the default mode. A menu owns the main run loop while
+        // it is open and runs it in event-tracking mode, where a default-mode
+        // timer does not fire at all — so clicking the menu bar item froze the
+        // bars on their last frame until the menu was dismissed. Measured at
+        // 30Hz over a second of menu tracking: 0 ticks in .default, 27 in
+        // .common. The same applies to any tracking loop, so this also keeps
+        // the meter live through a drag.
+        let display = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             // Timer callbacks genuinely are delivered on the main run loop, so
             // assuming main-actor isolation here is sound — unlike in the audio
             // callback, where the same assumption traps.
@@ -283,6 +290,8 @@ final class SystemAudioLevels: ObservableObject {
                 }
             }
         }
+        RunLoop.main.add(display, forMode: .common)
+        displayTimer = display
     }
 }
 
