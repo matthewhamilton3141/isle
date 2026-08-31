@@ -156,7 +156,8 @@ struct ExpandedNotchView: View {
         VStack(alignment: .leading, spacing: 1) {
             MarqueeText(
                 text: media.title.isEmpty ? "Not playing" : media.title,
-                font: .system(size: 14, weight: .semibold),
+                fontSize: 14,
+                weight: .semibold,
                 lineHeight: 18
             )
 
@@ -164,12 +165,16 @@ struct ExpandedNotchView: View {
             // measure against, which is the other half of why long artist
             // strings failed to scroll. lineHeight is trimmed to suit 11pt
             // rather than inheriting the 18pt title default.
+            // The dimming is passed in rather than applied with
+            // `foregroundStyle`: the text is drawn into a layer now, and a
+            // SwiftUI style modifier can't reach inside it.
             MarqueeText(
                 text: media.artist,
-                font: .system(size: 11, weight: .regular),
+                fontSize: 11,
+                weight: .regular,
+                color: .white.opacity(0.7),
                 lineHeight: 15
             )
-            .foregroundStyle(.white.opacity(0.7))
         }
     }
 

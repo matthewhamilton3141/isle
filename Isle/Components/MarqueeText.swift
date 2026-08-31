@@ -3,172 +3,240 @@
 //
 //  Now-playing ticker for text that's too long for the notch.
 //
-//  Per spec 3.1 this is a horizontal *offset* animation with a pause at
-//  each end — explicitly not an opacity flash, both because a strobing
-//  label is unpleasant to read and because flashing UI is an accessibility
-//  problem. Text that already fits is left completely static; no animation
-//  runs at all in that case.
+//  Per spec 3.1 this is a horizontal *offset* animation — explicitly not an
+//  opacity flash, both because a strobing label is unpleasant to read and
+//  because flashing UI is an accessibility problem. Text that already fits is
+//  left completely static; no animation runs at all in that case.
 //
-//  Driven off `TimelineView(.animation)` and wall-clock time rather than a
-//  repeating SwiftUI animation, so multiple marquees (title and artist)
-//  stay in phase with each other and with the equalizer instead of drifting
-//  apart over a long track.
+//  The travel is a continuous cycle, not a there-and-back. The string is laid
+//  down twice with a gap and slid steadily left; by the time the first copy has
+//  fully left the frame the second sits exactly where the first began, so the
+//  animation restarts with nothing to see. That reads as one unbroken pass
+//  through the title, where a ping-pong made you sit through a return trip over
+//  words you had already read.
+//
+//  Core Animation drives it, like the marker and the waveform: a constant
+//  velocity slide is a single translation, so the whole thing goes to the render
+//  server once and this process does nothing while it plays. It exists only
+//  while the panel is open — ExpandedNotchView isn't built when the notch is
+//  collapsed — so a closed island costs nothing at all.
 //
 
+import AppKit
 import SwiftUI
 
 struct MarqueeText: View {
     let text: String
-    var font: Font = .system(size: 13, weight: .semibold)
+    var fontSize: CGFloat = 13
+    var weight: NSFont.Weight = .semibold
+    var color: Color = .white
 
     /// Points per second while moving.
     var speed: Double = 30
-    /// Seconds held still at each end.
-    var pause: Double = 1.2
+    /// Held still after the panel opens, before the first pass begins. The
+    /// island is still growing at that point, and text that starts travelling
+    /// immediately reads as jitter rather than as a deliberate move.
+    var startDelay: Double = 0.3
+    /// Clear space between the end of one pass and the start of the next.
+    var gap: CGFloat = 44
 
     /// Row height. Defaults to a 13pt title; pass something smaller for the
     /// artist line so it doesn't reserve space it never uses.
     var lineHeight: CGFloat = 18
 
-    @State private var textWidth: CGFloat = 0
-    @State private var containerWidth: CGFloat = 0
-
-    private var overflow: CGFloat {
-        max(0, textWidth - containerWidth)
-    }
-
     var body: some View {
-        Group {
-            if overflow > 0 {
-                scrolling
-            } else {
-                Text(text)
-                    .font(font)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        MarqueeRepresentable(
+            text: text, fontSize: fontSize, weight: weight, color: color,
+            speed: speed, startDelay: startDelay, gap: gap
+        )
         .frame(height: lineHeight)
-        // Both widths are reported through preferences rather than read
-        // inside onChange. Reading `proxy.size.width` from an onChange(of:
-        // text) handler returns the width from *before* the new string was
-        // laid out, so a longer title measured as the previous, shorter one —
-        // overflow came out as 0 and the text was silently truncated instead
-        // of scrolling. Preferences are emitted after layout, so they always
-        // describe the string currently on screen.
-        .background(
-            GeometryReader { proxy in
-                Color.clear.preference(
-                    key: MarqueeContainerWidthKey.self,
-                    value: proxy.size.width
-                )
-            }
-        )
-        // The untruncated text, measured off-screen. `fixedSize` stops the
-        // layout system wrapping or eliding it, so we get its true width.
-        .background(
-            Text(text)
-                .font(font)
-                .lineLimit(1)
-                .fixedSize()
-                .hidden()
-                .background(
-                    GeometryReader { proxy in
-                        Color.clear.preference(
-                            key: MarqueeTextWidthKey.self,
-                            value: proxy.size.width
-                        )
-                    }
-                )
-                .allowsHitTesting(false),
-            alignment: .leading
-        )
-        .onPreferenceChange(MarqueeContainerWidthKey.self) { containerWidth = $0 }
-        .onPreferenceChange(MarqueeTextWidthKey.self) { textWidth = $0 }
-        .clipped()
+        .accessibilityLabel(text)
+    }
+}
+
+// MARK: - SwiftUI bridge
+
+private struct MarqueeRepresentable: NSViewRepresentable {
+    var text: String
+    var fontSize: CGFloat
+    var weight: NSFont.Weight
+    var color: Color
+    var speed: Double
+    var startDelay: Double
+    var gap: CGFloat
+
+    func makeNSView(context: Context) -> MarqueeLayerView {
+        let view = MarqueeLayerView()
+        view.configure(text: text, font: font, color: NSColor(color),
+                       speed: speed, startDelay: startDelay, gap: gap)
+        return view
     }
 
-    private var scrolling: some View {
-        TimelineView(.animation) { context in
-            let offset = offset(at: context.date.timeIntervalSinceReferenceDate)
-            Text(text)
-                .font(font)
-                .lineLimit(1)
-                .fixedSize()
-                .offset(x: offset)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        // The scrolling text runs past both edges; fade them so it slides out
-        // of view rather than being guillotined by the clip rect.
-        .mask(
-            LinearGradient(
-                stops: [
-                    .init(color: .clear, location: 0),
-                    .init(color: .black, location: 0.04),
-                    .init(color: .black, location: 0.96),
-                    .init(color: .clear, location: 1),
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
+    func updateNSView(_ view: MarqueeLayerView, context: Context) {
+        view.configure(text: text, font: font, color: NSColor(color),
+                       speed: speed, startDelay: startDelay, gap: gap)
+    }
+
+    private var font: NSFont { .systemFont(ofSize: fontSize, weight: weight) }
+}
+
+// MARK: - Layer view
+
+final class MarqueeLayerView: NSView {
+
+    private let track = CALayer()
+    private var copies: [CATextLayer] = []
+    private let fade = CAGradientLayer()
+
+    private var text: String = ""
+    private var font: NSFont = .systemFont(ofSize: 13, weight: .semibold)
+    private var color: NSColor = .white
+    private var speed: Double = 30
+    private var startDelay: Double = 0.3
+    private var gap: CGFloat = 44
+
+    private var builtKey: String = ""
+    private var builtWidth: CGFloat = 0
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.masksToBounds = true
+        layer?.addSublayer(track)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override var isFlipped: Bool { true }
+
+    func configure(
+        text: String, font: NSFont, color: NSColor,
+        speed: Double, startDelay: Double, gap: CGFloat
+    ) {
+        self.text = text
+        self.font = font
+        self.color = color
+        self.speed = speed
+        self.startDelay = startDelay
+        self.gap = gap
+        rebuildIfNeeded()
+    }
+
+    override func layout() {
+        super.layout()
+        rebuildIfNeeded()
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        builtKey = ""            // contentsScale changed; the text needs redrawing
+        rebuildIfNeeded()
+    }
+
+    // MARK: - Build
+
+    private func rebuildIfNeeded() {
+        let scale = window?.backingScaleFactor ?? 2
+        let key = "\(text)|\(font.pointSize)|\(font.fontName)|\(color.description)|\(speed)|\(gap)|\(scale)"
+        guard key != builtKey || bounds.width != builtWidth else { return }
+        builtKey = key
+        builtWidth = bounds.width
+        rebuild(scale: scale)
+    }
+
+    private func rebuild(scale: CGFloat) {
+        guard bounds.width > 0, bounds.height > 0 else { return }
+
+        let textWidth = ceil((text as NSString).size(withAttributes: [.font: font]).width)
+        // Fits: one static copy, no animation, no mask. Nothing moves and
+        // nothing is scheduled.
+        let scrolls = textWidth > bounds.width
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
+        makeCopies(scrolls ? 2 : 1, scale: scale)
+        for (index, copy) in copies.enumerated() {
+            copy.frame = CGRect(
+                x: CGFloat(index) * (textWidth + gap), y: 0,
+                width: textWidth, height: bounds.height
             )
+        }
+
+        track.frame = CGRect(x: 0, y: 0, width: bounds.width, height: bounds.height)
+        track.removeAllAnimations()
+
+        if scrolls {
+            // One pass is the string plus the gap after it: by the time that
+            // much has gone by, the second copy sits exactly where the first
+            // started, so restarting is invisible.
+            let distance = textWidth + gap
+            let slide = CABasicAnimation(keyPath: "transform.translation.x")
+            slide.fromValue = 0
+            slide.toValue = -distance
+            slide.duration = distance / speed
+            slide.repeatCount = .greatestFiniteMagnitude
+            // The settle the panel needs to finish opening before anything moves.
+            // `.backwards` fill holds the start position through it, rather than
+            // leaving the first frames undefined.
+            slide.beginTime = CACurrentMediaTime() + startDelay
+            slide.fillMode = .backwards
+            slide.isRemovedOnCompletion = false
+            track.add(slide, forKey: "slide")
+
+            // The text runs past both edges; fade them so it slides out of view
+            // rather than being guillotined by the clip rect.
+            fade.frame = CGRect(origin: .zero, size: bounds.size)
+            fade.startPoint = CGPoint(x: 0, y: 0.5)
+            fade.endPoint = CGPoint(x: 1, y: 0.5)
+            fade.colors = [
+                NSColor.clear.cgColor, NSColor.black.cgColor,
+                NSColor.black.cgColor, NSColor.clear.cgColor,
+            ]
+            fade.locations = [0, 0.04, 0.96, 1]
+            layer?.mask = fade
+        } else {
+            layer?.mask = nil
+        }
+
+        CATransaction.commit()
+    }
+
+    private func makeCopies(_ count: Int, scale: CGFloat) {
+        if copies.count != count {
+            copies.forEach { $0.removeFromSuperlayer() }
+            copies = (0..<count).map { _ in
+                let layer = CATextLayer()
+                layer.truncationMode = .none
+                layer.isWrapped = false
+                layer.alignmentMode = .left
+                track.addSublayer(layer)
+                return layer
+            }
+        }
+        // Handed an attributed string rather than a plain one, so the weight and
+        // colour are the ones asked for rather than CATextLayer's defaults.
+        let attributed = NSAttributedString(
+            string: text,
+            attributes: [.font: font, .foregroundColor: color]
         )
-    }
-
-    /// Ping-pong: hold, travel left, hold, travel back. Going back rather
-    /// than snapping to the start avoids a jump-cut mid-title.
-    private func offset(at time: TimeInterval) -> CGFloat {
-        let travel = Double(overflow) / speed
-        let cycle = (pause + travel) * 2
-        guard cycle > 0 else { return 0 }
-
-        let t = time.truncatingRemainder(dividingBy: cycle)
-
-        if t < pause {
-            return 0
+        for copy in copies {
+            copy.contentsScale = scale
+            copy.string = attributed
         }
-        if t < pause + travel {
-            let progress = (t - pause) / travel
-            return -overflow * eased(progress)
-        }
-        if t < pause * 2 + travel {
-            return -overflow
-        }
-        let progress = (t - pause * 2 - travel) / travel
-        return -overflow * (1 - eased(progress))
-    }
-
-    /// Gentle ease in/out so the text doesn't start and stop abruptly.
-    private func eased(_ t: Double) -> CGFloat {
-        CGFloat(t * t * (3 - 2 * t))
-    }
-}
-
-private struct MarqueeTextWidthKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
-private struct MarqueeContainerWidthKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
     }
 }
 
 #Preview("Marquee") {
     VStack(alignment: .leading, spacing: 12) {
-        MarqueeText(text: "Short title")
-        MarqueeText(text: "A Very Long Song Title That Will Definitely Overflow The Notch")
+        MarqueeText(text: "Short title", fontSize: 14)
+        MarqueeText(text: "It’s The End Of The World As We Know It (And I Feel Fine)", fontSize: 14)
         MarqueeText(
             text: "An Artist With An Unreasonably Long Name Indeed",
-            font: .system(size: 11, weight: .regular)
+            fontSize: 11, weight: .regular, color: .white.opacity(0.7)
         )
     }
     .frame(width: 220)
     .padding()
     .background(.black)
-    .foregroundStyle(.white)
 }
