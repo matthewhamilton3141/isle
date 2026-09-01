@@ -16,12 +16,16 @@ import AppKit
 struct NotchRootView: View {
     @ObservedObject var viewModel: NotchViewModel
 
+    /// This island's own state — hover, and the geometry of the screen it's
+    /// drawn on. One per display; the view model behind it is shared.
+    @ObservedObject var island: IslandPresentation
+
     /// Reports the currently occupied rect (in this view's coordinate space)
     /// so the window can restrict hit-testing to it. Optional so previews can
     /// build the view without the window controller's hit-test plumbing.
     var onActiveRectChange: ((CGRect) -> Void)? = nil
 
-    private var state: NotchState { viewModel.state }
+    private var state: NotchState { island.state }
 
     /// The notch's *live* frame, sampled from the animating layout rather than
     /// the discrete target `size`. Drives both the reveal of the expanded
@@ -33,7 +37,7 @@ struct NotchRootView: View {
     private static let collapsedHPadding: CGFloat = 28
 
     private var size: CGSize {
-        guard let metrics = viewModel.metrics else { return NotchMetrics.expandedSize }
+        guard let metrics = island.metrics else { return NotchMetrics.expandedSize }
         if state == .collapsed {
             // Nothing active: collapse to exactly the physical cutout so the
             // island vanishes into the hardware notch. Hover still expands it
@@ -63,7 +67,7 @@ struct NotchRootView: View {
 
     /// 0 when fully collapsed, 1 when fully expanded, tracking the animation.
     private var expandProgress: CGFloat {
-        let collapsed = viewModel.metrics?.windowSize(for: .collapsed).width ?? 0
+        let collapsed = island.metrics?.windowSize(for: .collapsed).width ?? 0
         let expanded = NotchMetrics.expandedSize.width
         guard expanded > collapsed, liveSize.width > 0 else { return state.isExpanded ? 1 : 0 }
         return min(max((liveSize.width - collapsed) / (expanded - collapsed), 0), 1)
@@ -76,9 +80,11 @@ struct NotchRootView: View {
         Double(min(1, max(0, (expandProgress - 0.65) / 0.3)))
     }
 
-    /// Cached on the view model — see `NotchViewModel.palette`. Deriving it
-    /// here re-ran extraction on every body evaluation, which both cost real
-    /// CPU at 30fps and let a near-tied colour ranking flip frame to frame.
+    /// Resolved on the view model — see `NotchViewModel.palette`. Extraction
+    /// itself stays cached there (this only picks between the cached artwork
+    /// colours and the accent): deriving it here re-ran extraction on every
+    /// body evaluation, which both cost real CPU at 30fps and let a near-tied
+    /// colour ranking flip frame to frame.
     private var palette: ArtworkPalette {
         viewModel.palette
     }
@@ -88,7 +94,7 @@ struct NotchRootView: View {
     /// metrics aren't available yet, which is safer than falling back to 0 —
     /// guessing low hides content, guessing high only wastes a few points.
     private var notchBandHeight: CGFloat {
-        viewModel.metrics?.notchSize.height ?? 32
+        island.metrics?.notchSize.height ?? 32
     }
 
     var body: some View {
@@ -199,7 +205,7 @@ struct NotchRootView: View {
     /// A centred notch frame of the given size, in the hosting view's top-left
     /// space, carrying the collapsed shift that keeps the cutout under the camera.
     private func frameRect(for s: CGSize) -> CGRect {
-        let hostWidth = viewModel.metrics?.maximumFrame.width ?? NotchMetrics.expandedSize.width
+        let hostWidth = island.metrics?.maximumFrame.width ?? NotchMetrics.expandedSize.width
         return CGRect(
             x: (hostWidth - s.width) / 2 + collapsedShift,
             y: 0,
@@ -211,13 +217,13 @@ struct NotchRootView: View {
     @ViewBuilder
     private var content: some View {
         if state.isExpanded {
-            ExpandedNotchView(viewModel: viewModel, palette: palette)
+            ExpandedNotchView(viewModel: viewModel, island: island, palette: palette)
                 // Opacity gated on how far the notch has actually opened; the
                 // transition still handles the fade-out on collapse.
                 .opacity(expandedContentOpacity)
                 .transition(.opacity)
         } else {
-            CollapsedNotchView(viewModel: viewModel, palette: palette)
+            CollapsedNotchView(viewModel: viewModel, island: island, palette: palette)
                 .transition(.opacity)
         }
     }
@@ -273,17 +279,22 @@ struct NotchRootView: View {
 /// right in the canvas. No subsystems start (the view model is only
 /// constructed, never `start()`ed), so nothing touches audio or the adapter.
 private enum NotchPreview {
+    /// A view model and the one island in front of it, wired the way
+    /// `NotchWindowController` wires them for a real screen.
     @MainActor
-    static func viewModel(_ configure: (NotchViewModel) -> Void = { _ in }) -> NotchViewModel {
+    static func island(
+        _ configure: (NotchViewModel) -> Void = { _ in }
+    ) -> (NotchViewModel, IslandPresentation) {
         // Isolated defaults so a preview never reads or writes the real prefs.
         let settings = AppSettings(defaults: UserDefaults(suiteName: "isle.preview")!)
         settings.mode = .both            // show both sources + the tab switcher
         let vm = NotchViewModel(settings: settings)
+        let island = IslandPresentation(content: vm)
         if let screen = NSScreen.main {
-            vm.metrics = NotchMetrics(screen: screen)
+            island.metrics = NotchMetrics(screen: screen)
         }
         configure(vm)
-        return vm
+        return (vm, island)
     }
 }
 
@@ -304,18 +315,18 @@ private struct NotchPreviewStage<Content: View>: View {
 }
 
 #Preview("Notch — live alert (tab switch)") {
-    NotchPreviewStage {
-        NotchRootView(viewModel: NotchPreview.viewModel { vm in
-            // A live approval auto-jumps to the Claude tab; click Music in the
-            // canvas to confirm the manual override now sticks.
-            vm.claudeState = .needsApproval
-        })
+    // A live approval auto-jumps to the Claude tab; click Music in the
+    // canvas to confirm the manual override now sticks.
+    let (vm, island) = NotchPreview.island { $0.claudeState = .needsApproval }
+    return NotchPreviewStage {
+        NotchRootView(viewModel: vm, island: island)
     }
 }
 
 #Preview("Notch — resting") {
-    NotchPreviewStage {
-        NotchRootView(viewModel: NotchPreview.viewModel())
+    let (vm, island) = NotchPreview.island()
+    return NotchPreviewStage {
+        NotchRootView(viewModel: vm, island: island)
     }
 }
 #endif

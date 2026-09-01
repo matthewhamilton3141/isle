@@ -1,9 +1,13 @@
 //
 //  NotchViewModel.swift
 //
-//  Single observable the notch views read from. Holds the two inputs that
-//  can open the notch (pointer hover, Claude Code activity), derives the
-//  resolved NotchState from them, and owns the media feed.
+//  Single observable every island reads from. Owns the media feed, the Claude
+//  bridge and the power toasts — i.e. everything the notch *shows*, which is
+//  identical on every screen it's drawn on.
+//
+//  The other input that can open the notch, pointer hover, is per-screen and
+//  lives on IslandPresentation. This file keeps the live-activity half of the
+//  rule (`autoExpandsForActivity`); that file crosses it with its own hover.
 //
 
 import SwiftUI
@@ -28,21 +32,13 @@ enum CollapsedSize {
     static let statusFontSize: CGFloat = 10
 }
 
+/// Everything the island *shows*, shared by every island on every screen.
+///
+/// Hover and per-screen geometry are not here — they belong to one island and
+/// live on `IslandPresentation`. See that file for where the line is drawn and
+/// why the alert flags stayed on this side of it.
 @MainActor
 final class NotchViewModel: ObservableObject {
-    /// Pointer is over the notch's hit area. Set only through `setHovering`,
-    /// never directly, so the collapse-commit gate can't be bypassed.
-    @Published private(set) var isHovering: Bool = false
-
-    /// While true, pointer-driven expansion is refused. Set the instant the
-    /// notch starts collapsing and cleared once the close animation has
-    /// settled — see `setHovering`.
-    private var collapseLocked = false
-
-    /// How long re-expansion stays locked out after a collapse begins. Covers
-    /// the close spring (`Animation.notchClose`, response 0.30) so the hover
-    /// region has fully shrunk before hover can fire again.
-    private static let collapseLockDuration: TimeInterval = 0.32
 
     /// The user retracted the current alert's auto-opened panel (hovered away or
     /// clicked it). The panel collapses to the island but the alert glyph stays
@@ -124,7 +120,20 @@ final class NotchViewModel: ObservableObject {
     /// It also has to be cached for cost: as a computed property on the view
     /// it re-ran on every body evaluation, which is 30 times a second now that
     /// audio levels publish at display rate.
-    @Published private(set) var palette: ArtworkPalette = .fallback
+    /// Colours pulled from the current album art, or nil when there is no
+    /// artwork to pull from.
+    @Published private(set) var artworkPalette: ArtworkPalette?
+
+    /// The palette everything draws from.
+    ///
+    /// Artwork wins whenever there is any. Without it — a Claude-only island,
+    /// or music with no cover — the user's accent supplies one instead, which
+    /// is the whole point of `ClaudeAccent`: `ArtworkColors.palette(from: nil)`
+    /// returns three greys, and a `.palette` marker drawn from those is the
+    /// flat look the accent exists to replace.
+    var palette: ArtworkPalette {
+        artworkPalette ?? settings.claudeAccentPalette
+    }
 
     /// Identity of the cover `palette` was built from, to skip the work when
     /// an update carries the same image.
@@ -134,8 +143,6 @@ final class NotchViewModel: ObservableObject {
     /// while set, the scrubber renders this instead of the live position so
     /// the thumb doesn't fight the playback clock under the finger.
     @Published var scrubTarget: Double?
-
-    var metrics: NotchMetrics?
 
     private let settings: AppSettings
     private let adapter = MediaRemoteAdapterClient()
@@ -884,7 +891,9 @@ final class NotchViewModel: ObservableObject {
         // exactly the question of whether the cover changed.
         if model.artwork !== paletteArtwork {
             paletteArtwork = model.artwork
-            palette = ArtworkColors.palette(from: model.artwork)
+            // nil artwork leaves this nil rather than storing `.fallback`, so
+            // `palette` can hand over to the accent instead of the greys.
+            artworkPalette = model.artwork.map { ArtworkColors.palette(from: $0) }
         }
 
         media = model
@@ -928,56 +937,40 @@ final class NotchViewModel: ObservableObject {
     /// island (glyph/label) and the user expands on hover — it just doesn't pop
     /// open on its own. `hasLiveActivity` itself stays true so a manual expand
     /// still lands on the Claude tab (see `expandedTab`).
-    private var autoExpandsForActivity: Bool {
+    /// Internal rather than private: `IslandPresentation.state` crosses it with
+    /// that island's own hover.
+    var autoExpandsForActivity: Bool {
         hasLiveActivity && settings.expandOnAlert && !alertDismissed
     }
 
-    var state: NotchState {
-        NotchStateResolver.resolve(
-            isHovering: isHovering,
-            hasLiveActivity: autoExpandsForActivity
-        )
+    /// An island was hovered while this alert was live — a prerequisite for
+    /// hover-away to count as a dismiss, so an untouched auto-open isn't
+    /// dismissed by a stray move nearby. Called by `IslandPresentation`.
+    func noteAlertVisited() {
+        if hasLiveActivity { alertWasHovered = true }
     }
 
-    /// The only way `isHovering` changes. Opening is immediate; closing commits
-    /// to the collapse and locks re-expansion out for the length of the close
-    /// animation. That's what stops the panel flapping back open under a
-    /// pointer that's on its way off the island — a stray hover-in during the
-    /// shrink is ignored until the notch has fully settled. A live-activity
-    /// interrupt is unaffected: it opens through `hasLiveActivity`, not hover.
-    func setHovering(_ hovering: Bool) {
-        if hovering {
-            // Remember that this alert's panel was actually visited, so hovering
-            // back off it can count as a dismiss.
-            if hasLiveActivity { alertWasHovered = true }
-            guard !collapseLocked, !isHovering else { return }
-            isHovering = true
-        } else {
-            guard isHovering else { return }
-            isHovering = false
-            // Hovering away from an auto-opened alert the user has visited
-            // retracts the panel (if they allow it); the glyph stays in the
-            // island until the alert resolves.
-            if hasLiveActivity, alertWasHovered, settings.dismissAlertPanel {
-                alertDismissed = true
-            }
-            collapseLocked = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.collapseLockDuration) { [weak self] in
-                self?.collapseLocked = false
-            }
+    /// The pointer left an island. Hovering away from an auto-opened alert the
+    /// user has visited retracts the panel (if they allow it); the glyph stays
+    /// in the island until the alert resolves.
+    ///
+    /// Shared across islands on purpose: the alert has been seen and waved off,
+    /// and it should not stay open on a screen the user isn't looking at.
+    func noteHoveredAway() {
+        if hasLiveActivity, alertWasHovered, settings.dismissAlertPanel {
+            alertDismissed = true
         }
     }
 
     /// Retract the current alert's panel now (a click on it). No-op unless an
     /// alert is live and the user allows dismissing; the glyph stays until the
-    /// alert resolves.
-    func dismissAlert() {
-        guard hasLiveActivity, settings.dismissAlertPanel else { return }
+    /// alert resolves. Returns whether it actually dismissed, so the island the
+    /// click landed on can drop its hover to match.
+    @discardableResult
+    func dismissAlert() -> Bool {
+        guard hasLiveActivity, settings.dismissAlertPanel else { return false }
         alertDismissed = true
-        // The pointer is still over the (large) panel at click time, so drop the
-        // hover explicitly or it'd stay open as a hover-expand. The hover region
-        // shrinks to the collapsed island, which the pointer is now outside of.
-        isHovering = false
+        return true
     }
 
     /// Whether the expanded panel shows the Music/Claude segmented switcher —
@@ -1046,16 +1039,24 @@ final class NotchViewModel: ObservableObject {
         hasClaudeActivity && !hasMusicActivity
     }
 
-    /// Warm status colour for the working phases in the Claude-solo island:
-    /// yellow while thinking (no tool yet), orange once a tool is running. Nil
-    /// for every other state and layout, so those keep their marker colour.
+    /// Status colour for the working phases in the Claude-solo island: the
+    /// lighter stop while thinking (no tool yet), the fuller one once a tool is
+    /// running. Nil for every other state and layout, so those keep their
+    /// marker colour.
+    ///
+    /// This used to be two literals, `#F2C14E` and `#E8842B`. What they encoded
+    /// was never those particular hues but the *relationship* — thinking is the
+    /// paler form of working — and that survives any accent, so it now comes
+    /// off the palette. Isle keeps the distinction because it is real
+    /// information: whether a tool is actually running.
     var workingTint: Color? {
         guard isClaudeSolo, claudeState == .working else { return nil }
         // Full strength for as long as the state stands. It used to fade once
         // hooks had been quiet a while, but hook silence is normal during a
         // long think, so the fade only ever second-guessed a state that was
         // still true.
-        return isThinking ? Color(hex: "#F2C14E") : Color(hex: "#E8842B")
+        let accent = palette
+        return isThinking ? accent.accent : accent.primary
     }
 
     /// Both sources live at once — collapsed view splits (spec 3.1): music keeps

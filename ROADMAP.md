@@ -23,15 +23,18 @@ ordered so nothing downstream is blocked. Milestones list **Goal**, **Scope**,
 |---|---|---|
 | Notch overlay shell (window, shape, hit-test, animations) | Shipped | `Isle/Notch/` |
 | Media sync + transport (Spotify) | Shipped | `Isle/Media/` |
-| Audio-reactive waveform | Shipped | `Isle/Media/SystemAudioLevels.swift` |
+| Audio-reactive waveform | Shipped; source preference pending (M5) | `Isle/Media/SystemAudioLevels.swift` |
+| Display selection (multi-display) | Built-in display only (M8) | `NotchMetrics.preferredScreen()` |
+| Power / charging activities | Shipped (M9) | `Isle/Power/` |
 | Claude status glyph (breathing + checkmark) | Built, wired (M3) | `Isle/Claude/` |
 | Claude hook bridge (`isle-cli` + `settings.json`) | Watched (M3); per-session files, v7 | `Isle/Claude/ClaudeStatusWatcher.swift` |
 | Claude session registry (hook-free liveness) | Shipped | `Isle/Claude/ClaudeSessionRegistry.swift` |
 | Stall / no-response detection | Shipped, one path unverified | `Isle/Notch/NotchViewModel.swift` |
 | Claude hook installer | Done (M3) — menu-bar action, Settings wiring pending | `Isle/Claude/HookInstaller.swift` |
 | `NotchViewModel.claudeState` | Live from watcher, mode-gated (M3) | `Isle/Notch/NotchViewModel.swift` |
-| Settings pane | Empty `Settings` scene | `Isle/IsleApp.swift:20` |
-| Mode selection (Music / Claude / Both) | Model + gating done (M1); picker UI pending (M2/M6) | `Isle/Core/` |
+| Settings pane | Shipped — mode, notch, media, Claude, updates. The SwiftUI `Settings` scene is still empty; the real window is built in `openSettings` | `Isle/Settings/SettingsView.swift` |
+| Mode selection (Music / Claude / Both) | Model + gating done (M1); picker shipped in Settings and the menu bar | `Isle/Core/`, `Isle/Settings/SettingsView.swift` |
+| Claude accent colour | Shipped | `Isle/Core/ClaudeAccent.swift` |
 | Tabbed "Both" expanded view | Done (M4) | `Isle/Notch/ExpandedNotchView.swift`, `ClaudeExpandedView.swift` |
 
 The state machine (`NotchState`, `NotchStateResolver`) and the collapsed
@@ -318,21 +321,188 @@ install — all live.
   - **Media** (visible in Music/Both) — the customizable-controls set from
     `PROJECT_BRIEF.md §3.4`: scrubber/volume/next-prev/shuffle/repeat toggles,
     accent color / auto-from-artwork, `done` auto-collapse timing, waveform
-    on/off, split-vs-cycle behavior.
-  - **Claude** (visible in Claude/Both) — hook install/uninstall status.
+    source (see note), split-vs-cycle behavior.
+  - **Claude** (visible in Claude/Both) — hook install/uninstall status;
+    accent colour (see note), which is the Claude-only equivalent of the
+    Media section's auto-from-artwork.
 - All persisted via `AppSettings` / `@AppStorage`.
 - Mode change tears down and restarts only the affected subsystems (no relaunch).
+
+### Note: Claude-only mode has no palette, and one dead control — **shipped**
+
+A Claude-only user (`IsleMode.claude`) currently cannot change the colour of
+their island, and one of the controls that claims they can does nothing. Two
+separate causes, both worth fixing together:
+
+**1. `workingTint` overrides the marker system for exactly these users.**
+`isClaudeSolo` is `hasClaudeActivity && !hasMusicActivity`, which in `.claude`
+mode is *always* true. So `NotchViewModel.workingTint` returns non-nil for the
+whole `working` state, and it sets `forceFixed = true` — which
+`DotColors.rgba` honours "regardless of the design's colour mode"
+(`DotMatrixView.swift:303`). `CollapsedNotchView.markerColor` short-circuits on
+it as well, so the status text follows the same two hexes (`#F2C14E` thinking,
+`#E8842B` once a tool runs). A Claude-only user can edit `working` in the Marker
+Editor and see no change.
+
+**2. `.palette` means *album artwork*, which they don't have.** `idle`,
+`working` and `compacting` all default to `colorMode: .palette`. With no music,
+`NotchViewModel.palette` never leaves `ArtworkPalette.fallback` — three greys
+(`white 0.45 / 0.30 / 0.60`). So the states that aren't force-tinted are flat
+grey.
+
+Net: hardcoded amber when busy, grey when not, and an editor control that lies.
+The music user gets a palette that responds to what they're doing; the
+Claude-only user gets neither half of it.
+
+**The fix is to supply the missing palette, not to add an override.**
+
+- A **Claude accent** in Settings feeds `ArtworkPalette` when there is no
+  artwork to derive one from — so `.palette` markers behave for a Claude-only
+  user exactly as they do for a music user, and every existing read of
+  `palette.primary`/`accent`/`secondary` keeps working untouched.
+- **`workingTint` becomes derived rather than literal.** What those two hexes
+  encode is a *relationship* — thinking is the paler, softer form of working —
+  and that survives any hue. Derive both ends from the accent (thinking =
+  lifted/desaturated, working = full) and the ramp reads correctly in blue or
+  green as well as amber. This also removes the `forceFixed` special case, so
+  the Marker Editor stops being overridden and starts telling the truth.
+- **Semantic states stay fixed.** `done` green, `failed` red, `needsQuestion`
+  blue carry information the accent does not, and an accent that repainted them
+  would delete the fastest signal in the island. This is the line between
+  supplying a neutral palette (yes) and a global colour override (no).
+
+**The control is swatches plus a custom picker, not a bare colour well.**
+macOS's own accent setting is a swatch row plus "Other…", and there are two
+reasons to match it beyond consistency. First, the accent has to yield *three*
+stops — `paletteRamp` walks `primary → accent → secondary` — so a swatch can
+ship its ramp pre-derived and correct by construction, where an arbitrary hue
+has to derive one and degrades at the extremes (a near-black or fully saturated
+pick collapses the three stops into nearly one colour). Second, two regions of
+the space are actively wrong: near-black vanishes against the camera housing,
+and near-red/near-green impersonates `failed`/`done` — which undoes the whole
+point of holding the semantic states fixed. *Recommend a swatch row with
+**Match system accent** as the default first chip (`BreathingShapeLayer` already
+defaults to `.controlAccentColor`), then tuned accents, then **Custom…** opening
+the standard `ColorPicker` with a luminance clamp.* The Marker Editor's existing
+free `ColorPicker` stays as-is — that is a per-marker choice made deep in a
+customisation UI, where an odd colour is the point.
+
+**Status: built.** `Isle/Core/ClaudeAccent.swift` holds the swatches, the
+derivation for custom colours, and a small CIE76 implementation;
+`AppSettings.claudeAccent` / `.claudeAccentHex` persist the choice;
+`NotchViewModel.palette` is now computed and falls back to the accent instead of
+`ArtworkPalette.fallback`; `workingTint` derives from it rather than the two
+literals; and the picker sits in `SettingsView.claudeSection`.
+`MarkerDesign.Hex` was made non-private so the reserved colours have one source
+of truth. Two swatches were added late — see the muted note below.
+
+**The swatches.** Seven, not six or eight — because the state machine has already
+claimed most of the wheel. `red` `#FF3B30`, `amber` `#FF9F0A`, `green` `#34C759`,
+`blue` `#0A84FF`, `cyan` `#32ADE6` and `gray` `#8E8E93` all carry meaning, plus
+the two working tints. What is left is four hue families, and the violet band
+takes two entries separated on lightness:
+
+| Swatch | primary | secondary | accent |
+|---|---|---|---|
+| Lime | `#9DC63F` | `#5F8A24` | `#CDEA6A` |
+| Teal | `#25BFA4` | `#127A6B` | `#7FE9C8` |
+| Violet | `#9438E0` | `#6321A6` | `#C79BFF` |
+| Orchid | `#CE5FD2` | `#8F2F96` | `#F0A6EE` |
+| Magenta | `#E44C8E` | `#A62760` | `#FF95B8` |
+
+Chosen against two different bars, because they are two different problems.
+**Chip vs. semantic colour** must be unmistakable at 20px in the notch — a
+`working` island that reads as `failed` is the failure this whole design exists
+to avoid — so every stop above clears every semantic hex by **ΔE > 30** (CIE76;
+worst case 32.7, Lime primary vs `green`). **Chip vs. chip** only needs to be
+telling-apart-able in a settings row, so that bar is ΔE > 18 (worst case 32.8,
+Violet vs Orchid). All three stops also clear the extraction brightness floors
+(`primary` ≥ 0.35, `secondary` ≥ 0.28, `accent` ≥ 0.45 on `(r+g+b)/3`).
+
+Two candidates were tried and cut, worth not re-proposing: **Sky** sits at hue
+211, which *is* `blue`/`needsQuestion` (ΔE 19.9 from `cyan`), and **Rose** has an
+accent at hue 9° — red territory — while sitting 24.9 from Magenta. There is
+also no second blue-violet available: clearing `blue` requires hue ≥ 267, which
+is already Violet, so the band genuinely holds one entry plus a lighter Orchid,
+not three.
+
+For **Custom…**, `ClaudeAccent.derive` takes the picked hue and floors it into a
+legible band (saturation ≥ 0.35, value ≥ 0.58 — floors, not clamps, so a
+near-black pick doesn't collapse all three stops into one colour), then takes
+the deep stop at 0.62× value / 1.12× saturation and the highlight at 1.30×
+value / 0.60× saturation, each rotated 6–8° so the ramp moves in hue and not
+only in lightness.
+
+The earlier plan here said to *nudge* a colliding custom colour to the nearest
+safe one. That was wrong and is not what shipped: silently substituting a
+different colour than the one someone picked in an explicit colour well is
+surprising, and the picker exists precisely to let them override. Custom is
+applied as chosen, and `ClaudeAccent.collision(forCustom:)` measures it so the
+caption can say plainly which reserved colour it sits near.
+
+**"Match system" cannot use the system accent directly.** Measured against the
+eight macOS accents, five collide with a reserved colour — Blue, Red, Orange,
+Yellow and Green — and Blue, which is the macOS default, lands **8.0 ΔE** from
+`needsQuestion`. Shipping the raw accent would have given most users a `working`
+island that reads as a pending question. `.system` therefore snaps to the
+nearest measured swatch (`nearestSwatch(to:)`), which is honest where a near
+match exists (Pink→Magenta 7.8, Purple→Orchid 17.8, Graphite→Slate 19.6) and
+openly approximate where none does (Blue→Violet 44.7, Orange→Stone 64.3, because
+there is no safe blue or orange left). The caption says so.
+
+Keep the artwork extraction path itself untouched — it is settled. This adds a
+source for the case where it has nothing to extract from.
+
+---
+
+### Note: waveform source is three-way, not on/off
+
+The procedural waveform already exists and is already good — `EqualizerLayer`
+runs each bar as its own sine on its own period (deliberately non-harmonic
+multipliers, so the bars don't march in a visible wave), handed to the render
+server as keyframe loops that need no per-frame updates. Today it is only ever
+reached as a *failure* path: `SystemAudioLevels` starts unconditionally with
+media (`NotchViewModel.setMediaRunning`), and the pattern appears when capture
+can't run — old OS, Spotify not running, or the user declined the audio-capture
+prompt.
+
+So the setting is three-way, not a checkbox:
+
+| Choice | Behaviour |
+|---|---|
+| **Live** (default) | Taps Spotify's audio. Prompts for audio-capture permission the first time. |
+| **Animated** | Never starts the tap — no prompt, no Core Audio at all. Renders the existing procedural pattern whenever something is playing. |
+| **Off** | No waveform. The collapsed island gives the space back to artwork/title. |
+
+The value of **Animated** is that it is the only choice that never triggers the
+permission prompt, which matters for the same reason `IsleMode` gates the media
+subsystems: a user who doesn't want to grant audio capture should be able to
+decline it once and keep a waveform that looks alive.
+
+Implementation is small — gate the `audio.start()` call in `setMediaRunning` on
+the preference, and pass the choice down to `LiveEqualizer` so **Off** renders
+nothing. `EqualizerLayerView` already has `Mode { live, procedural, resting }`;
+this adds a way to pin it to `procedural` rather than only falling into it.
 
 ### Files
 - New `Isle/Settings/SettingsView.swift` (+ per-section subviews).
 - `Isle/IsleApp.swift` — populate the `Settings` scene; add "Settings…" and
   "Setup…" menu items.
-- `Isle/Notch/NotchViewModel.swift` — observe settings for live control toggles.
+- `Isle/Notch/NotchViewModel.swift` — observe settings for live control toggles;
+  gate `audio.start()` in `setMediaRunning` on the waveform source.
+- `Isle/Components/EqualizerView.swift` — carry the waveform source into
+  `LiveEqualizer` so **Animated** pins the procedural mode and **Off** renders
+  nothing.
 
 ### Acceptance
 - Switching Music → Both at runtime starts the Claude watcher and reveals tabs
   without relaunch.
 - Toggling a media control hides/shows it in the expanded row immediately.
+- **Animated** never starts the tap — verified by the audio-capture prompt not
+  appearing on a clean install that picks it before first playback.
+- In Claude-only mode, changing the Claude accent recolours the idle and working
+  island live, and editing `working` in the Marker Editor now takes effect —
+  today it is silently overridden.
 
 ---
 
@@ -432,6 +602,168 @@ The handshake:
 
 ---
 
+## Milestone 8 — Multi-Display  ✅
+
+The spec scoped v1 to the built-in display ("non-goal: multi-display sync"), and
+`NotchMetrics.preferredScreen()` held that line: the first screen with a camera
+housing, else `NSScreen.main`. On a desk with an external monitor that is often
+the wrong screen — the island sits on the laptop panel while the user works on
+the display in front of them.
+
+### What shipped
+A binary, not a display picker: **Built-in display** (the default, unchanged
+behaviour) or **All displays** — one island on every attached screen, all
+showing the same thing. Settings → Notch → "Show island on".
+
+A picker over named displays was considered and dropped. It needs a stable
+display identity across reconnects (`CGDirectDisplayID` is reassigned on
+hotplug, so the durable key is the vendor/model/serial triple), and the answer
+almost everyone would give it is "all of them" anyway.
+
+### How it's built
+- `DisplayScope` (`Isle/Core/DisplayScope.swift`) — the two-case enum, persisted
+  by `AppSettings.displayScope` under `isle.displayScope`.
+- `IslandPresentation` (`Isle/Notch/IslandPresentation.swift`) — the per-screen
+  half of the notch's state: `isHovering`, the collapse lock, and `metrics`.
+  One instance per island.
+- `NotchViewModel` stays a **singleton**. Every island shows the same track,
+  Claude status and power toast, so the audio tap, the MediaRemote adapter and
+  the Claude watcher are not duplicated per display. `alertDismissed` and
+  `alertWasHovered` deliberately stayed on it too — they describe the alert, not
+  the window, so waving an approval off on one screen dismisses it everywhere.
+- `NotchWindowController` owns a `[CGDirectDisplayID: Island]` and reconciles it
+  in `syncIslands()`. The display ID is a within-session key only (reuse a
+  panel rather than rebuild it, so the marquee and equalizer phases survive a
+  re-place); nothing persists it.
+- `metrics` became `@Published`. It was a plain `var`, so a display change
+  reframed the window but never invalidated the content — nothing here worked
+  until that was fixed.
+- One global pointer monitor still, routed to the island whose screen contains
+  `NSEvent.mouseLocation`; every other island is told to collapse.
+
+### Rules that matter
+- **A sync is never applied while an island is open.** The hover geometry
+  assumes a target that stays put, so a hotplug mid-reach is deferred
+  (`syncDeferred`) and applied on collapse.
+- **Mirrored secondaries are skipped** (`CGDisplayMirrorsDisplay`), or two
+  panels land on the same pixels with two independent hover states.
+- **`.builtIn` falls back to main**, so a clamshelled MacBook or a Mac mini
+  still gets an island rather than none.
+
+### Still to verify on real hardware
+- Two displays, hover each island in turn; the other must collapse.
+- Hotplug while hovering — the deferred sync must land on collapse, not during.
+- A Claude alert opens every island at once and one haptic fires, not N (the
+  0.35s throttle in `playTransitionHaptic` covers this).
+- The idle collapsed pill on a non-notched display is a visible 180×32 black
+  rectangle over the middle of a real menu bar. Clicks either side of it pass
+  through, but whether it should shrink to a sliver when idle is an open design
+  call.
+
+### Boundaries
+Still one `NotchViewModel`. "The island follows focus" remains rejected — it
+moves the island while you are reaching for it.
+
+---
+
+## Milestone 9 — Power & Charging Activities
+
+*Plugged in. 42%.* A third thing worth reporting, alongside music and Claude:
+the Mac's own power state, and the batteries of the devices attached to it.
+Nothing exists today — there is no `IOPowerSources` use anywhere in `Isle/`.
+
+### Goal
+Connecting a charger, crossing a low-battery threshold, or connecting a device
+with a reportable battery briefly claims the collapsed island, then hands it
+back to whatever was there.
+
+### The data — what actually works
+
+Checked on macOS 26.5.1 rather than assumed, because the obvious route is a dead
+end:
+
+| Source | API | Verdict |
+|---|---|---|
+| Mac's internal battery | `IOPSCopyPowerSourcesInfo` / `IOPSGetPowerSourceDescription`, with `IOPSNotificationCreateRunLoopSource` for change callbacks | **Works.** Public IOKit, no permission prompt, event-driven. Gives current/max capacity, charging flag, AC vs battery, and time-to-empty/full. |
+| Bluetooth devices via IORegistry | `BatteryPercent` / `BatteryPercentLeft`/`Right`/`Case` under `AppleDeviceManagementHIDEventService` | **Dead end here.** `ioreg -r -k BatteryPercent` returns nothing, and a full `ioreg -l` has no battery keys at all — including with an AirPods-class device connected and reporting. |
+| Bluetooth devices via System Profiler | `system_profiler SPBluetoothDataType` | **Works**, and is the route that does. Reports `Case Battery Level` / `Left Battery Level` / `Right Battery Level` for connected devices. Measured at ~0.1s, so it is affordable *on a connect/disconnect event*, not on a timer. |
+
+So: IOKit for the Mac, a subprocess for the peripherals, and the peripheral path
+is event-driven only. Confirm the `SPBluetoothDataType` key names against the
+target macOS before building — this is parsed text, not an API.
+
+### Scope
+- New `Isle/Power/PowerMonitor.swift` — an `ObservableObject` publishing the
+  Mac's power state, driven by the IOPS run-loop source (no polling).
+- Peripheral batteries refreshed on Bluetooth connect/disconnect, cached between
+  events.
+- Events worth surfacing: charger connected / disconnected (with the level),
+  fully charged, low-battery thresholds, device connected with a level, device
+  low.
+- Presentation: a **momentary toast** in the collapsed island that reverts, not
+  a third permanent seat. The collapsed split rule is built for two sources
+  (`splitMusicFraction`, `collapsedClaudeExtra`) and a power event is transient
+  by nature — it does not want a standing seat the way music and Claude do.
+- Gated by a settings toggle, on by default.
+
+### Acceptance
+- Plugging in shows a charging toast with the real percentage, then returns the
+  island to music/Claude.
+- Connecting a device with a reportable battery shows its level; a device whose
+  battery is not reported shows **nothing** — no placeholder, no "unknown".
+- A power toast never pops the panel open, and never displaces a Claude alert.
+
+### Decisions to lock
+- **Ambient behaviour, not a fourth `IsleMode`.** Power is event-driven, not
+  something you would run the island *as*, and adding a case to `IsleMode`
+  reshapes every `showsMusic` / `showsClaude` gate. *Recommend a toggle.*
+- **Does critical battery interrupt?** Everything else here is ambient, but a
+  Mac about to sleep is arguably the one power event that earns
+  `liveActivityExpanded`. *Recommend no — macOS already has its own low-battery
+  alert, and Isle duplicating it is noise.*
+- **Collision with a Claude alert** — attention outranks ambient; the toast is
+  dropped, not queued.
+- **Toast duration**, and whether repeat events within a window coalesce.
+
+### What shipped
+
+Built as specced, with three departures worth recording:
+
+- **`system_profiler -json`, not the text output.** The roadmap warned this was
+  "parsed text, not an API" and said to confirm the key names. The `-json` form
+  sidesteps the warning entirely: `device_batteryLevelLeft` /
+  `device_batteryLevelRight` / `device_batteryLevelMain` and `device_minorType`
+  are stable identifiers, where the text output's "Left Battery Level:" labels
+  are display strings that have moved between releases. Also faster (~0.08s).
+- **IOBluetooth fires connect notifications for devices that are *already*
+  connected**, synchronously, at registration. Useful as initial state, but as
+  an event it means a toast for your headphones on every launch — hence
+  `BluetoothBatteryMonitor.launchGrace`.
+- **Peripherals are read on a charger plug-in too**, not only on connect. A
+  device's level can't be watched, only fetched, and sitting down to plug the
+  Mac in is the moment a flat pair of headphones is worth mentioning. Only the
+  lowest device at or below 20% is reported, so this can't turn into a roundup.
+
+Decisions locked: toast duration is a constant 4s, not a setting (`doneToastSeconds`
+is tunable because a slow reader wants the checkmark to linger; this is the same
+reading task at the same size). Repeats coalesce by kind — a jiggling MagSafe
+connector leaves one current message, not six stale ones. Two settings toggles,
+not one: the Bluetooth half is separable because it is the half that costs a
+subprocess. Critical battery does not interrupt, as recommended.
+
+Two things the island deliberately won't say. Plugging in at 100% reads *Fully
+charged*, never "Charging · 100%" — that would be a claim about something that
+isn't going to happen. And power monitoring stops with the display, so plugging
+in with the lid shut produces no toast on wake rather than a stale one.
+
+### Says-nothing-it-can't-back-up
+Report only what the APIs actually return. Time-to-full is a value IOKit
+provides — and provides as "still calculating" for the first minutes after a
+plug-in — so show it when it is real and omit it when it isn't, rather than
+estimating one. Same rule as the Claude island's silence: no inferred state.
+
+---
+
 ## Suggested sequencing
 
 ```
@@ -439,7 +771,9 @@ M1 Mode archetype ─┬─> M2 Onboarding
                    ├─> M3 Claude bridge ─┬─> M4 Tabbed "Both" ─┐
                    │                     └─> M7 Act from notch ─┤
                    └───────────────────────> M5 Settings ──────┴─> M6 Launch
-                                                                    │
+                                              │                     │
+                                              ├─> M8 Display picker │
+                                              └─> M9 Power/charging │
                                      M7 unblocks ──> Scheduled Prompts (Parked)
 ```
 
@@ -449,6 +783,9 @@ M1 Mode archetype ─┬─> M2 Onboarding
 - **M7 (Act from notch) needs M3's bridge** (it extends `isle-cli` and the
   status watcher) and delivers the "talk back into a session" primitive that
   Scheduled Prompts is parked on.
+- **M8 and M9 sit off the Claude track entirely.** Each is an engine plus a
+  Settings section, so both want M5 to exist first — but neither blocks anything
+  downstream, and neither gates a release.
 - A credible public build = **M1 + M2 + M3 + M4** (the full three-mode island),
   with **M5**, **M7**, and **M6** finishing it for release.
 

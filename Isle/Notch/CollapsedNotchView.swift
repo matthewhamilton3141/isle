@@ -16,10 +16,11 @@ import SwiftUI
 
 struct CollapsedNotchView: View {
     @ObservedObject var viewModel: NotchViewModel
+    @ObservedObject var island: IslandPresentation
     var palette: ArtworkPalette
 
     private var cutoutWidth: CGFloat {
-        viewModel.metrics?.notchSize.width ?? 0
+        island.metrics?.notchSize.width ?? 0
     }
 
     var body: some View {
