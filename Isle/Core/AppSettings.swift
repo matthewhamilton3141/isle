@@ -25,6 +25,7 @@ final class AppSettings: ObservableObject {
     private static let showShuffleRepeatKey = "isle.showShuffleRepeat"
     private static let doneToastKey = "isle.doneToastSeconds"
     private static let hapticsKey = "isle.haptics"
+    private static let displayScopeKey = "isle.displayScope"
     private static let expandOnAlertKey = "isle.expandOnAlert"
     private static let dismissAlertPanelKey = "isle.dismissAlertPanel"
     private static let showWaitingKey = "isle.showWaiting"
@@ -60,6 +61,16 @@ final class AppSettings: ObservableObject {
     /// can annoy.
     @Published var haptics: Bool {
         didSet { defaults.set(haptics, forKey: Self.hapticsKey) }
+    }
+
+    /// Which screens the island is drawn on. `.builtIn` by default, which is
+    /// the behaviour Isle has always had — nobody's island moves unless they
+    /// ask for it. See `DisplayScope`.
+    @Published var displayScope: DisplayScope {
+        didSet {
+            guard displayScope != oldValue else { return }
+            defaults.set(displayScope.rawValue, forKey: Self.displayScopeKey)
+        }
     }
 
     // MARK: - Media controls (spec 3.4)
@@ -152,6 +163,8 @@ final class AppSettings: ObservableObject {
         }
         lastTab = IsleTab(rawValue: defaults.string(forKey: Self.tabKey) ?? "") ?? .music
         haptics = defaults.object(forKey: Self.hapticsKey) as? Bool ?? true
+        displayScope = DisplayScope(rawValue: defaults.string(forKey: Self.displayScopeKey) ?? "")
+            ?? .builtIn
         showScrubber = defaults.object(forKey: Self.showScrubberKey) as? Bool ?? true
         showShuffleRepeat = defaults.object(forKey: Self.showShuffleRepeatKey) as? Bool ?? true
         doneToastSeconds = defaults.object(forKey: Self.doneToastKey) as? Double ?? 4

@@ -1,9 +1,15 @@
 //
 //  NotchWindowController.swift
 //
-//  Owns the overlay panel and keeps it glued to the right screen.
+//  Owns the overlay panels and keeps them glued to the right screens.
 //
-//  Sizing note: the panel is created once at its maximum extent and never
+//  There is one *island* — one panel, one hosting view, one IslandPresentation
+//  — per screen Isle is drawing on, and exactly one NotchViewModel behind all
+//  of them. Every island shows the same track, the same Claude status, the same
+//  power toast; what differs per screen is the cutout geometry and which island
+//  the pointer is currently on. See IslandPresentation for that split.
+//
+//  Sizing note: each panel is created once at its maximum extent and never
 //  resized while animating. The SwiftUI content inside grows and shrinks
 //  against a fixed frame. Resizing an NSWindow per frame fights the window
 //  server and shows up as tearing along the notch edge, which is the one
@@ -16,24 +22,68 @@ import Combine
 
 @MainActor
 final class NotchWindowController {
-    private var window: NotchWindow?
-    private var hostingView: NotchHostingView<NotchRootView>?
-    private var metrics: NotchMetrics?
+    /// One screen's worth of overlay. A class rather than a struct because the
+    /// SwiftUI layout callback mutates `activeRectInView` from outside the
+    /// dictionary that holds it.
+    private final class Island {
+        let presentation: IslandPresentation
+        let window: NotchWindow
+        let hosting: NotchHostingView<NotchRootView>
+
+        /// The screen this island is drawn on. Re-resolved on every sync: a
+        /// hotplug can hand back a different `NSScreen` object for the same
+        /// display, with a different frame.
+        var screen: NSScreen
+
+        /// The notch's live clickable region, in the hosting view's coordinate
+        /// space (top-left origin). Drives `ignoresMouseEvents` so the window
+        /// server passes clicks outside the drawn notch straight through — see
+        /// `updateClickThrough`.
+        var activeRectInView: CGRect?
+
+        init(
+            presentation: IslandPresentation,
+            window: NotchWindow,
+            hosting: NotchHostingView<NotchRootView>,
+            screen: NSScreen
+        ) {
+            self.presentation = presentation
+            self.window = window
+            self.hosting = hosting
+            self.screen = screen
+        }
+    }
+
+    /// Live islands, keyed by the display's runtime ID.
+    ///
+    /// `CGDirectDisplayID` is reassigned across reconnects and reboots, so it
+    /// would be no use for *persisting* a choice of display — but that is
+    /// exactly what this doesn't do. The key only has to be stable for as long
+    /// as a display stays plugged in, which is what lets a re-sync reuse the
+    /// existing panel (and so keep its marquee and equalizer phases) rather
+    /// than rebuild it.
+    private var islands: [CGDirectDisplayID: Island] = [:]
+
     private var screenObserver: (any NSObjectProtocol)?
     private var pointerMonitor: Any?
+    private var cancellables = Set<AnyCancellable>()
 
-    /// The notch's live clickable region, in the hosting view's coordinate
-    /// space (top-left origin). Drives `ignoresMouseEvents` so the window
-    /// server passes clicks outside the drawn notch straight through — see
-    /// `updateClickThrough`.
-    private var activeRectInView: CGRect?
+    /// A sync arrived while an island was open and was deferred — see
+    /// `syncIslands`. Run as soon as everything has collapsed.
+    private var syncDeferred = false
 
     private let viewModel = NotchViewModel()
+    private let settings = AppSettings.shared
 
-    var isVisible: Bool { window?.isVisible ?? false }
+    /// Between `show()` and `hide()`. Screen and settings changes only re-place
+    /// panels while this is true.
+    private var isRunning = false
+
+    var isVisible: Bool { islands.values.contains { $0.window.isVisible } }
 
     init() {
         observeScreenChanges()
+        observeDisplayScope()
     }
 
     deinit {
@@ -48,38 +98,9 @@ final class NotchWindowController {
     // MARK: - Lifecycle
 
     func show() {
-        guard let screen = NotchMetrics.preferredScreen() else {
-            NSLog("Isle: no screen available to place the notch on")
-            return
-        }
-
-        let metrics = NotchMetrics(screen: screen)
-        self.metrics = metrics
-        viewModel.metrics = metrics
-
-        let frame = metrics.maximumFrame
-        let window = self.window ?? NotchWindow(contentRect: frame)
-
-        window.setFrame(frame, display: false)
-
-        if hostingView == nil {
-            // Built once and reused. Recreating the hosting view on every
-            // show() would restart the marquee and equalizer phases and drop
-            // the adapter's accumulated state.
-            let hosting = NotchHostingView(
-                rootView: NotchRootView(viewModel: viewModel) { [weak self] rect in
-                    self?.hostingView?.activeRect = rect
-                    self?.activeRectInView = rect
-                    self?.updateClickThrough()
-                }
-            )
-            hostingView = hosting
-        }
-
-        window.contentView = hostingView
-        window.orderFrontRegardless()
-
-        self.window = window
+        isRunning = true
+        syncIslands()
+        guard !islands.isEmpty else { return }
         observePointer()
         viewModel.start()
     }
@@ -92,12 +113,133 @@ final class NotchWindowController {
     }
 
     func hide() {
-        window?.orderOut(nil)
+        isRunning = false
+        for island in islands.values {
+            island.presentation.setHovering(false)
+            island.window.orderOut(nil)
+        }
+        // The panels are kept, not destroyed: `hide()` is a toggle from the
+        // menu bar, and rebuilding the hosting views on the way back would
+        // restart the marquee and equalizer phases.
         if let pointerMonitor {
             NSEvent.removeMonitor(pointerMonitor)
             self.pointerMonitor = nil
         }
+        cancelSweepRecheck()
         viewModel.stop()
+    }
+
+    // MARK: - Placement
+
+    /// Reconcile the live islands against the screens Isle should be drawing on.
+    ///
+    /// Idempotent and cheap: an existing island is reframed in place, a newly
+    /// attached screen gets a panel, and a screen that has gone away — or
+    /// dropped out of scope — loses one. Called on launch, on display changes,
+    /// and when the user changes the display scope.
+    private func syncIslands() {
+        guard isRunning else { return }
+
+        // Never re-place a panel the pointer is inside. The hover rule below
+        // assumes a target that stays put, and a display change while the user
+        // is reaching for the island — plugging in a monitor renumbers screens
+        // and can move the built-in display's origin — would move it mid-reach.
+        // Defer instead, and pick it up on collapse.
+        if islands.values.contains(where: { $0.presentation.isHovering }) {
+            syncDeferred = true
+            return
+        }
+        syncDeferred = false
+
+        let screens = targetScreens()
+        guard !screens.isEmpty else {
+            NSLog("Isle: no screen available to place the island on")
+            return
+        }
+
+        var wanted = Set<CGDirectDisplayID>()
+
+        for screen in screens {
+            guard let id = Self.displayID(of: screen) else { continue }
+            wanted.insert(id)
+
+            let metrics = NotchMetrics(screen: screen)
+            if let island = islands[id] {
+                island.screen = screen
+                island.presentation.metrics = metrics
+                island.window.setFrame(metrics.maximumFrame, display: false)
+                island.window.orderFrontRegardless()
+            } else {
+                makeIsland(id: id, screen: screen, metrics: metrics)
+            }
+        }
+
+        for (id, island) in islands where !wanted.contains(id) {
+            island.presentation.setHovering(false)
+            island.window.orderOut(nil)
+            islands.removeValue(forKey: id)
+        }
+    }
+
+    private func makeIsland(id: CGDirectDisplayID, screen: NSScreen, metrics: NotchMetrics) {
+        let presentation = IslandPresentation(content: viewModel)
+        presentation.metrics = metrics
+
+        let window = NotchWindow(contentRect: metrics.maximumFrame)
+        let hosting = NotchHostingView(
+            rootView: NotchRootView(viewModel: viewModel, island: presentation) { [weak self] rect in
+                self?.updateActiveRect(rect, on: id)
+            }
+        )
+
+        // In the dictionary before the content view is set: SwiftUI can report
+        // its first layout during the `contentView` assignment, and the
+        // callback above looks the island up by id.
+        islands[id] = Island(
+            presentation: presentation,
+            window: window,
+            hosting: hosting,
+            screen: screen
+        )
+
+        window.contentView = hosting
+        window.setFrame(metrics.maximumFrame, display: false)
+        window.orderFrontRegardless()
+    }
+
+    /// The screens to draw on, in the user's chosen scope.
+    ///
+    /// Mirrored secondaries are dropped in both scopes: a mirror already shows
+    /// the primary's island, and drawing a second one would put two panels on
+    /// the same pixels with two independent hover states.
+    private func targetScreens() -> [NSScreen] {
+        switch settings.displayScope {
+        case .builtIn:
+            // `preferredScreen` is the notched screen, else main — so on a
+            // clamshelled MacBook or a Mac mini this still means *somewhere*
+            // rather than nowhere.
+            return [NotchMetrics.preferredScreen()].compactMap { $0 }
+        case .all:
+            let screens = NSScreen.screens.filter { !Self.isMirrorSecondary($0) }
+            return screens.isEmpty ? [NotchMetrics.preferredScreen()].compactMap { $0 } : screens
+        }
+    }
+
+    private static func displayID(of screen: NSScreen) -> CGDirectDisplayID? {
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
+            .uint32Value
+    }
+
+    private static func isMirrorSecondary(_ screen: NSScreen) -> Bool {
+        guard let id = displayID(of: screen) else { return false }
+        return CGDisplayMirrorsDisplay(id) != kCGNullDirectDisplay
+    }
+
+    private func updateActiveRect(_ rect: CGRect, on id: CGDirectDisplayID) {
+        guard let island = islands[id] else { return }
+        island.activeRectInView = rect
+        island.hosting.activeRect = rect
+        updateClickThrough(island)
     }
 
     // MARK: - Hover zones
@@ -132,10 +274,14 @@ final class NotchWindowController {
     private var sweepRecheckWork: DispatchWorkItem?
 
     /// Tracks the pointer to do three things: keep clicks passing through the
-    /// dead area around the notch, open the panel when the pointer arrives on
-    /// the island, and collapse it once the pointer leaves for good. Isle never
+    /// dead area around each notch, open a panel when the pointer arrives on
+    /// its island, and collapse it once the pointer leaves for good. Isle never
     /// becomes the active app, so a global monitor (not a local one) is what
     /// sees these moves. `.mouseMoved` monitoring needs no special permission.
+    ///
+    /// One monitor covers every island: the pointer is only ever in one place,
+    /// so each move is routed to the island whose screen it is on and every
+    /// other island is told to collapse.
     private func observePointer() {
         guard pointerMonitor == nil else { return }
         pointerMonitor = NSEvent.addGlobalMonitorForEvents(
@@ -156,10 +302,12 @@ final class NotchWindowController {
     /// points doesn't shut it. The gap between the two is the hysteresis: easy
     /// to commit to, hard to lose by accident.
     private func handlePointerMove(_ event: NSEvent) {
-        // Every move: reconcile click-through, so the window server only routes
-        // clicks to Isle when the pointer is over the drawn notch and passes
-        // everything else to what's underneath.
-        updateClickThrough()
+        // Every move: reconcile click-through on every island, so the window
+        // server only routes clicks to Isle when the pointer is over a drawn
+        // notch and passes everything else to what's underneath.
+        for island in islands.values {
+            updateClickThrough(island)
+        }
 
         // Measured on every move, in zone or out: the reading is an interval
         // between consecutive events, so sampling it only once the pointer is
@@ -167,22 +315,35 @@ final class NotchWindowController {
         // last there — and a sweep would clear the gate on its first frame.
         let sweeping = isSweep(event)
 
-        guard let zones = hoverZones() else { return }
         let pointer = NSEvent.mouseLocation
+        guard let active = island(containing: pointer) else {
+            collapseAll()
+            return
+        }
 
-        guard !viewModel.isHovering else {
+        // The pointer is on one screen, so nothing on any other screen can
+        // still be hovered. This is what closes the island you just left.
+        for other in islands.values where other !== active {
+            other.presentation.setHovering(false)
+        }
+
+        guard let zones = hoverZones(for: active) else { return }
+
+        guard !active.presentation.isHovering else {
             // Open: only a real departure closes it. SwiftUI's `.onHover` sees
             // the drawn rect and nothing more, which is why closing is owned
             // here — it's the only place that knows about the pad.
             if !zones.stayOpen.contains(pointer) {
                 cancelSweepRecheck()
-                viewModel.setHovering(false)
+                active.presentation.setHovering(false)
+                runDeferredSync()
             }
             return
         }
 
         guard zones.open.contains(pointer) else {
             cancelSweepRecheck()
+            runDeferredSync()
             return
         }
 
@@ -190,17 +351,46 @@ final class NotchWindowController {
         // the island is the pointer on its way somewhere else — the single
         // most common way this panel used to open when nobody asked it to.
         if sweeping {
-            scheduleSweepRecheck()
+            scheduleSweepRecheck(on: active)
         } else {
             cancelSweepRecheck()
-            viewModel.setHovering(true)
+            active.presentation.setHovering(true)
         }
+    }
+
+    /// Which island the pointer is on, by screen.
+    ///
+    /// The strict test comes first; the 1pt-grown fallback covers the top edge,
+    /// where `NSEvent.mouseLocation` can report exactly `frame.maxY` and
+    /// `CGRect.contains` excludes its own upper bound — which is precisely
+    /// where the island lives.
+    private func island(containing pointer: CGPoint) -> Island? {
+        if let hit = islands.values.first(where: { $0.screen.frame.contains(pointer) }) {
+            return hit
+        }
+        return islands.values.first { $0.screen.frame.insetBy(dx: -1, dy: -1).contains(pointer) }
+    }
+
+    private func collapseAll() {
+        for island in islands.values {
+            island.presentation.setHovering(false)
+        }
+        cancelSweepRecheck()
+        runDeferredSync()
+    }
+
+    /// Run a sync that was held off because an island was open.
+    private func runDeferredSync() {
+        guard syncDeferred, !islands.values.contains(where: { $0.presentation.isHovering }) else {
+            return
+        }
+        syncIslands()
     }
 
     /// The open and stay-open regions in screen coordinates, or nil before the
     /// first layout.
-    private func hoverZones() -> (open: CGRect, stayOpen: CGRect)? {
-        guard let drawn = drawnRectInScreen() else { return nil }
+    private func hoverZones(for island: Island) -> (open: CGRect, stayOpen: CGRect)? {
+        guard let drawn = drawnRectInScreen(island) else { return nil }
         let pad = Self.stayOpenPad
         return (
             // Screen coords are bottom-left origin, so "below the island" is
@@ -231,16 +421,17 @@ final class NotchWindowController {
         return hypot(dx, dy) / interval > Self.sweepSpeed && dx > dy * Self.sweepAspect
     }
 
-    private func scheduleSweepRecheck() {
+    private func scheduleSweepRecheck(on island: Island) {
         guard sweepRecheckWork == nil else { return }
-        let work = DispatchWorkItem { [weak self] in
+        let work = DispatchWorkItem { [weak self, weak island] in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.sweepRecheckWork = nil
-                guard let zones = self.hoverZones(),
+                guard let island,
+                      let zones = self.hoverZones(for: island),
                       zones.open.contains(NSEvent.mouseLocation)
                 else { return }
-                self.viewModel.setHovering(true)
+                island.presentation.setHovering(true)
             }
         }
         sweepRecheckWork = work
@@ -252,7 +443,7 @@ final class NotchWindowController {
         sweepRecheckWork = nil
     }
 
-    /// Makes the panel transparent to the mouse everywhere except the drawn
+    /// Makes a panel transparent to the mouse everywhere except its drawn
     /// notch. Returning `nil` from the hosting view's `hitTest` is not enough:
     /// the window server has already chosen this panel as the click target
     /// before `hitTest` runs, so a `nil` result drops the click rather than
@@ -260,31 +451,35 @@ final class NotchWindowController {
     /// `ignoresMouseEvents` makes the window server skip the panel outright, so
     /// the click lands on whatever is really there.
     ///
+    /// This is also what keeps a non-notched display usable. The fallback pill
+    /// sits over a *real* menu bar there, not over hardware — and everything
+    /// either side of the drawn pill, which is where the app menus and status
+    /// items are, stays clickable because the panel is transparent to the mouse
+    /// outside it.
+    ///
     /// Driven by the same `activeRect` the content reports, converted from the
     /// hosting view's top-left space to the screen's bottom-left space. Padded
     /// so the panel goes live a hair before the pointer reaches the visible
     /// notch — otherwise the flip could land one event too late and the first
     /// hover-in would be missed.
-    private func updateClickThrough() {
-        guard let window else { return }
-
-        guard let screenRect = drawnRectInScreen() else {
+    private func updateClickThrough(_ island: Island) {
+        guard let screenRect = drawnRectInScreen(island) else {
             // No layout yet — err toward interactive so the notch is never dead.
-            window.ignoresMouseEvents = false
+            island.window.ignoresMouseEvents = false
             return
         }
 
         // Keep clicks routed to Isle a hair before the pointer reaches the
         // visible notch (the pad), so the first hover-in is never missed.
         let hot = screenRect.insetBy(dx: -6, dy: -6)
-        window.ignoresMouseEvents = !hot.contains(NSEvent.mouseLocation)
+        island.window.ignoresMouseEvents = !hot.contains(NSEvent.mouseLocation)
     }
 
-    /// The drawn notch in screen coordinates (bottom-left origin), which is
-    /// what `NSEvent.mouseLocation` speaks. Nil until SwiftUI reports a layout.
-    private func drawnRectInScreen() -> CGRect? {
-        guard let window, let rect = activeRectInView else { return nil }
-        let frame = window.frame
+    /// A drawn notch in screen coordinates (bottom-left origin), which is what
+    /// `NSEvent.mouseLocation` speaks. Nil until SwiftUI reports a layout.
+    private func drawnRectInScreen(_ island: Island) -> CGRect? {
+        guard let rect = island.activeRectInView else { return nil }
+        let frame = island.window.frame
         // `rect` is measured from the top of the window; the window's top edge
         // sits at `frame.maxY`.
         return CGRect(
@@ -295,11 +490,12 @@ final class NotchWindowController {
         )
     }
 
-    // MARK: - Screen changes
+    // MARK: - Screen and settings changes
 
-    /// Re-place the panel when displays change — plugging in a monitor can
+    /// Re-place the panels when displays change — plugging in a monitor can
     /// renumber screens and move the built-in display's coordinate origin,
-    /// which would otherwise leave the notch floating in the wrong place.
+    /// which would otherwise leave a notch floating in the wrong place. In
+    /// `.all` scope it's also how a newly attached display gets its island.
     private func observeScreenChanges() {
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
@@ -307,9 +503,21 @@ final class NotchWindowController {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.isVisible else { return }
-                self.show()
+                self?.syncIslands()
             }
         }
+    }
+
+    /// Switching between built-in and all displays takes effect immediately —
+    /// no relaunch. Delivered on the main queue rather than read inline because
+    /// `@Published` fires *before* the new value is stored.
+    private func observeDisplayScope() {
+        settings.$displayScope
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.syncIslands()
+            }
+            .store(in: &cancellables)
     }
 }

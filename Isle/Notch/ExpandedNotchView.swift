@@ -10,6 +10,7 @@ import SwiftUI
 
 struct ExpandedNotchView: View {
     @ObservedObject var viewModel: NotchViewModel
+    var island: IslandPresentation
     var palette: ArtworkPalette
 
     private var media: MediaPlaybackModel { viewModel.media }
@@ -50,7 +51,7 @@ struct ExpandedNotchView: View {
             musicBody
                 .transition(.opacity)
         case .claude:
-            ClaudeExpandedView(viewModel: viewModel, palette: palette)
+            ClaudeExpandedView(viewModel: viewModel, island: island, palette: palette)
                 .transition(.opacity)
         }
     }

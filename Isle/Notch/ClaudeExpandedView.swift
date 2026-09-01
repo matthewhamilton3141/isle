@@ -12,6 +12,7 @@ import SwiftUI
 
 struct ClaudeExpandedView: View {
     @ObservedObject var viewModel: NotchViewModel
+    var island: IslandPresentation
     var palette: ArtworkPalette
 
     private var state: ClaudeCodeState { viewModel.claudeState }
@@ -72,7 +73,7 @@ struct ClaudeExpandedView: View {
         // dismissing is enabled). contentShape so taps land on the whole card,
         // not just the glyph and text.
         .contentShape(Rectangle())
-        .onTapGesture { viewModel.dismissAlert() }
+        .onTapGesture { island.dismissAlert() }
     }
 
     /// The project chip and the elapsed time, grouped together on the left so

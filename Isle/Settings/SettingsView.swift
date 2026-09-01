@@ -141,6 +141,18 @@ struct SettingsView: View {
     private var notchSection: some View {
         Section("Notch") {
             VStack(alignment: .leading, spacing: 4) {
+                Picker("Show island on", selection: $settings.displayScope) {
+                    ForEach(DisplayScope.allCases) { scope in
+                        Text(scope.title).tag(scope)
+                    }
+                }
+                Text(settings.displayScope.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
                 Toggle("Haptic feedback", isOn: $settings.haptics)
                 Text("A soft tap from the trackpad each time the notch opens or closes. Macs without a Force Touch trackpad feel nothing either way.")
                     .font(.caption)

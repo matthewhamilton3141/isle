@@ -602,62 +602,67 @@ The handshake:
 
 ---
 
-## Milestone 8 — Display Selection
+## Milestone 8 — Multi-Display  ✅
 
 The spec scoped v1 to the built-in display ("non-goal: multi-display sync"), and
-the code holds that line: `NotchMetrics.preferredScreen()` returns the first
-screen with a camera housing (`safeAreaInsets.top > 0`), else `NSScreen.main`.
-On a desk with an external monitor that is often the wrong screen — the island
-sits on the laptop panel while the user works on the display in front of them.
+`NotchMetrics.preferredScreen()` held that line: the first screen with a camera
+housing, else `NSScreen.main`. On a desk with an external monitor that is often
+the wrong screen — the island sits on the laptop panel while the user works on
+the display in front of them.
 
-### Goal
-The user picks which display the island lives on, in Settings, and that choice
-survives the display being unplugged and plugged back in.
+### What shipped
+A binary, not a display picker: **Built-in display** (the default, unchanged
+behaviour) or **All displays** — one island on every attached screen, all
+showing the same thing. Settings → Notch → "Show island on".
 
-### Scope
-- `AppSettings`: a persisted display preference; unset means **Automatic**
-  (today's rule — the notched screen, else main).
-- `NotchMetrics.preferredScreen()` grows a parameter: resolve the saved display,
-  and fall back to Automatic when it isn't currently attached.
-- Settings: a Display picker listing `NSScreen.screens` by `localizedName`, with
-  Automatic first. Rebuilt on `didChangeScreenParametersNotification` so
-  unplugging a monitor updates the list while the pane is open.
-- `NotchWindowController`: re-run `show()` when the preference changes, not only
-  on screen-parameter changes. `show()` is already idempotent and reuses the
-  hosting view — it rebuilds `NotchMetrics`, reframes the window, and keeps the
-  marquee/equalizer phases — so moving displays is a reframe, not a teardown.
-- Non-notched displays: `NotchMetrics` already handles this (`hasPhysicalNotch`
-  false → the 180×32 `fallbackNotchSize` pill, drawn with fully rounded top
-  corners). Needs verifying rather than building.
+A picker over named displays was considered and dropped. It needs a stable
+display identity across reconnects (`CGDirectDisplayID` is reassigned on
+hotplug, so the durable key is the vendor/model/serial triple), and the answer
+almost everyone would give it is "all of them" anyway.
 
-### Acceptance
-- Picking an external display moves the island there without a relaunch.
-- Unplugging the chosen display moves the island to the built-in rather than
-  leaving a window on a screen that no longer exists; replugging returns it.
-- On a non-notched display the fallback pill draws correctly and hover still
-  opens the panel.
+### How it's built
+- `DisplayScope` (`Isle/Core/DisplayScope.swift`) — the two-case enum, persisted
+  by `AppSettings.displayScope` under `isle.displayScope`.
+- `IslandPresentation` (`Isle/Notch/IslandPresentation.swift`) — the per-screen
+  half of the notch's state: `isHovering`, the collapse lock, and `metrics`.
+  One instance per island.
+- `NotchViewModel` stays a **singleton**. Every island shows the same track,
+  Claude status and power toast, so the audio tap, the MediaRemote adapter and
+  the Claude watcher are not duplicated per display. `alertDismissed` and
+  `alertWasHovered` deliberately stayed on it too — they describe the alert, not
+  the window, so waving an approval off on one screen dismisses it everywhere.
+- `NotchWindowController` owns a `[CGDirectDisplayID: Island]` and reconciles it
+  in `syncIslands()`. The display ID is a within-session key only (reuse a
+  panel rather than rebuild it, so the marquee and equalizer phases survive a
+  re-place); nothing persists it.
+- `metrics` became `@Published`. It was a plain `var`, so a display change
+  reframed the window but never invalidated the content — nothing here worked
+  until that was fixed.
+- One global pointer monitor still, routed to the island whose screen contains
+  `NSEvent.mouseLocation`; every other island is told to collapse.
 
-### Decisions to lock
-- **How the choice is persisted.** `NSScreen` has no stable identity property.
-  The runtime handle is `deviceDescription["NSScreenNumber"]` (a
-  `CGDirectDisplayID`), but that is reassigned across reconnects and reboots, so
-  storing it alone will silently pick the wrong screen. The durable key is the
-  `CGDisplayVendorNumber` / `CGDisplayModelNumber` / `CGDisplaySerialNumber`
-  triple, with `localizedName` kept alongside as the label to show. *Recommend
-  the triple; resolve to a live `NSScreen` at use time.*
-- **What "Automatic" means** — the notched built-in always, or the screen that
-  currently owns the menu bar. *Recommend the current rule (built-in), so the
-  default is unchanged for everyone who never opens the picker.*
-- **Mirrored displays** — draw once on the primary, not once per mirror.
+### Rules that matter
+- **A sync is never applied while an island is open.** The hover geometry
+  assumes a target that stays put, so a hotplug mid-reach is deferred
+  (`syncDeferred`) and applied on collapse.
+- **Mirrored secondaries are skipped** (`CGDisplayMirrorsDisplay`), or two
+  panels land on the same pixels with two independent hover states.
+- **`.builtIn` falls back to main**, so a clamshelled MacBook or a Mac mini
+  still gets an island rather than none.
+
+### Still to verify on real hardware
+- Two displays, hover each island in turn; the other must collapse.
+- Hotplug while hovering — the deferred sync must land on collapse, not during.
+- A Claude alert opens every island at once and one haptic fires, not N (the
+  0.35s throttle in `playTransitionHaptic` covers this).
+- The idle collapsed pill on a non-notched display is a visible 180×32 black
+  rectangle over the middle of a real menu bar. Clicks either side of it pass
+  through, but whether it should shrink to a sliver when idle is an open design
+  call.
 
 ### Boundaries
-One island, one window, one `NotchViewModel` — the picker deliberately keeps
-that assumption. "An island on every display" and "the island follows focus"
-were both considered and rejected for now: the first needs a view model per
-display (the audio tap, adapter, and Claude watcher are all singletons today),
-and the second makes the island move while you are reaching for it, which fights
-the hover geometry in `NotchWindowController` that assumes a target that stays
-put.
+Still one `NotchViewModel`. "The island follows focus" remains rejected — it
+moves the island while you are reaching for it.
 
 ---
 
