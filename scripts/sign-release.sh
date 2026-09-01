@@ -34,7 +34,12 @@ DMG="dist/Isle-$VERSION.dmg"
 APP_BUILD="build/Release/Build/Products/Release/Isle.app"
 
 echo "==> Building Release $VERSION"
+# `-destination generic/platform=macOS` is what makes the build universal.
+# Without it xcodebuild defaults to the *local* machine as the destination and
+# narrows ARCHS to that one slice, so an Apple Silicon Mac silently produces an
+# arm64-only app that Intel Macs refuse to launch ("not supported on this Mac").
 xcodebuild -project Isle.xcodeproj -scheme Isle -configuration Release \
+    -destination 'generic/platform=macOS' \
     -derivedDataPath build/Release build \
     CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="-" \
     CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM="" \
@@ -44,6 +49,13 @@ xcodebuild -project Isle.xcodeproj -scheme Isle -configuration Release \
 # Sanity: the built app's version must match what we're signing/advertising.
 BUILT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP_BUILD/Contents/Info.plist")"
 [ "$BUILT_VERSION" = "$VERSION" ] || { echo "version mismatch: built $BUILT_VERSION, asked $VERSION" >&2; exit 1; }
+
+# Sanity: both slices must be present. A thin build looks perfectly healthy
+# right up until an Intel user downloads it, so fail here instead.
+for SLICE in x86_64 arm64; do
+    lipo -archs "$APP_BUILD/Contents/MacOS/Isle" | grep -qw "$SLICE" \
+        || { echo "not universal: $SLICE slice missing from the app binary" >&2; exit 1; }
+done
 
 echo "==> Packaging $DMG"
 STAGE="build/dmg-staging"
