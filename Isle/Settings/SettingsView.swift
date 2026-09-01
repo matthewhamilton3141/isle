@@ -169,24 +169,33 @@ struct SettingsView: View {
     /// Unconditional, unlike Music and Claude: power isn't a mode, it's
     /// ambient. A charger going in matters whichever source the island is
     /// running.
+    ///
+    /// Two independent switches, neither nested under the other. They are
+    /// different questions about different hardware — this Mac's battery, and
+    /// the batteries of things attached to it — and someone who only wants to
+    /// hear about their headphones should be able to say so.
     private var powerSection: some View {
         Section("Power") {
             VStack(alignment: .leading, spacing: 4) {
-                Toggle("Show power events", isOn: $settings.showPowerEvents)
-                Text("A charger going in or out, a full charge, and a low battery briefly take over the island, then hand it back to whatever was there.")
+                Toggle("Show battery updates", isOn: $settings.showBatteryEvents)
+                Text("Plugging in, unplugging, a full charge, a low battery and Low Power Mode appear briefly in the notch, then hand it back to whatever was there.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Toggle("Include Bluetooth device batteries", isOn: $settings.showDeviceBattery)
-                Text("Shows a device's level when it connects, and checks for a flat one when you plug the Mac in. Reading a peripheral's battery needs a brief system_profiler call, so this half can be turned off on its own. Devices that don't report a level show nothing.")
+                Toggle("Show device updates", isOn: $settings.showDeviceBattery)
+                Text("A Bluetooth device's battery level appears when it connects — and when you plug the Mac in, if battery updates are on. Devices that don't report a level show nothing.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .disabled(!settings.showPowerEvents)
+
+            Text("Switching one off stops Isle watching for it, so it costs nothing. Either way macOS keeps its own battery behaviour, alerts and Bluetooth exactly as they are.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
