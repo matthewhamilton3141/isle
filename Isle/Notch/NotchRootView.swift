@@ -76,9 +76,11 @@ struct NotchRootView: View {
         Double(min(1, max(0, (expandProgress - 0.65) / 0.3)))
     }
 
-    /// Cached on the view model — see `NotchViewModel.palette`. Deriving it
-    /// here re-ran extraction on every body evaluation, which both cost real
-    /// CPU at 30fps and let a near-tied colour ranking flip frame to frame.
+    /// Resolved on the view model — see `NotchViewModel.palette`. Extraction
+    /// itself stays cached there (this only picks between the cached artwork
+    /// colours and the accent): deriving it here re-ran extraction on every
+    /// body evaluation, which both cost real CPU at 30fps and let a near-tied
+    /// colour ranking flip frame to frame.
     private var palette: ArtworkPalette {
         viewModel.palette
     }

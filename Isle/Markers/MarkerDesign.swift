@@ -69,7 +69,10 @@ struct MarkerDesign: Codable, Equatable {
 
     // MARK: - Palette of default colours (hex)
 
-    private enum Hex {
+    /// The colours the state machine owns. Not private: `ClaudeAccent` measures
+    /// candidate accents against these so a user-chosen colour can't quietly
+    /// impersonate an error or a success.
+    enum Hex {
         static let red = "#FF3B30"
         static let amber = "#FF9F0A"
         static let green = "#34C759"

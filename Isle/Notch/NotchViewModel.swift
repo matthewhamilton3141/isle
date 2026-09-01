@@ -124,7 +124,20 @@ final class NotchViewModel: ObservableObject {
     /// It also has to be cached for cost: as a computed property on the view
     /// it re-ran on every body evaluation, which is 30 times a second now that
     /// audio levels publish at display rate.
-    @Published private(set) var palette: ArtworkPalette = .fallback
+    /// Colours pulled from the current album art, or nil when there is no
+    /// artwork to pull from.
+    @Published private(set) var artworkPalette: ArtworkPalette?
+
+    /// The palette everything draws from.
+    ///
+    /// Artwork wins whenever there is any. Without it — a Claude-only island,
+    /// or music with no cover — the user's accent supplies one instead, which
+    /// is the whole point of `ClaudeAccent`: `ArtworkColors.palette(from: nil)`
+    /// returns three greys, and a `.palette` marker drawn from those is the
+    /// flat look the accent exists to replace.
+    var palette: ArtworkPalette {
+        artworkPalette ?? settings.claudeAccentPalette
+    }
 
     /// Identity of the cover `palette` was built from, to skip the work when
     /// an update carries the same image.
@@ -884,7 +897,9 @@ final class NotchViewModel: ObservableObject {
         // exactly the question of whether the cover changed.
         if model.artwork !== paletteArtwork {
             paletteArtwork = model.artwork
-            palette = ArtworkColors.palette(from: model.artwork)
+            // nil artwork leaves this nil rather than storing `.fallback`, so
+            // `palette` can hand over to the accent instead of the greys.
+            artworkPalette = model.artwork.map { ArtworkColors.palette(from: $0) }
         }
 
         media = model
@@ -1046,16 +1061,24 @@ final class NotchViewModel: ObservableObject {
         hasClaudeActivity && !hasMusicActivity
     }
 
-    /// Warm status colour for the working phases in the Claude-solo island:
-    /// yellow while thinking (no tool yet), orange once a tool is running. Nil
-    /// for every other state and layout, so those keep their marker colour.
+    /// Status colour for the working phases in the Claude-solo island: the
+    /// lighter stop while thinking (no tool yet), the fuller one once a tool is
+    /// running. Nil for every other state and layout, so those keep their
+    /// marker colour.
+    ///
+    /// This used to be two literals, `#F2C14E` and `#E8842B`. What they encoded
+    /// was never those particular hues but the *relationship* — thinking is the
+    /// paler form of working — and that survives any accent, so it now comes
+    /// off the palette. Isle keeps the distinction because it is real
+    /// information: whether a tool is actually running.
     var workingTint: Color? {
         guard isClaudeSolo, claudeState == .working else { return nil }
         // Full strength for as long as the state stands. It used to fade once
         // hooks had been quiet a while, but hook silence is normal during a
         // long think, so the fade only ever second-guessed a state that was
         // still true.
-        return isThinking ? Color(hex: "#F2C14E") : Color(hex: "#E8842B")
+        let accent = palette
+        return isThinking ? accent.accent : accent.primary
     }
 
     /// Both sources live at once — collapsed view splits (spec 3.1): music keeps

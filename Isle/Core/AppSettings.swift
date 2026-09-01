@@ -12,6 +12,7 @@
 
 import Foundation
 import Combine
+import SwiftUI
 
 @MainActor
 final class AppSettings: ObservableObject {
@@ -27,6 +28,8 @@ final class AppSettings: ObservableObject {
     private static let expandOnAlertKey = "isle.expandOnAlert"
     private static let dismissAlertPanelKey = "isle.dismissAlertPanel"
     private static let showWaitingKey = "isle.showWaiting"
+    private static let claudeAccentKey = "isle.claudeAccent"
+    private static let claudeAccentHexKey = "isle.claudeAccentHex"
 
     /// The user's chosen mode, or `nil` until onboarding sets one
     /// (Milestone 2). Persisted on change.
@@ -106,6 +109,31 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(showWaitingStatus, forKey: Self.showWaitingKey) }
     }
 
+    /// The colour a Claude-only island draws itself in — it supplies the
+    /// palette that album artwork supplies for music. Without one, a
+    /// Claude-only user is stuck on `ArtworkPalette.fallback`, which is three
+    /// greys, and every `.palette` marker renders flat. See `ClaudeAccent`.
+    @Published var claudeAccent: ClaudeAccent {
+        didSet {
+            guard claudeAccent != oldValue else { return }
+            defaults.set(claudeAccent.rawValue, forKey: Self.claudeAccentKey)
+        }
+    }
+
+    /// The colour behind `ClaudeAccent.custom`. Kept separately so switching to
+    /// a swatch and back doesn't lose what the user picked.
+    @Published var claudeAccentHex: String {
+        didSet {
+            guard claudeAccentHex != oldValue else { return }
+            defaults.set(claudeAccentHex, forKey: Self.claudeAccentHexKey)
+        }
+    }
+
+    /// The resolved palette for the current accent, ready to draw with.
+    var claudeAccentPalette: ArtworkPalette {
+        claudeAccent.palette(customHex: claudeAccentHex)
+    }
+
     /// Whether the user has ever picked a mode. Onboarding keys off this.
     var hasChosenMode: Bool { mode != nil }
 
@@ -130,5 +158,8 @@ final class AppSettings: ObservableObject {
         expandOnAlert = defaults.object(forKey: Self.expandOnAlertKey) as? Bool ?? true
         dismissAlertPanel = defaults.object(forKey: Self.dismissAlertPanelKey) as? Bool ?? true
         showWaitingStatus = defaults.object(forKey: Self.showWaitingKey) as? Bool ?? true
+        claudeAccent = ClaudeAccent(rawValue: defaults.string(forKey: Self.claudeAccentKey) ?? "")
+            ?? .system
+        claudeAccentHex = defaults.string(forKey: Self.claudeAccentHexKey) ?? "#9438E0"
     }
 }

@@ -186,6 +186,8 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            accentPicker
+
             LabeledContent("Keep “done” checkmark for") {
                 HStack(spacing: 8) {
                     Text("\(Int(settings.doneToastSeconds))s")
@@ -231,6 +233,101 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .disabled(!settings.expandOnAlert)
+        }
+    }
+
+    // MARK: - Accent
+
+    /// A swatch row plus a custom well, rather than a bare colour picker.
+    ///
+    /// macOS's own accent setting has this shape, and two things here make it
+    /// the right one beyond consistency. The accent has to yield *three* stops
+    /// — `DotColors.paletteRamp` walks primary → accent → secondary — so a
+    /// swatch can ship its ramp pre-derived and correct, where an arbitrary hue
+    /// has to derive one and degrades at the extremes. And two regions of the
+    /// space are actively wrong: near-black vanishes against the camera
+    /// housing, and near-red or near-green impersonates `failed` and `done`,
+    /// which is exactly what holding the semantic markers fixed is meant to
+    /// prevent. The swatches are measured against those; a custom colour is
+    /// floored by `ClaudeAccent.derive` but carries no such guarantee.
+    @ViewBuilder
+    private var accentPicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            LabeledContent("Accent") {
+                HStack(spacing: 6) {
+                    ForEach(ClaudeAccent.swatches) { swatch in
+                        swatchChip(swatch)
+                    }
+                    CustomAccentWell(
+                        hex: $settings.claudeAccentHex,
+                        isSelected: settings.claudeAccent == .custom,
+                        size: Self.chipSize
+                    ) {
+                        settings.claudeAccent = .custom
+                    }
+                }
+            }
+
+            Text(accentCaption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// One size for every chip in the accent row, the custom well included —
+    /// it is the reason that well is hand-drawn rather than a `ColorPicker`.
+    private static let chipSize: CGFloat = 24
+
+    private func swatchChip(_ swatch: ClaudeAccent) -> some View {
+        let selected = settings.claudeAccent == swatch
+        return Button {
+            settings.claudeAccent = swatch
+        } label: {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(swatch.chipColor(customHex: settings.claudeAccentHex))
+                .frame(width: Self.chipSize, height: Self.chipSize)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .strokeBorder(.primary.opacity(0.15), lineWidth: 1)
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .strokeBorder(Color.accentColor, lineWidth: selected ? 2 : 0)
+                        .padding(-3)
+                }
+        }
+        .buttonStyle(.plain)
+        .help(swatch.title)
+        .accessibilityLabel(swatch.title)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+    }
+
+    /// The family's own explanation, plus a qualifier in `.both` — where the
+    /// accent is real but intermittent: `NotchViewModel.palette` prefers album
+    /// art whenever there is any, and only falls through to the accent when
+    /// nothing is playing. Saying so is better than hiding the control, which
+    /// would leave a Both-mode user watching a colour they can't change.
+    private var accentCaption: String {
+        guard settings.effectiveMode == .both else { return familyCaption }
+        return familyCaption
+            + " While music is playing the island takes its colour from the album art instead — this applies when nothing is."
+    }
+
+    private var familyCaption: String {
+        switch settings.claudeAccent.family {
+        case .chromatic:
+            return "\(settings.claudeAccent.title). Questions, errors and the done checkmark keep their own colours — those mean something."
+        case .muted:
+            return "\(settings.claudeAccent.title) — muted rather than grey. A true grey can't be told apart from the disconnected and paused states, which already use it."
+        case .snapped:
+            let name = ClaudeAccent.nearestSwatch(to: .controlAccentColor).title
+            return "Follows your system accent, snapped to the nearest colour Isle can use — \(name). Five of the eight macOS accents are colours that already mean something here."
+        case .derived:
+            if let clash = ClaudeAccent.collision(forCustom: settings.claudeAccentHex) {
+                return "This is close to the colour Isle uses for \(clash), so a working island may read as one. Still applied — it's your choice."
+            }
+            return "A custom colour. Clear of the colours Isle uses for questions, errors and success."
         }
     }
 
