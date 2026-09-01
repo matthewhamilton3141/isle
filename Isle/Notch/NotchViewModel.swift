@@ -167,8 +167,10 @@ final class NotchViewModel: ObservableObject {
     /// Whether the Claude status watcher is currently live.
     private var claudeRunning = false
 
-    /// Whether the power monitors are currently live.
+    /// Whether each power monitor is currently live. Tracked separately
+    /// because the two settings are independent.
     private var powerRunning = false
+    private var deviceBatteryRunning = false
 
     /// Reverts a `done` glyph back to `idle` after a beat, so the checkmark
     /// reads as a toast rather than sticking until the next prompt. Cancelled
@@ -564,7 +566,7 @@ final class NotchViewModel: ObservableObject {
         // mode does — turning the feature off should stop watching IOKit and
         // Bluetooth, not just hide the toasts.
         Publishers.Merge(
-            self.settings.$showPowerEvents.dropFirst().map { _ in () },
+            self.settings.$showBatteryEvents.dropFirst().map { _ in () },
             self.settings.$showDeviceBattery.dropFirst().map { _ in () }
         )
         .receive(on: RunLoop.main)
@@ -593,7 +595,7 @@ final class NotchViewModel: ObservableObject {
         isRunning = false
         setMediaRunning(false)
         setClaudeRunning(false)
-        setPowerRunning(false, devices: false)
+        setPowerRunning(battery: false, devices: false)
         for (center, token) in displayObservers { center.removeObserver(token) }
         displayObservers.removeAll()
     }
@@ -603,11 +605,11 @@ final class NotchViewModel: ObservableObject {
     private func applyMode() {
         setMediaRunning(settings.effectiveMode.showsMusic && !displayAsleep)
         setClaudeRunning(settings.effectiveMode.showsClaude)
-        // Power is ambient — it runs in every mode, gated only by its own
-        // toggle. Suppressed while the display is off for the same reason the
+        // Power is ambient — it runs in every mode, gated only by its own two
+        // toggles. Suppressed while the display is off for the same reason the
         // media pipeline is: nothing it produces could be seen.
-        setPowerRunning(settings.showPowerEvents && !displayAsleep,
-                        devices: settings.showDeviceBattery)
+        setPowerRunning(battery: settings.showBatteryEvents && !displayAsleep,
+                        devices: settings.showDeviceBattery && !displayAsleep)
     }
 
     // MARK: - Display sleep
@@ -698,25 +700,33 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
-    /// Starts or stops the two power monitors. `devices` is separate because
-    /// the Bluetooth half can be turned off on its own — it's the half that
-    /// costs a subprocess.
-    private func setPowerRunning(_ running: Bool, devices: Bool) {
-        if running != powerRunning {
-            powerRunning = running
-            if running {
-                power.start()
-            } else {
-                power.stop()
-                clearPowerToasts()
-            }
+    /// Starts or stops each power monitor from its own switch.
+    ///
+    /// A switch that is off stops the watching, not just the drawing: there is
+    /// no point paying for a signal whose only purpose is a message the user
+    /// has said they don't want. Off means Isle isn't looking.
+    ///
+    /// That has one honest consequence worth knowing. The peripheral check on
+    /// plug-in is cued by `PowerMonitor` — the charger event *is* the cue — so
+    /// with battery updates off, device updates are connect-driven only. The
+    /// alternative was keeping IOKit watched purely to serve the other switch,
+    /// which is exactly the cost this is meant to avoid.
+    private func setPowerRunning(battery: Bool, devices: Bool) {
+        if battery != powerRunning {
+            powerRunning = battery
+            battery ? power.start() : power.stop()
         }
-        // Nested rather than parallel: a device battery is only ever shown as
-        // a power toast, so it has nothing to report while power is off.
-        if running && devices {
-            bluetoothBattery.start()
-        } else {
-            bluetoothBattery.stop()
+
+        if devices != deviceBatteryRunning {
+            deviceBatteryRunning = devices
+            devices ? bluetoothBattery.start() : bluetoothBattery.stop()
+        }
+
+        // Anything already on screen that the user has just switched off
+        // shouldn't sit out the rest of its four seconds.
+        if let toast = powerToast,
+           toast.isDeviceUpdate ? !devices : !battery {
+            clearPowerToasts()
         }
     }
 
@@ -1307,7 +1317,11 @@ final class NotchViewModel: ObservableObject {
     /// Claude alert is live — a power event is ambient and stale within
     /// seconds, so waiting its turn behind an approval would make it a lie.
     private func enqueuePowerToast(_ toast: PowerToast) {
-        guard settings.showPowerEvents, !hasLiveActivity else { return }
+        // Each message answers to its own toggle — the Mac's battery and a
+        // peripheral's are separate questions about separate hardware.
+        let allowed = toast.isDeviceUpdate ? settings.showDeviceBattery
+                                           : settings.showBatteryEvents
+        guard allowed, !hasLiveActivity else { return }
 
         // Coalesce: a second event of the same kind replaces the first rather
         // than stacking. A loose MagSafe connector jiggling in and out should

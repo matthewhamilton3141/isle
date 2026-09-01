@@ -31,7 +31,7 @@ final class AppSettings: ObservableObject {
     private static let showWaitingKey = "isle.showWaiting"
     private static let claudeAccentKey = "isle.claudeAccent"
     private static let claudeAccentHexKey = "isle.claudeAccentHex"
-    private static let showPowerEventsKey = "isle.showPowerEvents"
+    private static let showBatteryEventsKey = "isle.showBatteryEvents"
     private static let showDeviceBatteryKey = "isle.showDeviceBattery"
 
     /// The user's chosen mode, or `nil` until onboarding sets one
@@ -149,25 +149,27 @@ final class AppSettings: ObservableObject {
 
     // MARK: - Power
 
-    /// Whether power events — charger in/out, fully charged, low battery —
-    /// briefly claim the collapsed island. Ambient rather than a mode: a power
-    /// event is transient, so it borrows the island for a few seconds and
-    /// hands it back, and there is nothing here you would run Isle *as*.
+    /// Whether this Mac's own battery briefly claims the collapsed island —
+    /// the charger going in or out, reaching full, crossing a low-battery
+    /// threshold, Low Power Mode switching.
     ///
-    /// On by default. Off stops `PowerMonitor` entirely, so IOKit isn't even
-    /// watched.
-    @Published var showPowerEvents: Bool {
-        didSet { defaults.set(showPowerEvents, forKey: Self.showPowerEventsKey) }
+    /// Ambient rather than a mode: a power event is transient, so it borrows
+    /// the island for a few seconds and hands it back, and there is nothing
+    /// here you would run Isle *as*.
+    @Published var showBatteryEvents: Bool {
+        didSet { defaults.set(showBatteryEvents, forKey: Self.showBatteryEventsKey) }
     }
 
-    /// Whether a connecting Bluetooth device's battery level is shown too, and
-    /// whether plugging the Mac in re-checks peripherals for a flat one.
+    /// Whether a connecting Bluetooth device's level is shown, and whether
+    /// plugging the Mac in re-checks peripherals for a flat one.
     ///
-    /// Separate from `showPowerEvents` because it costs materially more: the
-    /// Mac's own battery is a free IOKit callback, but a peripheral's level is
-    /// only readable by shelling out to `system_profiler`. Anyone who would
-    /// rather Isle never spawned a subprocess can keep the rest of the feature
-    /// and turn this off. Only relevant when `showPowerEvents` is on.
+    /// Independent of `showBatteryEvents`, not nested under it: these are
+    /// different questions about different hardware, and they cost differently.
+    /// The Mac's own battery is a free IOKit callback; a peripheral's level is
+    /// only readable by shelling out to `system_profiler`. Someone who would
+    /// rather Isle never spawned a subprocess can turn this off and keep the
+    /// rest, and someone who only cares about their headphones can do the
+    /// reverse.
     @Published var showDeviceBattery: Bool {
         didSet { defaults.set(showDeviceBattery, forKey: Self.showDeviceBatteryKey) }
     }
@@ -201,7 +203,7 @@ final class AppSettings: ObservableObject {
         claudeAccent = ClaudeAccent(rawValue: defaults.string(forKey: Self.claudeAccentKey) ?? "")
             ?? .system
         claudeAccentHex = defaults.string(forKey: Self.claudeAccentHexKey) ?? "#9438E0"
-        showPowerEvents = defaults.object(forKey: Self.showPowerEventsKey) as? Bool ?? true
+        showBatteryEvents = defaults.object(forKey: Self.showBatteryEventsKey) as? Bool ?? true
         showDeviceBattery = defaults.object(forKey: Self.showDeviceBatteryKey) as? Bool ?? true
     }
 }

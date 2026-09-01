@@ -58,6 +58,15 @@ struct PowerToast: Equatable, Identifiable {
         return nil
     }
 
+    /// Which of the two settings governs this message. The split is by the
+    /// hardware being reported on, not by how the reading was obtained: a
+    /// device level is about a peripheral whatever prompted the read, so a
+    /// level surfaced by plugging the Mac in is still a device update.
+    var isDeviceUpdate: Bool {
+        if case .device = kind { return true }
+        return false
+    }
+
     static func == (lhs: PowerToast, rhs: PowerToast) -> Bool {
         lhs.id == rhs.id
     }
