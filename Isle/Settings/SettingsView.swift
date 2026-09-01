@@ -30,6 +30,8 @@ struct SettingsView: View {
                 claudeSection
             }
 
+            powerSection
+
             updatesSection
         }
         .formStyle(.grouped)
@@ -159,6 +161,32 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    // MARK: - Power
+
+    /// Unconditional, unlike Music and Claude: power isn't a mode, it's
+    /// ambient. A charger going in matters whichever source the island is
+    /// running.
+    private var powerSection: some View {
+        Section("Power") {
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Show power events", isOn: $settings.showPowerEvents)
+                Text("A charger going in or out, a full charge, and a low battery briefly take over the island, then hand it back to whatever was there.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Include Bluetooth device batteries", isOn: $settings.showDeviceBattery)
+                Text("Shows a device's level when it connects, and checks for a flat one when you plug the Mac in. Reading a peripheral's battery needs a brief system_profiler call, so this half can be turned off on its own. Devices that don't report a level show nothing.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .disabled(!settings.showPowerEvents)
         }
     }
 

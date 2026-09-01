@@ -263,6 +263,10 @@ Isle/
 │   ├── HookInstaller.swift            installs and removes the hooks + helper
 │   ├── ClaudeStatusGlyphView.swift    the glyph
 │   └── BreathingShapeView.swift       the working animation
+├── Power/
+│   ├── PowerMonitor.swift             Mac battery, IOKit run-loop source
+│   ├── BluetoothBatteryMonitor.swift  peripheral levels (system_profiler)
+│   └── PowerToast.swift               the momentary island message
 ├── Markers/                   # designable dot-matrix markers per Claude state
 ├── Components/                # MarqueeText, EqualizerView, ArtworkColors
 ├── Settings/, Onboarding/     # settings pane, first-launch mode picker
