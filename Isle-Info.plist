@@ -29,5 +29,19 @@
 	-->
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Isle controls shuffle and repeat in Spotify from the notch.</string>
+	<!--
+	  Required to observe Bluetooth devices. BluetoothBatteryMonitor registers
+	  for IOBluetooth connect notifications, which counts as a Bluetooth access
+	  request. Without this key TCC does not merely deny it — it aborts the
+	  process outright with __TCC_CRASHING_DUE_TO_PRIVACY_VIOLATION__, so the
+	  app dies on launch. Note this only bites under a LaunchServices launch;
+	  running the binary straight from a shell does not reproduce it.
+
+	  Denial is handled: the registration fails and device batteries are simply
+	  switched off (see BluetoothBatteryMonitor).
+	-->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Isle shows the battery level of your connected Bluetooth devices in the notch.</string>
+
 </dict>
 </plist>

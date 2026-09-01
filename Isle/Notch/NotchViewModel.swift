@@ -150,6 +150,8 @@ final class NotchViewModel: ObservableObject {
     private let audio = SystemAudioLevels()
     private let claudeWatcher = ClaudeStatusWatcher()
     private let sessionRegistry = ClaudeSessionRegistry()
+    private let power = PowerMonitor()
+    private let bluetoothBattery = BluetoothBatteryMonitor()
     private var cancellables = Set<AnyCancellable>()
 
     /// True between `start()` and `stop()` — i.e. while the notch window is
@@ -164,6 +166,9 @@ final class NotchViewModel: ObservableObject {
 
     /// Whether the Claude status watcher is currently live.
     private var claudeRunning = false
+
+    /// Whether the power monitors are currently live.
+    private var powerRunning = false
 
     /// Reverts a `done` glyph back to `idle` after a beat, so the checkmark
     /// reads as a toast rather than sticking until the next prompt. Cancelled
@@ -514,6 +519,27 @@ final class NotchViewModel: ObservableObject {
             self.applyClaudeStatus(self.selectStatus(from: self.claudeStatuses))
         }
 
+        power.onEvent = { [weak self] toast in
+            self?.enqueuePowerToast(toast)
+        }
+
+        // Plugging in is the one moment a flat pair of headphones is worth
+        // mentioning unprompted — you are sitting down to charge things.
+        // Peripheral levels can't be watched (only read, at the cost of a
+        // subprocess), so this is the cue to go and look.
+        power.onPluggedIn = { [weak self] in
+            guard let self, self.settings.showDeviceBattery else { return }
+            self.bluetoothBattery.refreshLowDevices()
+        }
+
+        bluetoothBattery.onDeviceConnected = { [weak self] device in
+            self?.enqueuePowerToast(.device(device))
+        }
+
+        bluetoothBattery.onLowDevice = { [weak self] device in
+            self?.enqueuePowerToast(.device(device))
+        }
+
         // Re-render notch views on any settings change (waveform/scrubber
         // toggles etc.), since those views observe this view model, not
         // AppSettings directly. Mode changes are handled separately below so
@@ -533,6 +559,20 @@ final class NotchViewModel: ObservableObject {
                 self.objectWillChange.send()
             }
             .store(in: &cancellables)
+
+        // The power toggles start and stop their own monitors, the same way
+        // mode does — turning the feature off should stop watching IOKit and
+        // Bluetooth, not just hide the toasts.
+        Publishers.Merge(
+            self.settings.$showPowerEvents.dropFirst().map { _ in () },
+            self.settings.$showDeviceBattery.dropFirst().map { _ in () }
+        )
+        .receive(on: RunLoop.main)
+        .sink { [weak self] in
+            guard let self, self.isRunning else { return }
+            self.applyMode()
+        }
+        .store(in: &cancellables)
     }
 
     func start() {
@@ -553,6 +593,7 @@ final class NotchViewModel: ObservableObject {
         isRunning = false
         setMediaRunning(false)
         setClaudeRunning(false)
+        setPowerRunning(false, devices: false)
         for (center, token) in displayObservers { center.removeObserver(token) }
         displayObservers.removeAll()
     }
@@ -562,6 +603,11 @@ final class NotchViewModel: ObservableObject {
     private func applyMode() {
         setMediaRunning(settings.effectiveMode.showsMusic && !displayAsleep)
         setClaudeRunning(settings.effectiveMode.showsClaude)
+        // Power is ambient — it runs in every mode, gated only by its own
+        // toggle. Suppressed while the display is off for the same reason the
+        // media pipeline is: nothing it produces could be seen.
+        setPowerRunning(settings.showPowerEvents && !displayAsleep,
+                        devices: settings.showDeviceBattery)
     }
 
     // MARK: - Display sleep
@@ -649,6 +695,28 @@ final class NotchViewModel: ObservableObject {
             claudeErrorType = nil
             claudeResetAt = nil
             claudeUpdatedAt = nil
+        }
+    }
+
+    /// Starts or stops the two power monitors. `devices` is separate because
+    /// the Bluetooth half can be turned off on its own — it's the half that
+    /// costs a subprocess.
+    private func setPowerRunning(_ running: Bool, devices: Bool) {
+        if running != powerRunning {
+            powerRunning = running
+            if running {
+                power.start()
+            } else {
+                power.stop()
+                clearPowerToasts()
+            }
+        }
+        // Nested rather than parallel: a device battery is only ever shown as
+        // a power toast, so it has nothing to report while power is off.
+        if running && devices {
+            bluetoothBattery.start()
+        } else {
+            bluetoothBattery.stop()
         }
     }
 
@@ -1015,7 +1083,7 @@ final class NotchViewModel: ObservableObject {
     /// the hardware; it stays hoverable (see NotchWindowController's pointer
     /// backstop), so hovering the notch still reveals it.
     var isCollapsedIdle: Bool {
-        !hasMusicActivity && !hasClaudeActivity
+        !showsPowerToast && !hasMusicActivity && !hasClaudeActivity
     }
 
     /// Claude has something worth showing in the collapsed notch.
@@ -1078,6 +1146,14 @@ final class NotchViewModel: ObservableObject {
     var collapsedSideWidths: (leading: CGFloat, trailing: CGFloat) {
         let s = CollapsedSize.self
         let g = s.cutoutGap
+
+        // A power toast borrows the whole island for its few seconds: the
+        // symbol takes the album's footprint on the left, the message sits on
+        // the right. Same straddle as the Claude-solo layout, so music and
+        // Claude slide back into place when it ends rather than jumping.
+        if let toast = powerToast, showsPowerToast {
+            return (s.album + g, PowerToast.width(of: toast.text) + g)
+        }
 
         if shouldSplitCollapsed {
             // Music cluster is album + waveform, with the waveform tucked toward
@@ -1194,6 +1270,101 @@ final class NotchViewModel: ObservableObject {
         return width
     }
 
+    // MARK: - Power toasts
+
+    /// The power message currently on screen, if any. Set only through
+    /// `enqueuePowerToast` / `advancePowerToast` so the timer and the value
+    /// can't drift apart.
+    @Published private(set) var powerToast: PowerToast?
+
+    /// Toasts waiting their turn. Deliberately shallow: plugging in can
+    /// produce a charging toast and then a flat-headphones toast, and that is
+    /// about as much as anyone wants to read off a notch in one go.
+    private var powerToastQueue: [PowerToast] = []
+
+    private var powerToastTask: Task<Void, Never>?
+
+    /// How long each toast holds the island. Matched to the Claude `done`
+    /// checkmark's default so the island's two transient messages have the
+    /// same rhythm — but a constant, not a setting: `doneToastSeconds` is
+    /// tunable because a slow reader wants the checkmark to linger, and this
+    /// is the same reading task at the same size.
+    private static let powerToastSeconds: TimeInterval = 4
+
+    private static let powerToastQueueLimit = 2
+
+    /// Whether the toast should actually be drawn. Separate from
+    /// `powerToast != nil` so a Claude alert arriving mid-toast takes the
+    /// island back immediately — attention outranks ambient. The toast's timer
+    /// keeps running underneath and it simply expires unseen, rather than
+    /// being queued to reappear after the alert, which would deliver "Charging
+    /// · 42%" minutes after the fact.
+    var showsPowerToast: Bool {
+        powerToast != nil && !hasLiveActivity
+    }
+
+    /// Accepts a toast, or declines it. Dropped rather than queued when a
+    /// Claude alert is live — a power event is ambient and stale within
+    /// seconds, so waiting its turn behind an approval would make it a lie.
+    private func enqueuePowerToast(_ toast: PowerToast) {
+        guard settings.showPowerEvents, !hasLiveActivity else { return }
+
+        // Coalesce: a second event of the same kind replaces the first rather
+        // than stacking. A loose MagSafe connector jiggling in and out should
+        // leave one current message, not six stale ones.
+        if let current = powerToast, current.coalesces(with: toast) {
+            showPowerToast(toast)
+            return
+        }
+        powerToastQueue.removeAll { $0.coalesces(with: toast) }
+
+        guard powerToast != nil else {
+            showPowerToast(toast)
+            return
+        }
+        powerToastQueue.append(toast)
+        if powerToastQueue.count > Self.powerToastQueueLimit {
+            powerToastQueue.removeFirst()
+        }
+    }
+
+    /// Puts a toast on screen and restarts the clock. The animation is
+    /// explicit because these arrive from IOKit and subprocess callbacks,
+    /// outside any SwiftUI transaction.
+    private func showPowerToast(_ toast: PowerToast) {
+        powerToastTask?.cancel()
+        withAnimation(.easeInOut(duration: 0.25)) {
+            powerToast = toast
+        }
+        powerToastTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.powerToastSeconds))
+            guard !Task.isCancelled else { return }
+            self?.advancePowerToast()
+        }
+    }
+
+    /// The current toast's time is up: show the next one, or hand the island
+    /// back to music and Claude.
+    private func advancePowerToast() {
+        powerToastTask = nil
+        if powerToastQueue.isEmpty {
+            withAnimation(.easeInOut(duration: 0.25)) {
+                powerToast = nil
+            }
+        } else {
+            showPowerToast(powerToastQueue.removeFirst())
+        }
+    }
+
+    private func clearPowerToasts() {
+        powerToastTask?.cancel()
+        powerToastTask = nil
+        powerToastQueue.removeAll()
+        withAnimation(.easeInOut(duration: 0.25)) {
+            powerToast = nil
+        }
+    }
+
     // MARK: - Transport
 
     // Spotify handles every command over AppleScript, so controls are live
@@ -1289,3 +1460,74 @@ final class NotchViewModel: ObservableObject {
         return projectedElapsed(at: date) / media.duration
     }
 }
+
+
+#if DEBUG
+// MARK: - Preview support
+
+/// Drives the power toasts from SwiftUI previews and the debug menu. In this
+/// file rather than beside the previews because `powerToast` and
+/// `showPowerToast` are private, and Swift's `private` is file-scoped — so an
+/// extension here can reach them without widening their access for the app.
+extension NotchViewModel {
+    /// One of each kind, in the order they read best: the two adapter events
+    /// that bracket a charge, the two terminal states, then a peripheral.
+    ///
+    /// Levels come from the machine the preview is running on rather than from
+    /// constants, so the numbers on screen are in the same ballpark as the
+    /// menu bar's — a demo that says 89% on a Mac sitting at 100% reads as a
+    /// mock-up rather than as the feature. Rounded to the nearest ten, which
+    /// is as precise as a glance at a demo needs to be.
+    ///
+    /// A function rather than a stored value because it samples live state:
+    /// held as a `static let` it would freeze whatever the battery happened to
+    /// read the first time the preview was built.
+    static func previewToasts() -> [PowerToast] {
+        let live = PowerMonitor.read()
+        let level = live.map { roundedToTen($0.percent) } ?? 80
+
+        // The one level that can't just mirror reality: a low-battery toast
+        // fires on crossing a threshold, so on a Mac at 100% the honest
+        // preview is what the toast *will* say — 20% — not the current level.
+        // On a Mac that really is low, the real number is the accurate one.
+        let lowLevel = min(level, 20)
+
+        return [
+            .pluggedIn(percent: level, minutesToFull: live?.minutesToFull ?? 80),
+            .fullyCharged(),
+            .lowBattery(percent: lowLevel),
+            .unplugged(percent: level, minutesToEmpty: live?.minutesToEmpty ?? 627),
+            .lowPowerMode(on: live?.isLowPowerMode == false, percent: level),
+            .device(PeripheralBattery(
+                name: "AirPods Pro", address: "A4:F6:E6:76:55:32",
+                percent: 12, minorType: "Headphones"
+            )),
+        ]
+    }
+
+    /// Nearest ten, clamped to a real battery's range.
+    private static func roundedToTen(_ percent: Int) -> Int {
+        min(100, max(0, Int((Double(percent) / 10).rounded()) * 10))
+    }
+
+    /// Pins a toast on screen with no timer, so a static preview doesn't empty
+    /// itself four seconds after the canvas renders it.
+    func pinPreviewToast(_ toast: PowerToast) {
+        powerToast = toast
+    }
+
+    /// Cycles the full set on a loop, through the real queue and the real
+    /// timers. The gap between toasts is deliberate: it's long enough to see
+    /// the island hand itself back to whatever was underneath before the next
+    /// one claims it, which is the half of the behaviour a still can't show.
+    func runPreviewToastLoop() async {
+        while !Task.isCancelled {
+            for toast in Self.previewToasts() {
+                enqueuePowerToast(toast)
+                try? await Task.sleep(for: .seconds(5.2))
+            }
+            try? await Task.sleep(for: .seconds(1.5))
+        }
+    }
+}
+#endif

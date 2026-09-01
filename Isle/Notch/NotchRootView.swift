@@ -323,6 +323,53 @@ private struct NotchPreviewStage<Content: View>: View {
     }
 }
 
+/// Runs the toast cycle live in the canvas. A view of its own so the loop is
+/// owned by something with a lifetime — started in `.task`, cancelled when the
+/// canvas tears the preview down, rather than left spinning behind it.
+private struct PowerToastPreviewLoop: View {
+    @ObservedObject var viewModel: NotchViewModel
+    let island: IslandPresentation
+
+    var body: some View {
+        NotchRootView(viewModel: viewModel, island: island)
+            .task { await viewModel.runPreviewToastLoop() }
+    }
+}
+
+/// The one to watch: all five toasts on a loop, through the real queue and the
+/// real timers, with Claude working underneath so each toast is seen taking the
+/// island and handing it back.
+#Preview("Notch — power toasts (live)") {
+    // Something for the toast to displace and return to. `working` is ambient,
+    // so it doesn't suppress the toast the way an approval would — see
+    // `NotchViewModel.showsPowerToast`.
+    let (vm, island) = NotchPreview.island { $0.claudeState = .working }
+    return NotchPreviewStage {
+        PowerToastPreviewLoop(viewModel: vm, island: island)
+    }
+}
+
+/// Stills, for checking copy, colour and width without waiting for the cycle.
+#Preview("Notch — power toasts (stills)") {
+    let pinned = NotchViewModel.previewToasts().map { toast in
+        NotchPreview.island { $0.pinPreviewToast(toast) }
+    }
+    return VStack(spacing: 10) {
+        ForEach(Array(pinned.enumerated()), id: \.offset) { _, pair in
+            NotchRootView(viewModel: pair.0, island: pair.1)
+                .frame(height: 40)
+        }
+    }
+    .frame(width: NotchMetrics.expandedSize.width + 120)
+    .padding(.vertical, 16)
+    .background(
+        LinearGradient(
+            colors: [Color(white: 0.32), Color(white: 0.06)],
+            startPoint: .top, endPoint: .bottom
+        )
+    )
+}
+
 #Preview("Notch — resting") {
     let (vm, island) = NotchPreview.island()
     return NotchPreviewStage {
