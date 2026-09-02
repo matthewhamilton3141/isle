@@ -16,7 +16,7 @@ struct ExpandedNotchView: View {
     private var media: MediaPlaybackModel { viewModel.media }
 
     var body: some View {
-        // The Music/Claude switcher itself lives in NotchRootView, positioned
+        // The face switcher itself lives in NotchRootView, positioned
         // to the right of the physical cutout — see NotchRootView.tabBar.
         content
             // A clean cross-dissolve: nothing moves, the old tab just fades out
@@ -53,6 +53,9 @@ struct ExpandedNotchView: View {
                 .transition(.opacity)
         case .claude:
             ClaudeExpandedView(viewModel: viewModel, island: island, palette: palette)
+                .transition(.opacity)
+        case .agenda:
+            AgendaExpandedView(viewModel: viewModel, palette: palette)
                 .transition(.opacity)
         }
     }

@@ -26,6 +26,7 @@ ordered so nothing downstream is blocked. Milestones list **Goal**, **Scope**,
 | Audio-reactive waveform | Shipped; source preference pending (M5) | `Isle/Media/SystemAudioLevels.swift` |
 | Display selection (multi-display) | Built-in display only (M8) | `NotchMetrics.preferredScreen()` |
 | Power / charging activities | Shipped (M9) | `Isle/Power/` |
+| Calendar events and reminders (Agenda face + ambient toasts) | Shipped | `Isle/Agenda/` |
 | Claude status glyph (breathing + checkmark) | Built, wired (M3) | `Isle/Claude/` |
 | Claude hook bridge (`isle-cli` + `settings.json`) | Watched (M3); per-session files, v7 | `Isle/Claude/ClaudeStatusWatcher.swift` |
 | Claude session registry (hook-free liveness) | Shipped | `Isle/Claude/ClaudeSessionRegistry.swift` |

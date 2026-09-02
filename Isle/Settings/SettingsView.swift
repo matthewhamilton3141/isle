@@ -8,6 +8,7 @@
 //
 
 import SwiftUI
+import EventKit
 
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
@@ -20,6 +21,12 @@ struct SettingsView: View {
 
     @State private var hookInstalled = HookInstaller.isInstalled
     @State private var hookMessage: String?
+
+    /// Bumped when Isle comes back to the front, which is what happens after
+    /// the Calendar or Reminders prompt is answered — so the access text in
+    /// the agenda section re-reads EventKit instead of showing the state from
+    /// before the prompt.
+    @State private var accessRefresh = 0
 
     var body: some View {
         Form {
@@ -37,10 +44,15 @@ struct SettingsView: View {
 
             powerSection
 
+            agendaSection
+
             updatesSection
         }
         .formStyle(.grouped)
         .frame(width: 460, height: 440)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            accessRefresh += 1
+        }
     }
 
     // MARK: - Updates
@@ -216,6 +228,90 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    // MARK: - Agenda
+
+    /// Ambient like Power, and split the same way: calendar events and
+    /// reminders are separate data behind separate macOS permissions, so each
+    /// gets its own switch and its own pointer at the Privacy pane.
+    ///
+    /// Unlike audio capture, EventKit *does* say when it was declined, so
+    /// that is stated outright rather than hedged — see `AgendaMonitor.Access`.
+    private var agendaSection: some View {
+        Section("Calendar & Reminders") {
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Show upcoming events", isOn: $settings.showCalendarEvents)
+                Text("Today's events are listed on the Agenda face of the expanded notch, and one appears briefly in the island shortly before it starts, in its calendar's colour. Invitations you've declined are left out.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if settings.showCalendarEvents {
+                    accessRow(
+                        for: .event,
+                        needs: "Needs Calendar access, which macOS asks for when this is switched on.",
+                        declined: "Calendar access was declined, so no event will show until it's allowed in System Settings.",
+                        pane: .calendars,
+                        button: "Calendars Privacy…"
+                    )
+                    Picker("Events appear", selection: leadBinding) {
+                        ForEach(EventLead.allCases) { lead in
+                            Text(lead.title).tag(lead)
+                        }
+                    }
+                    .padding(.top, 2)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Show reminders", isOn: $settings.showReminders)
+                Text("Reminders due today are listed on the Agenda face, and one appears in the island as it comes due. A reminder with a date but no time is listed under Today but never announced — the hour Reminders picks for those is its own setting.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if settings.showReminders {
+                    accessRow(
+                        for: .reminder,
+                        needs: "Needs Reminders access, which macOS asks for when this is switched on.",
+                        declined: "Reminders access was declined, so no reminder will show until it's allowed in System Settings.",
+                        pane: .reminders,
+                        button: "Reminders Privacy…"
+                    )
+                }
+            }
+
+            Text("With either on, hovering the notch gains an Agenda face. Switching both off removes it and stops Isle reading. Calendar and Reminders keep their own alerts either way; Isle adds a glance, not a replacement.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func accessRow(
+        for type: EKEntityType, needs: String, declined: String,
+        pane: PrivacyPane, button: String
+    ) -> some View {
+        let isDeclined = AgendaMonitor.Access.to(type) == .declined
+        return HStack(spacing: 8) {
+            Text(isDeclined ? declined : needs)
+                .font(.caption)
+                .foregroundStyle(isDeclined ? .orange : .secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button(button) { pane.open() }
+                .controlSize(.small)
+        }
+        .padding(.top, 2)
+        .id(accessRefresh)
+    }
+
+    /// The picker works in `EventLead`; the setting stores plain minutes so a
+    /// value from a future ladder still round-trips through defaults.
+    private var leadBinding: Binding<EventLead> {
+        Binding(
+            get: { EventLead(rawValue: settings.eventLeadMinutes) ?? .default },
+            set: { settings.eventLeadMinutes = $0.rawValue }
+        )
     }
 
     // MARK: - Music
@@ -483,6 +579,8 @@ private struct AudioCaptureStatus: View {
 enum PrivacyPane: String {
     case audioCapture = "Privacy_AudioCapture"
     case bluetooth = "Privacy_Bluetooth"
+    case calendars = "Privacy_Calendars"
+    case reminders = "Privacy_Reminders"
 
     func open() {
         let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(rawValue)")!

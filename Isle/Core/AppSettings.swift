@@ -34,6 +34,9 @@ final class AppSettings: ObservableObject {
     private static let claudeAccentHexKey = "isle.claudeAccentHex"
     private static let showBatteryEventsKey = "isle.showBatteryEvents"
     private static let showDeviceBatteryKey = "isle.showDeviceBattery"
+    private static let showCalendarEventsKey = "isle.showCalendarEvents"
+    private static let showRemindersKey = "isle.showReminders"
+    private static let eventLeadMinutesKey = "isle.eventLeadMinutes"
 
     /// The user's chosen mode, or `nil` until onboarding sets one
     /// (Milestone 2). Persisted on change.
@@ -188,6 +191,34 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(showDeviceBattery, forKey: Self.showDeviceBatteryKey) }
     }
 
+    // MARK: - Agenda
+
+    /// Whether a calendar event briefly claims the collapsed island shortly
+    /// before it starts. Off by default: unlike the power switches, this one
+    /// costs a macOS permission, and an install that predates it must not
+    /// start asking for Calendar access on the strength of an update. Setup
+    /// ticks it for a fresh install, where the prompt is expected.
+    @Published var showCalendarEvents: Bool {
+        didSet { defaults.set(showCalendarEvents, forKey: Self.showCalendarEventsKey) }
+    }
+
+    /// Whether a reminder claims the island as it comes due. Independent of
+    /// `showCalendarEvents` for the same reason the two power switches are:
+    /// different data behind different permissions, and someone who keeps
+    /// their calendar elsewhere may still want their reminders.
+    @Published var showReminders: Bool {
+        didSet { defaults.set(showReminders, forKey: Self.showRemindersKey) }
+    }
+
+    /// How many minutes before an event its toast appears. Zero means at the
+    /// start. See `EventLead` for the choices Settings offers.
+    @Published var eventLeadMinutes: Int {
+        didSet {
+            guard eventLeadMinutes != oldValue else { return }
+            defaults.set(eventLeadMinutes, forKey: Self.eventLeadMinutesKey)
+        }
+    }
+
     /// Whether the user has ever picked a mode. Onboarding keys off this.
     var hasChosenMode: Bool { mode != nil }
 
@@ -221,5 +252,30 @@ final class AppSettings: ObservableObject {
         claudeAccentHex = defaults.string(forKey: Self.claudeAccentHexKey) ?? "#9438E0"
         showBatteryEvents = defaults.object(forKey: Self.showBatteryEventsKey) as? Bool ?? true
         showDeviceBattery = defaults.object(forKey: Self.showDeviceBatteryKey) as? Bool ?? true
+        showCalendarEvents = defaults.object(forKey: Self.showCalendarEventsKey) as? Bool ?? false
+        showReminders = defaults.object(forKey: Self.showRemindersKey) as? Bool ?? false
+        eventLeadMinutes = defaults.object(forKey: Self.eventLeadMinutesKey) as? Int ?? EventLead.default.rawValue
+    }
+}
+
+/// The lead times Settings offers for an event's toast. A fixed ladder rather
+/// than a free stepper: these are the intervals people actually set alerts
+/// for, and a segmented row of five reads faster than a number to dial.
+enum EventLead: Int, CaseIterable, Identifiable {
+    case atStart = 0
+    case five = 5
+    case ten = 10
+    case fifteen = 15
+    case thirty = 30
+
+    static let `default`: EventLead = .five
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .atStart: return "At start"
+        default: return "\(rawValue) min before"
+        }
     }
 }
