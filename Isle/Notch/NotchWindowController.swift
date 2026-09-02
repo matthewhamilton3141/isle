@@ -472,7 +472,13 @@ final class NotchWindowController {
         // Keep clicks routed to Isle a hair before the pointer reaches the
         // visible notch (the pad), so the first hover-in is never missed.
         let hot = screenRect.insetBy(dx: -6, dy: -6)
-        island.window.ignoresMouseEvents = !hot.contains(NSEvent.mouseLocation)
+        let ignores = !hot.contains(NSEvent.mouseLocation)
+        // Only on a change. This runs on every pointer move on every island,
+        // and the setter is a window-server round trip whether or not the
+        // value moved.
+        if island.window.ignoresMouseEvents != ignores {
+            island.window.ignoresMouseEvents = ignores
+        }
     }
 
     /// A drawn notch in screen coordinates (bottom-left origin), which is what

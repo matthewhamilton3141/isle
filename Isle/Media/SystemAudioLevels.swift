@@ -57,6 +57,28 @@ final class SystemAudioLevels: ObservableObject {
     /// it's been superseded and stay quiet.
     private var generation = 0
 
+    /// The owner has asked for levels (`start`) and not yet withdrawn the ask
+    /// (`stop`). Kept apart from `isCapturing` because the tap comes and goes
+    /// for reasons of its own — Spotify relaunching, playback pausing — and
+    /// none of those may bring capture back once the owner has switched it
+    /// off. Before this the Spotify-launch observer restarted the tap
+    /// unconditionally, so a Claude-only mode, or a locked screen, would
+    /// quietly acquire a running FFT the moment Spotify was opened.
+    private var wantsCapture = false
+
+    /// Playback is paused, as reported by the owner. While it is, the tap's
+    /// IO is stopped rather than left listening to silence: a running process
+    /// tap keeps coreaudiod's IO cycle going for the output device, which
+    /// measured at about 1.5% of a core in coreaudiod plus the IOProc here —
+    /// all to confirm, ~94 times a second, that nothing is playing. The bars
+    /// rest at zero either way, so nothing visible changes.
+    private var playbackPaused = false
+
+    /// Defers the stop so a pause that is undone within a few seconds —
+    /// skipping back, a quick interruption — never interrupts the tap at all.
+    private var pauseTask: Task<Void, Never>?
+    private static let pauseGrace: Duration = .seconds(5)
+
     /// All DSP lives in here, off the main actor entirely.
     ///
     /// This class is `@MainActor` because it's an ObservableObject, but the
@@ -92,11 +114,108 @@ final class SystemAudioLevels: ObservableObject {
             failureReason = "System audio capture requires macOS 14.4 or later."
             return
         }
+        wantsCapture = true
         // Rebuild the tap whenever Spotify comes or goes — its PID, and so its
         // audio process object, changes across launches. Registered once.
         observeSpotifyLifecycle()
+        beginCaptureIfNeeded()
+    }
 
-        guard !isCapturing else { return }
+    /// Playback paused or resumed, from whoever knows. Pausing stops the
+    /// tap's IO after a grace period; resuming starts it straight back. Only
+    /// meaningful between `start` and `stop`, and harmless outside them.
+    func setPlaybackPaused(_ paused: Bool) {
+        guard paused != playbackPaused else { return }
+        playbackPaused = paused
+        pauseTask?.cancel()
+        pauseTask = nil
+
+        guard paused else {
+            if isSuspended {
+                resumeCapture()
+            } else {
+                beginCaptureIfNeeded()
+            }
+            return
+        }
+
+        pauseTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.pauseGrace)
+            guard !Task.isCancelled, let self, self.playbackPaused else { return }
+            self.pauseTask = nil
+            self.suspendCapture()
+        }
+    }
+
+    /// The tap and aggregate device exist but their IO is stopped — the
+    /// paused state. Distinct from "not capturing": the objects are kept so
+    /// that resuming is an `AudioDeviceStart`, not a rebuild.
+    private var isSuspended = false
+
+    /// Stops the IO cycle and leaves the Core Audio objects in place.
+    ///
+    /// Stopping rather than tearing down is deliberate. The objects are what
+    /// take time and are the visible part to Spotify — creating a tap on a
+    /// process makes coreaudiod re-plumb that process's output — so they are
+    /// built once and kept. What costs while paused is the IO cycle, and
+    /// that's what this stops: with no running IOProc the aggregate device
+    /// goes idle, and coreaudiod with it.
+    private func suspendCapture() {
+        guard isCapturing, !isSuspended else { return }
+        isSuspended = true
+
+        displayTimer?.invalidate()
+        displayTimer = nil
+        #if DEBUG
+        diagnosticTimer?.invalidate()
+        diagnosticTimer = nil
+        #endif
+
+        let session = self.session
+        Self.captureQueue.async { session.suspend() }
+
+        // Zeros, not empty: the meter is still available, just idle. Empty
+        // would flip the equalizer to its no-capture fallback.
+        levels = Array(repeating: 0, count: bandCount)
+    }
+
+    /// Restarts the IO cycle on the kept objects. Falls back to a full rebuild
+    /// if the device won't start — the output device it was built on may have
+    /// gone away during the pause.
+    private func resumeCapture() {
+        guard isCapturing, isSuspended else { return }
+        isSuspended = false
+
+        let session = self.session
+        let generation = self.generation
+        Self.captureQueue.async { [weak self] in
+            let started = session.resume()
+            Task { @MainActor in
+                self?.resumeDidFinish(started, generation: generation)
+            }
+        }
+    }
+
+    private func resumeDidFinish(_ started: Bool, generation: Int) {
+        guard generation == self.generation, isCapturing, !isSuspended else { return }
+        if started {
+            startPublishing()
+        } else {
+            endCapture()
+            beginCaptureIfNeeded()
+        }
+    }
+
+    /// Brings the tap up if the owner wants it, Spotify is running, and it
+    /// isn't already up. Every path that can start capture goes through here
+    /// so the gates can't be skipped.
+    ///
+    /// Not gated on playback: the tap is built whenever it *could* be needed
+    /// and merely suspended while nothing plays, so that pressing play is
+    /// answered by an `AudioDeviceStart` rather than by building a tap on a
+    /// process whose stream is just starting up.
+    private func beginCaptureIfNeeded() {
+        guard wantsCapture, !isCapturing else { return }
 
         // Which pid to tap is a cheap local lookup and stays here. Everything
         // after it is Core Audio, and goes to the queue.
@@ -132,8 +251,17 @@ final class SystemAudioLevels: ObservableObject {
         guard generation == self.generation, isCapturing else { return }
         switch outcome {
         case .success(.started):
-            startPublishing()
             failureReason = nil
+            if playbackPaused {
+                // Built while paused (launch, or a Spotify relaunch): keep it
+                // idle until something plays.
+                suspendCapture()
+            } else if !isSuspended {
+                // A pause can have expired while the setup was in flight, in
+                // which case the suspend is already queued behind it: leave
+                // the meter idle and let the resume start publishing.
+                startPublishing()
+            }
         case .success(.processUnavailable):
             // Spotify went away between the pid lookup and the tap. The
             // terminate observer will have cleaned up; nothing to report.
@@ -141,7 +269,9 @@ final class SystemAudioLevels: ObservableObject {
         case .failure(let error):
             failureReason = "\(error.localizedDescription)"
             NSLog("Isle: audio capture unavailable — \(error.localizedDescription)")
-            stop()
+            // Capture ends, the ask stands: a Spotify relaunch gets to retry.
+            endCapture()
+            levels = []
         }
     }
 
@@ -167,8 +297,12 @@ final class SystemAudioLevels: ObservableObject {
         ) { [weak self] note in
             guard Self.isSpotify(note) else { return }
             // Tap is bound to the now-dead process; tear it down so the bars
-            // rest rather than freezing on the last frame.
-            Task { @MainActor in self?.stop() }
+            // rest rather than freezing on the last frame. The owner's ask
+            // stands, so a relaunch brings it back.
+            Task { @MainActor in
+                self?.endCapture()
+                self?.levels = []
+            }
         })
     }
 
@@ -177,13 +311,25 @@ final class SystemAudioLevels: ObservableObject {
             .bundleIdentifier == SpotifyController.bundleID
     }
 
-    /// Tear down and bring capture back up against Spotify's current process.
+    /// Tear down and bring capture back up against Spotify's current process —
+    /// if the owner still wants it, which `beginCaptureIfNeeded` checks.
     private func restart() {
-        stop()
-        start()
+        endCapture()
+        beginCaptureIfNeeded()
     }
 
     func stop() {
+        wantsCapture = false
+        pauseTask?.cancel()
+        pauseTask = nil
+        endCapture()
+        levels = []
+    }
+
+    /// Takes the tap down without changing what the owner asked for. `levels`
+    /// is left to the caller, since what it should read afterwards depends on
+    /// why capture ended: empty for "unavailable", zeros for "idle".
+    private func endCapture() {
         displayTimer?.invalidate()
         displayTimer = nil
 
@@ -193,6 +339,7 @@ final class SystemAudioLevels: ObservableObject {
         #endif
 
         isCapturing = false
+        isSuspended = false
         generation &+= 1
 
         // Teardown blocks on coreaudiod exactly as setup does, so it goes to
@@ -200,8 +347,6 @@ final class SystemAudioLevels: ObservableObject {
         // it's undoing, even when that start is still in flight.
         let session = self.session
         Self.captureQueue.async { session.tearDown() }
-
-        levels = []
     }
 
     /// Blocks until the pending teardown has actually run, or `timeout` passes.
@@ -234,6 +379,9 @@ final class SystemAudioLevels: ObservableObject {
     /// callback fires far more often than the screen refreshes, and driving
     /// SwiftUI from it would be pure wasted work.
     private func startPublishing() {
+        // A resume and a setup can both land here for the same capture (see
+        // `captureDidFinish`); one timer is the most it should ever get.
+        guard displayTimer == nil else { return }
         let analyzer = self.analyzer
 
         #if DEBUG
@@ -323,12 +471,34 @@ private final class CaptureSession: @unchecked Sendable {
     private var aggregateID: AudioObjectID = kAudioObjectUnknown
     private var ioProcID: AudioDeviceIOProcID?
 
+    /// The IOProc has been stopped by `suspend` and not yet restarted.
+    private var isSuspended = false
+
     func start(tapping pid: pid_t, analyzer: AudioAnalyzer) throws -> Outcome {
         guard #available(macOS 14.4, *) else { return .processUnavailable }
         guard aggregateID == kAudioObjectUnknown else { return .started }
         guard let processObject = processObject(for: pid) else { return .processUnavailable }
         try startCapture(tapping: processObject, analyzer: analyzer)
         return .started
+    }
+
+    /// Stops the IO cycle, keeping the tap, the aggregate device and the
+    /// IOProc registered so `resume` is a single start call. No-op unless
+    /// capture is up and running.
+    func suspend() {
+        guard aggregateID != kAudioObjectUnknown, let ioProcID, !isSuspended else { return }
+        AudioDeviceStop(aggregateID, ioProcID)
+        isSuspended = true
+    }
+
+    /// Restarts the IO cycle after `suspend`. Returns false when the device
+    /// won't start — the caller then rebuilds from scratch.
+    func resume() -> Bool {
+        guard aggregateID != kAudioObjectUnknown, let ioProcID else { return false }
+        guard isSuspended else { return true }
+        guard AudioDeviceStart(aggregateID, ioProcID) == noErr else { return false }
+        isSuspended = false
+        return true
     }
 
     /// Audio HAL process object for a pid, or nil if the translation fails —
@@ -362,6 +532,7 @@ private final class CaptureSession: @unchecked Sendable {
             aggregateID = kAudioObjectUnknown
         }
         ioProcID = nil
+        isSuspended = false
 
         if tapID != kAudioObjectUnknown {
             // Guarded rather than hoisted to the whole method: the aggregate
@@ -504,8 +675,36 @@ private final class AudioAnalyzer: @unchecked Sendable {
 
     /// Stream sample rate, needed to turn the band edges into real
     /// frequencies. Set once before the IOProc starts, so the audio thread
-    /// only ever reads it.
-    var sampleRate: Double = 48_000
+    /// only ever reads it — and reads the band edges derived from it below,
+    /// which are recomputed here rather than on every callback.
+    var sampleRate: Double = 48_000 {
+        didSet { bandRanges = Self.bandRanges(sampleRate: sampleRate, fftSize: fftSize, bandCount: bandCount) }
+    }
+
+    /// The FFT bins each band spans, `low..<upper`. A pure function of the
+    /// sample rate, the transform size and the band count, so it's computed
+    /// when one of those is set rather than with two `pow` calls per band on
+    /// every callback.
+    private var bandRanges: [Range<Int>] = []
+
+    private static func bandRanges(sampleRate: Double, fftSize: Int, bandCount: Int) -> [Range<Int>] {
+        let halfSize = fftSize / 2
+        // Skip bin 0 (DC) — it carries no audible information and would peg
+        // the first bar on any signal with an offset.
+        let minBin = 1
+        let binWidth = sampleRate / Double(fftSize)
+        let maxBin = min(halfSize - 1, max(minBin + 1, Int(topFrequency / binWidth)))
+        return (0..<bandCount).map { band in
+            let lowFraction = Double(band) / Double(bandCount)
+            let highFraction = Double(band + 1) / Double(bandCount)
+            let low = Int(Double(minBin) * pow(Double(maxBin) / Double(minBin), lowFraction))
+            let high = max(low + 1, Int(Double(minBin) * pow(Double(maxBin) / Double(minBin), highFraction)))
+            return low..<min(high, halfSize)
+        }
+    }
+
+    /// `log2(fftSize)`, which vDSP wants on every call and which never changes.
+    private let log2n: vDSP_Length
 
     /// The spectrum is only followed up to here. Above it, music carries
     /// little but air and cymbal wash, and at a 1024-point FFT everything
@@ -620,9 +819,10 @@ private final class AudioAnalyzer: @unchecked Sendable {
         magnitudes = [Float](repeating: 0, count: fftSize / 2)
         sampleBuffer = [Float](repeating: 0, count: fftSize)
 
-        let log2n = vDSP_Length(log2(Float(fftSize)))
+        log2n = vDSP_Length(log2(Float(fftSize)))
         fftSetup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))
         vDSP_hann_window(&window, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
+        bandRanges = Self.bandRanges(sampleRate: sampleRate, fftSize: fftSize, bandCount: bandCount)
     }
 
     deinit {
@@ -670,14 +870,17 @@ private final class AudioAnalyzer: @unchecked Sendable {
 
         let samples = data.bindMemory(to: Float.self, capacity: available)
 
+        #if DEBUG
         // Peak before any windowing or smoothing, so it reflects exactly what
-        // Core Audio handed us.
+        // Core Audio handed us. Diagnostics only — nothing reads it in a
+        // release build, so it isn't worth a lock there.
         var framePeak: Float = 0
         vDSP_maxmgv(samples, 1, &framePeak, vDSP_Length(available))
         lock.lock()
         callCount += 1
         peak = max(peak, framePeak)
         lock.unlock()
+        #endif
 
         analyse(samples, count: available)
     }
@@ -695,16 +898,34 @@ private final class AudioAnalyzer: @unchecked Sendable {
         vDSP_rmsqv(samples, 1, &rms, vDSP_Length(n))
         let isSilent = rms < Self.silenceThreshold
 
+        // Silence needs no spectrum: every band is going to zero regardless,
+        // and the reference is frozen. Skipping the transform matters because
+        // a paused stream still delivers a buffer of zeros ~94 times a second
+        // (for the grace period before the tap comes down), and running a
+        // windowed FFT over each of them to learn nothing was most of what
+        // this thread did while nothing played.
+        if isSilent {
+            for band in 0..<bandCount { newLevels[band] = 0 }
+            smooth(toward: newLevels)
+            return
+        }
+
         // Zero-fill a short buffer rather than skipping it, so quiet passages
-        // still produce output instead of freezing the meter.
-        for index in 0..<fftSize {
-            sampleBuffer[index] = index < n ? samples[index] : 0
+        // still produce output instead of freezing the meter. A block copy and
+        // a vector clear rather than an indexed loop: this runs on the
+        // realtime thread and, unoptimised, the loop's bounds checks and
+        // iterator metadata were the single hottest thing in the callback.
+        sampleBuffer.withUnsafeMutableBufferPointer { buffer in
+            let base = buffer.baseAddress!
+            base.update(from: samples, count: n)
+            if n < fftSize {
+                vDSP_vclr(base + n, 1, vDSP_Length(fftSize - n))
+            }
         }
 
         vDSP_vmul(sampleBuffer, 1, window, 1, &sampleBuffer, 1, vDSP_Length(fftSize))
 
         let halfSize = fftSize / 2
-        let log2n = vDSP_Length(log2(Float(fftSize)))
 
         realParts.withUnsafeMutableBufferPointer { realPtr in
             imagParts.withUnsafeMutableBufferPointer { imagPtr in
@@ -740,18 +961,12 @@ private final class AudioAnalyzer: @unchecked Sendable {
         #if DEBUG
         var rawDb = [Double](repeating: 0, count: bandCount)
         #endif
-        // Skip bin 0 (DC) — it carries no audible information and would peg
-        // the first bar on any signal with an offset.
-        let minBin = 1
-        let binWidth = sampleRate / Double(fftSize)
-        let maxBin = min(halfSize - 1, max(minBin + 1, Int(Self.topFrequency / binWidth)))
 
         for band in 0..<bandCount {
-            let lowFraction = Double(band) / Double(bandCount)
-            let highFraction = Double(band + 1) / Double(bandCount)
-            let low = Int(Double(minBin) * pow(Double(maxBin) / Double(minBin), lowFraction))
-            let high = max(low + 1, Int(Double(minBin) * pow(Double(maxBin) / Double(minBin), highFraction)))
-            let upper = min(high, halfSize)
+            // Band edges are precomputed from the sample rate — see `bandRanges`.
+            let range = bandRanges[band]
+            let low = range.lowerBound
+            let upper = range.upperBound
 
             // The loudest bin in the band, not the average of them. A mean
             // over a wide band is dominated by the many quiet bins beside the
@@ -796,42 +1011,47 @@ private final class AudioAnalyzer: @unchecked Sendable {
         let frameFloor = (bandDb.max() ?? Self.referenceFloor) - 40
         let frameLevel = bandDb.reduce(0) { $0 + max($1, frameFloor) }
             / Double(bandCount)
-        if !isSilent {
-            let coefficient = frameLevel > reference
-                ? Self.referenceAttack
-                : Self.referenceRelease
-            reference += (frameLevel - reference) * coefficient
-            reference = max(reference, Self.referenceFloor)
+        let coefficient = frameLevel > reference
+            ? Self.referenceAttack
+            : Self.referenceRelease
+        reference += (frameLevel - reference) * coefficient
+        reference = max(reference, Self.referenceFloor)
+
+        for band in 0..<bandCount {
+            // +28 over a 53dB span puts a band sitting exactly at the
+            // reference just past half the strip's height, and pegs one
+            // running 25dB above it.
+            //
+            // This started at +30/50 — a 0.6 resting point with only 20dB
+            // of headroom. Measured against real playback, bands sit
+            // +15.5dB over the reference at p99, so the loudest passages
+            // were within 5dB of the ceiling: at full volume the bars'
+            // true peaks reached 0.97 of the strip and read as pinned.
+            // The span is the knob that buys headroom — 53dB keeps the
+            // loudest peaks around 0.88, clear of the ceiling but not so
+            // far down that the waveform goes limp.
+            let normalised = (bandDb[band] - reference + 28) / 53
+            newLevels[band] = min(max(normalised, 0), 1)
         }
 
-        if isSilent {
-            for band in 0..<bandCount { newLevels[band] = 0 }
-        } else {
-            for band in 0..<bandCount {
-                // +28 over a 53dB span puts a band sitting exactly at the
-                // reference just past half the strip's height, and pegs one
-                // running 25dB above it.
-                //
-                // This started at +30/50 — a 0.6 resting point with only 20dB
-                // of headroom. Measured against real playback, bands sit
-                // +15.5dB over the reference at p99, so the loudest passages
-                // were within 5dB of the ceiling: at full volume the bars'
-                // true peaks reached 0.97 of the strip and read as pinned.
-                // The span is the knob that buys headroom — 53dB keeps the
-                // loudest peaks around 0.88, clear of the ceiling but not so
-                // far down that the waveform goes limp.
-                let normalised = (bandDb[band] - reference + 28) / 53
-                newLevels[band] = min(max(normalised, 0), 1)
-            }
-        }
+        #if DEBUG
+        lock.lock()
+        rawReadout = rawDb
+        lock.unlock()
+        #endif
+        smooth(toward: newLevels)
+    }
 
+    /// Eases the published levels toward this frame's targets, under the lock.
+    /// Shared by the silent path and the analysed one so both decay the same
+    /// way. `targets` is the audio-thread scratch, never retained.
+    private func smooth(toward targets: [Double]) {
         lock.lock()
         #if DEBUG
         referenceReadout = reference
-        rawReadout = rawDb
         #endif
         for index in 0..<bandCount {
-            let target = newLevels[index]
+            let target = targets[index]
             // Fast attack, slow release — mirrors a physical VU meter and
             // stops the bars flickering on transients.
             let coefficient = target > smoothed[index] ? 0.55 : 0.12
