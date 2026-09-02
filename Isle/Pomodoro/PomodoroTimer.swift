@@ -7,9 +7,9 @@
 //
 //  The countdown is anchored to a wall-clock end date rather than decremented
 //  by a timer. The views read `remaining(at:)` off a TimelineView so the digits
-//  are exact at any frame, and the one-second Timer here exists only to notice
-//  that an interval has ended and roll to the next phase — so a missed or late
-//  tick can never make the clock drift.
+//  are exact at any frame, and the single one-shot Timer here, armed for the
+//  end date itself, exists only to notice that an interval has ended and roll
+//  to the next phase — so a late fire can never make the clock drift.
 //
 
 import AppKit
@@ -135,22 +135,41 @@ final class PomodoroTimer: ObservableObject {
 
     // MARK: - Ticking
 
+    /// One timer, armed for the moment the interval ends. This used to be a
+    /// half-second repeating poll asking "is it over yet?" — two wakeups a
+    /// second for the length of every interval, with no tolerance, to learn
+    /// nothing until the last one. The end date is known the instant the
+    /// clock starts, so the timer is simply set for it. In `.common` mode so
+    /// an open menu can't hold the roll-over until it closes.
     private func startTick() {
-        guard tick == nil else { return }
-        tick = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, self.isRunning, self.remaining() <= 0 else { return }
-                let ended = self.phase
-                self.advance(completed: true)
-                // Breaks roll straight into the next interval; the next focus
-                // waits to be started so a break ending doesn't put you on the
-                // clock without asking.
-                if ended.isBreak == false {
-                    self.start()
-                }
-                self.onIntervalEnded?(ended)
-            }
+        stopTick()
+        guard isRunning, let endDate else { return }
+        let timer = Timer(fire: endDate, interval: 0, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.intervalMayHaveEnded() }
         }
+        timer.tolerance = 0.25
+        RunLoop.main.add(timer, forMode: .common)
+        tick = timer
+    }
+
+    private func intervalMayHaveEnded() {
+        tick = nil
+        guard isRunning else { return }
+        // Fired ahead of the end (tolerance, or a clock adjustment): re-arm
+        // for what's left rather than ending an interval early.
+        guard remaining() <= 0 else {
+            startTick()
+            return
+        }
+        let ended = phase
+        advance(completed: true)
+        // Breaks roll straight into the next interval; the next focus waits
+        // to be started so a break ending doesn't put you on the clock
+        // without asking.
+        if ended.isBreak == false {
+            start()
+        }
+        onIntervalEnded?(ended)
     }
 
     private func stopTick() {

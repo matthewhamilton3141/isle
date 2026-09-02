@@ -328,7 +328,7 @@ final class NotchViewModel: ObservableObject {
             return
         }
         guard reselectTimer == nil else { return }
-        reselectTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 // Apply only on a real change, so an unchanged state doesn't
@@ -338,6 +338,10 @@ final class NotchViewModel: ObservableObject {
                 self.applyClaudeStatus(resolved)
             }
         }
+        // Coarse by design, so it can afford to be coalesced with whatever
+        // else wakes the process.
+        timer.tolerance = 1
+        reselectTimer = timer
     }
 
     /// The transcript's last timestamped entry: whether it leaves the model
@@ -447,7 +451,7 @@ final class NotchViewModel: ObservableObject {
         guard workingWordTimer == nil else { return }
         workingWordIndex = Int.random(in: 0..<Self.workingWords.count)
         workingWord = Self.workingWords[workingWordIndex]
-        workingWordTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.workingWordIndex = (self.workingWordIndex + 1) % Self.workingWords.count
@@ -456,6 +460,9 @@ final class NotchViewModel: ObservableObject {
                 }
             }
         }
+        // Nobody is counting the seconds between "Coalescing" and "Percolating".
+        timer.tolerance = 2
+        workingWordTimer = timer
     }
 
     private func stopWorkingWords() {
@@ -555,12 +562,28 @@ final class NotchViewModel: ObservableObject {
             .store(in: &cancellables)
 
         adapter.onUpdate = { [weak self] model in
-            self?.adapterModel = model
-            self?.recomputeSource()
+            guard let self else { return }
+            self.adapterModel = model
+            // The adapter losing Spotify's track is the moment the poll's
+            // model — and so its cover — becomes the one on screen. Any cover
+            // the poll held back while the adapter was supplying one is
+            // fetched now; see `spotify.wantsArtwork` below.
+            if !model.hasTrack {
+                self.spotify.fetchArtworkIfNeeded()
+            }
+            self.recomputeSource()
         }
         spotify.onUpdate = { [weak self] model in
             self?.spotifyModel = model
             self?.recomputeSource()
+        }
+        // The poll's cover is only drawn when the adapter has no Spotify
+        // track (`recomputeSource` prefers the adapter's model whole, artwork
+        // included). Fetching it otherwise was a download and a decode per
+        // track change that never reached the screen.
+        spotify.wantsArtwork = { [weak self] in
+            guard let self else { return false }
+            return !self.adapterModel.hasTrack
         }
         // Full rate while the poll is the only source (the adapter has no
         // Spotify track — a browser owns the session), or while a panel is
@@ -1088,12 +1111,24 @@ final class NotchViewModel: ObservableObject {
     private static let snapThreshold: TimeInterval = 1.5
 
     private func apply(_ model: MediaPlaybackModel) {
+        var model = model
         let now = Date()
         let reported = model.elapsed(at: now)
 
         let isNewTrack = model.title != media.title || model.album != media.album
         let transportChanged = model.isPlaying != media.isPlaying
             || model.playbackRate != anchorRate
+
+        // Same track, no cover: keep the one on screen. The sources swap when
+        // a browser takes the now-playing session — the adapter drops out and
+        // the poll takes over — and the poll's model arrives before its cover
+        // does (the download is deferred until it's needed; see
+        // `SpotifyController.wantsArtwork`). Without this the island showed
+        // the gradient for the fraction of a second in between, for a track
+        // that hadn't changed.
+        if model.artwork == nil, !isNewTrack {
+            model.artwork = media.artwork
+        }
 
         if anchorDate == nil || isNewTrack || transportChanged {
             anchorElapsed = reported

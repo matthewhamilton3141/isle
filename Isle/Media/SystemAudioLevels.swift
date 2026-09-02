@@ -385,7 +385,7 @@ final class SystemAudioLevels: ObservableObject {
         let analyzer = self.analyzer
 
         #if DEBUG
-        diagnosticTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
+        let diagnostic = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
             MainActor.assumeIsolated {
                 let (calls, peak, reference, levelPeaks, raw) = analyzer.drainDiagnostics()
                 let levels = analyzer.snapshot()
@@ -413,6 +413,8 @@ final class SystemAudioLevels: ObservableObject {
                 }
             }
         }
+        diagnostic.tolerance = 0.5
+        diagnosticTimer = diagnostic
         #endif
 
         // .common, not the default mode. A menu owns the main run loop while
@@ -438,6 +440,10 @@ final class SystemAudioLevels: ObservableObject {
                 }
             }
         }
+        // A few milliseconds of slack on a 33ms period: enough for the kernel
+        // to fold this into a neighbouring wakeup, not enough to be seen as
+        // an uneven frame on a meter that eases toward its target anyway.
+        display.tolerance = 0.005
         RunLoop.main.add(display, forMode: .common)
         displayTimer = display
     }

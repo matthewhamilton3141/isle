@@ -311,6 +311,22 @@ final class SpotifyController {
     private var artworkURL: String?
     private var artworkImage: NSImage?
 
+    /// Asked before a cover is fetched. Nil, or true, fetches at once; false
+    /// holds the fetch until `fetchArtworkIfNeeded` is called. The owner
+    /// answers false while the MediaRemote adapter is supplying the cover as
+    /// bytes — in which case the adapter's model wins outright (see
+    /// `NotchViewModel.recomputeSource`) and a cover fetched here was never
+    /// shown: a network round trip and a JPEG decode per track for nothing.
+    var wantsArtwork: (() -> Bool)?
+
+    /// A cover that was declined by `wantsArtwork` and can still be fetched.
+    private var pendingArtwork: (url: URL, key: String)?
+
+    /// The last model handed out, so a cover landing late is applied to
+    /// current state rather than to the model from whenever the fetch was
+    /// first deferred.
+    private var lastModel: MediaPlaybackModel?
+
     /// Last raw read, to suppress redundant emits. Without this the 1 Hz poll
     /// republishes an identical model every second (a paused track never
     /// changes), and that constant view invalidation upstream disrupts the
@@ -326,6 +342,8 @@ final class SpotifyController {
         guard let raw else {
             artworkURL = nil
             artworkImage = nil
+            pendingArtwork = nil
+            lastModel = nil
             onUpdate?(nil)
             return
         }
@@ -345,27 +363,37 @@ final class SpotifyController {
 
         if raw.artworkURL == artworkURL {
             model.artwork = artworkImage
+            lastModel = model
             onUpdate?(model)
         } else {
             // New cover: emit immediately without it (the gradient shows
-            // meanwhile), then re-emit once the image lands.
+            // meanwhile), then re-emit once the image lands — if it's wanted.
             artworkURL = raw.artworkURL.isEmpty ? nil : raw.artworkURL
             artworkImage = nil
+            pendingArtwork = URL(string: raw.artworkURL).map { ($0, raw.artworkURL) }
+            lastModel = model
             onUpdate?(model)
-            if let url = URL(string: raw.artworkURL) {
-                fetchArtwork(from: url, for: raw.artworkURL, base: model)
-            }
+            fetchArtworkIfNeeded()
         }
     }
 
-    private func fetchArtwork(from url: URL, for key: String, base: MediaPlaybackModel) {
+    /// Fetches a cover that was held back, if `wantsArtwork` now allows it.
+    /// The owner calls this when the poll's model becomes the one on screen.
+    func fetchArtworkIfNeeded() {
+        guard let pending = pendingArtwork, wantsArtwork?() ?? true else { return }
+        pendingArtwork = nil
+        fetchArtwork(from: pending.url, for: pending.key)
+    }
+
+    private func fetchArtwork(from url: URL, for key: String) {
         URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
             guard let data, let image = NSImage(data: data) else { return }
             Task { @MainActor in
-                guard let self, self.artworkURL == key else { return }  // track moved on
+                // Dropped if the track moved on while this was in flight.
+                guard let self, self.artworkURL == key, var updated = self.lastModel else { return }
                 self.artworkImage = image
-                var updated = base
                 updated.artwork = image
+                self.lastModel = updated
                 self.onUpdate?(updated)
             }
         }.resume()
