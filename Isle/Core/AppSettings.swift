@@ -37,6 +37,12 @@ final class AppSettings: ObservableObject {
     private static let showCalendarEventsKey = "isle.showCalendarEvents"
     private static let showRemindersKey = "isle.showReminders"
     private static let eventLeadMinutesKey = "isle.eventLeadMinutes"
+    private static let pomodoroEnabledKey = "isle.pomodoro.enabled"
+    private static let pomodoroFocusMinutesKey = "isle.pomodoro.focusMinutes"
+    private static let pomodoroShortBreakMinutesKey = "isle.pomodoro.shortBreakMinutes"
+    private static let pomodoroLongBreakMinutesKey = "isle.pomodoro.longBreakMinutes"
+    private static let pomodoroSessionsPerCycleKey = "isle.pomodoro.sessionsPerCycle"
+    private static let pomodoroSoundKey = "isle.pomodoro.sound"
 
     /// The user's chosen mode, or `nil` until onboarding sets one
     /// (Milestone 2). Persisted on change.
@@ -219,6 +225,41 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    // MARK: - Pomodoro
+
+    /// Whether the built-in Pomodoro timer exists at all. Off by default and
+    /// only switchable from Settings: it adds a third tab to the expanded panel
+    /// and a seat in the collapsed island, so it's opt-in rather than something
+    /// every install carries. Off also stops and resets any running timer.
+    @Published var pomodoroEnabled: Bool {
+        didSet { defaults.set(pomodoroEnabled, forKey: Self.pomodoroEnabledKey) }
+    }
+
+    /// Length of a focus interval, in minutes.
+    @Published var pomodoroFocusMinutes: Int {
+        didSet { defaults.set(pomodoroFocusMinutes, forKey: Self.pomodoroFocusMinutesKey) }
+    }
+
+    /// Length of the short break between focus intervals, in minutes.
+    @Published var pomodoroShortBreakMinutes: Int {
+        didSet { defaults.set(pomodoroShortBreakMinutes, forKey: Self.pomodoroShortBreakMinutesKey) }
+    }
+
+    /// Length of the long break that ends a cycle, in minutes.
+    @Published var pomodoroLongBreakMinutes: Int {
+        didSet { defaults.set(pomodoroLongBreakMinutes, forKey: Self.pomodoroLongBreakMinutesKey) }
+    }
+
+    /// How many focus intervals make a cycle — the long break follows the last.
+    @Published var pomodoroSessionsPerCycle: Int {
+        didSet { defaults.set(pomodoroSessionsPerCycle, forKey: Self.pomodoroSessionsPerCycleKey) }
+    }
+
+    /// Play a short system sound when an interval ends.
+    @Published var pomodoroSound: Bool {
+        didSet { defaults.set(pomodoroSound, forKey: Self.pomodoroSoundKey) }
+    }
+
     /// Whether the user has ever picked a mode. Onboarding keys off this.
     var hasChosenMode: Bool { mode != nil }
 
@@ -255,6 +296,12 @@ final class AppSettings: ObservableObject {
         showCalendarEvents = defaults.object(forKey: Self.showCalendarEventsKey) as? Bool ?? false
         showReminders = defaults.object(forKey: Self.showRemindersKey) as? Bool ?? false
         eventLeadMinutes = defaults.object(forKey: Self.eventLeadMinutesKey) as? Int ?? EventLead.default.rawValue
+        pomodoroEnabled = defaults.object(forKey: Self.pomodoroEnabledKey) as? Bool ?? false
+        pomodoroFocusMinutes = defaults.object(forKey: Self.pomodoroFocusMinutesKey) as? Int ?? 25
+        pomodoroShortBreakMinutes = defaults.object(forKey: Self.pomodoroShortBreakMinutesKey) as? Int ?? 5
+        pomodoroLongBreakMinutes = defaults.object(forKey: Self.pomodoroLongBreakMinutesKey) as? Int ?? 15
+        pomodoroSessionsPerCycle = defaults.object(forKey: Self.pomodoroSessionsPerCycleKey) as? Int ?? 4
+        pomodoroSound = defaults.object(forKey: Self.pomodoroSoundKey) as? Bool ?? true
     }
 }
 

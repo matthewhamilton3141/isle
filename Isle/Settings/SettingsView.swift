@@ -46,6 +46,8 @@ struct SettingsView: View {
 
             agendaSection
 
+            pomodoroSection
+
             updatesSection
         }
         .formStyle(.grouped)
@@ -312,6 +314,60 @@ struct SettingsView: View {
             get: { EventLead(rawValue: settings.eventLeadMinutes) ?? .default },
             set: { settings.eventLeadMinutes = $0.rawValue }
         )
+    }
+
+    // MARK: - Pomodoro
+
+    /// Opt-in, and only from here: the timer adds a tab to the expanded panel
+    /// and a seat in the collapsed island, so it stays out of the way until
+    /// somebody asks for it. The interval controls only appear once it's on.
+    private var pomodoroSection: some View {
+        Section("Pomodoro") {
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Enable Pomodoro timer", isOn: $settings.pomodoroEnabled)
+                Text(settings.pomodoroEnabled
+                     ? "A focus timer lives in the expanded panel; while it runs, the remaining time sits in the island."
+                     : "Off — the timer is hidden from the notch entirely.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if settings.pomodoroEnabled {
+                minutesRow("Focus", value: $settings.pomodoroFocusMinutes, range: 1...90)
+                minutesRow("Short break", value: $settings.pomodoroShortBreakMinutes, range: 1...30)
+                minutesRow("Long break", value: $settings.pomodoroLongBreakMinutes, range: 1...60)
+
+                LabeledContent("Focus sessions per cycle") {
+                    HStack(spacing: 8) {
+                        Text("\(settings.pomodoroSessionsPerCycle)")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                        Stepper("", value: $settings.pomodoroSessionsPerCycle, in: 1...8, step: 1)
+                            .labelsHidden()
+                    }
+                }
+
+                Toggle("Sound when an interval ends", isOn: $settings.pomodoroSound)
+
+                Text("Changes to the lengths apply from the next interval; the one that's running keeps its time.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func minutesRow(_ title: String, value: Binding<Int>, range: ClosedRange<Int>) -> some View {
+        LabeledContent(title) {
+            HStack(spacing: 8) {
+                Text("\(value.wrappedValue) min")
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                Stepper("", value: value, in: range, step: 1)
+                    .labelsHidden()
+            }
+        }
     }
 
     // MARK: - Music

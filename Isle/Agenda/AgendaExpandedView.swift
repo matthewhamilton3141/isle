@@ -115,8 +115,7 @@ struct AgendaExpandedView: View {
                     row(item, at: now)
                 }
             }
-            // Clear the face switcher parked in the panel's bottom-right corner.
-            .padding(.trailing, 44)
+            .padding(.trailing, 8)
         }
         .scrollIndicators(.hidden)
         .frame(height: Self.rowHeight * CGFloat(Self.visibleRows))
@@ -137,6 +136,7 @@ struct AgendaExpandedView: View {
 
     /// Width of the time column, so titles line up whatever the time reads.
     private static let timeWidth: CGFloat = 58
+
 
     private func row(_ item: AgendaItem, at now: Date) -> some View {
         let label = timeLabel(for: item, at: now)
@@ -210,7 +210,6 @@ struct AgendaExpandedView: View {
                 .lineLimit(2)
                 .minimumScaleFactor(0.8)
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(.trailing, 44)
         }
     }
 

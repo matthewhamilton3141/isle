@@ -134,19 +134,20 @@ struct NotchRootView: View {
                 .padding(.bottom, state.isExpanded ? 8 : 0)
 
             // The face switcher, parked in the housing band to the right of
-            // the physical cutout (only when more than one face is on). It sits in
-            // the band rather than below it — the band right of the camera is
-            // ordinary screen, not hardware. Inside the ZStack so it clips to
-            // the notch outline; opacity-gated so it fades in with the rest of
-            // the expanded content instead of popping mid-animation.
+            // the physical cutout (only when more than one face is on). The
+            // band right of the camera is ordinary screen, not hardware, and
+            // nothing else uses it but the waveform at the far right — so the
+            // strip sits there, out of the way of every face's content,
+            // rather than in a corner where it crowded the transport keys.
+            // Inside the ZStack so it clips to the notch outline; opacity-
+            // gated so it fades in with the rest of the expanded content
+            // instead of popping mid-animation.
             if state.isExpanded && viewModel.showsTabBar {
                 tabBar
-                    // Parked in the bottom-right corner of the panel rather than
-                    // up in the housing band — inset enough to clear the rounded
-                    // bottom corner and the transport keys, which stay centred.
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                    .padding(.trailing, 22)
-                    .padding(.bottom, 16)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .padding(.trailing, Self.tabStripTrailing)
+                    // Centred in the band's height.
+                    .padding(.top, max(0, (notchBandHeight - Self.tabStripCell) / 2))
                     .opacity(expandedContentOpacity)
             }
         }
@@ -230,48 +231,74 @@ struct NotchRootView: View {
 
     // MARK: - Tab switcher
 
-    /// Diameter of the single toggle button.
-    private static let tabBarHeight: CGFloat = 34
+    /// Square hit area of one face in the strip, and the gap between them.
+    /// Small enough that four of them fit between the cutout and the
+    /// waveform on the narrowest housing.
+    private static let tabStripCell: CGFloat = 20
+    private static let tabStripGap: CGFloat = 6
 
-    /// A single toggle rather than a segmented pill: it shows the *next*
-    /// face's icon (the one you'd switch to), so on Music it's the 3x3 Claude
-    /// mark and on Claude it's the music note — or the calendar, when the
-    /// agenda is on and it's next in the cycle. Tapping goes to that face.
+    /// Inset from the panel's right edge: past the waveform pinned at the
+    /// top-right (22 panel padding + 4 + 30 wide) with a little air. Constant
+    /// whether or not the waveform is showing, so the strip never hops.
+    private static let tabStripTrailing: CGFloat = 64
+
+    /// A strip of every face, the current one lit and underlined, the rest
+    /// dimmed. Tapping any goes straight there — no cycling through faces
+    /// you didn't want to reach the one you did.
     private var tabBar: some View {
-        let target = viewModel.nextTab
-        return Button {
-            // No withAnimation here: the content cross-fade is handled by
-            // ExpandedNotchView's own `.animation(value: expandedTab)`.
-            viewModel.selectTab(target)
-        } label: {
-            tabIcon(for: target)
-                .frame(width: Self.tabBarHeight, height: Self.tabBarHeight)
-                .background(Circle().fill(.black.opacity(0.35)))
-                .contentShape(Circle())
+        HStack(spacing: Self.tabStripGap) {
+            ForEach(viewModel.availableTabs) { tab in
+                let active = tab == viewModel.expandedTab
+                Button {
+                    // No withAnimation here: the content cross-fade is handled
+                    // by ExpandedNotchView's own `.animation(value: expandedTab)`.
+                    viewModel.selectTab(tab)
+                } label: {
+                    tabIcon(for: tab)
+                        .opacity(active ? 1 : 0.4)
+                        .frame(width: Self.tabStripCell, height: Self.tabStripCell)
+                        .overlay(alignment: .bottom) {
+                            Capsule()
+                                .fill(.white)
+                                .frame(width: 10, height: 2)
+                                .opacity(active ? 1 : 0)
+                        }
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(tab.title)
+                .accessibilityAddTraits(active ? [.isSelected] : [])
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Switch to \(target.title)")
         .animation(.easeInOut(duration: 0.15), value: viewModel.expandedTab)
     }
 
-    /// Music and Agenda keep their SF Symbols; Claude uses the dot mark.
+    /// Music, Pomodoro and Agenda keep their SF Symbols; Claude uses the dot
+    /// mark. All are drawn into the same square so none outweighs the others
+    /// in the strip.
     @ViewBuilder
     private func tabIcon(for tab: IsleTab) -> some View {
+        let color = Color.white
+        let size: CGFloat = 13
         switch tab {
         case .agenda:
             Image(systemName: "calendar")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 18, height: 18)
+                .font(.system(size: size * 0.85, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: size, height: size)
         case .music:
-            // A 4-bar waveform, sized to the same 16x16 box as the Claude dot
-            // grid so neither icon outweighs the other in the toggle.
-            WaveformIcon(color: .white)
-                .frame(width: 18, height: 18)
+            // A 4-bar waveform, sized to the same box as the Claude dot grid.
+            WaveformIcon(color: color)
+                .frame(width: size, height: size)
         case .claude:
             // A simpler 3x3 grid reads better than 5x5 at tab-icon size.
-            DotGridIcon(color: .white, dimension: 3)
-                .frame(width: 18, height: 18)
+            DotGridIcon(color: color, dimension: 3)
+                .frame(width: size, height: size)
+        case .pomodoro:
+            Image(systemName: tab.symbolName)
+                .font(.system(size: size * 0.85, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: size, height: size)
         }
     }
 
