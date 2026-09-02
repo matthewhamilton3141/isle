@@ -81,6 +81,10 @@ final class NotchWindowController {
 
     var isVisible: Bool { islands.values.contains { $0.window.isVisible } }
 
+    /// The capture behind the waveform, for Settings to report on. The view
+    /// model owns it; this is the only way out.
+    var audioLevels: SystemAudioLevels { viewModel.audioLevelSource }
+
     init() {
         observeScreenChanges()
         observeDisplayScope()

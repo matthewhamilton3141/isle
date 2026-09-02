@@ -60,7 +60,9 @@ struct CollapsedNotchView: View {
             // right rather than displacing the music.
             HStack(spacing: CollapsedSize.gap) {
                 artworkThumbnail
-                equalizer(width: CollapsedSize.wave)
+                if viewModel.showsWaveform {
+                    equalizer(width: CollapsedSize.wave)
+                }
             }
         } else if viewModel.isClaudeSolo {
             // Claude solo: the dot glyph sits to the left of the camera, in the
@@ -89,7 +91,7 @@ struct CollapsedNotchView: View {
         } else if viewModel.isClaudeSolo {
             // Claude solo: only the status word here; the dots are on the left.
             statusText
-        } else if viewModel.hasMusicActivity {
+        } else if viewModel.hasMusicActivity, viewModel.showsWaveform {
             equalizer(width: CollapsedSize.wave)
         } else {
             EmptyView()
@@ -194,7 +196,8 @@ struct CollapsedNotchView: View {
         LiveEqualizer(
             source: viewModel.audioLevelSource,
             palette: palette,
-            isPlaying: viewModel.media.isPlaying
+            isPlaying: viewModel.media.isPlaying,
+            listens: viewModel.waveformSource.capturesAudio
         )
         .frame(width: width, height: 20)
     }

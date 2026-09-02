@@ -68,18 +68,26 @@ The choice is changeable at any time in Settings. Only the subsystems the active
 mode needs are started, so a Claude-only install never requests Spotify
 permissions.
 
-### 4. Grant permissions
+### 4. Choose what Isle may ask for
 
-In Music and Both modes, macOS prompts twice on first use:
+The next screen lists the two features that need a macOS permission, both
+ticked. Nothing starts until you press Continue, so Isle only ever asks for
+what you left ticked:
 
-- **Automation → Spotify**, for the transport controls. Required for playback
-  control.
-- **Audio capture**, for the waveform. Optional — declining leaves everything
-  else working, and the waveform falls back to a procedural pattern rather than
-  going flat.
+- **Live waveform** (Music and Both) — the bars move with the music. macOS
+  asks for *Audio Recording* the first time something plays. Unticked, the
+  waveform still animates; it just doesn't listen.
+- **Device batteries** — a Bluetooth device's battery level shows when it
+  connects. macOS asks for *Bluetooth* as soon as you continue. Unticked, Isle
+  never looks.
 
-Both can be changed later in **System Settings → Privacy & Security**, under
-*Automation* and under *Microphone* (or *Audio Recording* on newer macOS).
+In Music and Both modes, macOS also asks for **Automation → Spotify** on first
+use, for the transport controls. That one is required for playback control.
+
+All of these can be changed later in **System Settings → Privacy & Security**,
+and the waveform and device toggles live in Isle's Settings too. Isle is signed
+without an Apple Developer ID, so macOS ties its answers to the exact build and
+asks again after an update.
 
 Isle runs as a menu bar app with no Dock icon.
 
@@ -121,7 +129,7 @@ Isle runs as a menu bar app with no Dock icon.
 | Toggle Notch | Show or hide the island |
 | Pop out notch for alerts | Whether Claude alerts expand the island on their own |
 | Settings… | Mode, music options, Claude hook, updates |
-| Setup… | Re-run the first-launch mode picker |
+| Setup… | Re-run the first-launch mode and permissions picker |
 | Check for Updates… | Check for a new version immediately |
 | Marker Editor… | Design the dot-matrix markers for each Claude state |
 | Animation Gallery… | Preview the island's animations |
@@ -174,10 +182,11 @@ corrupt download. Run the `xattr` command from [Install](#2-clear-the-quarantine
 from the menu bar item. Isle also runs on Macs without a notch, drawn against
 the top edge of the display.
 
-**The waveform doesn't move.** Audio capture requires macOS 14.4 or newer and
-permission to record audio. Re-enable Isle in **System Settings → Privacy &
-Security**, under *Microphone* or *Audio Recording* depending on the macOS
-version. Without it, the waveform runs a procedural pattern.
+**The waveform doesn't move.** Check that **Waveform** is set to *Live* in
+Settings → Music; *Animated* never listens by design. Live capture requires
+macOS 14.4 or newer and permission to record audio — the *Audio Recording
+Privacy…* button in that section opens the right pane. Isle can't tell a
+declined permission from silence, so it won't say which it is.
 
 **The controls do nothing.** Automation permission for Spotify was declined.
 Re-enable Isle under **System Settings → Privacy & Security → Automation**.

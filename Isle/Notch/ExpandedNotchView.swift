@@ -30,11 +30,12 @@ struct ExpandedNotchView: View {
             // switching tabs no longer makes it hop. Gated on a live track;
             // non-interactive so it never swallows a seek or dismiss tap.
             .overlay(alignment: .topTrailing) {
-                if media.hasTrack {
+                if media.hasTrack, viewModel.showsWaveform {
                     LiveEqualizer(
                         source: viewModel.audioLevelSource,
                         palette: palette,
-                        isPlaying: media.isPlaying
+                        isPlaying: media.isPlaying,
+                        listens: viewModel.waveformSource.capturesAudio
                     )
                     .frame(width: 30, height: 24)
                     .padding(.top, 10)
