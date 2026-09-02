@@ -52,9 +52,16 @@ BUILT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "
 
 # Sanity: both slices must be present. A thin build looks perfectly healthy
 # right up until an Intel user downloads it, so fail here instead.
-for SLICE in x86_64 arm64; do
-    lipo -archs "$APP_BUILD/Contents/MacOS/Isle" | grep -qw "$SLICE" \
-        || { echo "not universal: $SLICE slice missing from the app binary" >&2; exit 1; }
+# The adapter framework is a gitignored build product (Vendor/); the Xcode copy
+# phase only warns when it's absent, so a fresh checkout silently ships an app
+# with no now-playing. Check it's there and universal too.
+ADAPTER="$APP_BUILD/Contents/Resources/MediaRemoteAdapter.framework/Versions/A/MediaRemoteAdapter"
+[ -f "$ADAPTER" ] || { echo "MediaRemoteAdapter.framework missing from the app — run scripts/build-mediaremote-adapter.sh" >&2; exit 1; }
+for BIN in "$APP_BUILD/Contents/MacOS/Isle" "$ADAPTER"; do
+    for SLICE in x86_64 arm64; do
+        lipo -archs "$BIN" | grep -qw "$SLICE" \
+            || { echo "not universal: $SLICE slice missing from $BIN" >&2; exit 1; }
+    done
 done
 
 echo "==> Packaging $DMG"
