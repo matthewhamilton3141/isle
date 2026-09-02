@@ -233,27 +233,32 @@ struct NotchRootView: View {
     /// Diameter of the single toggle button.
     private static let tabBarHeight: CGFloat = 34
 
-    /// A single toggle rather than a two-segment pill: it shows the *other*
-    /// tab's icon (the one you'd switch to), so on Music it's the 3x3 Claude
-    /// mark and on Claude it's the music note. Tapping flips to that tab.
+    /// Round buttons rather than a segmented pill: one per tab you could
+    /// switch *to*, each showing that tab's icon, so on Music you see the
+    /// Claude mark (and the timer, if it's on). Tapping jumps to that tab. With
+    /// two tabs this is the single toggle it has always been.
     private var tabBar: some View {
-        let target = viewModel.expandedTab.other
-        return Button {
-            // No withAnimation here: the content cross-fade is handled by
-            // ExpandedNotchView's own `.animation(value: expandedTab)`.
-            viewModel.selectTab(target)
-        } label: {
-            tabIcon(for: target)
-                .frame(width: Self.tabBarHeight, height: Self.tabBarHeight)
-                .background(Circle().fill(.black.opacity(0.35)))
-                .contentShape(Circle())
+        let targets = viewModel.availableTabs.filter { $0 != viewModel.expandedTab }
+        return HStack(spacing: 8) {
+            ForEach(targets) { target in
+                Button {
+                    // No withAnimation here: the content cross-fade is handled
+                    // by ExpandedNotchView's own `.animation(value: expandedTab)`.
+                    viewModel.selectTab(target)
+                } label: {
+                    tabIcon(for: target)
+                        .frame(width: Self.tabBarHeight, height: Self.tabBarHeight)
+                        .background(Circle().fill(.black.opacity(0.35)))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Switch to \(target.title)")
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Switch to \(target.title)")
         .animation(.easeInOut(duration: 0.15), value: viewModel.expandedTab)
     }
 
-    /// Music keeps its SF Symbol; Claude uses the dot mark.
+    /// Music keeps its SF Symbol; Claude uses the dot mark; Pomodoro a timer.
     @ViewBuilder
     private func tabIcon(for tab: IsleTab) -> some View {
         switch tab {
@@ -265,6 +270,11 @@ struct NotchRootView: View {
         case .claude:
             // A simpler 3x3 grid reads better than 5x5 at tab-icon size.
             DotGridIcon(color: .white, dimension: 3)
+                .frame(width: 18, height: 18)
+        case .pomodoro:
+            Image(systemName: tab.symbolName)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.white)
                 .frame(width: 18, height: 18)
         }
     }
