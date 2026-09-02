@@ -68,11 +68,11 @@ struct PomodoroExpandedView: View {
 
     // MARK: - Hero
 
-    /// The ring with the clock inside. Ticks once a second while running;
-    /// paused, the schedule still fires but reads the same value, which is a
-    /// no-op redraw.
+    /// The ring with the clock inside. Ticks once a second while running and
+    /// not at all while paused — the schedule itself stops, rather than
+    /// firing to re-evaluate the same digits.
     private var hero: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
+        TimelineView(.animation(minimumInterval: 1, paused: !timer.isRunning)) { context in
             ZStack {
                 PomodoroRing(
                     progress: timer.progress(at: context.date),

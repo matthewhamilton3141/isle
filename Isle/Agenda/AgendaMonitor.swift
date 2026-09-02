@@ -86,6 +86,17 @@ final class AgendaMonitor {
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
     private var timer: Timer?
 
+    /// A reload the store asked for, waiting out the burst it arrived in.
+    private var reloadTask: Task<Void, Never>?
+
+    /// How long a store change waits before the re-fetch runs. EventKit posts
+    /// `EKEventStoreChanged` once per touched object during a sync — a
+    /// calendar refreshing over iCloud can post dozens in a second — and each
+    /// reload is a synchronous events query on the main thread plus a
+    /// reminders fetch. Half a second collapses a burst into one reload and
+    /// is still well inside a toast's own tolerance.
+    private static let reloadCoalesce: Duration = .milliseconds(500)
+
     /// Bumped on every reload so a reminder fetch that lands after a newer
     /// reload started is discarded rather than overwriting its result.
     private var generation = 0
@@ -173,6 +184,8 @@ final class AgendaMonitor {
     private func stop() {
         for (center, token) in observers { center.removeObserver(token) }
         observers.removeAll()
+        reloadTask?.cancel()
+        reloadTask = nil
         timer?.invalidate()
         timer = nil
         pendingEvents.removeAll()
@@ -184,8 +197,10 @@ final class AgendaMonitor {
     }
 
     private func startObserving() {
+        // Coalesced, not immediate — see `reloadCoalesce`. Every one of these
+        // can arrive in a burst (a sync, or a wake that also moves the clock).
         let reload: @Sendable (Notification) -> Void = { [weak self] _ in
-            MainActor.assumeIsolated { self?.reload() }
+            MainActor.assumeIsolated { self?.scheduleReload() }
         }
         let center = NotificationCenter.default
         let workspace = NSWorkspace.shared.notificationCenter
@@ -215,6 +230,20 @@ final class AgendaMonitor {
     }
 
     // MARK: - Fetching
+
+    /// Runs `reload` once the current burst of store changes has gone quiet.
+    /// A newer request restarts the wait, so a sync that keeps posting delays
+    /// the fetch until it has finished rather than fetching mid-way through.
+    private func scheduleReload() {
+        guard isRunning else { return }
+        reloadTask?.cancel()
+        reloadTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.reloadCoalesce)
+            guard !Task.isCancelled, let self else { return }
+            self.reloadTask = nil
+            self.reload()
+        }
+    }
 
     /// Re-reads everything inside the horizon and re-arms the timer. Events
     /// are synchronous; reminders come back on a completion, so the two are

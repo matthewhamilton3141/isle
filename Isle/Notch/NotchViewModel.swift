@@ -301,7 +301,12 @@ final class NotchViewModel: ObservableObject {
     /// Live sessions as the CLI itself reports them, hook-free. Ground truth
     /// for liveness: a session killed with SIGKILL fires no SessionEnd, and its
     /// pid simply stops existing here.
-    @Published private(set) var claudeSessions: [ClaudeSession] = []
+    ///
+    /// Not published: no view reads it, and the registry is rewritten on every
+    /// CLI status change, so publishing it invalidated the whole notch on each
+    /// one for nothing. Selection re-runs on the change (see `onSessions`) and
+    /// publishes through `claudeState` only when the result differs.
+    private var claudeSessions: [ClaudeSession] = []
 
     private var reselectTimer: Timer?
 
@@ -323,7 +328,7 @@ final class NotchViewModel: ObservableObject {
             return
         }
         guard reselectTimer == nil else { return }
-        reselectTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 // Apply only on a real change, so an unchanged state doesn't
@@ -333,6 +338,10 @@ final class NotchViewModel: ObservableObject {
                 self.applyClaudeStatus(resolved)
             }
         }
+        // Coarse by design, so it can afford to be coalesced with whatever
+        // else wakes the process.
+        timer.tolerance = 1
+        reselectTimer = timer
     }
 
     /// The transcript's last timestamped entry: whether it leaves the model
@@ -442,7 +451,7 @@ final class NotchViewModel: ObservableObject {
         guard workingWordTimer == nil else { return }
         workingWordIndex = Int.random(in: 0..<Self.workingWords.count)
         workingWord = Self.workingWords[workingWordIndex]
-        workingWordTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.workingWordIndex = (self.workingWordIndex + 1) % Self.workingWords.count
@@ -451,6 +460,9 @@ final class NotchViewModel: ObservableObject {
                 }
             }
         }
+        // Nobody is counting the seconds between "Coalescing" and "Percolating".
+        timer.tolerance = 2
+        workingWordTimer = timer
     }
 
     private func stopWorkingWords() {
@@ -550,12 +562,39 @@ final class NotchViewModel: ObservableObject {
             .store(in: &cancellables)
 
         adapter.onUpdate = { [weak self] model in
-            self?.adapterModel = model
-            self?.recomputeSource()
+            guard let self else { return }
+            self.adapterModel = model
+            // The adapter losing Spotify's track is the moment the poll's
+            // model — and so its cover — becomes the one on screen. Any cover
+            // the poll held back while the adapter was supplying one is
+            // fetched now; see `spotify.wantsArtwork` below.
+            if !model.hasTrack {
+                self.spotify.fetchArtworkIfNeeded()
+            }
+            self.recomputeSource()
         }
         spotify.onUpdate = { [weak self] model in
             self?.spotifyModel = model
             self?.recomputeSource()
+        }
+        // The poll's cover is only drawn when the adapter has no Spotify
+        // track (`recomputeSource` prefers the adapter's model whole, artwork
+        // included). Fetching it otherwise was a download and a decode per
+        // track change that never reached the screen.
+        spotify.wantsArtwork = { [weak self] in
+            guard let self else { return false }
+            return !self.adapterModel.hasTrack
+        }
+        // Full rate while the poll is the only source (the adapter has no
+        // Spotify track — a browser owns the session), or while a panel is
+        // open and its scrubber and toggles are actually drawn from it.
+        // Otherwise the adapter pushes every change a collapsed island shows,
+        // and the poll can relax — see `SpotifyController.tick`.
+        spotify.wantsFullRate = { [weak self] in
+            guard let self else { return false }
+            return !self.adapterModel.hasTrack
+                || self.hoveredIslands > 0
+                || self.autoExpandsForActivity
         }
 
         claudeWatcher.onStatuses = { [weak self] statuses in
@@ -1072,12 +1111,24 @@ final class NotchViewModel: ObservableObject {
     private static let snapThreshold: TimeInterval = 1.5
 
     private func apply(_ model: MediaPlaybackModel) {
+        var model = model
         let now = Date()
         let reported = model.elapsed(at: now)
 
         let isNewTrack = model.title != media.title || model.album != media.album
         let transportChanged = model.isPlaying != media.isPlaying
             || model.playbackRate != anchorRate
+
+        // Same track, no cover: keep the one on screen. The sources swap when
+        // a browser takes the now-playing session — the adapter drops out and
+        // the poll takes over — and the poll's model arrives before its cover
+        // does (the download is deferred until it's needed; see
+        // `SpotifyController.wantsArtwork`). Without this the island showed
+        // the gradient for the fraction of a second in between, for a track
+        // that hadn't changed.
+        if model.artwork == nil, !isNewTrack {
+            model.artwork = media.artwork
+        }
 
         if anchorDate == nil || isNewTrack || transportChanged {
             anchorElapsed = reported
@@ -1102,6 +1153,11 @@ final class NotchViewModel: ObservableObject {
             artworkPalette = model.artwork.map { ArtworkColors.palette(from: $0) }
         }
 
+        // The anchor above is the only thing that needs the timing fields, and
+        // it has them now. Publish only when something a view draws has
+        // changed — otherwise every 1 Hz poll re-evaluated the whole notch
+        // (shape, glyph, equalizer bridge, palette) to redraw nothing.
+        guard !model.hasSameDisplay(as: media) else { return }
         media = model
     }
 
@@ -1154,6 +1210,23 @@ final class NotchViewModel: ObservableObject {
     /// dismissed by a stray move nearby. Called by `IslandPresentation`.
     func noteAlertVisited() {
         if hasLiveActivity { alertWasHovered = true }
+    }
+
+    /// How many islands the pointer currently holds open. The pointer is only
+    /// ever on one screen, so this is 0 or 1 in practice; a count rather than
+    /// a flag so two islands changing in the same event can't leave it wrong.
+    /// Feeds the Spotify poll's cadence — see `spotify.wantsFullRate`.
+    private var hoveredIslands = 0
+
+    /// An island's hover flipped. Called by `IslandPresentation` on every
+    /// transition, in both directions.
+    func islandHoverChanged(_ hovering: Bool) {
+        hoveredIslands = max(0, hoveredIslands + (hovering ? 1 : -1))
+        // Opening the panel puts the scrubber on screen: bring the position
+        // current now rather than at the next relaxed read.
+        if hovering, hoveredIslands == 1 {
+            spotify.pollNow()
+        }
     }
 
     /// The pointer left an island. Hovering away from an auto-opened alert the

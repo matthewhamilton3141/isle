@@ -27,7 +27,21 @@ final class SpotifyController {
     /// Latest Spotify state, or nil when Spotify isn't running or is stopped.
     var onUpdate: ((MediaPlaybackModel?) -> Void)?
 
+    /// Asked at every tick whether the read should run at full rate. Nil, or
+    /// true, means once a second; false relaxes it to every `relaxedEvery`
+    /// ticks. See `tick` for what the owner is expected to answer.
+    var wantsFullRate: (() -> Bool)?
+
     private var timer: Timer?
+
+    /// Ticks since the last read, for the relaxed cadence.
+    private var ticksSinceRead = 0
+
+    /// How many ticks a relaxed poll waits between reads. Three seconds is
+    /// short enough that a state change the adapter *didn't* push (shuffle,
+    /// repeat) still lands before the panel is opened on it, and long enough
+    /// to take two thirds of the AppleScript traffic off a collapsed island.
+    private static let relaxedEvery = 3
 
     /// AppleScript is synchronous and can block on an unresponsive Spotify, so
     /// every script runs here rather than on the main thread.
@@ -41,8 +55,12 @@ final class SpotifyController {
         guard timer == nil else { return }
         // .common so polling continues while the notch is being tracked/dragged.
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.poll() }
+            Task { @MainActor in self?.tick() }
         }
+        // A fifth of a second of slack lets the kernel coalesce this with
+        // other wakeups. Nothing here is timing-critical at that scale — the
+        // scrubber runs off its own clock between reads.
+        timer.tolerance = 0.2
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
         poll()
@@ -51,9 +69,31 @@ final class SpotifyController {
     func stop() {
         timer?.invalidate()
         timer = nil
+        ticksSinceRead = 0
+    }
+
+    /// Read now rather than at the next tick — for when the panel opens and
+    /// the position on screen should be current, not up to three seconds old.
+    func pollNow() {
+        guard timer != nil else { return }
+        poll()
+    }
+
+    /// The 1 Hz timer stays; what it does each second depends on whether
+    /// anyone is looking. The read costs ~45ms of Apple events (see below),
+    /// which is worth paying every second while the panel is open — the
+    /// scrubber and the toggles are on screen — or while this poll is the only
+    /// source there is. Collapsed, with the adapter already pushing Spotify's
+    /// state, nothing it reads is drawn, so it reads every third second.
+    private func tick() {
+        ticksSinceRead += 1
+        let full = wantsFullRate?() ?? true
+        guard full || ticksSinceRead >= Self.relaxedEvery else { return }
+        poll()
     }
 
     private func poll() {
+        ticksSinceRead = 0
         // Whether Spotify is running is answered in-process. The read script
         // used to open with `tell application "System Events" to exists process
         // "Spotify"`, which costs an Apple-event round trip and a LaunchServices
@@ -271,6 +311,22 @@ final class SpotifyController {
     private var artworkURL: String?
     private var artworkImage: NSImage?
 
+    /// Asked before a cover is fetched. Nil, or true, fetches at once; false
+    /// holds the fetch until `fetchArtworkIfNeeded` is called. The owner
+    /// answers false while the MediaRemote adapter is supplying the cover as
+    /// bytes — in which case the adapter's model wins outright (see
+    /// `NotchViewModel.recomputeSource`) and a cover fetched here was never
+    /// shown: a network round trip and a JPEG decode per track for nothing.
+    var wantsArtwork: (() -> Bool)?
+
+    /// A cover that was declined by `wantsArtwork` and can still be fetched.
+    private var pendingArtwork: (url: URL, key: String)?
+
+    /// The last model handed out, so a cover landing late is applied to
+    /// current state rather than to the model from whenever the fetch was
+    /// first deferred.
+    private var lastModel: MediaPlaybackModel?
+
     /// Last raw read, to suppress redundant emits. Without this the 1 Hz poll
     /// republishes an identical model every second (a paused track never
     /// changes), and that constant view invalidation upstream disrupts the
@@ -286,6 +342,8 @@ final class SpotifyController {
         guard let raw else {
             artworkURL = nil
             artworkImage = nil
+            pendingArtwork = nil
+            lastModel = nil
             onUpdate?(nil)
             return
         }
@@ -305,27 +363,37 @@ final class SpotifyController {
 
         if raw.artworkURL == artworkURL {
             model.artwork = artworkImage
+            lastModel = model
             onUpdate?(model)
         } else {
             // New cover: emit immediately without it (the gradient shows
-            // meanwhile), then re-emit once the image lands.
+            // meanwhile), then re-emit once the image lands — if it's wanted.
             artworkURL = raw.artworkURL.isEmpty ? nil : raw.artworkURL
             artworkImage = nil
+            pendingArtwork = URL(string: raw.artworkURL).map { ($0, raw.artworkURL) }
+            lastModel = model
             onUpdate?(model)
-            if let url = URL(string: raw.artworkURL) {
-                fetchArtwork(from: url, for: raw.artworkURL, base: model)
-            }
+            fetchArtworkIfNeeded()
         }
     }
 
-    private func fetchArtwork(from url: URL, for key: String, base: MediaPlaybackModel) {
+    /// Fetches a cover that was held back, if `wantsArtwork` now allows it.
+    /// The owner calls this when the poll's model becomes the one on screen.
+    func fetchArtworkIfNeeded() {
+        guard let pending = pendingArtwork, wantsArtwork?() ?? true else { return }
+        pendingArtwork = nil
+        fetchArtwork(from: pending.url, for: pending.key)
+    }
+
+    private func fetchArtwork(from url: URL, for key: String) {
         URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
             guard let data, let image = NSImage(data: data) else { return }
             Task { @MainActor in
-                guard let self, self.artworkURL == key else { return }  // track moved on
+                // Dropped if the track moved on while this was in flight.
+                guard let self, self.artworkURL == key, var updated = self.lastModel else { return }
                 self.artworkImage = image
-                var updated = base
                 updated.artwork = image
+                self.lastModel = updated
                 self.onUpdate?(updated)
             }
         }.resume()

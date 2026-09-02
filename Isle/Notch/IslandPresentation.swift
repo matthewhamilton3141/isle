@@ -24,9 +24,16 @@ import Combine
 
 @MainActor
 final class IslandPresentation: ObservableObject {
-    /// Pointer is over this island's hit area. Set only through `setHovering`,
-    /// never directly, so the collapse-commit gate can't be bypassed.
-    @Published private(set) var isHovering: Bool = false
+    /// Pointer is over this island's hit area. Set only through `setHovering`
+    /// and `dismissAlert`, never from outside, so the collapse-commit gate
+    /// can't be bypassed. Every transition is reported to the content, which
+    /// uses it to decide how hard the media poll works.
+    @Published private(set) var isHovering: Bool = false {
+        didSet {
+            guard isHovering != oldValue else { return }
+            content.islandHoverChanged(isHovering)
+        }
+    }
 
     /// Geometry of the camera housing (or the fallback pill) on the screen this
     /// island is drawn on. Published because the views size themselves from it:

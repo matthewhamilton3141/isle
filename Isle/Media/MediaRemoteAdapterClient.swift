@@ -26,7 +26,14 @@ final class MediaRemoteAdapterClient {
 
     private var process: Process?
     private var readSource: DispatchSourceRead?
-    private var buffer = Data()
+
+    /// Where the pipe is read, split into lines and decoded — JSON and
+    /// artwork both. Serial, so lines reach the main actor in the order the
+    /// adapter wrote them. Its own queue rather than a global one so that
+    /// ordering is a property of the queue and not of luck.
+    private static let readerQueue = DispatchQueue(
+        label: "com.isle.mediaremote-reader", qos: .utility
+    )
 
     /// Accumulated state. The adapter streams *diffs* by default, so each
     /// line may carry only the keys that changed; we merge into this.
@@ -97,7 +104,6 @@ final class MediaRemoteAdapterClient {
             process.terminate()
         }
         process = nil
-        buffer.removeAll()
 
         // Report an empty model so the notch doesn't hold a stale track while
         // the feed is off. Done here rather than left to the termination
@@ -117,40 +123,124 @@ final class MediaRemoteAdapterClient {
         // awkward to cancel cleanly when the process dies mid-read.
         let source = DispatchSource.makeReadSource(
             fileDescriptor: handle.fileDescriptor,
-            queue: .global(qos: .utility)
+            queue: Self.readerQueue
         )
+
+        // The process this reader belongs to. A `stop()` then `start()` in
+        // quick succession leaves the old reader draining its last bytes
+        // while a new process is already up; the main-side handler checks
+        // this so a dead process can't write into the live one's state.
+        let owner = process
+        let parser = LineParser()
 
         source.setEventHandler { [weak self] in
             let chunk = handle.availableData
             guard !chunk.isEmpty else {
-                Task { @MainActor in self?.stop() }
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        guard let self, self.process === owner else { return }
+                        self.stop()
+                    }
+                }
                 return
             }
-            Task { @MainActor in self?.consume(chunk) }
+
+            // Everything expensive happens here, on the reader queue: the
+            // line split, the JSON decode and — the part that used to hitch
+            // the main thread once per track — the base64 and JPEG decode of
+            // a 640px cover. The main actor receives values ready to merge.
+            let decoded = parser.lines(appending: chunk).compactMap(Self.decode)
+            guard !decoded.isEmpty else { return }
+
+            // `DispatchQueue.main.async` rather than a Task hop: it is FIFO,
+            // which keeps diffs applying in the order the adapter emitted them.
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.process === owner else { return }
+                    for line in decoded {
+                        self.handle(line)
+                    }
+                }
+            }
         }
 
         source.resume()
         readSource = source
     }
 
-    private func consume(_ chunk: Data) {
-        buffer.append(chunk)
+    /// Splits the pipe's bytes into lines. Touched only on `readerQueue`.
+    ///
+    /// The adapter emits one JSON object per line. Artwork payloads run to
+    /// hundreds of KB and routinely arrive split across reads, so any trailing
+    /// partial line is held until its newline shows up. `scanned` remembers
+    /// how far that partial line has already been searched: without it every
+    /// chunk re-scanned the whole buffer from the start, which on a 300KB
+    /// cover arriving in 8KB pieces was several megabytes of comparisons and
+    /// copies per track.
+    private final class LineParser: @unchecked Sendable {
+        private var buffer = Data()
+        private var scanned = 0
 
-        // The adapter emits one JSON object per line. Artwork payloads run to
-        // hundreds of KB and routinely arrive split across reads, so hold any
-        // trailing partial line in `buffer` until its newline shows up.
-        var lines: [Data] = []
-        while let newline = buffer.firstIndex(of: UInt8(ascii: "\n")) {
-            lines.append(buffer.subdata(in: buffer.startIndex..<newline))
-            // Rebase rather than removeSubrange: Data slices keep their parent's
-            // indices, and mixing those with startIndex-relative maths is how
-            // you get an off-by-one that only bites on multi-chunk payloads.
-            buffer = Data(buffer[buffer.index(after: newline)...])
+        func lines(appending chunk: Data) -> [Data] {
+            buffer.append(chunk)
+
+            var lines: [Data] = []
+            var lineStart = buffer.startIndex
+            var search = scanned
+            // The slice shares `buffer`'s indices, so `newline` indexes
+            // `buffer` directly.
+            while let newline = buffer[search...].firstIndex(of: UInt8(ascii: "\n")) {
+                lines.append(buffer.subdata(in: lineStart..<newline))
+                lineStart = buffer.index(after: newline)
+                search = lineStart
+            }
+
+            // Rebase once per chunk rather than per line. A fresh `Data` from
+            // a slice starts at index 0, which is what makes `scanned` a
+            // plain offset that survives the rebase.
+            if lineStart != buffer.startIndex {
+                buffer = Data(buffer[lineStart...])
+            }
+            scanned = buffer.endIndex
+            return lines
+        }
+    }
+
+    /// One adapter line, decoded as far as it can be off the main actor.
+    private struct DecodedLine: @unchecked Sendable {
+        enum Artwork {
+            /// The payload carried no artwork key at all.
+            case absent
+            /// It carried one, and this is what it decoded to (nil if the
+            /// bytes weren't an image).
+            case set(NSImage?)
+            /// It carried one that wasn't valid base64. Left as it was.
+            case undecodable
         }
 
-        for line in lines where !line.isEmpty {
-            handle(line: line)
+        let envelope: StreamEnvelope
+        let artwork: Artwork
+    }
+
+    private nonisolated static func decode(_ line: Data) -> DecodedLine? {
+        guard !line.isEmpty,
+              let envelope = try? JSONDecoder().decode(StreamEnvelope.self, from: line)
+        else {
+            return nil  // partial or unrecognised line; nothing useful to do
         }
+
+        let artwork: DecodedLine.Artwork
+        if let base64 = envelope.payload.artworkData {
+            let cleaned = base64.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let data = Data(base64Encoded: cleaned) {
+                artwork = .set(decodeArtwork(data))
+            } else {
+                artwork = .undecodable
+            }
+        } else {
+            artwork = .absent
+        }
+        return DecodedLine(envelope: envelope, artwork: artwork)
     }
 
     /// Isle is scoped to Spotify. MediaRemote reports whichever app owns the
@@ -159,11 +249,9 @@ final class MediaRemoteAdapterClient {
     /// notch rather than surfacing another app's track.
     private static let spotifyBundleID = "com.spotify.client"
 
-    private func handle(line: Data) {
-        guard let envelope = try? JSONDecoder().decode(StreamEnvelope.self, from: line) else {
-            return  // partial or unrecognised line; nothing useful to do
-        }
-        merge(envelope.payload, isDiff: envelope.diff ?? false)
+    private func handle(_ line: DecodedLine) {
+        let envelope = line.envelope
+        merge(envelope.payload, artwork: line.artwork, isDiff: envelope.diff ?? false)
 
         // `current` still tracks the true system owner (merged from diffs), but
         // we only publish it when that owner is Spotify. Publishing an empty
@@ -204,7 +292,7 @@ final class MediaRemoteAdapterClient {
     /// When it's false the payload is authoritative, so absent keys are
     /// cleared — otherwise a track with no album would inherit the previous
     /// track's album.
-    private func merge(_ payload: StreamPayload, isDiff: Bool) {
+    private func merge(_ payload: StreamPayload, artwork: DecodedLine.Artwork, isDiff: Bool) {
         func take<T>(_ new: T?, _ existing: T, default fallback: T) -> T {
             if let new { return new }
             return isDiff ? existing : fallback
@@ -256,13 +344,14 @@ final class MediaRemoteAdapterClient {
             current.timestamp = Date()
         }
 
-        if let base64 = payload.artworkData {
-            let cleaned = base64.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let data = Data(base64Encoded: cleaned) {
-                current.artwork = Self.decodeArtwork(data)
-            }
-        } else if !isDiff {
-            current.artwork = nil
+        // Already decoded on the reader queue — see `decode`.
+        switch artwork {
+        case .set(let image):
+            current.artwork = image
+        case .undecodable:
+            break
+        case .absent:
+            if !isDiff { current.artwork = nil }
         }
     }
 
@@ -276,7 +365,7 @@ final class MediaRemoteAdapterClient {
     /// away half the detail before SwiftUI ever scales it. Overriding `size`
     /// to the real pixel dimensions makes the full bitmap available, which is
     /// what makes the 18pt collapsed thumbnail look sharp instead of mushy.
-    private static func decodeArtwork(_ data: Data) -> NSImage? {
+    private nonisolated static func decodeArtwork(_ data: Data) -> NSImage? {
         guard let rep = NSBitmapImageRep(data: data) else {
             return NSImage(data: data)
         }

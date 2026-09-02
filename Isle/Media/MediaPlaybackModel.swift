@@ -50,6 +50,21 @@ struct MediaPlaybackModel: Equatable {
         !title.isEmpty || !artist.isEmpty
     }
 
+    /// Equal in every field a view reads — everything but the elapsed/timestamp
+    /// pair. Those two move on every source report while a track plays, but
+    /// nothing draws them: the scrubber runs off `NotchViewModel`'s own anchor
+    /// (see `displayProgress`). Publishing a model that differs only there
+    /// invalidated the whole notch once a second for a change no one could see.
+    func hasSameDisplay(as other: MediaPlaybackModel) -> Bool {
+        var lhs = self
+        var rhs = other
+        lhs.reportedElapsed = 0
+        rhs.reportedElapsed = 0
+        lhs.timestamp = .distantPast
+        rhs.timestamp = .distantPast
+        return lhs == rhs
+    }
+
     /// Position at a given wall-clock instant, extrapolated from the last
     /// report. Clamped to the track so a late update can't push the
     /// scrubber past the end.
