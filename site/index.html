@@ -6,74 +6,47 @@
 <title>Isle</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400..800&family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..125,400..800&family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap">
 <style>
 /* ============================================================
    Isle — product site
-   Treatment: instrument datasheet. Paper ground, measured type,
-   dimension callouts. The only true black on the page is the
-   hardware itself.
+   Treatment: a dark room with a lit screen in it. Warm charcoal
+   rather than neutral grey, film grain over everything, light
+   spilling off the display, and an accent that is whatever is
+   playing. Deliberately one visual world — the page is the room
+   the island lives in — so there is no light variant.
    ============================================================ */
 
 :root{
-  --paper:#E4E5E1;
-  --paper-2:#EFEFEC;
-  --paper-3:#DADBD6;
-  --ink:#101316;
-  --ink-2:#565C62;
-  --ink-3:#878C90;
-  --rule:#C7C8C3;
-  --rule-soft:#D5D6D1;
-  --signal:#1B39D8;
-  --signal-ink:#FFFFFF;
+  --paper:#0C0B0B;
+  --paper-2:#151312;
+  --paper-3:#1E1B19;
+  --ink:#F4F1EB;
+  --ink-2:#A8A29A;
+  --ink-3:#6E6A64;
+  --rule:#272320;
+  --rule-soft:#1B1917;
+  --signal:#E8A25C;
+  --signal-ink:#17130E;
 
-  /* Hardware tokens — identical in both themes. The notch is black
-     because the bezel is black, not because the page is dark. */
+  /* Hardware. The notch is black because the bezel is black. */
   --screen:#0A0B0C;
-  --screen-hi:#1A1D21;
   --screen-ink:#EDEEEF;
   --screen-ink-2:#8A9096;
   --screen-rule:#2A2E33;
-  --hw:#000000;
 
   /* Replaced at runtime by the playing track's artwork palette. */
-  --live:#8A8F93;
-  --live-2:#6F757A;
+  --live:#E8A25C;
+  --live-2:#C97F3E;
 
   --font-display:"Archivo","Helvetica Neue",Helvetica,Arial,sans-serif;
+  --font-serif:"Instrument Serif",Iowan Old Style,Georgia,serif;
   --font-body:"Instrument Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
   --font-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
   --font-native:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;
 
   --gut:clamp(20px,4vw,56px);
   --spine:136px;
-}
-
-@media (prefers-color-scheme: dark){
-  :root:not([data-theme="light"]){
-    --paper:#0E0F11;
-    --paper-2:#16181B;
-    --paper-3:#1D2024;
-    --ink:#E9EAE7;
-    --ink-2:#9BA1A7;
-    --ink-3:#71777D;
-    --rule:#282C31;
-    --rule-soft:#1F2226;
-    --signal:#8298FF;
-    --signal-ink:#0E0F11;
-  }
-}
-:root[data-theme="dark"]{
-  --paper:#0E0F11;
-  --paper-2:#16181B;
-  --paper-3:#1D2024;
-  --ink:#E9EAE7;
-  --ink-2:#9BA1A7;
-  --ink-3:#71777D;
-  --rule:#282C31;
-  --rule-soft:#1F2226;
-  --signal:#8298FF;
-  --signal-ink:#0E0F11;
 }
 
 *{box-sizing:border-box}
@@ -84,14 +57,29 @@ body{
   color:var(--ink);
   font-family:var(--font-body);
   font-size:16px;
-  line-height:1.55;
+  line-height:1.6;
   -webkit-font-smoothing:antialiased;
 }
-::selection{background:var(--ink);color:var(--paper)}
+::selection{background:var(--live);color:#17130E}
+
+/* the room's light — tinted by whatever is playing */
+.glow{
+  position:fixed;left:50%;top:-420px;transform:translateX(-50%);
+  width:min(1600px,150vw);height:1000px;pointer-events:none;z-index:0;
+  background:radial-gradient(48% 48% at 50% 50%, var(--live) 0%, transparent 70%);
+  opacity:.07;will-change:opacity;
+}
+
+/* film grain, over everything including the screen */
+.grain{
+  position:fixed;inset:0;pointer-events:none;z-index:400;opacity:.055;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.84' numOctaves='3' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='160' height='160' filter='url(%23n)'/></svg>");
+}
+header,main,footer{position:relative;z-index:1}
 
 a{color:inherit}
 button{font:inherit;color:inherit}
-:focus-visible{outline:2px solid var(--signal);outline-offset:3px;border-radius:2px}
+:focus-visible{outline:2px solid var(--live);outline-offset:3px;border-radius:2px}
 
 /* ---------- shared type ---------- */
 .mono{
@@ -106,37 +94,49 @@ h1,h2,h3{
   font-family:var(--font-display);
   font-weight:700;
   font-stretch:112%;
-  letter-spacing:-.022em;
-  line-height:1.02;
+  letter-spacing:-.024em;
+  line-height:1.0;
   text-wrap:balance;
   margin:0;
 }
-h1{font-size:clamp(38px,5.6vw,68px);font-weight:800;letter-spacing:-.032em}
-h2{font-size:clamp(27px,3.2vw,40px)}
-h3{font-size:17px;font-stretch:100%;letter-spacing:-.01em;line-height:1.25}
+h1{font-size:clamp(38px,5.2vw,70px);font-weight:800;letter-spacing:-.036em;line-height:.99}
+h2{font-size:clamp(29px,3.6vw,46px);line-height:1.0}
+h3{font-size:17.5px;font-stretch:100%;letter-spacing:-.012em;line-height:1.25}
+/* one warm moment against all that grotesque */
+.serif{
+  font-family:var(--font-serif);font-style:italic;font-weight:400;
+  font-stretch:normal;letter-spacing:-.005em;white-space:nowrap;
+  font-size:1.06em;   /* the serif sits optically smaller at the same size */
+}
 p{margin:0}
-.lede{font-size:clamp(16px,1.5vw,19px);line-height:1.5;color:var(--ink-2);max-width:60ch}
+.lede{font-size:clamp(16.5px,1.55vw,20px);line-height:1.55;color:var(--ink-2);max-width:58ch}
+
+/* scroll reveal */
+.reveal{opacity:0;transform:translateY(18px);transition:opacity .75s cubic-bezier(.2,.7,.3,1),transform .75s cubic-bezier(.2,.7,.3,1)}
+.reveal.in{opacity:1;transform:none}
+@media (prefers-reduced-motion:reduce){.reveal{opacity:1;transform:none;transition:none}}
 
 .wrap{max-width:1280px;margin:0 auto;padding:0 var(--gut)}
 
 /* ---------- top bar ---------- */
 .topbar{
   position:sticky;top:0;z-index:60;
-  background:color-mix(in srgb,var(--paper) 88%,transparent);
-  backdrop-filter:saturate(140%) blur(12px);
-  border-bottom:1px solid var(--rule);
+  background:rgba(12,11,11,.72);
+  backdrop-filter:saturate(150%) blur(14px);
+  -webkit-backdrop-filter:saturate(150%) blur(14px);
+  box-shadow:0 1px 0 var(--rule);
 }
-.topbar .wrap{display:flex;align-items:center;gap:26px;height:56px}
+.topbar .wrap{display:flex;align-items:center;gap:26px;height:60px}
 .brand{display:flex;align-items:center;gap:10px;text-decoration:none;flex:none}
-.brand .mark{width:17px;height:17px;display:block}
-.brand .mark circle{fill:var(--ink)}
+.mark{display:block;fill:currentColor}
+.brand .mark{width:17px;height:17px}
 .brand b{
   font-family:var(--font-display);font-weight:700;font-stretch:118%;
   font-size:17px;letter-spacing:-.02em;
 }
 .ver{
   font-family:var(--font-mono);font-size:10.5px;color:var(--ink-3);
-  border:1px solid var(--rule);border-radius:2px;padding:1px 5px;
+  border:1px solid var(--rule);border-radius:999px;padding:2px 8px;
   letter-spacing:.04em;
 }
 nav.top{display:flex;gap:22px;margin-left:auto}
@@ -146,261 +146,331 @@ nav.top a{
   padding:4px 0;border-bottom:1px solid transparent;
 }
 nav.top a:hover{color:var(--ink);border-bottom-color:var(--ink)}
-@media (max-width:880px){nav.top{display:none}}
+@media (max-width:880px){
+  nav.top{display:none}
+  .topbar .btn{margin-left:auto}   /* the nav normally holds this edge */
+}
 
 .btn{
   display:inline-flex;align-items:center;gap:9px;
-  background:var(--ink);color:var(--paper);
-  text-decoration:none;border:1px solid var(--ink);
-  padding:8px 15px;border-radius:3px;
+  background:linear-gradient(180deg,#FBF9F4,#E7E3DA);color:#141210;
+  text-decoration:none;border:1px solid #FBF9F4;
+  padding:9px 17px;border-radius:7px;
   font-family:var(--font-mono);font-size:11.5px;letter-spacing:.04em;
   font-weight:500;cursor:pointer;
-  transition:background .16s,color .16s,transform .16s;
+  box-shadow:0 1px 0 rgba(255,255,255,.4) inset, 0 10px 24px -14px rgba(0,0,0,.9);
+  transition:filter .16s,transform .16s,border-color .16s,background .16s;
 }
-.btn:hover{background:var(--signal);border-color:var(--signal);color:var(--signal-ink)}
+.btn:hover{filter:brightness(1.06)}
 .btn:active{transform:translateY(1px)}
-.btn.ghost{background:transparent;color:var(--ink);border-color:var(--rule)}
-.btn.ghost:hover{background:transparent;border-color:var(--ink);color:var(--ink)}
+.btn.ghost{
+  background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.015));
+  color:var(--ink);border-color:var(--rule);box-shadow:none;
+}
+.btn.ghost:hover{border-color:#4A443E;color:var(--ink);filter:none}
 .btn.sm{padding:6px 12px;font-size:11px}
 
 /* ---------- section frame ---------- */
-section{border-bottom:1px solid var(--rule)}
+section{position:relative;scroll-margin-top:74px}
+section::after{
+  content:"";position:absolute;left:0;right:0;bottom:0;height:1px;
+  background:linear-gradient(90deg,transparent,var(--rule) 14%,var(--rule) 86%,transparent);
+}
 .sec{display:grid;grid-template-columns:var(--spine) minmax(0,1fr);gap:0 44px;padding:clamp(48px,7vw,96px) 0}
+.sec > *{min-width:0}
 .spine{position:relative}
 .spine .tag{position:sticky;top:84px;display:block}
 .spine .tag i{
-  display:block;width:22px;height:1px;background:var(--ink-3);margin-bottom:10px;
+  display:block;width:26px;height:1px;background:var(--live);opacity:.7;margin-bottom:11px;
 }
 @media (max-width:820px){
-  .sec{grid-template-columns:1fr;gap:22px}
+  .sec{grid-template-columns:minmax(0,1fr);gap:22px}
   .spine .tag{position:static}
 }
 
 /* ---------- hero ---------- */
 .hero{padding:clamp(46px,7vw,88px) 0 clamp(34px,4vw,52px)}
 .hero-grid{display:grid;grid-template-columns:minmax(0,7fr) minmax(0,4fr);gap:0 clamp(28px,5vw,80px);align-items:start}
-@media (max-width:920px){.hero-grid{grid-template-columns:1fr;gap:38px}}
+@media (max-width:920px){.hero-grid{grid-template-columns:minmax(0,1fr);gap:38px}}
 .eyebrow{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-bottom:22px}
 .eyebrow span{white-space:nowrap}
 .eyebrow em{width:3px;height:3px;background:var(--ink-3);border-radius:50%;display:inline-block}
-.hero h1{margin-bottom:20px;max-width:16ch}
+.hero h1{margin-bottom:22px;max-width:19ch}
 .hero .lede{margin-bottom:28px}
 .hero-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
 .hero-actions .note{font-family:var(--font-mono);font-size:10.5px;color:var(--ink-3);letter-spacing:.03em}
 
 /* spec table in the hero's right column */
-.datasheet{border-top:1px solid var(--ink);padding-top:2px}
+.datasheet{
+  border:1px solid var(--rule);border-radius:12px;padding:6px 16px;
+  background:linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,.008));
+  box-shadow:0 1px 0 rgba(255,255,255,.04) inset;
+}
 .datasheet dl{display:grid;grid-template-columns:auto 1fr;margin:0}
 .datasheet dt,.datasheet dd{
   font-family:var(--font-mono);font-size:11.5px;margin:0;
   padding:9px 0;border-bottom:1px solid var(--rule-soft);
 }
+.datasheet dt:nth-last-of-type(1),.datasheet dd:nth-last-of-type(1){border-bottom:none}
 .datasheet dt{color:var(--ink-3);letter-spacing:.07em;text-transform:uppercase;padding-right:16px}
 .datasheet dd{color:var(--ink);text-align:right;font-variant-numeric:tabular-nums}
 
 /* ============================================================
-   DISPLAY MODULE — the mock MacBook screen
+   DISPLAY — the top of a 14" MacBook Pro, drawn in points
+   Logical screen 1512 × 982 pt. Camera housing 186 × 32 pt, which
+   is also the menu bar height on a notched Mac. Every number below
+   is a point, and the whole slab is scaled by one transform, so the
+   island holds the proportions it has on the real machine.
+   Housing width is derived from ExpandedNotchView's own note that
+   the cutout starts at x 167 in the 520 pt panel: 520 − 167×2 = 186.
    ============================================================ */
-.display{padding-bottom:clamp(30px,4vw,44px)}
-.stage{
-  position:relative;
+.displaywrap{
+  position:relative;overflow-x:auto;overflow-y:hidden;
   background:var(--screen);
-  border-radius:12px 12px 0 0;
-  border:1px solid var(--screen-rule);
-  border-bottom:none;
-  overflow:hidden;
-  height:clamp(214px,25vw,296px);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.07);
-  -webkit-mask-image:linear-gradient(#000 76%,rgba(0,0,0,.55) 93%,transparent);
-  mask-image:linear-gradient(#000 76%,rgba(0,0,0,.55) 93%,transparent);
+  border:1px solid #24282E;border-bottom:none;
+  border-radius:16px 16px 0 0;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.09),
+    0 -1px 0 rgba(255,255,255,.03),
+    0 50px 90px -50px rgba(0,0,0,1);
 }
-.wallpaper{
+/* light spilling off the screen onto the room below it */
+.demo .wrap{position:relative}
+.demo .wrap::before{
+  content:"";position:absolute;left:6%;right:6%;top:34%;height:52%;
+  background:radial-gradient(60% 60% at 50% 0%, var(--live), transparent 72%);
+  opacity:0;transition:opacity 1.2s ease;pointer-events:none;filter:blur(40px);z-index:0;
+}
+.demo[data-playing="1"] .wrap::before{opacity:.14}
+.display{
+  position:relative;width:1512px;height:250px;
+  transform:scale(var(--k,1));transform-origin:top left;
+  -webkit-mask-image:linear-gradient(#000 76%,rgba(0,0,0,.5) 94%,transparent);
+  mask-image:linear-gradient(#000 76%,rgba(0,0,0,.5) 94%,transparent);
+  --w:274px;--h:32px;--br:12px;--tr:8px;--shift:2px;--lead:28px;
+}
+.wall{
   position:absolute;inset:0;
   background:
-    radial-gradient(115% 85% at 50% -12%, #333B45 0%, #1E242B 38%, #12161A 72%, #0C0E11 100%);
+    radial-gradient(105% 72% at 50% -10%, #39434F 0%, #232A33 32%, #141920 66%, #0A0D11 100%);
 }
-.wallpaper::after{
+.wall::after{
   content:"";position:absolute;inset:0;
-  background-image:radial-gradient(rgba(255,255,255,.07) 1px, transparent 1px);
-  background-size:22px 22px;
-  opacity:.6;
+  background-image:radial-gradient(rgba(255,255,255,.045) 1px, transparent 1px);
+  background-size:26px 26px;
 }
-/* ambient bloom, tinted by the playing artwork */
+/* corner falloff, so the desktop reads as lit rather than printed */
+.wall::before{
+  content:"";position:absolute;inset:0;
+  background:radial-gradient(120% 100% at 50% 0%, transparent 45%, rgba(0,0,0,.55) 100%);
+}
 .bloom{
-  position:absolute;left:50%;top:0;transform:translateX(-50%);
-  width:min(760px,90%);height:220px;
-  background:radial-gradient(60% 100% at 50% 0%, var(--live) 0%, transparent 70%);
-  opacity:0;transition:opacity .8s ease;pointer-events:none;
+  position:absolute;left:756px;top:0;transform:translateX(-50%);
+  width:900px;height:260px;
+  background:radial-gradient(58% 100% at 50% 0%, var(--live) 0%, transparent 72%);
+  opacity:0;pointer-events:none;will-change:opacity;
 }
-.stage[data-playing="1"] .bloom{opacity:.20}
 
+/* ---- macOS menu bar ---- */
 .menubar{
-  position:absolute;top:0;left:0;right:0;height:34px;
-  display:flex;align-items:center;justify-content:space-between;
-  padding:0 14px;color:var(--screen-ink);
-  font-family:var(--font-native);font-size:12.5px;
+  position:absolute;left:0;right:0;top:0;height:32px;z-index:3;
+  color:#fff;-webkit-font-smoothing:antialiased;
+  font-family:var(--font-native);font-size:13px;
+  background:linear-gradient(rgba(0,0,0,.30),rgba(0,0,0,.18));
 }
-.menubar .grp{display:flex;align-items:center;gap:15px;opacity:.82}
-.menubar .grp.left b{font-weight:600}
-.menubar .grp span{font-weight:400}
-.menubar .clock{font-variant-numeric:tabular-nums;letter-spacing:.01em}
-.menubar .glyph{width:15px;height:11px;display:block;opacity:.9}
-@media (max-width:700px){.menubar .hide-sm{display:none}}
+.mb-left,.mb-right{position:absolute;top:0;height:32px;display:flex;align-items:center}
+.mb-left{left:6px}
+.mb-right{right:4px}
+.mb-item{padding:0 9px;white-space:nowrap;line-height:32px}
+.mb-item.app{font-weight:600}
+.mb-apple{padding:0 11px;display:flex;align-items:center}
+.mb-apple svg{display:block;fill:currentColor}
+.mb-status{padding:0 8px;display:flex;align-items:center;height:32px}
+.mb-status svg{display:block}
+.mb-clock{padding:0 10px 0 8px;font-variant-numeric:tabular-nums;letter-spacing:.1px}
 
-/* --- the island --- */
-.notchwrap{
-  position:absolute;top:0;left:50%;z-index:5;
-  --nw:282px;--nh:34px;--nbr:14px;
-  transform:translateX(-50%) scale(var(--stage-scale,1));
-  transform-origin:top center;
-}
-.notch{
-  position:relative;
-  width:var(--nw);height:var(--nh);
-  background:var(--hw);
-  border-radius:0 0 var(--nbr) var(--nbr);
-  transition:width .42s cubic-bezier(.22,.86,.24,1), height .42s cubic-bezier(.22,.86,.24,1), border-radius .42s cubic-bezier(.22,.86,.24,1);
+/* ---- the island ---- */
+.island{
+  position:absolute;top:0;z-index:5;
+  left:calc(756px + var(--shift) - var(--w) / 2);
+  width:var(--w);height:var(--h);
+  background:#000;
+  border-radius:0 0 var(--br) var(--br);
   cursor:pointer;
 }
-/* concave flares where the shape meets the bezel — NotchShape.swift */
-.notch::before,.notch::after{
-  content:"";position:absolute;top:0;width:8px;height:8px;
-  background:radial-gradient(circle at var(--fx) 100%, transparent 7.6px, var(--hw) 8px);
+/* concave flares where the shape meets the bezel — NotchShape.swift.
+   Radius animates 8 → 12 with the panel, as animatableData does. */
+.island::before,.island::after{
+  content:"";position:absolute;top:0;
+  width:var(--tr);height:var(--tr);
+  background:radial-gradient(circle at var(--fx) 100%, transparent calc(var(--tr) - .5px), #000 var(--tr));
 }
-.notch::before{left:-8px;--fx:0}
-.notch::after{right:-8px;--fx:100%}
+.island::before{left:calc(-1 * var(--tr));--fx:0}
+.island::after{right:calc(-1 * var(--tr));--fx:100%}
+.faces{position:absolute;inset:0;overflow:hidden;border-radius:0 0 var(--br) var(--br)}
+.face{position:absolute;inset:0}
 
-/* physical camera — stays put whatever the panel does */
+/* the physical camera, centred in the housing and never moving */
 .camera{
-  position:absolute;top:11px;left:50%;transform:translateX(-50%);
-  width:7px;height:7px;border-radius:50%;
-  background:#121417;box-shadow:inset 0 0 0 1px #1E2226;
-  z-index:8;pointer-events:none;
-}
-.camera::after{
-  content:"";position:absolute;inset:2px;border-radius:50%;
-  background:radial-gradient(circle at 30% 30%, #34393E, #0C0E10 70%);
+  position:absolute;left:756px;top:12.5px;transform:translateX(-50%);
+  width:7px;height:7px;border-radius:50%;z-index:8;pointer-events:none;
+  background:radial-gradient(circle at 34% 30%, #2E343A, #090B0D 72%);
+  box-shadow:0 0 0 1px rgba(255,255,255,.045);
 }
 
-.face{position:absolute;inset:0;transition:opacity .22s ease}
-.notch[data-state="collapsed"] .face-expanded{opacity:0;pointer-events:none}
-.notch[data-state="expanded"] .face-collapsed{opacity:0;pointer-events:none}
-
-/* collapsed: left cluster | camera dead zone | right cluster */
-.face-collapsed{display:flex;align-items:center;padding:0 4px}
-.cl-left{width:46px;display:flex;justify-content:flex-end;padding-right:6px}
-.cl-gap{width:190px;flex:none}
-.cl-right{width:46px;display:flex;justify-content:flex-start;padding-left:6px}
-.thumb{width:22px;height:22px;border-radius:5px;background-size:cover;background-position:center;flex:none}
-.wave-mini{width:26px;height:14px;display:block}
-
-/* expanded panel */
-.face-expanded{display:flex;align-items:center;justify-content:center;gap:14px;padding-top:12px}
-.artwork{
-  width:114px;height:114px;border-radius:14px;flex:none;
-  background-size:cover;background-position:center;
-  transform:translateY(-11px);
-  box-shadow:0 8px 22px rgba(0,0,0,.5);
+/* ---- collapsed face: 14 pt padding, content slot, 186 pt dead zone ---- */
+.c-art{
+  position:absolute;top:5px;width:22px;height:22px;
+  border-radius:5px;background-size:cover;background-position:center;
 }
-.panelcol{width:340px;flex:none;color:#fff;font-family:var(--font-native);transform:translateY(-1px)}
-.marquee{overflow:hidden;white-space:nowrap;position:relative}
+.c-wave{position:absolute;top:9px;height:14px}
+.c-dots{position:absolute}
+.c-word{
+  position:absolute;top:0;height:32px;
+  display:flex;align-items:center;white-space:nowrap;
+  font-family:var(--font-native);font-size:10px;font-weight:600;
+}
+
+/* ---- expanded face: padding 22 / 34 / 8, content box 476 × 104 ---- */
+.e-art{
+  position:absolute;left:26px;top:18px;width:114px;height:114px;
+  border-radius:14px;background-size:cover;background-position:center;
+  display:grid;place-items:center;
+}
+.e-col{position:absolute;left:154px;top:0;width:340px;height:146px;color:#fff;font-family:var(--font-native)}
+.e-title{position:absolute;left:0;top:35px;width:304px;height:18px;font-size:14px;font-weight:600;line-height:18px}
+.e-artist{position:absolute;left:0;top:54px;width:304px;height:15px;font-size:11px;line-height:15px;color:rgba(255,255,255,.7)}
+.marquee{overflow:hidden;white-space:nowrap}
 .marquee > span{display:inline-block;will-change:transform}
-.m-title{height:18px;font-size:14px;font-weight:600;line-height:18px;padding-right:36px}
-.m-artist{height:15px;font-size:11px;line-height:15px;color:rgba(255,255,255,.7);padding-right:36px}
-.scrub{margin-top:6px;transform:translateY(3px)}
-.track{
-  height:10px;display:flex;align-items:center;cursor:pointer;position:relative;
+.e-seek{position:absolute;left:0;top:78px;width:340px;height:10px;display:flex;align-items:center;cursor:pointer}
+.e-rail{width:340px;height:6px;border-radius:3px;background:rgba(255,255,255,.22);overflow:hidden}
+.e-fill{height:6px;border-radius:3px;background:#fff;width:0}
+.e-times{
+  position:absolute;left:0;top:90px;width:340px;height:11px;
+  display:flex;justify-content:space-between;
+  font-size:9px;font-weight:500;line-height:11px;
+  font-variant-numeric:tabular-nums;color:rgba(255,255,255,.55);
 }
-.track .rail{height:6px;border-radius:3px;background:rgba(255,255,255,.22);width:100%;overflow:hidden}
-.track .fill{height:100%;background:#fff;width:0%;border-radius:3px}
-.times{
-  display:flex;justify-content:space-between;margin-top:2px;
-  font-size:9px;font-weight:500;font-variant-numeric:tabular-nums;
-  color:rgba(255,255,255,.55);
+.e-controls{position:absolute;left:0;top:100px;width:340px;height:35px;display:flex;align-items:center;justify-content:center;gap:16px}
+.e-wave{position:absolute;left:464px;top:44px;width:30px;height:24px;pointer-events:none}
+.tabtoggle{
+  position:absolute;left:464px;top:96px;width:34px;height:34px;
+  border:0;padding:0;border-radius:50%;background:rgba(0,0,0,.35);
+  display:grid;place-items:center;cursor:pointer;opacity:0;
 }
-.transport{display:flex;align-items:center;justify-content:center;gap:16px;margin-top:4px}
+.tabtoggle svg{display:block}
+/* idle placeholder — mirrors the Claude tab's block, per ExpandedNotchView */
+.e-idle-head{position:absolute;left:0;top:45.5px;width:304px;font-size:24px;font-weight:700;line-height:29px;letter-spacing:-.35px}
+.e-idle-sub{position:absolute;left:0;top:76.5px;width:340px;font-size:12.5px;line-height:15px;color:rgba(255,255,255,.72)}
+
+/* ---- Claude face: glyph on the album's footprint, column raised 21 ---- */
+.k-glyph{position:absolute;left:26px;top:19px;width:114px;height:114px}
+.k-head{position:absolute;left:0;top:28px;width:304px;font-size:24px;font-weight:700;line-height:29px;letter-spacing:-.35px}
+.k-detail{position:absolute;left:0;top:59px;width:340px;font-size:12.5px;line-height:15px;color:rgba(255,255,255,.72);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.k-info{position:absolute;left:0;top:85px;height:17px;display:flex;align-items:center;gap:10px}
+.k-chip{
+  display:flex;align-items:center;gap:4px;height:17px;padding:0 8px;
+  border-radius:9px;background:rgba(255,255,255,.12);
+  font-size:10px;font-weight:500;color:rgba(255,255,255,.85);
+}
+.k-meta{font-size:10px;font-weight:500;color:rgba(255,255,255,.55);font-variant-numeric:tabular-nums}
+
+/* ---- transport buttons ---- */
 .tbtn{
   background:none;border:0;padding:0;cursor:pointer;color:#fff;
   display:grid;place-items:center;border-radius:4px;
-  transition:color .15s,opacity .15s;
+  width:var(--hit);height:var(--hit);
+  transition:color .15s;
 }
-.tbtn svg{display:block;fill:currentColor}
+/* symbol point size + 7, matching controlButton's frame */
+.tbtn.t15{--hit:22px}
+.tbtn.t21{--hit:28px}
+.tbtn.t28{--hit:35px}
+.tbtn svg{display:block}
 .tbtn[aria-pressed="false"]{color:rgba(255,255,255,.35)}
 .tbtn:hover{opacity:.75}
-.wave-big{position:absolute;top:10px;right:4px;width:30px;height:24px;pointer-events:none}
 
-/* --- CAD-style dimension callouts, drawn on the screen --- */
+/* ---- CAD-style callouts, in points on the display ---- */
 .dim{position:absolute;color:var(--screen-ink-2);font-family:var(--font-mono);font-size:9.5px;letter-spacing:.06em;pointer-events:none;z-index:4}
 .dim-w{
-  left:0;width:100%;top:calc(var(--nh) + 16px);
-  display:flex;align-items:center;gap:8px;
-  transition:top .42s cubic-bezier(.22,.86,.24,1);
+  left:calc(756px + var(--shift) - var(--w) / 2);width:var(--w);
+  top:calc(var(--h) + 18px);display:flex;align-items:center;gap:8px;
 }
 .dim-w i{flex:1;height:1px;background:var(--screen-rule);position:relative}
 .dim-w i::before,.dim-w i::after{content:"";position:absolute;top:-3px;width:1px;height:7px;background:var(--screen-rule)}
 .dim-w i::before{left:0}.dim-w i::after{right:0}
 .dim-h{
-  top:0;left:calc(100% + 22px);height:var(--nh);
+  left:calc(756px + var(--shift) + var(--w) / 2 + 22px);top:0;height:var(--h);
   display:flex;align-items:center;gap:8px;
-  transition:height .42s cubic-bezier(.22,.86,.24,1);
+  /* only once the panel hangs below the menu bar — otherwise it clutters it */
+  opacity:var(--dimh,0);
 }
 .dim-h i{width:1px;height:100%;background:var(--screen-rule);position:relative}
 .dim-h i::before,.dim-h i::after{content:"";position:absolute;left:-3px;width:7px;height:1px;background:var(--screen-rule)}
 .dim-h i::before{top:0}.dim-h i::after{bottom:0}
-@media (max-width:760px){.dim-h{display:none}}
 
-/* --- instrument panel under the screen --- */
+/* ---- instrument panel under the screen ---- */
 .console{
+  position:relative;z-index:1;
   border:1px solid var(--rule);border-top:none;
-  background:var(--paper-2);
-  display:grid;grid-template-columns:auto 1fr auto;gap:18px;align-items:center;
+  border-radius:0 0 14px 14px;
+  background:linear-gradient(180deg,rgba(255,255,255,.045),rgba(255,255,255,.012));
+  box-shadow:0 1px 0 rgba(255,255,255,.04) inset;
+  display:flex;flex-wrap:wrap;gap:14px 20px;align-items:center;justify-content:space-between;
   padding:12px 16px;
 }
-@media (max-width:820px){.console{grid-template-columns:1fr;gap:14px}}
+.seg{display:flex;align-items:center;gap:6px}
+.seglabel{
+  font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--ink-3);margin-right:4px;
+}
+.seg button{
+  border:1px solid var(--rule);background:transparent;color:var(--ink-2);
+  font-family:var(--font-mono);font-size:10.5px;letter-spacing:.03em;
+  padding:5px 10px;border-radius:999px;cursor:pointer;transition:all .15s;
+}
+.seg button:hover{color:var(--ink);border-color:#4A443E}
+.seg button[aria-pressed="true"]{
+  background:linear-gradient(180deg,#FBF9F4,#E9E5DC);color:#141210;border-color:#FBF9F4;
+}
+
 .console .grp{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .playbtn{
   display:inline-flex;align-items:center;gap:9px;
-  background:var(--ink);color:var(--paper);border:1px solid var(--ink);
-  border-radius:3px;padding:8px 14px;cursor:pointer;
+  background:linear-gradient(180deg,#FBF9F4,#E7E3DA);color:#141210;
+  border:1px solid #FBF9F4;border-radius:7px;padding:9px 16px;cursor:pointer;
   font-family:var(--font-mono);font-size:11.5px;letter-spacing:.04em;font-weight:500;
-  transition:background .16s,border-color .16s;
+  box-shadow:0 1px 0 rgba(255,255,255,.4) inset, 0 10px 24px -14px rgba(0,0,0,.9);
+  transition:filter .16s,transform .16s;
 }
-.playbtn:hover{background:var(--signal);border-color:var(--signal);color:var(--signal-ink)}
-.playbtn svg{fill:currentColor;display:block}
-.vol{display:flex;align-items:center;gap:9px}
-.vol input[type=range]{width:96px;accent-color:var(--ink);background:transparent}
-
+.playbtn:hover{filter:brightness(1.06)}
+.playbtn:active{transform:translateY(1px)}
+.playbtn svg{display:block}
+.vol{display:flex;align-items:center}
+.vol input[type=range]{width:96px;accent-color:var(--live);background:transparent}
 .readout{
   display:flex;align-items:center;gap:14px;flex-wrap:wrap;
-  font-family:var(--font-mono);font-size:10.5px;color:var(--ink-3);
-  letter-spacing:.04em;
+  font-family:var(--font-mono);font-size:10.5px;color:var(--ink-3);letter-spacing:.04em;
 }
 .readout b{color:var(--ink-2);font-weight:500}
 .bands{display:flex;gap:7px;font-variant-numeric:tabular-nums}
 .bands span{color:var(--ink-2);min-width:30px;display:inline-block}
 .livedot{width:6px;height:6px;border-radius:50%;background:var(--rule);flex:none;transition:background .4s}
-.stage[data-playing="1"] ~ .console .livedot,.console.on .livedot{background:var(--live)}
-
+.console.on .livedot{background:var(--live)}
 .caption{
-  display:flex;justify-content:space-between;gap:20px 40px;flex-wrap:wrap;
-  margin-top:14px;color:var(--ink-3);
-}
-.caption p{max-width:78ch;font-size:13px;line-height:1.55}
-.caption p b{font-family:var(--font-mono);font-size:12px;font-weight:500;color:var(--ink-2)}
-.caption p:last-child{
-  font-family:var(--font-mono);font-size:10.5px;letter-spacing:.06em;
-  text-transform:uppercase;white-space:nowrap;
+  margin-top:14px;color:var(--ink-3);font-size:13px;line-height:1.55;max-width:84ch;
 }
 
 /* ---------- capability grid ---------- */
-.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid var(--rule)}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid var(--rule);border-radius:14px;overflow:hidden;background:linear-gradient(180deg,rgba(255,255,255,.028),rgba(255,255,255,0))}
 @media (max-width:900px){.grid3{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media (max-width:600px){.grid3{grid-template-columns:1fr}}
-.cell{padding:22px 24px 26px;border-bottom:1px solid var(--rule-soft);border-right:1px solid var(--rule-soft)}
+@media (max-width:600px){.grid3{grid-template-columns:minmax(0,1fr)}}
+.cell{padding:24px 26px 28px;border-bottom:1px solid var(--rule-soft);border-right:1px solid var(--rule-soft);transition:background .3s}
 .cell:nth-child(3n){border-right:none}
 @media (max-width:900px){.cell:nth-child(3n){border-right:1px solid var(--rule-soft)}.cell:nth-child(2n){border-right:none}}
 @media (max-width:600px){.cell{border-right:none!important}}
-.cell .k{font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;color:var(--ink-3);text-transform:uppercase;display:block;margin-bottom:12px}
+.cell:hover{background:rgba(255,255,255,.022)}
+.cell .k{font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;color:var(--live);opacity:.85;text-transform:uppercase;display:block;margin-bottom:13px}
 .cell h3{margin-bottom:7px}
 .cell p{font-size:14.5px;line-height:1.5;color:var(--ink-2)}
 
@@ -414,14 +484,15 @@ section{border-bottom:1px solid var(--rule)}
 .lane .lk{font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}
 .flow{display:flex;align-items:stretch;gap:0}
 .node{
-  border:1px solid var(--rule);background:var(--paper-2);
-  padding:9px 13px;border-radius:3px;
-  flex:1 1 0;min-width:0;
+  border:1px solid var(--rule);border-radius:8px;
+  background:linear-gradient(180deg,rgba(255,255,255,.045),rgba(255,255,255,.012));
+  box-shadow:0 1px 0 rgba(255,255,255,.04) inset;
+  padding:10px 14px;flex:1 1 0;min-width:0;
 }
 .node b{display:block;font-family:var(--font-mono);font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .node i{display:block;font-style:normal;font-size:11px;color:var(--ink-3);white-space:nowrap;margin-top:2px;overflow:hidden;text-overflow:ellipsis}
-.node.solid{background:var(--ink);border-color:var(--ink);color:var(--paper)}
-.node.solid i{color:color-mix(in srgb, var(--paper) 60%, var(--ink))}
+.node.solid{background:linear-gradient(180deg,#FBF9F4,#E9E5DC);border-color:#FBF9F4;color:#141210;box-shadow:0 10px 26px -16px rgba(0,0,0,.9)}
+.node.solid i{color:#6B655D}
 .link{flex:0 0 clamp(48px,7vw,96px);display:flex;align-items:center;padding:0 5px;position:relative}
 .link i{flex:1;height:1px;background:var(--ink-3);opacity:.55}
 .link::after{content:"";width:0;height:0;border-left:5px solid var(--ink-3);border-top:3.5px solid transparent;border-bottom:3.5px solid transparent}
@@ -432,74 +503,57 @@ section{border-bottom:1px solid var(--rule)}
 }
 
 .callout{
-  border-left:2px solid var(--signal);background:var(--paper-2);
-  padding:16px 20px;margin-top:26px;
+  border:1px solid var(--rule);border-left:2px solid var(--live);
+  border-radius:0 12px 12px 0;
+  background:linear-gradient(90deg,rgba(232,162,92,.07),rgba(255,255,255,.012) 40%);
+  padding:18px 22px;margin-top:28px;
 }
-.callout .k{font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--signal);display:block;margin-bottom:8px}
+.callout .k{font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--live);display:block;margin-bottom:9px}
 .callout p{font-size:14.5px;color:var(--ink-2);line-height:1.55;max-width:72ch}
-.callout code{font-family:var(--font-mono);font-size:13px;color:var(--ink);background:var(--paper-3);padding:1px 4px;border-radius:2px}
+.callout code{font-family:var(--font-mono);font-size:13px;color:var(--ink);background:rgba(255,255,255,.06);padding:2px 5px;border-radius:4px}
 
-/* ---------- claude module ---------- */
-.claude-demo{display:grid;grid-template-columns:minmax(0,1fr) 262px;gap:0}
-@media (max-width:820px){.claude-demo{grid-template-columns:1fr}}
-.mini-stage{
-  position:relative;background:var(--screen);border:1px solid var(--screen-rule);
-  height:190px;overflow:hidden;
+/* ---------- Claude dot matrix ---------- */
+.dots{
+  --dot-box:22px;
+  display:grid;grid-template-columns:repeat(5,1fr);
+  /* dot = 0.6 × cell pitch, as DotGridIcon draws it */
+  gap:calc(var(--dot-box) * 0.087);
+  width:var(--dot-box);height:var(--dot-box);
 }
-.statebar{
-  border:1px solid var(--rule);border-left:none;background:var(--paper-2);
-  display:flex;flex-direction:column;
-}
-@media (max-width:820px){.statebar{border-left:1px solid var(--rule);border-top:none}}
-.statebar button{
-  text-align:left;background:none;border:0;border-bottom:1px solid var(--rule-soft);
-  padding:13px 16px;cursor:pointer;font-family:var(--font-mono);font-size:11px;
-  letter-spacing:.05em;color:var(--ink-2);display:flex;align-items:center;gap:10px;
-  transition:background .14s,color .14s;flex:1;
-}
-.statebar button:hover{background:var(--paper-3);color:var(--ink)}
-.statebar button[aria-pressed="true"]{background:var(--ink);color:var(--paper)}
-.statebar button:last-child{border-bottom:none}
-.statebar .sw{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
-
-.dots{display:grid;grid-template-columns:repeat(5,1fr);gap:2px;width:22px;height:22px}
 .dots u{display:block;width:100%;padding-bottom:100%;border-radius:50%;background:currentColor;opacity:.2}
-.statusword{
-  font-family:var(--font-native);font-size:11px;font-weight:600;
-  white-space:nowrap;transition:color .3s;
-}
 
 /* ---------- install ---------- */
-.steps{counter-reset:s;border-top:1px solid var(--rule)}
-.step{
-  display:grid;grid-template-columns:34px minmax(0,1fr);gap:0 18px;
-  padding:20px 0;border-bottom:1px solid var(--rule-soft);
-}
-.step::before{
-  counter-increment:s;content:counter(s,decimal-leading-zero);
-  font-family:var(--font-mono);font-size:11px;color:var(--ink-3);padding-top:2px;
-}
-.step h3{margin-bottom:5px}
-.step p{font-size:14.5px;color:var(--ink-2);max-width:66ch}
 pre{
-  margin:12px 0 0;padding:13px 15px;overflow-x:auto;
-  background:var(--screen);color:var(--screen-ink);
-  border-radius:4px;font-family:var(--font-mono);font-size:12.5px;line-height:1.6;
+  margin:14px 0 0;padding:15px 17px;overflow-x:auto;
+  background:linear-gradient(180deg,#121112,#0C0B0C);
+  color:var(--ink);border:1px solid var(--rule);border-radius:10px;
+  box-shadow:0 1px 0 rgba(255,255,255,.03) inset;
+  font-family:var(--font-mono);font-size:12.5px;line-height:1.65;
 }
-pre .c{color:var(--screen-ink-2)}
+pre .c{color:var(--ink-3)}
 .req{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 40px}
-@media (max-width:700px){.req{grid-template-columns:1fr}}
-.req div{padding:11px 0;border-bottom:1px solid var(--rule-soft);display:flex;justify-content:space-between;gap:18px;font-family:var(--font-mono);font-size:12px}
+@media (max-width:700px){.req{grid-template-columns:minmax(0,1fr)}}
+.req div{padding:10px 0;border-bottom:1px solid var(--rule-soft);display:flex;justify-content:space-between;gap:18px;font-family:var(--font-mono);font-size:12px}
+.fromsource{margin-top:26px}
+.fromsource summary{
+  cursor:pointer;font-family:var(--font-mono);font-size:11.5px;letter-spacing:.04em;
+  color:var(--ink-2);padding:8px 0;list-style:none;display:inline-flex;align-items:center;gap:8px;
+}
+.fromsource summary::-webkit-details-marker{display:none}
+.fromsource summary::before{content:"+";color:var(--live);font-size:13px}
+.fromsource[open] summary::before{content:"–"}
+.fromsource summary:hover{color:var(--ink)}
 .req span{color:var(--ink-3)}
 
 /* ---------- footer ---------- */
 footer{padding:44px 0 56px}
 .foot{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr) minmax(0,1fr);gap:34px}
-@media (max-width:760px){.foot{grid-template-columns:1fr;gap:26px}}
+@media (max-width:760px){.foot{grid-template-columns:minmax(0,1fr);gap:26px}}
 .foot p{font-size:13px;color:var(--ink-3);max-width:52ch;line-height:1.6}
 .foot ul{list-style:none;margin:0;padding:0;display:grid;gap:8px}
 .foot a{font-family:var(--font-mono);font-size:11.5px;color:var(--ink-2);text-decoration:none;border-bottom:1px solid var(--rule)}
 .foot a:hover{color:var(--ink);border-bottom-color:var(--ink)}
+.foot .brand{border-bottom:none;width:max-content}
 
 @media (prefers-reduced-motion: reduce){
   *{animation-duration:.001ms!important;animation-iteration-count:1!important}
@@ -508,26 +562,27 @@ footer{padding:44px 0 56px}
 </style>
 </head>
 <body>
+<div class="glow" aria-hidden="true"></div>
+<div class="grain" aria-hidden="true"></div>
 
 <header class="topbar">
   <div class="wrap">
     <a class="brand" href="#top">
-      <svg class="mark" viewBox="0 0 1024 1024" aria-hidden="true">
-        <circle cx="302" cy="302" r="62"/><circle cx="512" cy="302" r="62"/><circle cx="722" cy="302" r="62"/>
-        <circle cx="302" cy="512" r="62"/><circle cx="512" cy="512" r="62"/><circle cx="722" cy="512" r="62"/>
-        <circle cx="302" cy="722" r="62"/><circle cx="512" cy="722" r="62"/><circle cx="722" cy="722" r="62"/>
+      <svg class="mark" viewBox="0 0 100 100" aria-hidden="true">
+        <circle cx="13" cy="13" r="13"/><circle cx="50" cy="13" r="13"/><circle cx="87" cy="13" r="13"/>
+        <circle cx="13" cy="50" r="13"/><circle cx="50" cy="50" r="13"/><circle cx="87" cy="50" r="13"/>
+        <circle cx="13" cy="87" r="13"/><circle cx="50" cy="87" r="13"/><circle cx="87" cy="87" r="13"/>
       </svg>
       <b>Isle</b>
-      <span class="ver">0.1.3</span>
+      <span class="ver">0.3.0</span>
     </a>
     <nav class="top">
       <a href="#demo">Demo</a>
       <a href="#does">What it does</a>
       <a href="#mechanism">Mechanism</a>
-      <a href="#claude">Claude Code</a>
       <a href="#install">Install</a>
     </nav>
-    <a class="btn sm" href="https://github.com/matthewhamilton3141/isle/releases/download/v0.1.3/Isle-0.1.3.dmg">Download</a>
+    <a class="btn sm" href="https://github.com/matthewhamilton3141/isle/releases/download/v0.3.0/Isle-0.3.0.dmg">Download</a>
   </div>
 </header>
 
@@ -540,31 +595,26 @@ footer{padding:44px 0 56px}
         <div class="eyebrow mono">
           <span>macOS 14+</span><em></em>
           <span>Menu bar app</span><em></em>
-          <span>Swift &amp; SwiftUI</span><em></em>
-          <span>Built for Spotify</span>
+          <span>Spotify</span><em></em>
+          <span>Claude Code</span>
         </div>
-        <h1>A live island in the dead space around your camera.</h1>
-        <p class="lede">Isle fills the black band either side of the MacBook notch with what Spotify
-          is playing — album art, a waveform driven by the actual audio signal, and transport
-          controls that unfold when your pointer gets close. It never takes focus, and it folds
-          back out of the way the moment you leave.</p>
+        <h1>A live island in the <span class="serif">dead space</span> around your camera.</h1>
+        <p class="lede">What Spotify is playing and what Claude Code is doing, in the black band
+          either side of the notch. Hover to open the controls; leave and it folds away.</p>
         <div class="hero-actions" style="margin-top:28px">
-          <a class="btn" href="https://github.com/matthewhamilton3141/isle/releases/download/v0.1.3/Isle-0.1.3.dmg">
-            Download Isle 0.1.3 &nbsp;·&nbsp; .dmg
+          <a class="btn" href="https://github.com/matthewhamilton3141/isle/releases/download/v0.3.0/Isle-0.3.0.dmg">
+            Download Isle 0.3.0 &nbsp;·&nbsp; .dmg
           </a>
           <a class="btn ghost" href="#demo">Try it below</a>
-          <span class="note">Sideloaded build — not the App Store. Here's why.</span>
         </div>
       </div>
 
       <div class="datasheet">
         <dl>
-          <dt>Version</dt><dd>0.1.3</dd>
-          <dt>Requires</dt><dd>macOS 14.0</dd>
-          <dt>Waveform</dt><dd>macOS 14.4+</dd>
-          <dt>Source</dt><dd>Spotify</dd>
+          <dt>Version</dt><dd>0.3.0</dd>
+          <dt>Requires</dt><dd>macOS 14 · 14.4 for the waveform</dd>
+          <dt>Housing</dt><dd>186 × 32 pt</dd>
           <dt>Panel</dt><dd>520 × 146 pt</dd>
-          <dt>Bands</dt><dd>6 · log-spaced</dd>
           <dt>Dock icon</dt><dd>None</dd>
           <dt>Price</dt><dd>Free</dd>
         </dl>
@@ -573,117 +623,190 @@ footer{padding:44px 0 56px}
   </section>
 
   <!-- ============ DEMO ============ -->
-  <section id="demo" class="display">
+  <section id="demo" class="demo">
     <div class="wrap">
 
-      <div class="stage" id="stage" data-playing="0">
-        <div class="wallpaper"></div>
-        <div class="bloom"></div>
+      <div class="displaywrap" id="displaywrap" data-playing="0">
+        <div class="display" id="display">
+          <div class="wall"></div>
+          <div class="bloom"></div>
 
-        <div class="menubar">
-          <div class="grp left">
-            <svg class="glyph" viewBox="0 0 1024 1024" aria-hidden="true" style="width:12px;height:12px;fill:currentColor">
-              <circle cx="302" cy="302" r="90"/><circle cx="512" cy="302" r="90"/><circle cx="722" cy="302" r="90"/>
-              <circle cx="302" cy="512" r="90"/><circle cx="512" cy="512" r="90"/><circle cx="722" cy="512" r="90"/>
-              <circle cx="302" cy="722" r="90"/><circle cx="512" cy="722" r="90"/><circle cx="722" cy="722" r="90"/>
-            </svg>
-            <b>Spotify</b>
-            <span class="hide-sm">File</span><span class="hide-sm">Edit</span>
-            <span class="hide-sm">View</span><span class="hide-sm">Playback</span>
-          </div>
-          <div class="grp">
-            <span class="hide-sm" id="mbState">Isle</span>
-            <svg class="glyph" viewBox="0 0 24 16" aria-hidden="true" style="fill:none;stroke:currentColor;stroke-width:1.6">
-              <path d="M2 6.5a13 13 0 0 1 20 0M5.5 10a8.5 8.5 0 0 1 13 0"/><circle cx="12" cy="13.4" r="1" fill="currentColor" stroke="none"/>
-            </svg>
-            <svg class="glyph" viewBox="0 0 26 12" aria-hidden="true" style="fill:none;stroke:currentColor;stroke-width:1.4">
-              <rect x="1" y="1" width="20" height="10" rx="3"/><rect x="3" y="3" width="13" height="6" rx="1.5" fill="currentColor" stroke="none"/><path d="M23 4.5v3" stroke-linecap="round"/>
-            </svg>
-            <span class="clock" id="mbClock">9:41</span>
-          </div>
-        </div>
-
-        <div class="notchwrap">
-          <div class="notch" id="notch" data-state="collapsed" role="button" tabindex="0"
-               aria-label="Isle notch — click to expand or collapse">
-
-            <div class="face face-collapsed">
-              <div class="cl-left"><div class="thumb" id="thumbArt"></div></div>
-              <div class="cl-gap"></div>
-              <div class="cl-right"><canvas class="wave-mini" id="waveMini" width="52" height="28"></canvas></div>
+          <div class="menubar">
+            <div class="mb-left">
+              <span class="mb-apple">
+                <svg width="13" height="16" viewBox="0 0 100 122" aria-hidden="true">
+                  <path d="M69.9 64.8c-.1-13 10.6-19.2 11.1-19.5-6-8.8-15.4-10-18.8-10.2-8-.8-15.6 4.7-19.7 4.7-4.1 0-10.3-4.6-16.9-4.5-8.7.1-16.7 5.1-21.2 12.9C5.3 63.9 12 87 21.1 99.6c4.5 6.2 9.8 13.1 16.8 12.9 6.7-.3 9.3-4.3 17.4-4.3s10.4 4.3 17.5 4.2c7.2-.1 11.8-6.3 16.2-12.5 5.1-7.2 7.2-14.2 7.3-14.5-.2-.1-14-5.4-14.1-21.4z"/>
+                  <path d="M57.5 26.3c3.6-4.4 6.1-10.5 5.4-16.6-5.2.2-11.6 3.5-15.4 7.9-3.4 3.9-6.4 10.1-5.6 16.1 5.8.4 11.8-3 15.6-7.4z"/>
+                </svg>
+              </span>
+              <span class="mb-item app">Spotify</span>
+              <span class="mb-item">File</span>
+              <span class="mb-item">Edit</span>
+              <span class="mb-item">View</span>
+              <span class="mb-item">Playback</span>
+              <span class="mb-item">Window</span>
+              <span class="mb-item">Help</span>
             </div>
 
-            <div class="face face-expanded">
-              <div class="artwork" id="bigArt"></div>
-              <div class="panelcol">
-                <div class="marquee m-title" id="mqTitle"><span>Long Exposure</span></div>
-                <div class="marquee m-artist" id="mqArtist"><span>Nocturne Bureau</span></div>
-                <div class="scrub">
-                  <div class="track" id="track" role="slider" tabindex="0" aria-label="Seek"
-                       aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-                    <div class="rail"><div class="fill" id="fill"></div></div>
-                  </div>
-                  <div class="times"><span id="tElapsed">0:00</span><span id="tRemain">-3:34</span></div>
+            <div class="mb-right">
+              <span class="mb-status" title="Isle">
+                <svg class="mark" width="15" height="15" viewBox="0 0 100 100" aria-hidden="true">
+                  <circle cx="13" cy="13" r="13"/><circle cx="50" cy="13" r="13"/><circle cx="87" cy="13" r="13"/>
+                  <circle cx="13" cy="50" r="13"/><circle cx="50" cy="50" r="13"/><circle cx="87" cy="50" r="13"/>
+                  <circle cx="13" cy="87" r="13"/><circle cx="50" cy="87" r="13"/><circle cx="87" cy="87" r="13"/>
+                </svg>
+              </span>
+              <span class="mb-status">
+                <svg width="25" height="12" viewBox="0 0 27 13" aria-hidden="true">
+                  <rect x=".6" y=".6" width="23" height="11.8" rx="3.6" fill="none" stroke="currentColor" stroke-width="1" opacity=".5"/>
+                  <rect x="2.3" y="2.3" width="13.6" height="8.4" rx="2.1" fill="currentColor"/>
+                  <path d="M25.2 4.4c1 .5 1.5 1.5 1.5 2.1s-.5 1.7-1.5 2.2z" fill="currentColor" opacity=".5"/>
+                </svg>
+              </span>
+              <span class="mb-status">
+                <svg width="17" height="13" viewBox="0 0 24 18" aria-hidden="true"
+                     fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+                  <path d="M2.99 9.69A12.7 12.7 0 0 1 21.01 9.69"/>
+                  <path d="M6.02 11.81A8.4 8.4 0 0 1 17.98 11.81"/>
+                  <path d="M9.05 13.93A4.2 4.2 0 0 1 14.95 13.93"/>
+                  <circle cx="12" cy="15.9" r="1.45" fill="currentColor" stroke="none"/>
+                </svg>
+              </span>
+              <span class="mb-status">
+                <svg width="15" height="15" viewBox="0 0 20 20" aria-hidden="true"
+                     fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+                  <circle cx="8.4" cy="8.4" r="5.9"/><path d="M12.8 12.8 17.6 17.6"/>
+                </svg>
+              </span>
+              <span class="mb-status">
+                <svg width="16" height="14" viewBox="0 0 20 18" aria-hidden="true">
+                  <rect x=".9" y="1.3" width="18.2" height="6.6" rx="3.3" fill="none" stroke="currentColor" stroke-width="1.4"/>
+                  <circle cx="5.6" cy="4.6" r="1.5" fill="currentColor"/>
+                  <rect x=".9" y="10.1" width="18.2" height="6.6" rx="3.3" fill="none" stroke="currentColor" stroke-width="1.4"/>
+                  <circle cx="14.4" cy="13.4" r="1.5" fill="currentColor"/>
+                </svg>
+              </span>
+              <span class="mb-clock" id="mbClock">Sat Aug 30  1:25 AM</span>
+            </div>
+          </div>
+
+          <div class="island" id="island" role="button" tabindex="0"
+               aria-label="Isle — click to open or close the panel">
+            <div class="faces">
+              <!-- collapsed: music groups left of the camera, Claude right -->
+              <div class="face" id="faceCollapsed">
+                <div class="c-art" id="cArt"></div>
+                <canvas class="c-wave" id="waveMini" width="52" height="28"></canvas>
+                <div class="c-dots"><span class="dots" id="cDots" style="--dot-box:16px"></span></div>
+                <div class="c-word" id="cWord">Thinking</div>
+              </div>
+
+              <!-- expanded, music tab -->
+              <div class="face tabface" id="faceMusic">
+                <div class="e-art" id="eArt">
+                  <svg id="noteGlyph" width="22" height="22" viewBox="0 0 24 24" aria-hidden="true" fill="rgba(255,255,255,.75)">
+                    <rect x="9.5" y="3.6" width="1.7" height="12.2" rx=".85"/>
+                    <ellipse cx="7.2" cy="16.8" rx="3.6" ry="2.9" transform="rotate(-20 7.2 16.8)"/>
+                    <path d="M11.2 3.9c2.9.9 4.6 2.6 4.6 4.8 0 .9-.2 1.7-.7 2.4-.3.4-.9.1-.8-.4.4-1.9-.8-3.4-3.1-4.2z"/>
+                  </svg>
                 </div>
-                <div class="transport">
-                  <button class="tbtn" id="bShuffle" aria-pressed="false" aria-label="Shuffle">
-                    <svg width="15" height="15" viewBox="0 0 16 16"><path d="M11.2 2.3a.6.6 0 0 1 .85 0l2 2a.6.6 0 0 1 0 .85l-2 2a.6.6 0 0 1-.85-.85l.97-.97h-1.3c-.8 0-1.3.3-1.8 1L7.4 8l1.27 1.67c.5.7 1 1 1.8 1h1.3l-.97-.97a.6.6 0 0 1 .85-.85l2 2a.6.6 0 0 1 0 .85l-2 2a.6.6 0 1 1-.85-.85l.97-.97h-1.3c-1.2 0-2.1-.55-2.8-1.5L6.65 9 5.53 10.5c-.7.95-1.6 1.5-2.8 1.5H1.9a.6.6 0 0 1 0-1.2h.83c.8 0 1.3-.3 1.8-1L5.9 8 4.53 6.2c-.5-.7-1-1-1.8-1H1.9a.6.6 0 0 1 0-1.2h.83c1.2 0 2.1.55 2.8 1.5L6.65 7l1.12-1.5c.7-.95 1.6-1.5 2.8-1.5h1.3l-.97-.97a.6.6 0 0 1 0-.73z"/></svg>
-                  </button>
-                  <button class="tbtn" id="bPrev" aria-label="Previous track">
-                    <svg width="21" height="21" viewBox="0 0 22 22"><path d="M5.6 4.6c.5 0 .9.4.9.9v4.2l8.1-4.9c.8-.5 1.8.1 1.8 1v10.4c0 .9-1 1.5-1.8 1l-8.1-4.9v4.2c0 .5-.4.9-.9.9s-.9-.4-.9-.9V5.5c0-.5.4-.9.9-.9z"/></svg>
-                  </button>
-                  <button class="tbtn" id="bPlay" aria-label="Play">
-                    <svg width="28" height="28" viewBox="0 0 28 28" id="playIcon"><path d="M8.3 4.5c-.6-.4-1.4 0-1.4.8v17.4c0 .8.8 1.2 1.4.8l13.5-8.7c.5-.3.5-1.1 0-1.5L8.3 4.5z"/></svg>
-                  </button>
-                  <button class="tbtn" id="bNext" aria-label="Next track">
-                    <svg width="21" height="21" viewBox="0 0 22 22"><path d="M16.4 4.6c-.5 0-.9.4-.9.9v4.2L7.4 4.8c-.8-.5-1.8.1-1.8 1v10.4c0 .9 1 1.5 1.8 1l8.1-4.9v4.2c0 .5.4.9.9.9s.9-.4.9-.9V5.5c0-.5-.4-.9-.9-.9z"/></svg>
-                  </button>
-                  <button class="tbtn" id="bRepeat" aria-pressed="false" aria-label="Repeat">
-                    <svg width="15" height="15" viewBox="0 0 16 16"><path d="M4.6 3.2h6.2l-.9-.9a.6.6 0 0 1 .85-.85l1.95 1.95a.6.6 0 0 1 0 .85L10.75 6.2a.6.6 0 1 1-.85-.85l.9-.9H4.6c-1 0-1.7.7-1.7 1.7v1.3a.6.6 0 0 1-1.2 0V6.15c0-1.65 1.15-2.95 2.9-2.95zm6.8 4.5a.6.6 0 0 1 .6.6v1.55c0 1.65-1.15 2.95-2.9 2.95H2.9l.9.9a.6.6 0 1 1-.85.85L1 12.6a.6.6 0 0 1 0-.85l1.95-1.95a.6.6 0 1 1 .85.85l-.9.9h6.2c1 0 1.7-.7 1.7-1.7V8.3a.6.6 0 0 1 .6-.6z"/></svg>
-                  </button>
+                <div class="e-col">
+                  <div class="e-title marquee" id="mqTitle"><span></span></div>
+                  <div class="e-artist marquee" id="mqArtist"><span></span></div>
+                  <div class="e-seek" id="seek" role="slider" tabindex="0" aria-label="Seek"
+                       aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                    <div class="e-rail"><div class="e-fill" id="fill"></div></div>
+                  </div>
+                  <div class="e-times"><span id="tElapsed">0:00</span><span id="tRemain">0:00</span></div>
+                  <div class="e-controls" id="controls">
+                    <button class="tbtn t15" id="bShuffle" aria-pressed="false" aria-label="Shuffle">
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M1.6 7.6h4.3c1.6 0 3.1.8 4 2.1l3.6 5c.9 1.3 2.4 1.7 4 1.7h4.9"/>
+                        <path d="M1.6 16.4h4.3c1.6 0 3.1-.8 4-2.1l3.6-5c.9-1.3 2.4-1.7 4-1.7h4.9"/>
+                        <path d="M20 5.2 22.4 7.6 20 10"/><path d="M20 14 22.4 16.4 20 18.8"/>
+                      </svg>
+                    </button>
+                    <button class="tbtn t21" id="bPrev" aria-label="Previous track">
+                      <svg width="21" height="21" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M11.1 6v12L2.1 12z"/><path d="M21.9 6v12L12.9 12z"/>
+                      </svg>
+                    </button>
+                    <button class="tbtn t28" id="bPlay" aria-label="Play">
+                      <svg width="28" height="28" viewBox="0 0 24 24" id="playIcon" aria-hidden="true"><path d="M6.3 4.85 18.5 12 6.3 19.15z" fill="currentColor" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/></svg>
+                    </button>
+                    <button class="tbtn t21" id="bNext" aria-label="Next track">
+                      <svg width="21" height="21" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M12.9 6v12L21.9 12z"/><path d="M2.1 6v12L11.1 12z"/>
+                      </svg>
+                    </button>
+                    <button class="tbtn t15" id="bRepeat" aria-pressed="false" aria-label="Repeat">
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 13.4v-2.4A4 4 0 0 1 6 7h15.8"/><path d="M19.8 5 21.8 7 19.8 9"/><path d="M22 10.6V13a4 4 0 0 1-4 4H2.2"/><path d="M4.2 19 2.2 17 4.2 15"/></svg>
+                    </button>
+                  </div>
+                  <div class="e-idle-head" id="idleHead">Nothing playing</div>
+                  <div class="e-idle-sub" id="idleSub">Start something in Spotify or Music</div>
                 </div>
               </div>
-              <canvas class="wave-big" id="waveBig" width="60" height="48"></canvas>
+
+              <!-- expanded, Claude tab -->
+              <div class="face tabface" id="faceClaude">
+                <div class="k-glyph"><span class="dots" id="cDotsBig" style="--dot-box:114px"></span></div>
+                <div class="e-col">
+                  <div class="k-head" id="cHead">Thinking</div>
+                  <div class="k-detail" id="cSub">Reading Isle/Media/SystemAudioLevels.swift</div>
+                  <div class="k-info">
+                    <span class="k-chip">
+                      <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <path d="M2.6 6.2c0-1.4 1.1-2.5 2.5-2.5h4.1c.7 0 1.4.3 1.8.9l1 1.2h9c1.4 0 2.5 1.1 2.5 2.5v9.5c0 1.4-1.1 2.5-2.5 2.5H5.1c-1.4 0-2.5-1.1-2.5-2.5z"/>
+                      </svg>isle</span>
+                    <span class="k-meta" id="cElapsed">0m 00s</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- the waveform is pinned to one spot, outside the tab switch -->
+              <canvas class="e-wave" id="waveBig" width="60" height="48"></canvas>
+
+              <!-- NotchRootView's single toggle: it shows the tab you'd switch to -->
+              <button class="tabtoggle" id="tabToggle" aria-label="Switch tab"></button>
             </div>
           </div>
+
           <div class="camera"></div>
-          <div class="dim dim-w" id="dimW"><i></i><span id="dimWLabel">282</span><i></i></div>
-          <div class="dim dim-h" id="dimH"><i></i><span id="dimHLabel">34</span></div>
+          <div class="dim dim-w"><i></i><span id="dimWLabel">186</span><i></i></div>
+          <div class="dim dim-h"><i></i><span id="dimHLabel">32</span></div>
         </div>
       </div>
 
       <div class="console" id="console">
         <div class="grp">
           <button class="playbtn" id="bigPlay">
-            <svg width="11" height="12" viewBox="0 0 11 12" id="bigPlayIcon"><path d="M1 1.2c0-.5.5-.8 1-.5l8 4.8c.4.3.4.8 0 1l-8 4.8c-.5.3-1 0-1-.5V1.2z"/></svg>
-            <span id="bigPlayLabel">Play the demo</span>
+            <svg width="12" height="12" viewBox="0 0 24 24" id="bigPlayIcon" aria-hidden="true"><path d="M6.3 4.85 18.5 12 6.3 19.15z" fill="currentColor" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/></svg>
+            <span id="bigPlayLabel">Play</span>
           </button>
-          <div class="vol">
-            <span class="mono" style="font-size:10px">VOL</span>
-            <input type="range" id="vol" min="0" max="100" value="62" aria-label="Demo volume">
-          </div>
+          <div class="vol"><input type="range" id="vol" min="0" max="100" value="62" aria-label="Demo volume"></div>
         </div>
 
-        <div class="readout">
-          <span class="livedot" id="liveDot"></span>
-          <span>STATE <b id="roState">COLLAPSED</b></span>
-          <span>PANEL <b id="roSize">282×34</b></span>
-          <span>BANDS</span>
-          <span class="bands" id="roBands">
-            <span>0.00</span><span>0.00</span><span>0.00</span><span>0.00</span><span>0.00</span><span>0.00</span>
+        <div class="seg" id="cBar">
+          <span class="seglabel">Claude</span>
+          <button data-state="idle">None</button>
+          <button data-state="working" aria-pressed="true">Working</button>
+          <button data-state="approval">Approval</button>
+          <button data-state="done">Done</button>
+        </div>
+
+        <div class="grp">
+          <span class="readout"><span class="livedot" id="liveDot"></span><b id="roSize">186×32</b>
+            <span class="bands" id="roBands"><span>0.00</span><span>0.00</span><span>0.00</span><span>0.00</span><span>0.00</span><span>0.00</span></span>
           </span>
+          <button class="btn ghost sm" id="bToggle">Open</button>
         </div>
-
-        <button class="btn ghost sm" id="bToggle">Expand panel</button>
       </div>
 
-      <div class="caption">
-        <p>The waveform is not a loop. The demo synthesises its audio in your browser, runs an FFT
-          over the live output, and reduces the spectrum to six log-spaced bands, tilted so the high
-          bars stay alive — the same reduction <b>SystemAudioLevels.swift</b> runs on Spotify's
-          captured signal. Hover the island to expand it; drag the playbar to seek.</p>
-        <p style="text-align:right">Fig. 1 — Isle on a 14&quot; display, 1:1 scale</p>
-      </div>
+      <p class="caption">Both sources at once, in points: housing 186 × 32, panel 520 × 146, opened with
+        the app's own spring. Hover the island, drag the playbar, switch tabs with the toggle. The
+        waveform is a live FFT of audio synthesised in your browser — original, arranged to build and
+        drop, so give it fifteen seconds.</p>
     </div>
   </section>
 
@@ -692,46 +815,28 @@ footer{padding:44px 0 56px}
     <div class="wrap sec">
       <div class="spine"><span class="tag mono"><i></i>What it does</span></div>
       <div>
-        <h2 style="max-width:22ch;margin-bottom:16px">Six things, each one sized to the space it has.</h2>
-        <p class="lede" style="margin-bottom:34px">The notch is roughly 190 points wide and 34 tall.
-          Everything below had to earn its place in that band, or in the panel that unfolds from it.</p>
+        <h2 style="max-width:20ch;margin-bottom:14px">Two live activities, one strip of dead space.</h2>
+        <p class="lede" style="margin-bottom:30px">The housing is 186 × 32 points. Everything had to
+          earn its place in that band, or in the 520 × 146 panel that unfolds from it.</p>
 
         <div class="grid3">
           <div class="cell">
-            <span class="k">Collapsed</span>
-            <h3>Now playing at a glance</h3>
-            <p>Album art on the left of the camera, waveform on the right. The cutout itself is the
-              divider — nothing is ever drawn under the lens.</p>
+            <span class="k">Music</span>
+            <h3>Now playing, and the real signal</h3>
+            <p>Album art and transport for Spotify, with a waveform driven by a Core Audio process
+              tap on it — not a timer, and not anything else playing on the system.</p>
           </div>
           <div class="cell">
-            <span class="k">Signal</span>
-            <h3>A waveform from the real audio</h3>
-            <p>A Core Audio process tap on Spotify feeds an FFT. The bars move with your track, not
-              with a timer, and not with anything else playing on the system.</p>
+            <span class="k">Claude Code</span>
+            <h3>Opens when Claude needs you</h3>
+            <p>The session's state rides on the other side of the camera. An approval opens the
+              panel on its own, so you don't have to be watching the terminal.</p>
           </div>
           <div class="cell">
-            <span class="k">Expanded</span>
-            <h3>Full transport, on hover</h3>
-            <p>Play, pause, next, previous, shuffle, repeat, and a scrubbable playbar. The panel opens
-              under the pointer and closes when you leave.</p>
-          </div>
-          <div class="cell">
-            <span class="k">Artwork</span>
-            <h3>Cover art decoded sharp</h3>
-            <p>A 640 px sleeve drawn into 22 points aliases badly on the default filter. Isle decodes
-              at true pixel resolution, so the thumbnail stays crisp.</p>
-          </div>
-          <div class="cell">
-            <span class="k">Clock</span>
-            <h3>A playbar that doesn't stutter</h3>
-            <p>Position is smoothed against its own anchor and eased toward what Spotify reports, so
-              it stays continuous between coarse updates and through seeks.</p>
-          </div>
-          <div class="cell">
-            <span class="k">Window</span>
-            <h3>Never steals focus</h3>
-            <p>A borderless, non-activating panel with no Dock icon. It is created at full size and
-              only its contents animate, so the window server never has to reflow under your cursor.</p>
+            <span class="k">Both</span>
+            <h3>Out of the way by default</h3>
+            <p>A borderless, non-activating panel with no Dock icon. Idle, it shrinks to exactly the
+              camera housing and disappears into the hardware.</p>
           </div>
         </div>
       </div>
@@ -743,9 +848,9 @@ footer{padding:44px 0 56px}
     <div class="wrap sec">
       <div class="spine"><span class="tag mono"><i></i>Mechanism</span></div>
       <div>
-        <h2 style="max-width:20ch;margin-bottom:16px">Reading what's playing is the hard part.</h2>
-        <p class="lede" style="margin-bottom:34px">Apple gated the obvious API. Isle's media layer is
-          three separate paths because collapsing them into one would break the first thing you'd try.</p>
+        <h2 style="max-width:20ch;margin-bottom:14px">Reading what's playing is the hard part.</h2>
+        <p class="lede" style="margin-bottom:30px">Apple gated the obvious API, so the media layer is
+          three separate paths.</p>
 
         <div class="diagram">
           <div class="lane">
@@ -783,70 +888,9 @@ footer{padding:44px 0 56px}
         <div class="callout">
           <span class="k">The thing that costs everyone a day</span>
           <p>Since roughly macOS 15.4, <code>MRMediaRemoteGetNowPlayingInfo</code> returns an
-            <em>empty dictionary</em> to unentitled apps rather than failing. The call succeeds, so an
-            app built the textbook way silently never shows a track and nothing in the logs says why.
-            Verified through macOS 26.5. Reads go through the adapter subprocess; commands, which
-            aren't gated, go straight to Spotify. The two paths stay separate on purpose.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============ CLAUDE ============ -->
-  <section id="claude">
-    <div class="wrap sec">
-      <div class="spine"><span class="tag mono"><i></i>Claude Code</span></div>
-      <div>
-        <h2 style="max-width:21ch;margin-bottom:16px">The other thing worth putting up there.</h2>
-        <p class="lede" style="margin-bottom:30px">Isle watches a running Claude Code session and shows
-          its state in the same band. When Claude needs your approval, the island opens on its own —
-          you don't have to be looking at the terminal. Pick a state to see it.</p>
-
-        <div class="claude-demo">
-          <div class="mini-stage" id="miniStage">
-            <div class="wallpaper"></div>
-            <div class="menubar" style="opacity:.6">
-              <div class="grp left"><b>Terminal</b><span class="hide-sm">Shell</span><span class="hide-sm">Edit</span></div>
-              <div class="grp"><span class="clock">9:41</span></div>
-            </div>
-            <div class="notchwrap">
-              <div class="notch" id="cNotch" data-state="collapsed" style="--nw:282px;--nh:34px;--nbr:14px">
-                <div class="face face-collapsed">
-                  <div class="cl-left" style="align-items:center">
-                    <div class="dots" id="cDots" style="color:#E7E8E9"></div>
-                  </div>
-                  <div class="cl-gap"></div>
-                  <div class="cl-right"><span class="statusword" id="cWord" style="color:#E7E8E9">Thinking</span></div>
-                </div>
-                <div class="face face-expanded" style="justify-content:flex-start;padding:20px 26px 0 32px;align-items:flex-start">
-                  <div class="dots" id="cDotsBig" style="color:#E7E8E9;width:74px;height:74px;gap:5px;transform:translateY(2px)"></div>
-                  <div style="color:#fff;font-family:var(--font-native);margin-left:18px">
-                    <div id="cHead" style="font-size:24px;font-weight:700;letter-spacing:-.4px">Needs approval</div>
-                    <div id="cSub" style="font-size:12.5px;color:rgba(255,255,255,.72);margin-top:2px">Edit&nbsp;· Isle/Media/SystemAudioLevels.swift</div>
-                    <div style="display:flex;gap:16px;margin-top:11px;font-size:11px;color:rgba(255,255,255,.5);font-variant-numeric:tabular-nums">
-                      <span>isle</span><span id="cElapsed">4m 12s</span><span>opus-5</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div class="camera"></div>
-            </div>
-          </div>
-
-          <div class="statebar" id="cBar">
-            <button data-state="working" aria-pressed="true"><span class="sw"></span>Working</button>
-            <button data-state="approval" aria-pressed="false"><span class="sw"></span>Needs approval</button>
-            <button data-state="done" aria-pressed="false"><span class="sw"></span>Done</button>
-            <button data-state="idle" aria-pressed="false"><span class="sw"></span>No session</button>
-          </div>
-        </div>
-
-        <div class="caption">
-          <p>Claude's hooks write a small status file per session under <b>~/.isle/sessions/</b>; Isle
-            watches the directory with file-system events and ranks by urgency, so a background session
-            can't overwrite the one you're watching. Install the hook from the menu bar — it merges into
-            <b>~/.claude/settings.json</b> without disturbing what's already there.</p>
-          <p style="text-align:right">Fig. 2 — Claude mode</p>
+            <em>empty dictionary</em> to unentitled apps rather than failing — so an app built the
+            textbook way silently never shows a track, and nothing in the logs says why. Verified
+            through macOS 26.5.</p>
         </div>
       </div>
     </div>
@@ -857,49 +901,19 @@ footer{padding:44px 0 56px}
     <div class="wrap sec">
       <div class="spine"><span class="tag mono"><i></i>Install</span></div>
       <div>
-        <h2 style="max-width:20ch;margin-bottom:16px">Two permissions, then it's out of your way.</h2>
-        <p class="lede" style="margin-bottom:30px">Isle uses a private framework and AppleScript
-          automation, which rules out the Mac App Store. It ships as a signed disk image you install
-          yourself, and it updates itself from there.</p>
+        <h2 style="max-width:19ch;margin-bottom:14px">Two permissions, then it's out of your way.</h2>
+        <p class="lede" style="margin-bottom:26px">A private framework and AppleScript automation rule
+          out the Mac App Store, so Isle ships as a disk image and updates itself from there. First
+          launch is right-click → Open. macOS then asks twice: Automation, to control Spotify, and
+          audio capture, for the waveform — decline the second and the waveform falls back to a
+          procedural pattern rather than going dead.</p>
 
-        <div class="steps">
-          <div class="step">
-            <div>
-              <h3>Download and drag to Applications</h3>
-              <p>A 0.1.3 disk image, universal. First launch is right-click → Open, since the build is
-                sideloaded rather than notarised through the Store.</p>
-              <div style="margin-top:14px"><a class="btn" href="https://github.com/matthewhamilton3141/isle/releases/download/v0.1.3/Isle-0.1.3.dmg">Isle-0.1.3.dmg</a></div>
-            </div>
-          </div>
-          <div class="step">
-            <div>
-              <h3>Allow it to control Spotify, and to hear it</h3>
-              <p>macOS asks twice: Automation, for the transport controls, and audio capture, for the
-                waveform. Decline the second and everything still works — the waveform falls back to a
-                procedural pattern rather than going dead.</p>
-            </div>
-          </div>
-          <div class="step">
-            <div>
-              <h3>Optional — wire up Claude Code</h3>
-              <p>From the menu bar, <b>Install Claude Code Hook…</b> drops a helper into
-                <b>~/.isle/bin</b> and merges the hook entries into your settings.</p>
-            </div>
-          </div>
-          <div class="step">
-            <div>
-              <h3>Or build it from source</h3>
-              <p>Xcode 16+. The build script fetches a pinned upstream tag of the adapter, compiles a
-                universal framework, and drops it into place.</p>
-              <pre><span class="c"># one-time: build the bundled now-playing bridge</span>
-./scripts/build-mediaremote-adapter.sh
-
-open Isle.xcodeproj   <span class="c"># then ⌘R</span></pre>
-            </div>
-          </div>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:32px">
+          <a class="btn" href="https://github.com/matthewhamilton3141/isle/releases/download/v0.3.0/Isle-0.3.0.dmg">Download Isle 0.3.0 &nbsp;·&nbsp; .dmg</a>
+          <a class="btn ghost" href="https://github.com/matthewhamilton3141/isle">Source on GitHub</a>
         </div>
 
-        <div class="req" style="margin-top:34px">
+        <div class="req">
           <div><span>Operating system</span><b>macOS 14 Sonoma</b></div>
           <div><span>Waveform requires</span><b>macOS 14.4</b></div>
           <div><span>Music source</span><b>Spotify</b></div>
@@ -907,6 +921,14 @@ open Isle.xcodeproj   <span class="c"># then ⌘R</span></pre>
           <div><span>Menu bar</span><b>LSUIElement, no Dock icon</b></div>
           <div><span>Updates</span><b>In-app, signed manifest</b></div>
         </div>
+
+        <details class="fromsource">
+          <summary>Build it from source</summary>
+          <pre><span class="c"># one-time: build the bundled now-playing bridge</span>
+./scripts/build-mediaremote-adapter.sh
+
+open Isle.xcodeproj   <span class="c"># then ⌘R, Xcode 16+</span></pre>
+        </details>
       </div>
     </div>
   </section>
@@ -916,10 +938,10 @@ open Isle.xcodeproj   <span class="c"># then ⌘R</span></pre>
   <div class="wrap foot">
     <div>
       <a class="brand" href="#top" style="margin-bottom:14px">
-        <svg class="mark" viewBox="0 0 1024 1024" aria-hidden="true">
-          <circle cx="302" cy="302" r="62"/><circle cx="512" cy="302" r="62"/><circle cx="722" cy="302" r="62"/>
-          <circle cx="302" cy="512" r="62"/><circle cx="512" cy="512" r="62"/><circle cx="722" cy="512" r="62"/>
-          <circle cx="302" cy="722" r="62"/><circle cx="512" cy="722" r="62"/><circle cx="722" cy="722" r="62"/>
+        <svg class="mark" viewBox="0 0 100 100" aria-hidden="true">
+          <circle cx="13" cy="13" r="13"/><circle cx="50" cy="13" r="13"/><circle cx="87" cy="13" r="13"/>
+          <circle cx="13" cy="50" r="13"/><circle cx="50" cy="50" r="13"/><circle cx="87" cy="50" r="13"/>
+          <circle cx="13" cy="87" r="13"/><circle cx="50" cy="87" r="13"/><circle cx="87" cy="87" r="13"/>
         </svg>
         <b>Isle</b>
       </a>
@@ -939,7 +961,7 @@ open Isle.xcodeproj   <span class="c"># then ⌘R</span></pre>
     <div>
       <span class="mono" style="display:block;margin-bottom:12px">Build</span>
       <ul>
-        <li><a href="https://github.com/matthewhamilton3141/isle/releases/download/v0.1.3/Isle-0.1.3.dmg">Isle-0.1.3.dmg</a></li>
+        <li><a href="https://github.com/matthewhamilton3141/isle/releases/download/v0.3.0/Isle-0.3.0.dmg">Isle-0.3.0.dmg</a></li>
         <li><a href="https://github.com/ungive/mediaremote-adapter">mediaremote-adapter</a></li>
         <li><a href="https://claude.com/claude-code">Claude Code</a></li>
       </ul>
@@ -953,54 +975,56 @@ open Isle.xcodeproj   <span class="c"># then ⌘R</span></pre>
 
 /* ============================================================
    1. TRACKS
-   Three pieces of music generated in the browser. Each carries the
-   palette its "artwork" is drawn from — the same job ArtworkColors
-   does on a real sleeve, decided up front instead of sampled.
+   Three pieces generated in the browser — original, so nothing
+   licensed ships with the page. Written toward big-room
+   progressive house because that is what makes a six-band meter
+   move: four-on-the-floor, supersaw stacks, and a sidechain pump
+   that ducks everything on each kick.
    ============================================================ */
 
 var TRACKS = [
   {
-    title: "Long Exposure",
+    title: "Clearwater",
     artist: "Nocturne Bureau",
-    bpm: 92, duration: 214,
+    bpm: 128, duration: 214,
     pal: { primary: "#3FA9C4", secondary: "#123A52", accent: "#8FE6D6" },
     art: "arcs",
-    chords: [[57,60,64,67,71],[53,57,60,64],[48,52,55,59],[55,59,62,67]],
-    bass:   [45,41,36,43],
-    kick:   [1,0,0,0, 0,0,0,0, 1,0,0,0, 0,0,1,0],
-    snare:  [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0],
-    hat:    [0,0,1,0, 0,0,1,0, 0,0,1,0, 0,1,1,0],
-    lead:   [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0]
+    // F# minor: F#m — D — A — E
+    prog: [[54, 57, 61, 64, 66], [50, 54, 57, 62], [45, 52, 57, 61], [52, 56, 59, 64]],
+    bass: [42, 38, 45, 40],
+    lead: [78, 76, 73, 76]
   },
   {
     title: "Ferrite",
     artist: "Halide Twin",
-    bpm: 118, duration: 187,
+    bpm: 124, duration: 187,
     pal: { primary: "#E08A3C", secondary: "#5A2418", accent: "#F4D06F" },
     art: "bands",
-    chords: [[50,53,57,60],[46,50,53,57],[53,57,60,65],[48,52,55,60]],
-    bass:   [38,34,41,36],
-    kick:   [1,0,0,0, 0,0,1,0, 1,0,0,0, 0,0,0,0],
-    snare:  [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,1],
-    hat:    [1,0,1,0, 1,0,1,0, 1,0,1,1, 1,0,1,0],
-    lead:   [1,0,0,1, 0,1,0,0, 1,0,0,1, 0,0,1,0]
+    // D minor: Dm — Bb — F — C
+    prog: [[50, 53, 57, 62], [46, 50, 53, 58], [53, 57, 60, 65], [48, 52, 55, 60]],
+    bass: [38, 34, 41, 36],
+    lead: [74, 77, 72, 69]
   },
   {
     title: "Slow Tide, Long Way Out",
     artist: "Peninsula Sound Dept.",
-    bpm: 76, duration: 258,
+    bpm: 112, duration: 258,
     pal: { primary: "#6FA86B", secondary: "#1E3325", accent: "#D7E08C" },
     art: "grid",
-    chords: [[52,55,59,62],[48,52,55,59],[55,59,62,66],[50,54,57,62]],
-    bass:   [40,36,43,38],
-    kick:   [1,0,0,0, 0,0,0,0, 0,0,1,0, 0,0,0,0],
-    snare:  [0,0,0,0, 0,0,0,0, 1,0,0,0, 0,0,0,0],
-    hat:    [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,1],
-    lead:   [0,0,1,0, 0,0,0,0, 0,1,0,0, 0,0,0,0]
+    // E minor: Em — Cmaj7 — G — D
+    prog: [[52, 55, 59, 64], [48, 52, 55, 59], [55, 59, 62, 67], [50, 54, 57, 62]],
+    bass: [40, 36, 43, 38],
+    lead: [76, 71, 74, 79]
   }
 ];
 
 var BARS = 4, STEPS = 16;
+/* A 20-bar arrangement, so the meter has somewhere to go: four bars of
+   intro, four building, eight on the drop, four of breakdown. */
+function sectionFor(bar) {
+  var phase = bar % 20;
+  return phase < 4 ? "intro" : phase < 8 ? "build" : phase < 16 ? "drop" : "break";
+}
 
 /* ============================================================
    2. ARTWORK — drawn once per track, kept as a data URL
@@ -1070,7 +1094,7 @@ TRACKS.forEach(function (t) { t.artURL = makeArt(t); });
    AudioContext clock, so seeking moves the pattern with it.
    ============================================================ */
 
-var ctx = null, master, comp, analyser, freqData, noiseBuf;
+var ctx = null, master, pump, comp, analyser, freqData, noiseBuf;
 var playing = false, position = 0, anchorCtxTime = 0, anchorPos = 0;
 var trackIndex = 0, nextStep = 0, schedTimer = null;
 var shuffle = false, repeatMode = 0; // 0 off · 1 all · 2 one
@@ -1086,6 +1110,11 @@ function ensureContext() {
 
   master = ctx.createGain();
   master.gain.value = volume * 0.5;
+
+  // Sidechain bus: ducked on every kick, which is what makes the meter pump.
+  pump = ctx.createGain();
+  pump.gain.value = 1;
+  pump.connect(master);
 
   comp = ctx.createDynamicsCompressor();
   comp.threshold.value = -18; comp.knee.value = 14;
@@ -1114,91 +1143,156 @@ function env(node, when, a, d, peak) {
   g.exponentialRampToValueAtTime(0.0001, when + a + d);
 }
 
-function kick(when) {
+/* The kick bypasses the sidechain; everything else is ducked by it. */
+function duck(when, amount) {
+  var g = pump.gain;
+  g.cancelScheduledValues(when);
+  g.setValueAtTime(amount, when);
+  g.exponentialRampToValueAtTime(1, when + 0.26);
+}
+
+function kick(when, hard) {
   var o = ctx.createOscillator(), g = ctx.createGain();
   o.type = "sine";
-  o.frequency.setValueAtTime(140, when);
-  o.frequency.exponentialRampToValueAtTime(44, when + 0.11);
-  env(g, when, 0.004, 0.3, 0.95);
+  o.frequency.setValueAtTime(hard ? 165 : 140, when);
+  o.frequency.exponentialRampToValueAtTime(43, when + 0.09);
+  env(g, when, 0.003, hard ? 0.34 : 0.28, hard ? 1 : 0.8);
   o.connect(g); g.connect(master);
-  o.start(when); o.stop(when + 0.36);
+  o.start(when); o.stop(when + 0.42);
+
+  // click transient, so the low band has a real attack to read
+  var n = ctx.createBufferSource(), f = ctx.createBiquadFilter(), cg = ctx.createGain();
+  n.buffer = noiseBuf; f.type = "lowpass"; f.frequency.value = 1800;
+  env(cg, when, 0.001, 0.014, 0.32);
+  n.connect(f); f.connect(cg); cg.connect(master);
+  n.start(when); n.stop(when + 0.05);
+
+  duck(when, hard ? 0.18 : 0.3);
 }
 
-function snare(when) {
+function clap(when) {
   var s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
   s.buffer = noiseBuf; s.loop = true;
-  f.type = "bandpass"; f.frequency.value = 1900; f.Q.value = 0.9;
-  env(g, when, 0.003, 0.16, 0.28);
-  s.connect(f); f.connect(g); g.connect(master);
-  s.start(when); s.stop(when + 0.22);
+  f.type = "bandpass"; f.frequency.value = 1650; f.Q.value = 1.1;
+  env(g, when, 0.004, 0.19, 0.34);
+  s.connect(f); f.connect(g); g.connect(pump);
+  s.start(when); s.stop(when + 0.26);
 }
 
-function hat(when, open) {
+function hat(when, open, level) {
   var s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
   s.buffer = noiseBuf; s.loop = true;
-  f.type = "highpass"; f.frequency.value = 7600;
-  env(g, when, 0.002, open ? 0.13 : 0.035, 0.13);
-  s.connect(f); f.connect(g); g.connect(master);
-  s.start(when); s.stop(when + 0.2);
+  f.type = "highpass"; f.frequency.value = open ? 6800 : 8200;
+  env(g, when, 0.002, open ? 0.16 : 0.032, (level || 1) * 0.16);
+  s.connect(f); f.connect(g); g.connect(pump);
+  s.start(when); s.stop(when + 0.24);
 }
 
-function bass(when, midi, dur) {
+function sub(when, midi, dur) {
+  var o = ctx.createOscillator(), g = ctx.createGain();
+  o.type = "sine"; o.frequency.value = hz(midi);
+  g.gain.setValueAtTime(0.0001, when);
+  g.gain.exponentialRampToValueAtTime(0.42, when + 0.02);
+  g.gain.setValueAtTime(0.42, when + dur * 0.8);
+  g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+  o.connect(g); g.connect(pump);
+  o.start(when); o.stop(when + dur + 0.05);
+}
+
+function bassPluck(when, midi, dur) {
   var o = ctx.createOscillator(), f = ctx.createBiquadFilter(), g = ctx.createGain();
   o.type = "sawtooth"; o.frequency.value = hz(midi);
-  f.type = "lowpass"; f.Q.value = 6;
-  f.frequency.setValueAtTime(240, when);
-  f.frequency.exponentialRampToValueAtTime(90, when + dur);
-  env(g, when, 0.014, dur, 0.34);
-  o.connect(f); f.connect(g); g.connect(master);
-  o.start(when); o.stop(when + dur + 0.1);
+  f.type = "lowpass"; f.Q.value = 7;
+  f.frequency.setValueAtTime(900, when);
+  f.frequency.exponentialRampToValueAtTime(180, when + dur);
+  env(g, when, 0.006, dur, 0.26);
+  o.connect(f); f.connect(g); g.connect(pump);
+  o.start(when); o.stop(when + dur + 0.06);
 }
 
-function pad(when, notes, dur) {
+/* Five detuned saws per note. The whole stack shares one filter so a
+   cutoff sweep moves the chord rather than each voice separately. */
+function supersaw(when, notes, dur, cutoffFrom, cutoffTo, level) {
   var f = ctx.createBiquadFilter(), g = ctx.createGain();
-  f.type = "lowpass"; f.Q.value = 0.7;
-  f.frequency.setValueAtTime(620, when);
-  f.frequency.linearRampToValueAtTime(1500, when + dur * 0.5);
-  f.frequency.linearRampToValueAtTime(700, when + dur);
+  f.type = "lowpass"; f.Q.value = 1.2;
+  f.frequency.setValueAtTime(cutoffFrom, when);
+  f.frequency.exponentialRampToValueAtTime(Math.max(120, cutoffTo), when + dur * 0.85);
   g.gain.setValueAtTime(0.0001, when);
-  g.gain.exponentialRampToValueAtTime(0.16, when + dur * 0.28);
-  g.gain.setValueAtTime(0.16, when + dur * 0.7);
+  g.gain.exponentialRampToValueAtTime(level, when + 0.03);
+  g.gain.setValueAtTime(level, when + dur * 0.72);
   g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
-  f.connect(g); g.connect(master);
-  notes.forEach(function (m, i) {
-    [-6, 6].forEach(function (cents) {
+  f.connect(g); g.connect(pump);
+  var spread = [-16, -7, 0, 7, 16];
+  notes.forEach(function (m) {
+    spread.forEach(function (cents) {
       var o = ctx.createOscillator();
-      o.type = i === 0 ? "triangle" : "sawtooth";
+      o.type = "sawtooth";
       o.frequency.value = hz(m);
       o.detune.value = cents;
-      o.connect(f); o.start(when); o.stop(when + dur + 0.15);
+      o.connect(f);
+      o.start(when); o.stop(when + dur + 0.1);
     });
   });
 }
 
-function pluck(when, midi) {
-  var o = ctx.createOscillator(), f = ctx.createBiquadFilter(), g = ctx.createGain();
-  o.type = "triangle"; o.frequency.value = hz(midi);
-  f.type = "lowpass"; f.frequency.value = 3200;
-  env(g, when, 0.006, 0.5, 0.17);
-  o.connect(f); f.connect(g); g.connect(master);
-  o.start(when); o.stop(when + 0.6);
+function lead(when, midi, dur) {
+  var o = ctx.createOscillator(), o2 = ctx.createOscillator();
+  var f = ctx.createBiquadFilter(), g = ctx.createGain();
+  o.type = "square"; o2.type = "sawtooth";
+  o.frequency.value = hz(midi); o2.frequency.value = hz(midi); o2.detune.value = 9;
+  f.type = "lowpass"; f.frequency.value = 4200;
+  env(g, when, 0.008, dur, 0.13);
+  o.connect(f); o2.connect(f); f.connect(g); g.connect(pump);
+  o.start(when); o.stop(when + dur + 0.08);
+  o2.start(when); o2.stop(when + dur + 0.08);
 }
 
 function playStep(index, when) {
   var t = track();
-  var bar = Math.floor(index / STEPS) % BARS;
-  var s = index % STEPS;
-  var chord = t.chords[bar];
+  var bar = Math.floor(index / STEPS), s = index % STEPS;
+  var sec = sectionFor(bar), chord = t.prog[bar % BARS], root = t.bass[bar % BARS];
+  var beat = stepDur() * 4, barDur = stepDur() * STEPS;
 
-  if (t.kick[s]) kick(when);
-  if (t.snare[s]) snare(when);
-  if (t.hat[s]) hat(when, s % 8 === 6);
-  if (s === 0) {
-    pad(when, chord, stepDur() * STEPS);
-    bass(when, t.bass[bar], stepDur() * 3.2);
+  if (sec !== "break") {
+    if (s % 4 === 0) kick(when, sec === "drop");
   }
-  if (s === 8) bass(when, t.bass[bar] + 12, stepDur() * 2.4);
-  if (t.lead[s]) pluck(when, chord[(index * 3) % chord.length] + 12);
+
+  if (sec === "intro") {
+    if (s % 4 === 2) hat(when, false, 0.7);
+    if (s === 0) supersaw(when, chord, barDur * 0.9, 700, 420, 0.05);
+    if (s === 0) sub(when, root, beat * 1.6);
+  }
+
+  if (sec === "build") {
+    // filter opens across the four bars, and the roll doubles up at the end
+    var k = ((bar % 20) - 4) / 4 + (s / STEPS) / 4;
+    if (s % 2 === 1) hat(when, s === 14, 0.9);
+    if (s === 4 || s === 12) clap(when);
+    if (s === 0) supersaw(when, chord, barDur * 0.95, 500 + k * 5200, 700 + k * 5200, 0.07);
+    if (s === 0) sub(when, root, beat * 1.8);
+    if ((bar % 20) === 7) {
+      var density = s < 8 ? 2 : 1;               // 8ths, then 16ths
+      if (s % density === 0) hat(when, false, 0.5 + s / 24);
+    }
+  }
+
+  if (sec === "drop") {
+    if (s % 2 === 1) hat(when, s === 6 || s === 14, 1);
+    if (s === 4 || s === 12) clap(when);
+    if (s === 0) sub(when, root, beat * 1.2);
+    if (s % 4 === 2) bassPluck(when, root + 12, stepDur() * 1.6);
+    if (s === 0) supersaw(when, chord, barDur * 0.92, 4200, 1500, 0.085);
+    if (s === 8) supersaw(when, chord, beat * 0.8, 5200, 2200, 0.06);
+    if (s === 0 || s === 6 || s === 11) {
+      lead(when, t.lead[(bar + (s > 0 ? 1 : 0)) % t.lead.length], stepDur() * 2.2);
+    }
+  }
+
+  if (sec === "break") {
+    if (s === 0) supersaw(when, chord, barDur * 1.1, 900, 600, 0.075);
+    if (s === 8) hat(when, true, 0.4);
+    if (s === 0 && (bar % 20) === 19) clap(when);
+  }
 }
 
 function currentPosition() {
@@ -1332,6 +1426,10 @@ function Wave(canvas, cssW, cssH) {
   this.g = canvas.getContext("2d");
   this.resize();
 }
+Wave.prototype.setWidth = function (w) {
+  if (this.w === w) return;
+  this.w = w; this.resize();
+};
 Wave.prototype.resize = function () {
   var dpr = Math.min(window.devicePixelRatio || 1, 3);
   this.el.width = this.w * dpr; this.el.height = this.h * dpr;
@@ -1359,90 +1457,332 @@ Wave.prototype.draw = function () {
 };
 
 /* ============================================================
-   6. THE ISLAND
+   6. THE ISLAND — Both mode
+   Housing 186 × 32 pt. Collapsed, the shape is
+   housing + leading + trailing + 28 (10 pt root padding and 4 pt
+   collapsed padding, each side), shifted by half the difference of
+   the two sides so the cutout stays centred under the camera.
+   The two sides are sized to whatever is live: music groups left
+   of the camera, Claude right, exactly as collapsedSideWidths does.
    ============================================================ */
 
+var HOUSING = { w: 186, h: 32 };
+var EXPANDED = { w: 520, h: 146 };
+var PAD = 28;                       // NotchRootView.collapsedHPadding
+var CS = { album: 22, waveSplit: 22, waveSolo: 26, dots: 16,
+           gap: 5, cutoutGap: 6, minSide: 30, statusFontSize: 10 };
+var RADII = { cTop: 8, cBottom: 12, eTop: 12, eBottom: 22 };
+
+var PLAY_GLYPH = '<path d="M6.3 4.85 18.5 12 6.3 19.15z" fill="currentColor" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/>';
+var PAUSE_GLYPH = '<rect x="4.8" y="3.35" width="5" height="17.3" rx="1.4" fill="currentColor"/><rect x="14.2" y="3.35" width="5" height="17.3" rx="1.4" fill="currentColor"/>';
+var REPEAT_LOOP = '<path d="M2 13.4v-2.4A4 4 0 0 1 6 7h15.8"/><path d="M19.8 5 21.8 7 19.8 9"/><path d="M22 10.6V13a4 4 0 0 1-4 4H2.2"/><path d="M4.2 19 2.2 17 4.2 15"/>';
+var REPEAT_ONE = REPEAT_LOOP + '<path d="M10.6 11 12.2 9.8v4.4" stroke-width="1.7"/>';
+/* DotGridIcon at dimension 3, and WaveformIcon's four bars — the two tab icons */
+var ICON_CLAUDE = '<svg width="18" height="18" viewBox="0 0 18 18" fill="#fff" aria-hidden="true">' +
+  '<circle cx="3" cy="3" r="1.8"/><circle cx="9" cy="3" r="1.8"/><circle cx="15" cy="3" r="1.8"/>' +
+  '<circle cx="3" cy="9" r="1.8"/><circle cx="9" cy="9" r="1.8"/><circle cx="15" cy="9" r="1.8"/>' +
+  '<circle cx="3" cy="15" r="1.8"/><circle cx="9" cy="15" r="1.8"/><circle cx="15" cy="15" r="1.8"/></svg>';
+var ICON_MUSIC = '<svg width="18" height="18" viewBox="0 0 18 18" fill="#fff" aria-hidden="true">' +
+  '<rect x="0.86" y="6.3" width="2.79" height="5.4" rx="1.39"/>' +
+  '<rect x="5.36" y="2.7" width="2.79" height="12.6" rx="1.39"/>' +
+  '<rect x="9.86" y="4.5" width="2.79" height="9" rx="1.39"/>' +
+  '<rect x="14.36" y="3.42" width="2.79" height="11.16" rx="1.39"/></svg>';
+
 var $ = function (id) { return document.getElementById(id); };
-var notch = $("notch"), wrap = notch.parentNode, stage = $("stage");
+
+/* AppKit measures the status word with the system font at 10 pt semibold and
+   rounds up; the island's trailing side is sized from that. Same here. */
+var measureCanvas = document.createElement("canvas").getContext("2d");
+function textWidth(str) {
+  if (!str) return 0;
+  measureCanvas.font = '600 ' + CS.statusFontSize +
+    'px -apple-system, "SF Pro Text", system-ui, sans-serif';
+  return Math.ceil(measureCanvas.measureText(str).width);
+}
+
+/* ---- SwiftUI's spring, integrated ----
+   .spring(response:dampingFraction:) is a = −ω²(x − target) − 2ζω·v with
+   ω = 2π/response. Integrating per frame rather than easing a curve means an
+   interrupted open carries its velocity into the close, as the panel does. */
+function Spring(response, damping) { this.w = 2 * Math.PI / response; this.z = damping; }
+Spring.prototype.step = function (x, v, target, dt) {
+  var steps = Math.max(1, Math.ceil(dt / (1 / 240))), h = dt / steps;
+  for (var i = 0; i < steps; i++) {
+    v += (-this.w * this.w * (x - target) - 2 * this.z * this.w * v) * h;
+    x += v * h;
+  }
+  return [x, v];
+};
+var SPRING_OPEN = new Spring(0.34, 0.76);    // Animation.notchOpen
+var SPRING_CLOSE = new Spring(0.30, 1.0);    // Animation.notchClose
+
+var island = $("island"), display = $("display"), displaywrap = $("displaywrap");
 var waveMini = new Wave($("waveMini"), 26, 14);
 var waveBig = new Wave($("waveBig"), 30, 24);
 
-var COLLAPSED = { w: 282, h: 34, r: 14 };
-var EXPANDED = { w: 520, h: 146, r: 22 };
-var expanded = false, pinned = false;
+var open01 = 0, openVel = 0, wantOpen = false, pinned = false;
+var hasTrack = false;
+var tab = "music", tabT = 0;                 // 0 music, 1 claude
 
-function setState(open) {
-  expanded = open;
-  var d = open ? EXPANDED : COLLAPSED;
-  wrap.style.setProperty("--nw", d.w + "px");
-  wrap.style.setProperty("--nh", d.h + "px");
-  wrap.style.setProperty("--nbr", d.r + "px");
-  notch.setAttribute("data-state", open ? "expanded" : "collapsed");
-  $("dimWLabel").textContent = d.w;
-  $("dimHLabel").textContent = d.h;
-  $("roState").textContent = open ? "EXPANDED" : "COLLAPSED";
-  $("roSize").textContent = d.w + "×" + d.h;
-  $("bToggle").textContent = open ? "Collapse panel" : "Expand panel";
+/* ---- Claude ---- */
+var CHECK = [10, 16, 12, 8, 4];
+var C_STATES = {
+  idle:     { live: false, color: "#5B6167", word: "",         open: false,
+              head: "No active session", sub: "Nothing running" },
+  working:  { live: true,  color: "#E8842B", word: "Thinking",  open: false,
+              head: "Thinking", sub: "Reading Isle/Media/SystemAudioLevels.swift",
+              rotate: ["Thinking", "Coalescing", "Percolating"] },
+  approval: { live: true,  color: "#FF6A45", word: "Question",  open: true,
+              head: "Has a question", sub: "Edit · Isle/Media/SystemAudioLevels.swift" },
+  done:     { live: true,  color: "#6ECF8E", word: "Done",      open: false,
+              head: "Done", sub: "3 files changed · build passed" }
+};
+var cState = "working", cStart = Date.now(), cWordIndex = 0;
+var cDots = $("cDots"), cDotsBig = $("cDotsBig");
+for (var di = 0; di < 25; di++) {
+  cDots.appendChild(document.createElement("u"));
+  cDotsBig.appendChild(document.createElement("u"));
 }
+var cCells = cDots.children, cCellsBig = cDotsBig.children;
+
+function claudeLive() { return C_STATES[cState].live; }
+function bothLive() { return hasTrack && claudeLive(); }
+function effectiveTab() {
+  if (bothLive()) return tab;
+  return hasTrack ? "music" : (claudeLive() ? "claude" : "music");
+}
+
+/* ---- collapsedSideWidths, verbatim ---- */
+function collapsedGeometry() {
+  var music = hasTrack, claude = claudeLive(), g = CS.cutoutGap;
+  var lead, trail, mode;
+  if (music && claude) {
+    mode = "split";
+    lead = CS.album + CS.gap + CS.waveSplit + g;                 // 55
+    var w = textWidth(C_STATES[cState].word);
+    trail = CS.dots + (w > 0 ? CS.gap + w : 0) + g;
+  } else if (claude) {
+    mode = "claude";
+    lead = CS.album + g;                                          // glyph in the album's slot
+    var w2 = textWidth(C_STATES[cState].word);
+    trail = w2 > 0 ? w2 + g : CS.minSide;
+  } else if (music) {
+    mode = "music";
+    lead = CS.album + g;                                          // 28
+    trail = CS.waveSolo + g;                                      // 32
+  } else {
+    return { mode: "idle", w: HOUSING.w, h: HOUSING.h, shift: 0, lead: 0, trail: 0 };
+  }
+  return {
+    mode: mode, lead: lead, trail: trail,
+    w: HOUSING.w + lead + trail + PAD,
+    h: HOUSING.h,
+    shift: (trail - lead) / 2
+  };
+}
+
+/* Places the collapsed clusters: 14 pt padding, leading slot, 186 pt dead
+   zone, trailing slot. Each cluster keeps its 6 pt gap from the cutout. */
+function layoutCollapsed(c) {
+  var x0 = 14, tstart = x0 + c.lead + HOUSING.w + CS.cutoutGap;
+  var art = $("cArt"), wave = $("waveMini"), word = $("cWord");
+  var dotsWrap = document.querySelector(".c-dots");
+  var showArt = c.mode === "split" || c.mode === "music";
+  var showWave = showArt;
+  var showDots = c.mode === "split" || c.mode === "claude";
+  var showWord = showDots && C_STATES[cState].word !== "";
+
+  art.style.display = showArt ? "block" : "none";
+  wave.style.display = showWave ? "block" : "none";
+  dotsWrap.style.display = showDots ? "block" : "none";
+  word.style.display = showWord ? "flex" : "none";
+
+  if (showArt) art.style.left = x0 + "px";
+  if (showWave) {
+    var ww = c.mode === "split" ? CS.waveSplit : CS.waveSolo;
+    wave.style.left = (c.mode === "split" ? x0 + CS.album + CS.gap : tstart) + "px";
+    wave.style.width = ww + "px";
+    waveMini.setWidth(ww);
+  }
+  if (showDots) {
+    var size = c.mode === "split" ? CS.dots : CS.album;
+    dotsWrap.style.setProperty("--dot-box", size + "px");
+    dotsWrap.style.left = (c.mode === "split" ? tstart : x0) + "px";
+    dotsWrap.style.top = ((HOUSING.h - size) / 2) + "px";
+  }
+  if (showWord) word.style.left = (c.mode === "split" ? tstart + CS.dots + CS.gap : tstart) + "px";
+}
+
+function applyGeometry() {
+  var c = collapsedGeometry(), p = open01;
+  var w = c.w + (EXPANDED.w - c.w) * p;
+  var h = c.h + (EXPANDED.h - c.h) * p;
+
+  display.style.setProperty("--w", w.toFixed(2) + "px");
+  display.style.setProperty("--h", h.toFixed(2) + "px");
+  display.style.setProperty("--tr", (RADII.cTop + (RADII.eTop - RADII.cTop) * p).toFixed(2) + "px");
+  display.style.setProperty("--br", (RADII.cBottom + (RADII.eBottom - RADII.cBottom) * p).toFixed(2) + "px");
+  display.style.setProperty("--shift", (c.shift * (1 - Math.min(1, Math.max(0, p)))).toFixed(2) + "px");
+  display.style.setProperty("--dimh", Math.min(1, p * 1.6).toFixed(3));
+  layoutCollapsed(c);
+
+  // NotchRootView reads the live frame: the expanded content stays hidden
+  // until the notch is 65% open, then fades in over the rest of the travel.
+  var expandProgress = Math.min(1, Math.max(0, (w - c.w) / (EXPANDED.w - c.w)));
+  var revealed = Math.min(1, Math.max(0, (expandProgress - 0.65) / 0.3));
+
+  $("faceMusic").style.opacity = revealed * (1 - tabT);
+  $("faceClaude").style.opacity = revealed * tabT;
+  $("faceMusic").style.pointerEvents = revealed > 0.9 && tabT < 0.5 ? "auto" : "none";
+  $("faceClaude").style.pointerEvents = "none";
+  $("waveBig").style.opacity = revealed * (hasTrack ? 1 : 0);
+  $("tabToggle").style.opacity = revealed * (bothLive() ? 1 : 0);
+  $("tabToggle").style.pointerEvents = revealed > 0.9 && bothLive() ? "auto" : "none";
+  $("faceCollapsed").style.opacity = Math.min(1, Math.max(0, 1 - expandProgress / 0.55));
+
+  $("dimWLabel").textContent = Math.round(w);
+  $("dimHLabel").textContent = Math.round(h);
+  $("roSize").textContent = Math.round(w) + "×" + Math.round(h);
+  $("bToggle").textContent = wantOpen ? "Close" : "Open";
+}
+
+function stepIsland(dt) {
+  // tab cross-dissolve, 0.28 s, matching ExpandedNotchView
+  var tabTarget = effectiveTab() === "claude" ? 1 : 0;
+  if (tabT !== tabTarget) {
+    var d = Math.min(Math.abs(tabTarget - tabT), dt / 0.28);
+    tabT += tabTarget > tabT ? d : -d;
+  }
+  var target = wantOpen ? 1 : 0;
+  var spring = wantOpen ? SPRING_OPEN : SPRING_CLOSE;
+  if (Math.abs(open01 - target) < 0.0004 && Math.abs(openVel) < 0.0015) {
+    if (open01 !== target) { open01 = target; openVel = 0; }
+  } else {
+    var next = spring.step(open01, openVel, target, Math.min(dt, 0.05));
+    open01 = next[0]; openVel = next[1];
+  }
+  applyGeometry();
+}
+
+function setOpen(v) { wantOpen = v; }
+function setTab(v) { tab = v; $("tabToggle").innerHTML = v === "music" ? ICON_CLAUDE : ICON_MUSIC; }
 
 var finePointer = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
 if (finePointer) {
-  wrap.addEventListener("mouseenter", function () { setState(true); });
-  wrap.addEventListener("mouseleave", function () { if (!pinned) setState(false); });
+  island.addEventListener("mouseenter", function () { setOpen(true); });
+  island.addEventListener("mouseleave", function () { if (!pinned) setOpen(false); });
 }
-notch.addEventListener("click", function () {
-  if (!expanded) { pinned = true; setState(true); }
-  else { pinned = false; setState(false); }
+island.addEventListener("click", function (e) {
+  if (e.target.closest(".tbtn") || e.target.closest(".e-seek") || e.target.closest(".tabtoggle")) return;
+  pinned = !wantOpen; setOpen(!wantOpen);
 });
-notch.addEventListener("keydown", function (e) {
-  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); notch.click(); }
+island.addEventListener("keydown", function (e) {
+  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pinned = !wantOpen; setOpen(!wantOpen); }
 });
-$("bToggle").addEventListener("click", function () {
-  pinned = !expanded; setState(!expanded);
+$("tabToggle").addEventListener("click", function (e) {
+  e.stopPropagation(); setTab(tab === "music" ? "claude" : "music");
 });
+$("bToggle").addEventListener("click", function () { pinned = !wantOpen; setOpen(!wantOpen); });
+
+/* ---- Claude state ---- */
+function setClaude(name) {
+  cState = name;
+  var s = C_STATES[name];
+  cStart = Date.now(); cWordIndex = 0;
+  cDots.style.color = s.color; cDotsBig.style.color = s.color;
+  $("cWord").style.color = s.color;
+  $("cWord").textContent = s.word;
+  $("cHead").textContent = s.head;
+  $("cSub").textContent = s.sub;
+  Array.prototype.forEach.call($("cBar").querySelectorAll("button"), function (b) {
+    b.setAttribute("aria-pressed", b.dataset.state === name ? "true" : "false");
+  });
+  // A live approval opens the island itself and jumps to the Claude tab.
+  if (s.open) { setTab("claude"); pinned = true; setOpen(true); }
+  applyGeometry();
+}
+Array.prototype.forEach.call($("cBar").querySelectorAll("button"), function (b) {
+  b.addEventListener("click", function () { setClaude(b.dataset.state); });
+});
+
+function stepClaude(now) {
+  var t = now / 1000, s = C_STATES[cState], i;
+  for (i = 0; i < 25; i++) {
+    var row = Math.floor(i / 5), col = i % 5, o;
+    if (cState === "done") o = CHECK.indexOf(i) >= 0 ? 1 : 0.07;
+    else if (cState === "idle") o = 0.1;
+    else if (cState === "approval") o = 0.25 + 0.75 * Math.pow((Math.sin(t * 5.2) + 1) / 2, 1.7);
+    else {
+      var dist = Math.hypot(row - 2, col - 2);
+      o = 0.16 + 0.84 * Math.max(0, Math.sin(t * 2.1 - dist * 0.85));
+    }
+    cCells[i].style.opacity = o.toFixed(3);
+    cCellsBig[i].style.opacity = o.toFixed(3);
+  }
+  if (s.rotate) {
+    var idx = Math.floor((now / 2600) % s.rotate.length);
+    if (idx !== cWordIndex) {
+      cWordIndex = idx;
+      $("cWord").textContent = s.rotate[idx];
+      $("cHead").textContent = s.rotate[idx];
+    }
+  }
+  var secs = Math.floor((Date.now() - cStart) / 1000);
+  $("cElapsed").textContent = Math.floor(secs / 60) + "m " + ("0" + (secs % 60)).slice(-2) + "s";
+}
 
 /* ---- track display ---- */
 
 function applyTrack() {
   var t = track();
-  $("thumbArt").style.backgroundImage = "url(" + t.artURL + ")";
-  $("bigArt").style.backgroundImage = "url(" + t.artURL + ")";
-  setMarquee($("mqTitle"), t.title);
-  setMarquee($("mqArtist"), t.artist);
-  document.documentElement.style.setProperty("--live", t.pal.accent);
-  document.documentElement.style.setProperty("--live-2", t.pal.primary);
+  if (hasTrack) {
+    $("cArt").style.backgroundImage = "url(" + t.artURL + ")";
+    $("eArt").style.backgroundImage = "url(" + t.artURL + ")";
+    setMarquee($("mqTitle"), t.title);
+    setMarquee($("mqArtist"), t.artist);
+    document.documentElement.style.setProperty("--live", t.pal.accent);
+    document.documentElement.style.setProperty("--live-2", t.pal.primary);
+  }
+  showTrackChrome();
   syncProgress(position);
+}
+
+/* ExpandedNotchView swaps the whole text column for the idle placeholder when
+   there is no track; the artwork block stays and falls back to its gradient. */
+function showTrackChrome() {
+  $("mqTitle").style.display = hasTrack ? "block" : "none";
+  $("mqArtist").style.display = hasTrack ? "block" : "none";
+  $("seek").style.display = hasTrack ? "flex" : "none";
+  $("controls").style.display = hasTrack ? "flex" : "none";
+  document.querySelector(".e-times").style.display = hasTrack ? "flex" : "none";
+  $("idleHead").style.display = hasTrack ? "none" : "block";
+  $("idleSub").style.display = hasTrack ? "none" : "block";
+  $("noteGlyph").style.display = hasTrack ? "none" : "block";
+  if (!hasTrack) $("eArt").style.backgroundImage = "linear-gradient(135deg,#6E7479,#3C4145)";
 }
 
 function fmt(sec) {
   sec = Math.max(0, Math.floor(sec));
   return Math.floor(sec / 60) + ":" + ("0" + (sec % 60)).slice(-2);
 }
-
 function syncProgress(pos) {
+  if (!hasTrack) return;
   var d = track().duration, ratio = d ? Math.min(1, pos / d) : 0;
-  $("fill").style.width = (ratio * 100).toFixed(2) + "%";
+  $("fill").style.width = (ratio * 340).toFixed(1) + "px";
   $("tElapsed").textContent = fmt(pos);
   $("tRemain").textContent = "-" + fmt(d - pos);
-  $("track").setAttribute("aria-valuenow", Math.round(ratio * 100));
+  $("seek").setAttribute("aria-valuenow", Math.round(ratio * 100));
 }
-
 function syncTransport() {
-  var icon = $("playIcon"), big = $("bigPlayIcon");
-  if (playing) {
-    icon.innerHTML = '<path d="M8.4 4h2.6c.6 0 1 .5 1 1v18c0 .6-.4 1-1 1H8.4c-.6 0-1-.4-1-1V5c0-.5.4-1 1-1zm8.6 0h2.6c.6 0 1 .5 1 1v18c0 .6-.4 1-1 1H17c-.6 0-1-.4-1-1V5c0-.5.4-1 1-1z"/>';
-    big.innerHTML = '<path d="M1 1h3v10H1zM7 1h3v10H7z"/>';
-    $("bPlay").setAttribute("aria-label", "Pause");
-    $("bigPlayLabel").textContent = "Pause";
-  } else {
-    icon.innerHTML = '<path d="M8.3 4.5c-.6-.4-1.4 0-1.4.8v17.4c0 .8.8 1.2 1.4.8l13.5-8.7c.5-.3.5-1.1 0-1.5L8.3 4.5z"/>';
-    big.innerHTML = '<path d="M1 1.2c0-.5.5-.8 1-.5l8 4.8c.4.3.4.8 0 1l-8 4.8c-.5.3-1 0-1-.5V1.2z"/>';
-    $("bPlay").setAttribute("aria-label", "Play");
-    $("bigPlayLabel").textContent = "Play the demo";
-  }
-  stage.setAttribute("data-playing", playing ? "1" : "0");
+  $("playIcon").innerHTML = playing ? PAUSE_GLYPH : PLAY_GLYPH;
+  $("bigPlayIcon").innerHTML = playing ? PAUSE_GLYPH : PLAY_GLYPH;
+  $("bPlay").setAttribute("aria-label", playing ? "Pause" : "Play");
+  $("bigPlayLabel").textContent = playing ? "Pause" : "Play";
+  var flag = playing ? "1" : "0";
+  displaywrap.setAttribute("data-playing", flag);
+  document.body.setAttribute("data-playing", flag);
+  $("demo").setAttribute("data-playing", flag);
   $("console").classList.toggle("on", playing);
-  $("mbState").textContent = playing ? "Isle ▸" : "Isle";
 }
 
 /* ---- marquee: offset animation with a pause at each end ---- */
@@ -1455,7 +1795,7 @@ function setMarquee(el, text) {
   if (!entry) { entry = { el: el, span: span }; marquees.push(entry); }
   entry.overflow = 0;
   requestAnimationFrame(function () {
-    entry.overflow = Math.max(0, span.scrollWidth - el.clientWidth + 36);
+    entry.overflow = Math.max(0, span.scrollWidth - el.clientWidth);
     entry.t0 = performance.now();
   });
 }
@@ -1464,7 +1804,7 @@ function stepMarquees(now) {
   if (reduced) return;
   marquees.forEach(function (m) {
     if (!m.overflow) { m.span.style.transform = "translateX(0)"; return; }
-    var travel = m.overflow / 30, cycle = (travel + 1.2) * 2;
+    var travel = m.overflow / 30, cycle = (travel + 1.2) * 2;   // 30 pt/s, 1.2 s pauses
     var t = ((now - m.t0) / 1000) % cycle, x = 0;
     if (t < 1.2) x = 0;
     else if (t < 1.2 + travel) x = -(t - 1.2) / travel * m.overflow;
@@ -1474,10 +1814,13 @@ function stepMarquees(now) {
   });
 }
 
-/* ---- transport wiring ---- */
+/* ---- transport ---- */
 
 $("bPlay").addEventListener("click", function (e) { e.stopPropagation(); toggle(); });
-$("bigPlay").addEventListener("click", function () { if (!playing) { setState(true); pinned = true; } toggle(); });
+$("bigPlay").addEventListener("click", function () {
+  if (!hasTrack) { hasTrack = true; applyTrack(); setTab("music"); pinned = true; setOpen(true); }
+  toggle();
+});
 $("bNext").addEventListener("click", function (e) { e.stopPropagation(); nextTrack(false); });
 $("bPrev").addEventListener("click", function (e) { e.stopPropagation(); prevTrack(); });
 $("bShuffle").addEventListener("click", function (e) {
@@ -1488,153 +1831,89 @@ $("bRepeat").addEventListener("click", function (e) {
   e.stopPropagation();
   repeatMode = (repeatMode + 1) % 3;
   this.setAttribute("aria-pressed", repeatMode ? "true" : "false");
-  this.innerHTML = repeatMode === 2
-    ? '<svg width="15" height="15" viewBox="0 0 16 16"><path d="M4.6 3.2h6.2l-.9-.9a.6.6 0 0 1 .85-.85l1.95 1.95a.6.6 0 0 1 0 .85L10.75 6.2a.6.6 0 1 1-.85-.85l.9-.9H4.6c-1 0-1.7.7-1.7 1.7v1.3a.6.6 0 0 1-1.2 0V6.15c0-1.65 1.15-2.95 2.9-2.95zm6.8 4.5a.6.6 0 0 1 .6.6v1.55c0 1.65-1.15 2.95-2.9 2.95H2.9l.9.9a.6.6 0 1 1-.85.85L1 12.6a.6.6 0 0 1 0-.85l1.95-1.95a.6.6 0 1 1 .85.85l-.9.9h6.2c1 0 1.7-.7 1.7-1.7V8.3a.6.6 0 0 1 .6-.6z"/><text x="8" y="10.4" text-anchor="middle" font-size="6.5" font-family="system-ui" font-weight="700" fill="currentColor">1</text></svg>'
-    : '<svg width="15" height="15" viewBox="0 0 16 16"><path d="M4.6 3.2h6.2l-.9-.9a.6.6 0 0 1 .85-.85l1.95 1.95a.6.6 0 0 1 0 .85L10.75 6.2a.6.6 0 1 1-.85-.85l.9-.9H4.6c-1 0-1.7.7-1.7 1.7v1.3a.6.6 0 0 1-1.2 0V6.15c0-1.65 1.15-2.95 2.9-2.95zm6.8 4.5a.6.6 0 0 1 .6.6v1.55c0 1.65-1.15 2.95-2.9 2.95H2.9l.9.9a.6.6 0 1 1-.85.85L1 12.6a.6.6 0 0 1 0-.85l1.95-1.95a.6.6 0 1 1 .85.85l-.9.9h6.2c1 0 1.7-.7 1.7-1.7V8.3a.6.6 0 0 1 .6-.6z"/></svg>';
+  this.setAttribute("aria-label", repeatMode === 2 ? "Repeat one" : "Repeat");
+  this.querySelector("svg").innerHTML = repeatMode === 2 ? REPEAT_ONE : REPEAT_LOOP;
 });
-
 $("vol").addEventListener("input", function () {
   volume = this.value / 100;
   if (master) master.gain.setTargetAtTime(volume * 0.5, ctx.currentTime, 0.02);
 });
 
-/* ---- scrubbing ---- */
+/* ---- scrubbing: the app seeks once, on release ---- */
 
-var scrubbing = false;
-var trackEl = $("track");
+var scrubbing = false, seekEl = $("seek");
 function ratioFromEvent(e) {
-  var r = trackEl.getBoundingClientRect();
+  var r = seekEl.getBoundingClientRect();
   return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
 }
-trackEl.addEventListener("pointerdown", function (e) {
+seekEl.addEventListener("pointerdown", function (e) {
+  if (!hasTrack) return;
   e.stopPropagation(); scrubbing = true;
-  trackEl.setPointerCapture(e.pointerId);
+  seekEl.setPointerCapture(e.pointerId);
   syncProgress(ratioFromEvent(e) * track().duration);
 });
-trackEl.addEventListener("pointermove", function (e) {
+seekEl.addEventListener("pointermove", function (e) {
   if (scrubbing) syncProgress(ratioFromEvent(e) * track().duration);
 });
-trackEl.addEventListener("pointerup", function (e) {
+seekEl.addEventListener("pointerup", function (e) {
   if (!scrubbing) return;
   scrubbing = false;
-  seekTo(ratioFromEvent(e) * track().duration);   // one seek on release
+  seekTo(ratioFromEvent(e) * track().duration);
 });
-trackEl.addEventListener("keydown", function (e) {
+seekEl.addEventListener("keydown", function (e) {
+  if (!hasTrack) return;
   if (e.key === "ArrowRight") { e.preventDefault(); seekTo(currentPosition() + 5); }
   if (e.key === "ArrowLeft") { e.preventDefault(); seekTo(currentPosition() - 5); }
 });
 
-/* ---- responsive scale for both stages ---- */
+/* ---- one scale factor for the whole slab, so proportions stay true ---- */
 
-function fit(stageEl) {
-  var w = stageEl.clientWidth;
-  var s = Math.max(0.42, Math.min(1, (w - 56) / 580));
-  var wrp = stageEl.querySelector(".notchwrap");
-  if (wrp) wrp.style.setProperty("--stage-scale", s.toFixed(3));
+function fitAll() {
+  var k = Math.max(0.5, Math.min(1, displaywrap.clientWidth / 1512));
+  display.style.setProperty("--k", k.toFixed(4));
+  displaywrap.style.height = Math.round(250 * k) + "px";
+  displaywrap.scrollLeft = (1512 * k - displaywrap.clientWidth) / 2;
 }
-function fitAll() { [stage, $("miniStage")].forEach(fit); }
 window.addEventListener("resize", fitAll);
 
-/* ---- menu bar clock ---- */
+/* ---- menu bar clock, in the macOS format ---- */
 
 function clock() {
-  var d = new Date(), h = d.getHours() % 12 || 12;
-  var s = h + ":" + ("0" + d.getMinutes()).slice(-2);
-  Array.prototype.forEach.call(document.querySelectorAll(".clock"), function (el) { el.textContent = s; });
+  var d = new Date();
+  var days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  var months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  var h = d.getHours() % 12 || 12;
+  $("mbClock").textContent = days[d.getDay()] + " " + months[d.getMonth()] + " " + d.getDate() +
+    "  " + h + ":" + ("0" + d.getMinutes()).slice(-2) + " " + (d.getHours() < 12 ? "AM" : "PM");
 }
 clock(); setInterval(clock, 20000);
 
 /* ============================================================
-   7. CLAUDE MODE
-   The glyph is a 5×5 dot matrix. Working breathes, needs-approval
-   pulses and opens the island on its own, done resolves to a check.
+   7. FRAME LOOP + INIT
    ============================================================ */
 
-var cNotch = $("cNotch"), cDots = $("cDots"), cDotsBig = $("cDotsBig");
-var CHECK = [10, 16, 12, 8, 4];
-var C_STATES = {
-  working:  { color: "#E9A45C", words: ["Thinking", "Coalescing", "Percolating"], open: false,
-              head: "Working", sub: "Reading Isle/Media/SystemAudioLevels.swift" },
-  approval: { color: "#FF6A45", words: ["Approve?"], open: true,
-              head: "Needs approval", sub: "Edit · Isle/Media/SystemAudioLevels.swift" },
-  done:     { color: "#6ECF8E", words: ["Done"], open: false,
-              head: "Done", sub: "3 files changed · build passed" },
-  idle:     { color: "#5B6167", words: [""], open: false,
-              head: "No session", sub: "Nothing running" }
-};
-var cState = "working", cStart = Date.now(), cWordIndex = 0;
+var frame = 0, lastT = 0, pulse = 0;
+var glowEl = document.querySelector(".glow"), bloomEl = document.querySelector(".bloom");
 
-for (var d = 0; d < 25; d++) {
-  cDots.appendChild(document.createElement("u"));
-  cDotsBig.appendChild(document.createElement("u"));
-}
-var cCells = cDots.children, cCellsBig = cDotsBig.children;
-
-function setClaude(name) {
-  cState = name;
-  var s = C_STATES[name];
-  cStart = Date.now(); cWordIndex = 0;
-  cDots.style.color = s.color; cDotsBig.style.color = s.color;
-  $("cWord").style.color = s.color;
-  $("cWord").textContent = s.words[0];
-  $("cHead").textContent = s.head;
-  $("cSub").textContent = s.sub;
-  var g = s.open ? { w: 520, h: 146, r: 22 } : { w: 282, h: 34, r: 14 };
-  cNotch.style.setProperty("--nw", g.w + "px");
-  cNotch.style.setProperty("--nh", g.h + "px");
-  cNotch.style.setProperty("--nbr", g.r + "px");
-  cNotch.setAttribute("data-state", s.open ? "expanded" : "collapsed");
-  Array.prototype.forEach.call($("cBar").children, function (b) {
-    b.setAttribute("aria-pressed", b.dataset.state === name ? "true" : "false");
-  });
-}
-Array.prototype.forEach.call($("cBar").children, function (b) {
-  b.addEventListener("click", function () { setClaude(b.dataset.state); });
-});
-
-function stepClaude(now) {
-  var t = (now - 0) / 1000, s = C_STATES[cState], i;
-  for (i = 0; i < 25; i++) {
-    var row = Math.floor(i / 5), col = i % 5, o;
-    if (cState === "done") {
-      o = CHECK.indexOf(i) >= 0 ? 1 : 0.07;
-    } else if (cState === "idle") {
-      o = 0.1;
-    } else if (cState === "approval") {
-      o = 0.25 + 0.75 * Math.pow((Math.sin(t * 5.2) + 1) / 2, 1.7);
-    } else {
-      var dist = Math.hypot(row - 2, col - 2);
-      o = 0.16 + 0.84 * Math.max(0, Math.sin(t * 2.1 - dist * 0.85));
-    }
-    cCells[i].style.opacity = o.toFixed(3);
-    cCellsBig[i].style.opacity = o.toFixed(3);
-  }
-  if (s.words.length > 1) {
-    var idx = Math.floor((now / 2600) % s.words.length);
-    if (idx !== cWordIndex) { cWordIndex = idx; $("cWord").textContent = s.words[idx]; }
-  }
-  var secs = Math.floor((Date.now() - cStart) / 1000);
-  $("cElapsed").textContent = Math.floor(secs / 60) + "m " + ("0" + (secs % 60)).slice(-2) + "s";
+/* The room light rides the two lowest bands, so the page breathes with the
+   kick rather than on a timer. Smoothed, or it strobes. */
+function stepLight() {
+  var target = playing ? Math.min(1, levels[0] * 0.8 + levels[1] * 0.35) : 0;
+  pulse += (target - pulse) * (target > pulse ? 0.35 : 0.08);
+  glowEl.style.opacity = (0.07 + pulse * 0.15).toFixed(3);
+  bloomEl.style.opacity = (pulse * 0.2).toFixed(3);
 }
 
-/* ============================================================
-   8. FRAME LOOP
-   ============================================================ */
-
-var frame = 0;
 function loop(now) {
+  var dt = lastT ? Math.min(0.05, (now - lastT) / 1000) : 1 / 60;
+  lastT = now;
+  stepIsland(dt);
   readLevels();
-  waveMini.draw();
-  waveBig.draw();
+  if (hasTrack) { waveMini.draw(); waveBig.draw(); }
   stepMarquees(now);
   stepClaude(now);
-
-  if (playing && !scrubbing) {
-    var pos = currentPosition();
-    if (pos >= track().duration) pos = track().duration;
-    syncProgress(pos);
-  }
-
+  stepLight();
+  if (playing && !scrubbing) syncProgress(Math.min(currentPosition(), track().duration));
   if (++frame % 3 === 0) {
     var out = $("roBands").children;
     for (var i = 0; i < BANDS; i++) out[i].textContent = levels[i].toFixed(2);
@@ -1642,24 +1921,49 @@ function loop(now) {
   requestAnimationFrame(loop);
 }
 
-/* ============================================================
-   9. INIT
-   ============================================================ */
+/* Reveal on scroll. The class is added here rather than in the markup so a
+   page without JS still shows everything. */
+(function () {
+  if (!("IntersectionObserver" in window)) return;
+  var groups = [".hero-grid > *", ".displaywrap", ".console", ".caption",
+                ".sec > div", ".cell", ".lane", ".callout", ".step", ".foot > div"];
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+    });
+  }, { rootMargin: "0px 0px -8% 0px", threshold: 0.06 });
+  groups.forEach(function (sel) {
+    Array.prototype.forEach.call(document.querySelectorAll(sel), function (el, i) {
+      el.classList.add("reveal");
+      el.style.transitionDelay = Math.min(i, 5) * 55 + "ms";
+      io.observe(el);
+    });
+  });
+  setTimeout(function () {
+    Array.prototype.forEach.call(document.querySelectorAll(".reveal"), function (el) {
+      if (!el.classList.contains("in") && el.getBoundingClientRect().top < window.innerHeight) {
+        el.classList.add("in");
+      }
+    });
+  }, 2500);
+})();
 
+hasTrack = false;
+setTab("music");
 applyTrack();
-setState(false);
-syncTransport();
 setClaude("working");
+applyGeometry();
+syncTransport();
 fitAll();
 window.addEventListener("load", fitAll);
 if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitAll);
 requestAnimationFrame(loop);
 
-/* Free the audio graph when the tab goes away. */
 document.addEventListener("visibilitychange", function () {
   if (document.hidden && playing) pause();
 });
 })();
+
 </script>
 </body>
 </html>
