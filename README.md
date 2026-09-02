@@ -19,8 +19,8 @@ from there.
 
 ### 1. Download and drag to Applications
 
-[**Download Isle 0.1.3**](https://github.com/matthewhamilton3141/isle/releases/latest)
-— universal, macOS 14 or newer. Open the disk image and drag **Isle** into
+[**Download Isle 0.3.1**](https://github.com/matthewhamilton3141/isle/releases/latest)
+— universal (Apple Silicon and Intel), macOS 14 or newer. Open the disk image and drag **Isle** into
 **Applications**.
 
 ### 2. Clear the quarantine flag
@@ -88,6 +88,7 @@ Isle runs as a menu bar app with no Dock icon.
 | | |
 |---|---|
 | Operating system | macOS 14 Sonoma or newer |
+| Processor | Apple Silicon or Intel (universal build) |
 | Waveform | macOS 14.4 or newer (Core Audio process-tap API) |
 | Music source | Spotify |
 | Claude source | Claude Code |
