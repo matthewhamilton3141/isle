@@ -273,8 +273,6 @@ struct NotchRootView: View {
                 .background(Circle().fill(.black.opacity(0.35)))
                 .contentShape(Circle())
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Switch to \(target.title)")
         .animation(.easeInOut(duration: 0.15), value: viewModel.expandedTab)
     }
 
@@ -305,8 +303,8 @@ struct NotchRootView: View {
         .animation(.easeInOut(duration: 0.15), value: viewModel.expandedTab)
     }
 
-    /// Music and Agenda keep their SF Symbols; Claude uses the dot mark. All
-    /// three are drawn into the same square so none outweighs the others.
+    /// Music, Pomodoro and Agenda keep their SF Symbols; Claude uses the dot
+    /// mark. All are drawn into the same square so none outweighs the others.
     @ViewBuilder
     private func tabIcon(for tab: IsleTab, color: Color, size: CGFloat) -> some View {
         switch tab {
@@ -322,6 +320,11 @@ struct NotchRootView: View {
         case .claude:
             // A simpler 3x3 grid reads better than 5x5 at tab-icon size.
             DotGridIcon(color: color, dimension: 3)
+                .frame(width: size, height: size)
+        case .pomodoro:
+            Image(systemName: tab.symbolName)
+                .font(.system(size: size * 0.85, weight: .semibold))
+                .foregroundStyle(color)
                 .frame(width: size, height: size)
         }
     }

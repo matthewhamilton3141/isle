@@ -68,6 +68,9 @@ struct CollapsedNotchView: View {
             // Claude solo: the dot glyph sits to the left of the camera, in the
             // album cover's footprint so switching music↔Claude keeps it put.
             claudeDots(size: CollapsedSize.album)
+        } else if viewModel.isPomodoroSolo {
+            // Timer solo: the ring takes the same footprint for the same reason.
+            pomodoroRing(size: CollapsedSize.album)
         } else if viewModel.hasMusicActivity {
             artworkThumbnail
         } else {
@@ -83,14 +86,29 @@ struct CollapsedNotchView: View {
             toastText(toast)
         } else if viewModel.shouldSplitCollapsed {
             // Split: the Claude cluster rides on the right beside the music —
-            // dots next to the camera, status word beside them.
+            // dots next to the camera, status word beside them — and the timer
+            // cluster follows it when both are live.
             HStack(spacing: CollapsedSize.gap) {
-                claudeDots(size: CollapsedSize.dots)
-                statusText
+                if viewModel.hasClaudeActivity {
+                    claudeDots(size: CollapsedSize.dots)
+                    statusText
+                }
+                if viewModel.pomodoroOnTrailingSide {
+                    pomodoroCluster
+                }
             }
         } else if viewModel.isClaudeSolo {
             // Claude solo: only the status word here; the dots are on the left.
-            statusText
+            // A live timer tags along after the word.
+            HStack(spacing: CollapsedSize.gap) {
+                statusText
+                if viewModel.pomodoroOnTrailingSide {
+                    pomodoroCluster
+                }
+            }
+        } else if viewModel.isPomodoroSolo {
+            // Timer solo: only the clock here; the ring is on the left.
+            pomodoroClock
         } else if viewModel.hasMusicActivity, viewModel.showsWaveform {
             equalizer(width: CollapsedSize.wave)
         } else {
@@ -190,6 +208,54 @@ struct CollapsedNotchView: View {
         if let tint = viewModel.workingTint { return tint }
         let design = MarkerStore.shared.design(for: viewModel.claudeMarkerKind)
         return design.colorMode == .fixed ? Color(hex: design.fixedColorHex) : palette.accent
+    }
+
+    // MARK: - Pomodoro
+
+    /// The trailing-side cluster: a small ring beside the clock, matching the
+    /// dots-plus-word shape of the Claude cluster next to it.
+    private var pomodoroCluster: some View {
+        HStack(spacing: CollapsedSize.gap) {
+            pomodoroRing(size: CollapsedSize.dots)
+            pomodoroClock
+        }
+    }
+
+    /// The countdown, ticking off the display clock rather than a publish so
+    /// the digits are exact at any frame. Paused while paused — nothing to
+    /// redraw.
+    private var pomodoroClock: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            Text(PomodoroTimer.clock(viewModel.pomodoro.remaining(at: context.date)))
+                .font(.system(size: CollapsedSize.statusFontSize, weight: .semibold).monospacedDigit())
+                .foregroundStyle(pomodoroTint)
+                .lineLimit(1)
+                .fixedSize()
+                // Pinned to the slot the view model reserved for it (measured
+                // in this same font), so the text and the island's width can't
+                // disagree and clip the last digit.
+                .frame(width: viewModel.pomodoroClockWidth, alignment: .leading)
+        }
+    }
+
+    /// A thin progress ring that fills as the interval runs down. Focus draws
+    /// in the palette accent; breaks in the softer secondary, so a glance
+    /// tells which half of the cycle you're in.
+    private func pomodoroRing(size: CGFloat) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            PomodoroRing(
+                progress: viewModel.pomodoro.progress(at: context.date),
+                tint: pomodoroTint,
+                lineWidth: size >= CollapsedSize.album ? 2.5 : 2
+            )
+        }
+        .frame(width: size, height: size)
+        .opacity(viewModel.pomodoro.isRunning ? 1 : 0.55)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.pomodoro.isRunning)
+    }
+
+    private var pomodoroTint: Color {
+        viewModel.pomodoro.phase.isBreak ? palette.secondary : palette.accent
     }
 
     private func equalizer(width: CGFloat) -> some View {

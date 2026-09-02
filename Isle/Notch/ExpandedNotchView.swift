@@ -54,6 +54,9 @@ struct ExpandedNotchView: View {
         case .claude:
             ClaudeExpandedView(viewModel: viewModel, island: island, palette: palette)
                 .transition(.opacity)
+        case .pomodoro:
+            PomodoroExpandedView(viewModel: viewModel, palette: palette)
+                .transition(.opacity)
         case .agenda:
             AgendaExpandedView(viewModel: viewModel, palette: palette)
                 .transition(.opacity)

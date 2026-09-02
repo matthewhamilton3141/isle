@@ -161,6 +161,11 @@ final class NotchViewModel: ObservableObject {
     private let agenda = AgendaMonitor()
     private var cancellables = Set<AnyCancellable>()
 
+    /// The Pomodoro clock. Always constructed (it's cheap and idle until
+    /// started) but only *offered* while `settings.pomodoroEnabled` is on —
+    /// see `pomodoroAvailable`. Turning the setting off resets it.
+    let pomodoro: PomodoroTimer
+
     /// True between `start()` and `stop()` — i.e. while the notch window is
     /// shown. Guards the live mode-change subscription so it doesn't spin up
     /// subsystems while the overlay is hidden.
@@ -461,6 +466,9 @@ final class NotchViewModel: ObservableObject {
     /// Show the shuffle/repeat toggles in the expanded panel (Settings).
     var showShuffleRepeat: Bool { settings.showShuffleRepeat }
 
+    /// Focus intervals per Pomodoro cycle (Settings), for the tally dots.
+    var pomodoroSessionsPerCycle: Int { settings.pomodoroSessionsPerCycle }
+
     // The two now-playing sources, kept separately and merged in
     // `recomputeSource`. The adapter (MediaRemote) is preferred when Spotify
     // owns the system session — it pushes updates and ships artwork as bytes.
@@ -511,6 +519,35 @@ final class NotchViewModel: ObservableObject {
         let resolvedSettings = settings ?? .shared
         self.settings = resolvedSettings
         self.activeTab = resolvedSettings.lastTab
+        self.pomodoro = PomodoroTimer(settings: resolvedSettings)
+
+        // The timer publishes on its own object; the island reads it through
+        // this model, so forward its changes (they're at most once a second
+        // apart from the phase rolls — the digits themselves tick off a
+        // TimelineView, not off a publish).
+        pomodoro.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
+        pomodoro.onIntervalEnded = { [weak self] _ in
+            guard let self, self.settings.pomodoroSound else { return }
+            NSSound(named: "Glass")?.play()
+        }
+
+        // Switching the feature off takes the timer with it: a clock that kept
+        // running behind a hidden tab would ring with nothing on screen to say
+        // why. Also drops the user off the Pomodoro tab if they were on it.
+        resolvedSettings.$pomodoroEnabled
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] enabled in
+                guard let self, !enabled else { return }
+                self.pomodoro.reset()
+                if self.activeTab == .pomodoro {
+                    self.activeTab = self.availableTabs.first ?? .music
+                }
+            }
+            .store(in: &cancellables)
 
         adapter.onUpdate = { [weak self] model in
             self?.adapterModel = model
@@ -1153,18 +1190,23 @@ final class NotchViewModel: ObservableObject {
     var agendaShowsEvents: Bool { settings.showCalendarEvents }
     var agendaShowsReminders: Bool { settings.showReminders }
 
+    /// The Pomodoro timer is offered — the Settings toggle is on.
+    var pomodoroAvailable: Bool { settings.pomodoroEnabled }
+
     /// The faces the expanded panel can show right now, in switcher order:
-    /// the mode's sources first, then the agenda.
+    /// whatever the mode brings, then Pomodoro if it's been switched on, then
+    /// the agenda if either of its switches is.
     var availableTabs: [IsleTab] {
         var tabs: [IsleTab] = []
         if settings.effectiveMode.showsMusic { tabs.append(.music) }
         if settings.effectiveMode.showsClaude { tabs.append(.claude) }
+        if pomodoroAvailable { tabs.append(.pomodoro) }
         if showsAgenda { tabs.append(.agenda) }
         return tabs
     }
 
     /// Whether the expanded panel shows the switcher — only when there is
-    /// more than one face to switch between.
+    /// more than one face to switch between; a single source is just shown.
     var showsTabBar: Bool {
         availableTabs.count > 1
     }
@@ -1174,7 +1216,7 @@ final class NotchViewModel: ObservableObject {
     /// error) forces the Claude tab — without mutating `activeTab`, so the
     /// user's choice is restored automatically once the alert clears. A
     /// selection that is no longer available (the mode changed, the agenda
-    /// was switched off) falls back to the first face rather than a blank.
+    /// or Pomodoro was switched off) falls back to the first face rather than a blank.
     var expandedTab: IsleTab {
         let tabs = availableTabs
         // An alert auto-jumps to Claude, but a manual tab tap during the
@@ -1223,7 +1265,53 @@ final class NotchViewModel: ObservableObject {
     /// the hardware; it stays hoverable (see NotchWindowController's pointer
     /// backstop), so hovering the notch still reveals it.
     var isCollapsedIdle: Bool {
-        !showsToast && !hasMusicActivity && !hasClaudeActivity
+        !showsToast && !hasMusicActivity && !hasClaudeActivity && !hasPomodoroActivity
+    }
+
+    /// The Pomodoro clock has something worth showing in the collapsed island:
+    /// it's enabled and has been started (running or paused mid-interval). A
+    /// fresh, untouched timer stays off the island — it's reachable from the
+    /// expanded panel, and a "25:00" that never moves says nothing.
+    var hasPomodoroActivity: Bool {
+        pomodoroAvailable && pomodoro.isActive
+    }
+
+    /// The collapsed island is showing the timer alone — no music, no Claude —
+    /// so it straddles the cutout the way Claude solo does: glyph on the left
+    /// in the album's footprint, the clock on the right.
+    var isPomodoroSolo: Bool {
+        hasPomodoroActivity && !hasMusicActivity && !hasClaudeActivity
+    }
+
+    /// Width reserved for the collapsed clock. Measured from a template shaped
+    /// by the interval's full length rather than from the live string, so the
+    /// slot is fixed for the whole interval and the island never jitters as
+    /// the digits count down. Measured in the *monospaced-digit* font the
+    /// clock is actually drawn in — its digits are wider than the status
+    /// font's, and measuring with the wrong one left the text spilling past
+    /// its slot and clipped by the notch outline. Padded by a couple of points
+    /// so rounding in either layout can't shave the last digit.
+    var pomodoroClockWidth: CGFloat {
+        let template: String
+        switch pomodoro.phaseDuration {
+        case 3600...: template = "0:00:00"
+        case 600...: template = "00:00"
+        default: template = "0:00"
+        }
+        return Self.clockTextWidth(template) + 2
+    }
+
+    private static let clockFont = NSFont.monospacedDigitSystemFont(
+        ofSize: CollapsedSize.statusFontSize, weight: .semibold
+    )
+
+    private static var clockWidthCache: [String: CGFloat] = [:]
+
+    private static func clockTextWidth(_ string: String) -> CGFloat {
+        if let cached = clockWidthCache[string] { return cached }
+        let width = ceil((string as NSString).size(withAttributes: [.font: clockFont]).width)
+        clockWidthCache[string] = width
+        return width
     }
 
     /// Claude has something worth showing in the collapsed notch.
@@ -1272,7 +1360,14 @@ final class NotchViewModel: ObservableObject {
     /// question) stay on Claude's side too rather than taking over the whole
     /// island, so the music isn't displaced.
     var shouldSplitCollapsed: Bool {
-        hasMusicActivity && hasClaudeActivity
+        hasMusicActivity && (hasClaudeActivity || hasPomodoroActivity)
+    }
+
+    /// The Pomodoro clock is seated on the trailing side beside (or instead
+    /// of) the Claude cluster — i.e. it isn't the solo straddle, whose glyph
+    /// sits on the left.
+    var pomodoroOnTrailingSide: Bool {
+        hasPomodoroActivity && !isPomodoroSolo
     }
 
     /// Content widths either side of the camera cutout in the collapsed notch,
@@ -1298,9 +1393,15 @@ final class NotchViewModel: ObservableObject {
 
         if shouldSplitCollapsed {
             // Music cluster is album + waveform, with the waveform tucked toward
-            // the camera so the album sits outboard, clear of the housing.
+            // the camera so the album sits outboard, clear of the housing. The
+            // other side seats Claude, the timer, or both in that order.
             let leading = s.album + waveSlot + g
-            return (leading, s.dots + statusSlot + g)
+            var trailing: CGFloat = 0
+            if hasClaudeActivity { trailing += s.dots + statusSlot }
+            if pomodoroOnTrailingSide {
+                trailing += (trailing > 0 ? s.gap : 0) + pomodoroSlot
+            }
+            return (leading, trailing + g)
         }
         if hasClaudeActivity {
             // Claude solo: the dot glyph moves to the *left* of the camera and
@@ -1308,9 +1409,18 @@ final class NotchViewModel: ObservableObject {
             // cutout instead of crowding together on one side. The glyph takes
             // the album's footprint (not the smaller split-view dots) so it
             // lands in exactly the spot the album cover occupies in music mode.
+            // A running timer follows the word on the right.
             let word = Self.textWidth(collapsedStatusText)
-            let trailing = word > 0 ? word + g : s.minSide
-            return (s.album + g, trailing)
+            var trailing = word
+            if pomodoroOnTrailingSide {
+                trailing += (trailing > 0 ? s.gap : 0) + pomodoroSlot
+            }
+            return (s.album + g, trailing > 0 ? trailing + g : s.minSide)
+        }
+        if hasPomodoroActivity {
+            // Timer solo: same straddle as Claude solo — the timer glyph in the
+            // album's footprint on the left, the clock on the right.
+            return (s.album + g, pomodoroClockWidth + g)
         }
         if hasMusicActivity {
             // Waveform off leaves the trailing side empty — the album keeps its
@@ -1324,6 +1434,12 @@ final class NotchViewModel: ObservableObject {
     /// nothing when the waveform is switched off.
     private var waveSlot: CGFloat {
         showsWaveform ? CollapsedSize.gap + CollapsedSize.wave : 0
+    }
+
+    /// The timer's compact cluster on the trailing side: a small glyph, a gap,
+    /// and the clock.
+    private var pomodoroSlot: CGFloat {
+        CollapsedSize.dots + CollapsedSize.gap + pomodoroClockWidth
     }
 
     /// Extra trailing width for the status word beside the dots — the gap plus
