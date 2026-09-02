@@ -73,8 +73,8 @@ final class MediaRemoteAdapterClient {
 
         // Diffing stays on (the default) so full artwork isn't re-sent on
         // every tick — it's a base64 JPEG and dominates the payload.
-        process.terminationHandler = { [weak self] _ in
-            Task { @MainActor in self?.handleTermination() }
+        process.terminationHandler = { [weak self] ended in
+            Task { @MainActor in self?.handleTermination(of: ended) }
         }
 
         do {
@@ -92,11 +92,21 @@ final class MediaRemoteAdapterClient {
         readSource?.cancel()
         readSource = nil
 
+        let wasRunning = process != nil
         if let process, process.isRunning {
             process.terminate()
         }
         process = nil
         buffer.removeAll()
+
+        // Report an empty model so the notch doesn't hold a stale track while
+        // the feed is off. Done here rather than left to the termination
+        // handler, which no longer acts for a process that has been let go —
+        // see `handleTermination(of:)`.
+        if wasRunning {
+            current = MediaPlaybackModel()
+            onUpdate?(current)
+        }
     }
 
     // MARK: - Reading
@@ -166,7 +176,16 @@ final class MediaRemoteAdapterClient {
         }
     }
 
-    private func handleTermination() {
+    /// The adapter died on its own. Only the *current* process gets to tear
+    /// the client down: a `stop()` followed quickly by a `start()` — the
+    /// screen locking and unlocking, a mode flipped twice — has the old
+    /// process's termination arriving after the new one is already running,
+    /// and acting on it cancelled the new reader and dropped the new process
+    /// reference. That left a perl subprocess nobody was reading from, which
+    /// eventually blocked on a full pipe and lingered until Isle quit, and a
+    /// notch that showed nothing until the next restart.
+    private func handleTermination(of ended: Process) {
+        guard ended === process else { return }
         readSource?.cancel()
         readSource = nil
         process = nil

@@ -542,6 +542,19 @@ final class NotchViewModel: ObservableObject {
             self?.enqueuePowerToast(.device(device))
         }
 
+        // The tap only earns its keep while something is playing. Paused, the
+        // bars rest at zero whether or not anything is listening, so the
+        // capture is told to stand down — see `SystemAudioLevels.setPlaybackPaused`
+        // for what that saves. `hasTrack` is folded in so "nothing playing at
+        // all" counts as paused too.
+        $media
+            .map { $0.isPlaying && $0.hasTrack }
+            .removeDuplicates()
+            .sink { [weak self] playing in
+                self?.audio.setPlaybackPaused(!playing)
+            }
+            .store(in: &cancellables)
+
         // Re-render notch views on any settings change (waveform/scrubber
         // toggles etc.), since those views observe this view model, not
         // AppSettings directly. Mode changes are handled separately below so
@@ -685,6 +698,8 @@ final class NotchViewModel: ObservableObject {
             claudeWatcher.stop()
             sessionRegistry.stop()
             claudeSessions = []
+            claudeStatuses = []
+            lastAppliedStatus = nil
             doneRevertTask?.cancel()
             doneRevertTask = nil
             stopWorkingWords()
@@ -730,9 +745,24 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
+    /// The record most recently put through `applyClaudeStatus`, so a re-run
+    /// of selection that lands on the same record is a no-op.
+    ///
+    /// Selection re-runs on every registry event, and the registry is
+    /// rewritten whenever any session's CLI status changes — so without this
+    /// an unchanged `done` record was re-applied on each of those, which
+    /// restarted its revert timer, reset the "… ago" clock, and — once the
+    /// checkmark had already eased back to idle — put it back on the island as
+    /// if the turn had just finished again. Compared as a whole record: a
+    /// genuine re-write carries a fresh `updatedAt` and still gets through.
+    private var lastAppliedStatus: ClaudeStatus?
+
     /// Applies a fresh status from the watcher. Keeps the `done` checkmark on
     /// screen briefly, then eases it back to `idle` so it behaves like a toast.
     private func applyClaudeStatus(_ status: ClaudeStatus) {
+        guard status != lastAppliedStatus else { return }
+        lastAppliedStatus = status
+
         doneRevertTask?.cancel()
         doneRevertTask = nil
 
