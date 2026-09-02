@@ -36,9 +36,17 @@ struct LiveEqualizer: View {
     var palette: ArtworkPalette = .fallback
     var isPlaying: Bool = true
 
+    /// Whether to follow the capture at all. Off pins the procedural pattern
+    /// (`WaveformSource.animated`) rather than only falling into it when the
+    /// capture has nothing to say — so a user who switched away from Live
+    /// mid-song gets the pattern at once, not the last frame the tap sent.
+    var listens: Bool = true
+
     var body: some View {
-        LiveEqualizerRepresentable(source: source, palette: palette, isPlaying: isPlaying)
-            .accessibilityHidden(true)
+        LiveEqualizerRepresentable(
+            source: source, palette: palette, isPlaying: isPlaying, listens: listens
+        )
+        .accessibilityHidden(true)
     }
 }
 
@@ -46,17 +54,22 @@ private struct LiveEqualizerRepresentable: NSViewRepresentable {
     var source: SystemAudioLevels
     var palette: ArtworkPalette
     var isPlaying: Bool
+    var listens: Bool
 
     func makeNSView(context: Context) -> EqualizerLayerView {
         let view = EqualizerLayerView()
-        view.attach(to: source)
+        wire(view)
         view.configure(palette: palette, isPlaying: isPlaying)
         return view
     }
 
     func updateNSView(_ view: EqualizerLayerView, context: Context) {
-        view.attach(to: source)
+        wire(view)
         view.configure(palette: palette, isPlaying: isPlaying)
+    }
+
+    private func wire(_ view: EqualizerLayerView) {
+        listens ? view.attach(to: source) : view.detach()
     }
 }
 

@@ -109,6 +109,15 @@ final class EqualizerLayerView: NSView {
             }
     }
 
+    /// Stop following the capture and rest on the procedural pattern. A no-op
+    /// when nothing is attached, so the representable can call it every update.
+    func detach() {
+        guard source != nil else { return }
+        subscription = nil
+        source = nil
+        setLevels([])
+    }
+
     func configure(palette: ArtworkPalette, isPlaying: Bool) {
         let modeWas = mode
         self.palette = palette

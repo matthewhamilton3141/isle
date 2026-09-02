@@ -163,6 +163,7 @@ final class NotchViewModel: ObservableObject {
     /// live. Tracked so a mode change only toggles the delta rather than
     /// restarting an already-running capture.
     private var mediaRunning = false
+    private var audioRunning = false
 
     /// Whether the Claude status watcher is currently live.
     private var claudeRunning = false
@@ -485,6 +486,14 @@ final class NotchViewModel: ObservableObject {
     /// isn't running, which EqualizerView reads as "use the procedural fallback".
     var audioLevelSource: SystemAudioLevels { audio }
 
+    /// The waveform source as chosen in Settings. The views read it here rather
+    /// than from `AppSettings` so a change re-renders them through this model.
+    var waveformSource: WaveformSource { settings.waveformSource }
+
+    /// Whether a waveform is drawn at all. Off gives its slot back to the
+    /// island, which is why `collapsedSideWidths` reads this too.
+    var showsWaveform: Bool { settings.waveformSource.isShown }
+
     /// Why audio capture isn't running, if it isn't.
     var audioFailureReason: String? { audio.failureReason }
 
@@ -577,10 +586,13 @@ final class NotchViewModel: ObservableObject {
 
         // The power toggles start and stop their own monitors, the same way
         // mode does — turning the feature off should stop watching IOKit and
-        // Bluetooth, not just hide the toasts.
-        Publishers.Merge(
+        // Bluetooth, not just hide the toasts. The waveform source rides the
+        // same path: leaving Live tears the tap down, returning to it builds
+        // one (and, first time, asks).
+        Publishers.Merge3(
             self.settings.$showBatteryEvents.dropFirst().map { _ in () },
-            self.settings.$showDeviceBattery.dropFirst().map { _ in () }
+            self.settings.$showDeviceBattery.dropFirst().map { _ in () },
+            self.settings.$waveformSource.dropFirst().map { _ in () }
         )
         .receive(on: RunLoop.main)
         .sink { [weak self] in
@@ -606,6 +618,7 @@ final class NotchViewModel: ObservableObject {
 
     func stop() {
         isRunning = false
+        setAudioRunning(false)
         setMediaRunning(false)
         setClaudeRunning(false)
         setPowerRunning(battery: false, devices: false)
@@ -616,7 +629,9 @@ final class NotchViewModel: ObservableObject {
     /// Brings the running subsystems in line with the active mode, and with
     /// whether there's a display awake to show any of it on.
     private func applyMode() {
-        setMediaRunning(settings.effectiveMode.showsMusic && !displayAsleep)
+        let media = settings.effectiveMode.showsMusic && !displayAsleep
+        setMediaRunning(media)
+        setAudioRunning(media && settings.waveformSource.capturesAudio)
         setClaudeRunning(settings.effectiveMode.showsClaude)
         // Power is ambient — it runs in every mode, gated only by its own two
         // toggles. Suppressed while the display is off for the same reason the
@@ -680,12 +695,20 @@ final class NotchViewModel: ObservableObject {
         if running {
             adapter.start()
             spotify.start()
-            audio.start()
         } else {
             adapter.stop()
             spotify.stop()
-            audio.stop()
         }
+    }
+
+    /// The audio tap runs on its own switch, apart from the rest of the media
+    /// pipeline: it is the one piece that costs a permission prompt. Only the
+    /// `.live` waveform asks for it — `.animated` and `.off` never build a
+    /// tap, so macOS never asks, which is the whole point of those choices.
+    private func setAudioRunning(_ running: Bool) {
+        guard running != audioRunning else { return }
+        audioRunning = running
+        running ? audio.start() : audio.stop()
     }
 
     private func setClaudeRunning(_ running: Bool) {
@@ -1198,7 +1221,7 @@ final class NotchViewModel: ObservableObject {
         if shouldSplitCollapsed {
             // Music cluster is album + waveform, with the waveform tucked toward
             // the camera so the album sits outboard, clear of the housing.
-            let leading = s.album + s.gap + s.wave + g
+            let leading = s.album + waveSlot + g
             return (leading, s.dots + statusSlot + g)
         }
         if hasClaudeActivity {
@@ -1212,9 +1235,17 @@ final class NotchViewModel: ObservableObject {
             return (s.album + g, trailing)
         }
         if hasMusicActivity {
-            return (s.album + g, s.wave + g)
+            // Waveform off leaves the trailing side empty — the album keeps its
+            // seat and the island rests at its narrow width on the right.
+            return (s.album + g, showsWaveform ? s.wave + g : s.minSide)
         }
         return (s.minSide, s.minSide)   // resting
+    }
+
+    /// The waveform's share of the music cluster — the gap plus the bars, or
+    /// nothing when the waveform is switched off.
+    private var waveSlot: CGFloat {
+        showsWaveform ? CollapsedSize.gap + CollapsedSize.wave : 0
     }
 
     /// Extra trailing width for the status word beside the dots — the gap plus

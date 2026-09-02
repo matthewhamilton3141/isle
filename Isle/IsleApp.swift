@@ -9,6 +9,7 @@
 
 import SwiftUI
 import AppKit
+import Combine
 
 @main
 struct IsleApp: App {
@@ -43,11 +44,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HookInstaller.refreshIfNeeded()
 
         notchController = NotchWindowController()
-        notchController?.show()
 
-        // First launch (no mode chosen yet): ask what Isle should be before
-        // it settles into the default Both behaviour.
-        if !AppSettings.shared.hasChosenMode {
+        if AppSettings.shared.hasChosenMode {
+            notchController?.show()
+        } else {
+            // First launch: nothing runs until Setup has been answered. The
+            // subsystems are what trigger the permission prompts — Bluetooth
+            // on registration, audio capture on the first play — so starting
+            // them before the user has said which they want would ask the
+            // question the welcome screen is there to ask first. Setup writes
+            // the mode last, once the permission choices are in; that is the
+            // cue to bring the island up.
+            firstModeChoice = AppSettings.shared.$mode
+                .compactMap { $0 }
+                .first()
+                .receive(on: RunLoop.main)
+                .sink { [weak self] _ in
+                    self?.notchController?.show()
+                    self?.firstModeChoice = nil
+                }
             openSetup()
         }
 
@@ -171,6 +186,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var setupWindow: NSWindow?
 
+    /// Live only on a first launch, until Setup names a mode.
+    private var firstModeChoice: AnyCancellable?
+
     @objc private func openSetup() {
         if let setupWindow {
             setupWindow.makeKeyAndOrderFront(nil)
@@ -274,7 +292,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
         window.title = "Isle Settings"
-        window.contentView = NSHostingView(rootView: SettingsView(settings: .shared))
+        window.contentView = NSHostingView(rootView: SettingsView(settings: .shared, audio: notchController?.audioLevels))
         window.center()
         window.isReleasedWhenClosed = false
         settingsWindow = window

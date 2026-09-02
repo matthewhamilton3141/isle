@@ -11,6 +11,11 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
+
+    /// The capture behind the waveform, so the Music section can say why it
+    /// isn't running. Nil in previews and before the island exists.
+    var audio: SystemAudioLevels?
+
     @ObservedObject private var updater = Updater.shared
 
     @State private var hookInstalled = HookInstaller.isInstalled
@@ -190,6 +195,20 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if settings.showDeviceBattery {
+                    HStack(spacing: 8) {
+                        Text("Needs Bluetooth access, which macOS asks for when this is switched on. If it was declined, no device will ever show.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        Button("Bluetooth Privacy…") {
+                            PrivacyPane.bluetooth.open()
+                        }
+                        .controlSize(.small)
+                    }
+                    .padding(.top, 2)
+                }
             }
 
             Text("Switching one off stops Isle watching for it, so it costs nothing. Either way macOS keeps its own battery behaviour, alerts and Bluetooth exactly as they are.")
@@ -201,8 +220,28 @@ struct SettingsView: View {
 
     // MARK: - Music
 
+    /// The waveform picker is the one control here that costs a permission:
+    /// only Live builds the audio tap, and building the tap is what makes
+    /// macOS ask. Animated and Off never do — see `WaveformSource`.
     private var musicSection: some View {
         Section("Music") {
+            VStack(alignment: .leading, spacing: 4) {
+                Picker("Waveform", selection: $settings.waveformSource) {
+                    ForEach(WaveformSource.allCases) { source in
+                        Text(source.title).tag(source)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(settings.waveformSource.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if settings.waveformSource.capturesAudio, let audio {
+                AudioCaptureStatus(audio: audio)
+            }
+
             Toggle("Show scrubber", isOn: $settings.showScrubber)
             Toggle("Show shuffle & repeat", isOn: $settings.showShuffleRepeat)
         }
@@ -400,5 +439,53 @@ struct SettingsView: View {
         } catch {
             hookMessage = error.localizedDescription
         }
+    }
+}
+
+// MARK: - Audio capture status
+
+/// What the live waveform can honestly say about its capture.
+///
+/// A real failure (`failureReason`) is reported as such. A *declined* Audio
+/// Recording permission is not one: the tap builds, the device starts, and
+/// the IOProc simply never fires, so there is no error to report and Isle
+/// can't tell a declined permission from silence. What it can do is point at
+/// the setting — a conditional pointer, not a claim.
+private struct AudioCaptureStatus: View {
+    @ObservedObject var audio: SystemAudioLevels
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let reason = audio.failureReason {
+                Label(reason, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 8) {
+                Text("If the bars don't move while music plays, Audio Recording may be switched off for Isle.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                Button("Audio Recording Privacy…") {
+                    PrivacyPane.audioCapture.open()
+                }
+                .controlSize(.small)
+            }
+        }
+    }
+}
+
+/// Deep links into System Settings › Privacy & Security. The anchors are the
+/// ones the Privacy pane has used since Ventura; an unknown one just opens
+/// the pane, so the worst case is one extra click.
+enum PrivacyPane: String {
+    case audioCapture = "Privacy_AudioCapture"
+    case bluetooth = "Privacy_Bluetooth"
+
+    func open() {
+        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(rawValue)")!
+        NSWorkspace.shared.open(url)
     }
 }

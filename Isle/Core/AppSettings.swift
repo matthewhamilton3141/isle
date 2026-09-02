@@ -23,6 +23,7 @@ final class AppSettings: ObservableObject {
     private static let tabKey = "isle.lastTab"
     private static let showScrubberKey = "isle.showScrubber"
     private static let showShuffleRepeatKey = "isle.showShuffleRepeat"
+    private static let waveformSourceKey = "isle.waveformSource"
     private static let doneToastKey = "isle.doneToastSeconds"
     private static let hapticsKey = "isle.haptics"
     private static let displayScopeKey = "isle.displayScope"
@@ -86,6 +87,19 @@ final class AppSettings: ObservableObject {
     /// expanded panel. Off leaves just prev / play-pause / next.
     @Published var showShuffleRepeat: Bool {
         didSet { defaults.set(showShuffleRepeat, forKey: Self.showShuffleRepeatKey) }
+    }
+
+    /// Where the waveform gets its motion — and, with it, whether the audio
+    /// tap ever runs. Only `.live` starts the tap, so this is the switch that
+    /// decides whether macOS ever asks for Audio Recording. See `WaveformSource`.
+    ///
+    /// Defaults to `.live` so an install that predates the setting keeps the
+    /// waveform it already granted permission for.
+    @Published var waveformSource: WaveformSource {
+        didSet {
+            guard waveformSource != oldValue else { return }
+            defaults.set(waveformSource.rawValue, forKey: Self.waveformSourceKey)
+        }
     }
 
     // MARK: - Claude
@@ -196,6 +210,8 @@ final class AppSettings: ObservableObject {
             ?? .builtIn
         showScrubber = defaults.object(forKey: Self.showScrubberKey) as? Bool ?? true
         showShuffleRepeat = defaults.object(forKey: Self.showShuffleRepeatKey) as? Bool ?? true
+        waveformSource = WaveformSource(rawValue: defaults.string(forKey: Self.waveformSourceKey) ?? "")
+            ?? .live
         doneToastSeconds = defaults.object(forKey: Self.doneToastKey) as? Double ?? 4
         expandOnAlert = defaults.object(forKey: Self.expandOnAlertKey) as? Bool ?? true
         dismissAlertPanel = defaults.object(forKey: Self.dismissAlertPanelKey) as? Bool ?? true
