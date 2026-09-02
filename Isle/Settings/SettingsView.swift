@@ -1,14 +1,47 @@
 //
 //  SettingsView.swift
 //
-//  The Settings window. Change the mode (which restarts the affected
-//  subsystems live — no relaunch), toggle the media controls from spec 3.4,
-//  and manage the Claude Code hook. Sections show or hide with the active
-//  mode, so a music-only user never sees Claude options and vice versa.
+//  The Settings window. A native sidebar separates General, optional feature
+//  pages, and Updates; feature entries follow the active mode, so a music-only
+//  user never sees Claude options and vice versa. Changes restart only the
+//  affected subsystems live — no relaunch.
 //
 
 import SwiftUI
 import EventKit
+
+private enum SettingsPage: String, Identifiable {
+    case general
+    case music
+    case claude
+    case agenda
+    case pomodoro
+    case updates
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: return "General"
+        case .music: return "Music"
+        case .claude: return "Claude Code"
+        case .agenda: return "Calendar & Reminders"
+        case .pomodoro: return "Pomodoro"
+        case .updates: return "Updates"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .general: return "gearshape"
+        case .music: return "music.note"
+        case .claude: return "sparkles"
+        case .agenda: return "calendar"
+        case .pomodoro: return "timer"
+        case .updates: return "arrow.triangle.2.circlepath"
+        }
+    }
+}
 
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
@@ -21,6 +54,7 @@ struct SettingsView: View {
 
     @State private var hookInstalled = HookInstaller.isInstalled
     @State private var hookMessage: String?
+    @State private var selectedPage: SettingsPage? = .general
 
     /// Bumped when Isle comes back to the front, which is what happens after
     /// the Calendar or Reminders prompt is answered — so the access text in
@@ -29,29 +63,84 @@ struct SettingsView: View {
     @State private var accessRefresh = 0
 
     var body: some View {
+        // The sidebar is this window's permanent navigation, so it's pinned
+        // open: column visibility is a constant, and the system's collapse
+        // button is removed from the sidebar column's toolbar (it has to be
+        // removed *there* — on the outer split view the modifier is ignored).
+        NavigationSplitView(columnVisibility: .constant(.all)) {
+            List(selection: $selectedPage) {
+                Section {
+                    sidebarRow(.general)
+                }
+
+                Section("Features") {
+                    if settings.effectiveMode.showsMusic {
+                        sidebarRow(.music)
+                    }
+                    if settings.effectiveMode.showsClaude {
+                        sidebarRow(.claude)
+                    }
+                    sidebarRow(.agenda)
+                    sidebarRow(.pomodoro)
+                }
+
+                Section("About") {
+                    sidebarRow(.updates)
+                }
+            }
+            .listStyle(.sidebar)
+            .navigationTitle("Isle")
+            // A single width, not a range: with min == max the column has no
+            // slack, so the divider can't be dragged and the sidebar stays put.
+            .navigationSplitViewColumnWidth(185)
+            .toolbar(removing: .sidebarToggle)
+        } detail: {
+            selectedContent
+                .navigationTitle((selectedPage ?? .general).title)
+        }
+        .navigationSplitViewStyle(.balanced)
+        .frame(width: 720, height: 500)
+        .onChange(of: settings.effectiveMode) { _, _ in
+            guard let selectedPage, !availablePages.contains(selectedPage) else { return }
+            self.selectedPage = .general
+        }
+    }
+
+    private var availablePages: [SettingsPage] {
+        var pages: [SettingsPage] = [.general]
+        if settings.effectiveMode.showsMusic { pages.append(.music) }
+        if settings.effectiveMode.showsClaude { pages.append(.claude) }
+        pages += [.agenda, .pomodoro, .updates]
+        return pages
+    }
+
+    private func sidebarRow(_ page: SettingsPage) -> some View {
+        Label(page.title, systemImage: page.symbol)
+            .tag(page)
+    }
+
+    @ViewBuilder
+    private var selectedContent: some View {
         Form {
-            modeSection
-
-            notchSection
-
-            if settings.effectiveMode.showsMusic {
+            switch selectedPage ?? .general {
+            case .general:
+                modeSection
+                notchSection
+                powerSection
+            case .music:
                 musicSection
-            }
-
-            if settings.effectiveMode.showsClaude {
+            case .claude:
                 claudeSection
+            case .agenda:
+                agendaSection
+            case .pomodoro:
+                pomodoroSection
+            case .updates:
+                updatesSection
             }
-
-            powerSection
-
-            agendaSection
-
-            pomodoroSection
-
-            updatesSection
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 440)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             accessRefresh += 1
         }
