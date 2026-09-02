@@ -505,8 +505,8 @@ final class NotchViewModel: ObservableObject {
     /// than from `AppSettings` so a change re-renders them through this model.
     var waveformSource: WaveformSource { settings.waveformSource }
 
-    /// Whether a waveform is drawn at all. Off gives its slot back to the
-    /// island, which is why `collapsedSideWidths` reads this too.
+    /// Whether a waveform is drawn at all. Off leaves its slot in place but
+    /// empty (see `waveSlot`), so the collapsed layout doesn't depend on this.
     var showsWaveform: Bool { settings.waveformSource.isShown }
 
     /// Why audio capture isn't running, if it isn't.
@@ -1408,17 +1408,22 @@ final class NotchViewModel: ObservableObject {
             return (s.album + g, pomodoroClockWidth + g)
         }
         if hasMusicActivity {
-            // Waveform off leaves the trailing side empty — the album keeps its
-            // seat and the island rests at its narrow width on the right.
-            return (s.album + g, showsWaveform ? s.wave + g : s.minSide)
+            // The waveform's seat on the right is held whether or not the bars
+            // are drawn, so the album and the island stay exactly put when the
+            // waveform is switched off — see `waveSlot`.
+            return (s.album + g, s.wave + g)
         }
         return (s.minSide, s.minSide)   // resting
     }
 
-    /// The waveform's share of the music cluster — the gap plus the bars, or
-    /// nothing when the waveform is switched off.
+    /// The waveform's share of the music cluster — the gap plus the bars.
+    ///
+    /// Reserved even when the waveform is off. Giving the space back moved the
+    /// album 31pt inboard (and nudged the whole island), which read as the
+    /// cover jumping toward the camera and slipping under the housing. Holding
+    /// the slot means turning the bars off changes nothing but the bars.
     private var waveSlot: CGFloat {
-        showsWaveform ? CollapsedSize.gap + CollapsedSize.wave : 0
+        CollapsedSize.gap + CollapsedSize.wave
     }
 
     /// The timer's compact cluster on the trailing side: a small glyph, a gap,

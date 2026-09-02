@@ -60,9 +60,9 @@ struct CollapsedNotchView: View {
             // right rather than displacing the music.
             HStack(spacing: CollapsedSize.gap) {
                 artworkThumbnail
-                if viewModel.showsWaveform {
-                    equalizer(width: CollapsedSize.wave)
-                }
+                // The slot stays even with the waveform off, so the album
+                // doesn't move — see NotchViewModel.waveSlot.
+                waveformSlot
             }
         } else if viewModel.isClaudeSolo {
             // Claude solo: the dot glyph sits to the left of the camera, in the
@@ -109,10 +109,21 @@ struct CollapsedNotchView: View {
         } else if viewModel.isPomodoroSolo {
             // Timer solo: only the clock here; the ring is on the left.
             pomodoroClock
-        } else if viewModel.hasMusicActivity, viewModel.showsWaveform {
-            equalizer(width: CollapsedSize.wave)
+        } else if viewModel.hasMusicActivity {
+            waveformSlot
         } else {
             EmptyView()
+        }
+    }
+
+    /// The waveform, or an empty frame of the same size when it's switched
+    /// off — so the layout is identical either way and nothing shifts.
+    @ViewBuilder
+    private var waveformSlot: some View {
+        if viewModel.showsWaveform {
+            equalizer(width: CollapsedSize.wave)
+        } else {
+            Color.clear.frame(width: CollapsedSize.wave, height: 20)
         }
     }
 
