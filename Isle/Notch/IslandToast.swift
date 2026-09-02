@@ -132,8 +132,19 @@ extension IslandToast {
         ofSize: CollapsedSize.statusFontSize, weight: .semibold
     )
 
+    /// Cached, for the same reason `NotchViewModel.textWidth` is: the island's
+    /// width is read several times per body evaluation while a toast is up,
+    /// and each read laid the string out again. Toast strings carry live
+    /// numbers ("Charging · 42%") so the set grows slowly; it's emptied past a
+    /// modest size rather than left to accumulate for the life of the process.
+    private static var widthCache: [String: CGFloat] = [:]
+
     static func width(of string: String) -> CGFloat {
         guard !string.isEmpty else { return 0 }
-        return ceil((string as NSString).size(withAttributes: [.font: font]).width)
+        if let cached = widthCache[string] { return cached }
+        if widthCache.count >= 256 { widthCache.removeAll(keepingCapacity: true) }
+        let width = ceil((string as NSString).size(withAttributes: [.font: font]).width)
+        widthCache[string] = width
+        return width
     }
 }

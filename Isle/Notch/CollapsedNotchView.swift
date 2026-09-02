@@ -234,9 +234,11 @@ struct CollapsedNotchView: View {
 
     /// The countdown, ticking off the display clock rather than a publish so
     /// the digits are exact at any frame. Paused while paused — nothing to
-    /// redraw.
+    /// redraw. (`.animation`, not `.periodic`: only the former can be paused;
+    /// `.periodic` kept re-evaluating a paused clock once a second to draw
+    /// the same digits.)
     private var pomodoroClock: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
+        TimelineView(.animation(minimumInterval: 1, paused: !viewModel.pomodoro.isRunning)) { context in
             Text(PomodoroTimer.clock(viewModel.pomodoro.remaining(at: context.date)))
                 .font(.system(size: CollapsedSize.statusFontSize, weight: .semibold).monospacedDigit())
                 .foregroundStyle(pomodoroTint)
@@ -253,7 +255,7 @@ struct CollapsedNotchView: View {
     /// in the palette accent; breaks in the softer secondary, so a glance
     /// tells which half of the cycle you're in.
     private func pomodoroRing(size: CGFloat) -> some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
+        TimelineView(.animation(minimumInterval: 1, paused: !viewModel.pomodoro.isRunning)) { context in
             PomodoroRing(
                 progress: viewModel.pomodoro.progress(at: context.date),
                 tint: pomodoroTint,

@@ -46,6 +46,15 @@ final class DotMatrixLayerView: NSView {
 
     private var config: Config?
     private var levels: [Double] = []
+
+    /// The last inputs handed to `apply`, compared before anything is derived
+    /// from them. `DotColors` costs four `Color`→`NSColor` bridges and a hex
+    /// parse to build, and `apply` runs on every body evaluation of the view
+    /// above it — so without this the colours were resolved every time just
+    /// to find out nothing had changed.
+    private var appliedDesign: MarkerDesign?
+    private var appliedPalette: ArtworkPalette?
+    private var appliedTint: Color?
     private var dotLayers: [CALayer] = []
     private var builtSize: CGSize = .zero
 
@@ -64,6 +73,11 @@ final class DotMatrixLayerView: NSView {
     // MARK: - Input
 
     func apply(design: MarkerDesign, palette: ArtworkPalette, tint: Color?, animateMorph: Bool) {
+        guard design != appliedDesign || palette != appliedPalette || tint != appliedTint else { return }
+        appliedDesign = design
+        appliedPalette = palette
+        appliedTint = tint
+
         let next = Config(design: design, colors: DotColors(design: design, palette: palette, tint: tint))
         guard next != config else { return }
 
