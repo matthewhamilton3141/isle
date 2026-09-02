@@ -115,7 +115,9 @@ struct AgendaExpandedView: View {
                     row(item, at: now)
                 }
             }
-            .padding(.trailing, 8)
+            // Clear the single toggle when it's parked in the panel's
+            // bottom-right corner, so the bottom rows don't run under it.
+            .padding(.trailing, switcherClearance)
         }
         .scrollIndicators(.hidden)
         .frame(height: Self.rowHeight * CGFloat(Self.visibleRows))
@@ -137,6 +139,12 @@ struct AgendaExpandedView: View {
     /// Width of the time column, so titles line up whatever the time reads.
     private static let timeWidth: CGFloat = 58
 
+    /// How far the rows stop short of the column's right edge. With the
+    /// toggle in the corner, enough that the bottom lines don't run under
+    /// it; with the strip up in the housing band, nothing to clear.
+    private var switcherClearance: CGFloat {
+        viewModel.showsTabToggle ? 44 : 8
+    }
 
     private func row(_ item: AgendaItem, at now: Date) -> some View {
         let label = timeLabel(for: item, at: now)
@@ -210,6 +218,7 @@ struct AgendaExpandedView: View {
                 .lineLimit(2)
                 .minimumScaleFactor(0.8)
                 .fixedSize(horizontal: false, vertical: true)
+                .padding(.trailing, switcherClearance)
         }
     }
 

@@ -1284,6 +1284,28 @@ final class NotchViewModel: ObservableObject {
         availableTabs.count > 1
     }
 
+    /// Whether the switcher is the strip of every face in the housing band
+    /// rather than a single toggle in the corner. Two faces flip: the toggle
+    /// shows the other face's icon and there is nothing to cycle past. From
+    /// three, cycling would make someone pass through a face they didn't
+    /// want to reach the one they did, so each gets its own button.
+    var showsTabStrip: Bool {
+        availableTabs.count > 2
+    }
+
+    /// The single toggle is on: exactly two faces — see `showsTabStrip`.
+    var showsTabToggle: Bool {
+        showsTabBar && !showsTabStrip
+    }
+
+    /// The face the single toggle offers: the one after the current, cycling.
+    /// With two faces that is simply the other one.
+    var nextTab: IsleTab {
+        let tabs = availableTabs
+        guard let index = tabs.firstIndex(of: expandedTab) else { return tabs.first ?? .music }
+        return tabs[(index + 1) % tabs.count]
+    }
+
     /// Which content the expanded panel should render right now. Normally the
     /// user's selected tab, except that a live Claude interrupt (a question /
     /// error) forces the Claude tab — without mutating `activeTab`, so the
