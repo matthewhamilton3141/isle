@@ -6,7 +6,7 @@
 //  and the Claude marker sit, here a date card, then a text column — so
 //  switching faces keeps the panel's weight where it was.
 //
-//  The column shows three lines at a time, each a time, a coloured mark and
+//  The column shows four lines at a time, each a time, a coloured mark and
 //  a title, and scrolls for the rest — a two-finger swipe while hovering,
 //  with the bottom edge fading to say there is more. The date card opens
 //  Calendar: this is a glance at the notch, not the Calendar app. An event in
@@ -22,8 +22,9 @@ struct AgendaExpandedView: View {
     @ObservedObject var viewModel: NotchViewModel
     var palette: ArtworkPalette
 
-    /// Lines visible at once; the rest scroll.
-    private static let visibleRows = 3
+    /// Lines visible at once; the rest scroll. Four fill the usable height
+    /// below the housing band with a couple of points to spare.
+    private static let visibleRows = 4
 
     /// Height of one line, and so of the scrolling window.
     private static let rowHeight: CGFloat = 22
@@ -50,13 +51,19 @@ struct AgendaExpandedView: View {
                 .offset(y: -10)
 
                 VStack(alignment: .leading, spacing: 0) {
-                    Spacer(minLength: 0)
                     if viewModel.agendaItems.isEmpty {
+                        Spacer(minLength: 0)
                         emptyState
+                        Spacer(minLength: 0)
                     } else {
+                        // Pinned to the top, right under the housing band,
+                        // rather than centred: the list reads top-down, and
+                        // centring left a band of dead space above the first
+                        // line and none for a fourth.
                         rows(at: context.date)
+                            .padding(.top, 2)
+                        Spacer(minLength: 0)
                     }
-                    Spacer(minLength: 0)
                 }
                 .frame(minWidth: 340, maxWidth: 340, maxHeight: .infinity, alignment: .leading)
                 .offset(y: -1)
