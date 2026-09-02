@@ -1111,12 +1111,24 @@ final class NotchViewModel: ObservableObject {
     private static let snapThreshold: TimeInterval = 1.5
 
     private func apply(_ model: MediaPlaybackModel) {
+        var model = model
         let now = Date()
         let reported = model.elapsed(at: now)
 
         let isNewTrack = model.title != media.title || model.album != media.album
         let transportChanged = model.isPlaying != media.isPlaying
             || model.playbackRate != anchorRate
+
+        // Same track, no cover: keep the one on screen. The sources swap when
+        // a browser takes the now-playing session — the adapter drops out and
+        // the poll takes over — and the poll's model arrives before its cover
+        // does (the download is deferred until it's needed; see
+        // `SpotifyController.wantsArtwork`). Without this the island showed
+        // the gradient for the fraction of a second in between, for a track
+        // that hadn't changed.
+        if model.artwork == nil, !isNewTrack {
+            model.artwork = media.artwork
+        }
 
         if anchorDate == nil || isNewTrack || transportChanged {
             anchorElapsed = reported
