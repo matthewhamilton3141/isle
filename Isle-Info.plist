@@ -43,5 +43,17 @@
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Isle shows the battery level of your connected Bluetooth devices in the notch.</string>
 
+	<!--
+	  Required to read upcoming calendar events and due reminders for the
+	  agenda toasts (see AgendaMonitor). macOS 14 introduced the *FullAccess*
+	  keys; without the matching key, requestFullAccessToEvents /
+	  requestFullAccessToReminders never prompts and simply reports denied.
+	  Isle only asks when the corresponding Setup/Settings switch is on.
+	-->
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Isle shows a calendar event in the notch shortly before it starts. Events are read on this Mac and never sent anywhere.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Isle shows a reminder in the notch when it comes due. Reminders are read on this Mac and never sent anywhere.</string>
+
 </dict>
 </plist>

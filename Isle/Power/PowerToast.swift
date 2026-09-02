@@ -1,15 +1,9 @@
 //
 //  PowerToast.swift
 //
-//  The display model for a momentary power/battery message in the collapsed
-//  island, plus the two snapshots the monitors diff to produce them.
-//
-//  A toast is deliberately *not* a third seat in the collapsed island. Music
-//  and Claude each hold a standing side of the camera cutout (see
-//  `NotchViewModel.collapsedSideWidths`); a power event is transient by
-//  nature, so it borrows the whole island for a few seconds and hands it
-//  straight back. That's the only reason this is a value type with a
-//  pre-rendered `text` rather than a state enum the views switch on.
+//  The power and battery messages — `IslandToast` factories for the moments
+//  `PowerMonitor` and `BluetoothBatteryMonitor` report — plus the two
+//  snapshots the monitors diff to produce them.
 //
 //  Everything here reports what the APIs actually returned. Time-to-full and
 //  time-to-empty are IOKit values, and IOKit says "still calculating" for the
@@ -19,115 +13,58 @@
 
 import SwiftUI
 
-// MARK: - Toast
-
-/// What a toast draws to the left of the camera cutout. An enum rather than a
-/// symbol name because one of the glyphs isn't a system symbol: SF Symbols has
-/// no Bluetooth mark, so that case is drawn by `BluetoothRune`.
-enum PowerGlyph: Equatable {
-    case symbol(String)
-    case bluetoothRune
-}
-
-struct PowerToast: Equatable, Identifiable {
-    /// What produced the toast. Used for coalescing — a second event of the
-    /// same kind replaces the first rather than queueing behind it, so
-    /// jiggling a loose MagSafe connector can't stack up six toasts.
-    enum Kind: Equatable {
-        case pluggedIn
-        case unplugged
-        case fullyCharged
-        case lowBattery
-        /// A Bluetooth peripheral's level, keyed by address so two different
-        /// devices connecting in quick succession don't coalesce into one.
-        case device(address: String)
-        case lowPowerMode
-    }
-
-    let id = UUID()
-    let kind: Kind
-    let glyph: PowerGlyph
-    /// Already formatted for display — see `PowerToast` factory methods below.
-    let text: String
-    let tint: Color
-
-    /// The SF Symbol name, when this toast uses one. Nil for the hand-drawn
-    /// rune — which is exactly the distinction callers need to make.
-    var symbolName: String? {
-        if case let .symbol(name) = glyph { return name }
-        return nil
-    }
-
-    /// Which of the two settings governs this message. The split is by the
-    /// hardware being reported on, not by how the reading was obtained: a
-    /// device level is about a peripheral whatever prompted the read, so a
-    /// level surfaced by plugging the Mac in is still a device update.
-    var isDeviceUpdate: Bool {
-        if case .device = kind { return true }
-        return false
-    }
-
-    static func == (lhs: PowerToast, rhs: PowerToast) -> Bool {
-        lhs.id == rhs.id
-    }
-
-    /// True when this toast and another are the same *kind* of message, and so
-    /// should replace rather than queue. Not `==`, which is identity.
-    func coalesces(with other: PowerToast) -> Bool {
-        kind == other.kind
-    }
-}
-
 // MARK: - Copy
 
-extension PowerToast {
+extension IslandToast {
     /// Warm amber for charging, plain white for the neutral states, red for
-    /// the two "you should do something" ones. Deliberately a small palette:
-    /// the island is 10pt text on black and colour is the only other channel.
+    /// the two "you should do something" ones.
     private static let charge = Color(hex: "#5BD16A")
-    private static let neutral = Color(white: 0.92)
     private static let warn = Color(hex: "#E8842B")
     private static let alarm = Color(hex: "#E5484D")
 
-    static func pluggedIn(percent: Int, minutesToFull: Int?) -> PowerToast {
-        PowerToast(
+    static func pluggedIn(percent: Int, minutesToFull: Int?) -> IslandToast {
+        IslandToast(
             kind: .pluggedIn,
             glyph: .symbol("bolt.fill"),
             text: fit(
                 short: "Charging · \(percent)%",
                 long: minutesToFull.map { "Charging · \(percent)% · \(clock($0)) to full" }
             ),
-            tint: charge
+            tint: charge,
+            gate: .macBattery
         )
     }
 
-    static func unplugged(percent: Int, minutesToEmpty: Int?) -> PowerToast {
-        PowerToast(
+    static func unplugged(percent: Int, minutesToEmpty: Int?) -> IslandToast {
+        IslandToast(
             kind: .unplugged,
             glyph: .symbol(batterySymbol(for: percent)),
             text: fit(
                 short: "On battery · \(percent)%",
                 long: minutesToEmpty.map { "On battery · \(percent)% · \(clock($0)) left" }
             ),
-            tint: neutral
+            tint: neutral,
+            gate: .macBattery
         )
     }
 
-    static func fullyCharged() -> PowerToast {
-        PowerToast(
+    static func fullyCharged() -> IslandToast {
+        IslandToast(
             kind: .fullyCharged,
             glyph: .symbol("battery.100percent.bolt"),
             text: "Fully charged",
-            tint: charge
+            tint: charge,
+            gate: .macBattery
         )
     }
 
-    static func lowBattery(percent: Int) -> PowerToast {
-        PowerToast(
+    static func lowBattery(percent: Int) -> IslandToast {
+        IslandToast(
             kind: .lowBattery,
             glyph: .symbol(batterySymbol(for: percent)),
             text: "Low battery · \(percent)%",
-            tint: percent <= 10 ? alarm : warn
+            tint: percent <= 10 ? alarm : warn,
+            gate: .macBattery
         )
     }
 
@@ -145,63 +82,33 @@ extension PowerToast {
     /// `batterySymbol` ladder the on-battery and low-battery toasts use — a
     /// Mac at 30% shows a nearly empty battery here too, rather than a full
     /// one that contradicts the reason Low Power Mode came on.
-    static func lowPowerMode(on: Bool, percent: Int) -> PowerToast {
-        PowerToast(
+    static func lowPowerMode(on: Bool, percent: Int) -> IslandToast {
+        IslandToast(
             kind: .lowPowerMode,
             glyph: .symbol(batterySymbol(for: percent)),
             text: on ? "Low Power On" : "Low Power Off",
-            tint: on ? warn : neutral
+            tint: on ? warn : neutral,
+            gate: .macBattery
         )
     }
 
-    static func device(_ battery: PeripheralBattery) -> PowerToast {
-        PowerToast(
+    static func device(_ battery: PeripheralBattery) -> IslandToast {
+        IslandToast(
             kind: .device(address: battery.address),
             glyph: battery.glyph,
             // The device's own name, trimmed to keep the island sane — some
             // are genuinely called "Matthew's AirPods Pro Max (2nd gen)".
             text: name(battery.name, beside: " · \(battery.percent)%"),
-            tint: battery.percent <= PeripheralBattery.lowThreshold ? warn : neutral
+            tint: battery.percent <= PeripheralBattery.lowThreshold ? warn : neutral,
+            gate: .deviceBattery
         )
     }
 
     // MARK: - Formatting
 
-    /// Widest the toast's text is allowed to get, in points at the collapsed
-    /// status font. The island sizes itself to its content, so an unbounded
-    /// string would grow the collapsed pill toward the expanded panel's 520pt
-    /// and stop reading as a glance. Anything longer falls back to the short
-    /// form — which is why every toast has one.
-    static let maxTextWidth: CGFloat = 150
-
-    /// Prefers the fuller string, but only when it fits the island's budget.
-    /// Nothing is elided mid-string: it's the whole optional clause or none.
-    private static func fit(short: String, long: String?) -> String {
-        guard let long, PowerToast.width(of: long) <= maxTextWidth else { return short }
-        return long
-    }
-
     /// `h:mm`, matching how macOS's own battery menu writes a duration.
     private static func clock(_ minutes: Int) -> String {
         String(format: "%d:%02d", minutes / 60, minutes % 60)
-    }
-
-    /// A device's name plus its level, trimmed so the pair fits the island's
-    /// budget. Devices are named by their owner and some are genuinely called
-    /// "Matthew's AirPods Pro Max (2nd generation)"; the level is the part
-    /// that must survive, so the name yields to it.
-    ///
-    /// Trimmed by measured width rather than character count — a name in wide
-    /// glyphs and one in narrow glyphs don't fit the same number of them.
-    private static func name(_ name: String, beside suffix: String) -> String {
-        let budget = maxTextWidth - width(of: suffix)
-        guard width(of: name) > budget else { return name + suffix }
-
-        var trimmed = Substring(name)
-        while !trimmed.isEmpty && width(of: trimmed + "…") > budget {
-            trimmed = trimmed.dropLast()
-        }
-        return trimmed.trimmingCharacters(in: .whitespaces) + "…" + suffix
     }
 
     /// Rounded down to the nearest fifth, which is how SF Symbols quantises
@@ -214,17 +121,6 @@ extension PowerToast {
         case 13...: return "battery.25percent"
         default:    return "battery.0percent"
         }
-    }
-
-    /// Measured at the collapsed status font, so `fit` and the island's width
-    /// calculation agree about how wide the toast is.
-    private static let font = NSFont.systemFont(
-        ofSize: CollapsedSize.statusFontSize, weight: .semibold
-    )
-
-    static func width(of string: String) -> CGFloat {
-        guard !string.isEmpty else { return 0 }
-        return ceil((string as NSString).size(withAttributes: [.font: font]).width)
     }
 }
 
@@ -279,7 +175,7 @@ struct PeripheralBattery: Equatable {
     /// a charger plug-in, not just on connect).
     static let lowThreshold = 20
 
-    var glyph: PowerGlyph {
+    var glyph: ToastGlyph {
         switch minorType?.lowercased() {
         case let type? where type.contains("headphone") || type.contains("headset"):
             return .symbol("headphones")

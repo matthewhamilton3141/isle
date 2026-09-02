@@ -70,9 +70,9 @@ permissions.
 
 ### 4. Choose what Isle may ask for
 
-The next screen lists the two features that need a macOS permission, both
-ticked. Nothing starts until you press Continue, so Isle only ever asks for
-what you left ticked:
+The next screen lists the features that need a macOS permission, all ticked.
+Nothing starts until you press Continue, so Isle only ever asks for what you
+left ticked:
 
 - **Live waveform** (Music and Both) — the bars move with the music. macOS
   asks for *Audio Recording* the first time something plays. Unticked, the
@@ -80,12 +80,18 @@ what you left ticked:
 - **Device batteries** — a Bluetooth device's battery level shows when it
   connects. macOS asks for *Bluetooth* as soon as you continue. Unticked, Isle
   never looks.
+- **Events & reminders** — the expanded notch gains an Agenda face listing
+  what's left of today, and the island shows each event shortly before it
+  starts and each reminder as it comes due. macOS asks for *Calendars* and
+  *Reminders* as soon as you continue. Unticked, Isle never looks. Settings
+  can switch the two on and off separately.
 
 In Music and Both modes, macOS also asks for **Automation → Spotify** on first
 use, for the transport controls. That one is required for playback control.
 
 All of these can be changed later in **System Settings → Privacy & Security**,
-and the waveform and device toggles live in Isle's Settings too. Isle is signed
+and the waveform, device, calendar and reminder toggles live in Isle's
+Settings too. Isle is signed
 without an Apple Developer ID, so macOS ties its answers to the exact build and
 asks again after an update.
 
@@ -118,7 +124,15 @@ Isle runs as a menu bar app with no Dock icon.
 - **Live Claude Code status.** Working, waiting on you, done, or failed, with a
   breathing glyph while a turn runs and a checkmark when it lands.
 - **Both sources at once.** In Both mode the collapsed island splits between
-  music and Claude, and the expanded view tabs between them.
+  music and Claude, and the expanded view cycles between its faces.
+- **Your day, at a glance.** With Calendar or Reminders on, the expanded
+  notch has an Agenda face: today's date, then what's left of the day — events
+  still to come or in progress, and reminders due — each in its calendar's
+  colour. Three lines show at a time; swipe to scroll the rest, or click the
+  date to open Calendar. A calendar event also borrows the collapsed island a few minutes
+  before it starts, and a reminder as it comes due, then hands it straight
+  back. All-day events and date-only reminders are listed but never announced,
+  and declined invitations are left out.
 - **Stays out of the way.** A borderless, non-activating overlay that never
   takes focus and never resizes the window under the cursor.
 
@@ -128,7 +142,7 @@ Isle runs as a menu bar app with no Dock icon.
 |---|---|
 | Toggle Notch | Show or hide the island |
 | Pop out notch for alerts | Whether Claude alerts expand the island on their own |
-| Settings… | Mode, music options, Claude hook, updates |
+| Settings… | Mode, music options, Claude hook, power and calendar updates, app updates |
 | Setup… | Re-run the first-launch mode and permissions picker |
 | Check for Updates… | Check for a new version immediately |
 | Marker Editor… | Design the dot-matrix markers for each Claude state |
@@ -190,6 +204,13 @@ declined permission from silence, so it won't say which it is.
 
 **The controls do nothing.** Automation permission for Spotify was declined.
 Re-enable Isle under **System Settings → Privacy & Security → Automation**.
+
+**No event or reminder ever shows.** Check the two switches under
+**Settings → Calendar & Reminders**. Each says outright if its permission was
+declined, with a button to the right Privacy pane, and the Agenda face says so
+too. The island only announces a moment: all-day events and reminders with a
+date but no time are listed on the Agenda face but never announced, and
+invitations you declined are skipped entirely.
 
 **The Claude glyph never changes.** Confirm the hook is installed under
 **Settings → Claude Code**, and that `~/.claude/settings.json` still contains the
@@ -259,6 +280,7 @@ Isle/
 │   ├── NotchWindow.swift              borderless non-activating NSPanel
 │   ├── NotchHostingView.swift         hit-testing clipped to the drawn shape
 │   ├── NotchViewModel.swift           media + Claude feeds, playback clock
+│   ├── IslandToast.swift              the momentary island message (power, calendar)
 │   ├── CollapsedNotchView.swift
 │   ├── ExpandedNotchView.swift        music tab
 │   └── ClaudeExpandedView.swift       Claude tab
@@ -276,7 +298,11 @@ Isle/
 ├── Power/
 │   ├── PowerMonitor.swift             Mac battery, IOKit run-loop source
 │   ├── BluetoothBatteryMonitor.swift  peripheral levels (system_profiler)
-│   └── PowerToast.swift               the momentary island message
+│   └── PowerToast.swift               the power and battery messages
+├── Agenda/
+│   ├── AgendaMonitor.swift            calendar events and reminders (EventKit)
+│   ├── AgendaExpandedView.swift       the Agenda face of the expanded panel
+│   └── AgendaToast.swift              the event and reminder messages
 ├── Markers/                   # designable dot-matrix markers per Claude state
 ├── Components/                # MarqueeText, EqualizerView, ArtworkColors
 ├── Settings/, Onboarding/     # settings pane, first-launch mode picker

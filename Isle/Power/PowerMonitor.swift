@@ -22,7 +22,7 @@ import IOKit.ps
 final class PowerMonitor {
     /// A toast worth showing. Fired only for a real transition, never for the
     /// steady state, and never for the first reading after `start()`.
-    var onEvent: ((PowerToast) -> Void)?
+    var onEvent: ((IslandToast) -> Void)?
 
     /// The Mac was just connected to power. Separate from `onEvent` because
     /// it's also the cue to re-read peripheral batteries (see
@@ -135,8 +135,8 @@ final class PowerMonitor {
     /// `nonisolated` because it is pure — two snapshots in, a list of toasts
     /// out, no state touched. That keeps the editorial policy testable without
     /// standing up a monitor or a run loop.
-    nonisolated static func events(from before: MacPowerSnapshot, to now: MacPowerSnapshot) -> [PowerToast] {
-        var toasts: [PowerToast] = []
+    nonisolated static func events(from before: MacPowerSnapshot, to now: MacPowerSnapshot) -> [IslandToast] {
+        var toasts: [IslandToast] = []
 
         // Newly full *and* on the adapter — which happens two ways: the
         // percentage climbing to 100 while plugged in, or the charger going

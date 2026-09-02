@@ -133,20 +133,21 @@ struct NotchRootView: View {
                 .padding(.top, state.isExpanded ? notchBandHeight + 2 : 0)
                 .padding(.bottom, state.isExpanded ? 8 : 0)
 
-            // The Music/Claude switcher, parked in the housing band to the
-            // right of the physical cutout (only in `.both` mode). It sits in
-            // the band rather than below it — the band right of the camera is
-            // ordinary screen, not hardware. Inside the ZStack so it clips to
-            // the notch outline; opacity-gated so it fades in with the rest of
-            // the expanded content instead of popping mid-animation.
+            // The face switcher, parked in the housing band to the right of
+            // the physical cutout (only when more than one face is on). The
+            // band right of the camera is ordinary screen, not hardware, and
+            // nothing else uses it but the waveform at the far right — so the
+            // strip sits there, out of the way of every face's content,
+            // rather than in a corner where it crowded the transport keys.
+            // Inside the ZStack so it clips to the notch outline; opacity-
+            // gated so it fades in with the rest of the expanded content
+            // instead of popping mid-animation.
             if state.isExpanded && viewModel.showsTabBar {
                 tabBar
-                    // Parked in the bottom-right corner of the panel rather than
-                    // up in the housing band — inset enough to clear the rounded
-                    // bottom corner and the transport keys, which stay centred.
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                    .padding(.trailing, 22)
-                    .padding(.bottom, 16)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .padding(.trailing, Self.tabStripTrailing)
+                    // Centred in the band's height.
+                    .padding(.top, max(0, (notchBandHeight - Self.tabStripCell) / 2))
                     .opacity(expandedContentOpacity)
             }
         }
@@ -230,52 +231,74 @@ struct NotchRootView: View {
 
     // MARK: - Tab switcher
 
-    /// Diameter of the single toggle button.
-    private static let tabBarHeight: CGFloat = 34
+    /// Square hit area of one face in the strip, and the gap between them.
+    /// Small enough that four of them fit between the cutout and the
+    /// waveform on the narrowest housing.
+    private static let tabStripCell: CGFloat = 20
+    private static let tabStripGap: CGFloat = 6
 
-    /// Round buttons rather than a segmented pill: one per tab you could
-    /// switch *to*, each showing that tab's icon, so on Music you see the
-    /// Claude mark (and the timer, if it's on). Tapping jumps to that tab. With
-    /// two tabs this is the single toggle it has always been.
+    /// Inset from the panel's right edge: past the waveform pinned at the
+    /// top-right (22 panel padding + 4 + 30 wide) with a little air. Constant
+    /// whether or not the waveform is showing, so the strip never hops.
+    private static let tabStripTrailing: CGFloat = 64
+
+    /// A strip of every face, the current one lit and underlined, the rest
+    /// dimmed. Tapping any goes straight there — no cycling through faces
+    /// you didn't want to reach the one you did.
     private var tabBar: some View {
-        let targets = viewModel.availableTabs.filter { $0 != viewModel.expandedTab }
-        return HStack(spacing: 8) {
-            ForEach(targets) { target in
+        HStack(spacing: Self.tabStripGap) {
+            ForEach(viewModel.availableTabs) { tab in
+                let active = tab == viewModel.expandedTab
                 Button {
                     // No withAnimation here: the content cross-fade is handled
                     // by ExpandedNotchView's own `.animation(value: expandedTab)`.
-                    viewModel.selectTab(target)
+                    viewModel.selectTab(tab)
                 } label: {
-                    tabIcon(for: target)
-                        .frame(width: Self.tabBarHeight, height: Self.tabBarHeight)
-                        .background(Circle().fill(.black.opacity(0.35)))
-                        .contentShape(Circle())
+                    tabIcon(for: tab)
+                        .opacity(active ? 1 : 0.4)
+                        .frame(width: Self.tabStripCell, height: Self.tabStripCell)
+                        .overlay(alignment: .bottom) {
+                            Capsule()
+                                .fill(.white)
+                                .frame(width: 10, height: 2)
+                                .opacity(active ? 1 : 0)
+                        }
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Switch to \(target.title)")
+                .accessibilityLabel(tab.title)
+                .accessibilityAddTraits(active ? [.isSelected] : [])
             }
         }
         .animation(.easeInOut(duration: 0.15), value: viewModel.expandedTab)
     }
 
-    /// Music keeps its SF Symbol; Claude uses the dot mark; Pomodoro a timer.
+    /// Music, Pomodoro and Agenda keep their SF Symbols; Claude uses the dot
+    /// mark. All are drawn into the same square so none outweighs the others
+    /// in the strip.
     @ViewBuilder
     private func tabIcon(for tab: IsleTab) -> some View {
+        let color = Color.white
+        let size: CGFloat = 13
         switch tab {
+        case .agenda:
+            Image(systemName: "calendar")
+                .font(.system(size: size * 0.85, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: size, height: size)
         case .music:
-            // A 4-bar waveform, sized to the same 16x16 box as the Claude dot
-            // grid so neither icon outweighs the other in the toggle.
-            WaveformIcon(color: .white)
-                .frame(width: 18, height: 18)
+            // A 4-bar waveform, sized to the same box as the Claude dot grid.
+            WaveformIcon(color: color)
+                .frame(width: size, height: size)
         case .claude:
             // A simpler 3x3 grid reads better than 5x5 at tab-icon size.
-            DotGridIcon(color: .white, dimension: 3)
-                .frame(width: 18, height: 18)
+            DotGridIcon(color: color, dimension: 3)
+                .frame(width: size, height: size)
         case .pomodoro:
             Image(systemName: tab.symbolName)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 18, height: 18)
+                .font(.system(size: size * 0.85, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: size, height: size)
         }
     }
 
@@ -336,7 +359,7 @@ private struct NotchPreviewStage<Content: View>: View {
 /// Runs the toast cycle live in the canvas. A view of its own so the loop is
 /// owned by something with a lifetime — started in `.task`, cancelled when the
 /// canvas tears the preview down, rather than left spinning behind it.
-private struct PowerToastPreviewLoop: View {
+private struct ToastPreviewLoop: View {
     @ObservedObject var viewModel: NotchViewModel
     let island: IslandPresentation
 
@@ -346,21 +369,21 @@ private struct PowerToastPreviewLoop: View {
     }
 }
 
-/// The one to watch: all five toasts on a loop, through the real queue and the
+/// The one to watch: every toast on a loop, through the real queue and the
 /// real timers, with Claude working underneath so each toast is seen taking the
 /// island and handing it back.
-#Preview("Notch — power toasts (live)") {
+#Preview("Notch — toasts (live)") {
     // Something for the toast to displace and return to. `working` is ambient,
     // so it doesn't suppress the toast the way an approval would — see
-    // `NotchViewModel.showsPowerToast`.
+    // `NotchViewModel.showsToast`.
     let (vm, island) = NotchPreview.island { $0.claudeState = .working }
     return NotchPreviewStage {
-        PowerToastPreviewLoop(viewModel: vm, island: island)
+        ToastPreviewLoop(viewModel: vm, island: island)
     }
 }
 
 /// Stills, for checking copy, colour and width without waiting for the cycle.
-#Preview("Notch — power toasts (stills)") {
+#Preview("Notch — toasts (stills)") {
     let pinned = NotchViewModel.previewToasts().map { toast in
         NotchPreview.island { $0.pinPreviewToast(toast) }
     }
