@@ -27,7 +27,21 @@ final class SpotifyController {
     /// Latest Spotify state, or nil when Spotify isn't running or is stopped.
     var onUpdate: ((MediaPlaybackModel?) -> Void)?
 
+    /// Asked at every tick whether the read should run at full rate. Nil, or
+    /// true, means once a second; false relaxes it to every `relaxedEvery`
+    /// ticks. See `tick` for what the owner is expected to answer.
+    var wantsFullRate: (() -> Bool)?
+
     private var timer: Timer?
+
+    /// Ticks since the last read, for the relaxed cadence.
+    private var ticksSinceRead = 0
+
+    /// How many ticks a relaxed poll waits between reads. Three seconds is
+    /// short enough that a state change the adapter *didn't* push (shuffle,
+    /// repeat) still lands before the panel is opened on it, and long enough
+    /// to take two thirds of the AppleScript traffic off a collapsed island.
+    private static let relaxedEvery = 3
 
     /// AppleScript is synchronous and can block on an unresponsive Spotify, so
     /// every script runs here rather than on the main thread.
@@ -41,8 +55,12 @@ final class SpotifyController {
         guard timer == nil else { return }
         // .common so polling continues while the notch is being tracked/dragged.
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.poll() }
+            Task { @MainActor in self?.tick() }
         }
+        // A fifth of a second of slack lets the kernel coalesce this with
+        // other wakeups. Nothing here is timing-critical at that scale — the
+        // scrubber runs off its own clock between reads.
+        timer.tolerance = 0.2
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
         poll()
@@ -51,9 +69,31 @@ final class SpotifyController {
     func stop() {
         timer?.invalidate()
         timer = nil
+        ticksSinceRead = 0
+    }
+
+    /// Read now rather than at the next tick — for when the panel opens and
+    /// the position on screen should be current, not up to three seconds old.
+    func pollNow() {
+        guard timer != nil else { return }
+        poll()
+    }
+
+    /// The 1 Hz timer stays; what it does each second depends on whether
+    /// anyone is looking. The read costs ~45ms of Apple events (see below),
+    /// which is worth paying every second while the panel is open — the
+    /// scrubber and the toggles are on screen — or while this poll is the only
+    /// source there is. Collapsed, with the adapter already pushing Spotify's
+    /// state, nothing it reads is drawn, so it reads every third second.
+    private func tick() {
+        ticksSinceRead += 1
+        let full = wantsFullRate?() ?? true
+        guard full || ticksSinceRead >= Self.relaxedEvery else { return }
+        poll()
     }
 
     private func poll() {
+        ticksSinceRead = 0
         // Whether Spotify is running is answered in-process. The read script
         // used to open with `tell application "System Events" to exists process
         // "Spotify"`, which costs an Apple-event round trip and a LaunchServices

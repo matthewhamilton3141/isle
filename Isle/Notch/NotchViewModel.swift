@@ -301,7 +301,12 @@ final class NotchViewModel: ObservableObject {
     /// Live sessions as the CLI itself reports them, hook-free. Ground truth
     /// for liveness: a session killed with SIGKILL fires no SessionEnd, and its
     /// pid simply stops existing here.
-    @Published private(set) var claudeSessions: [ClaudeSession] = []
+    ///
+    /// Not published: no view reads it, and the registry is rewritten on every
+    /// CLI status change, so publishing it invalidated the whole notch on each
+    /// one for nothing. Selection re-runs on the change (see `onSessions`) and
+    /// publishes through `claudeState` only when the result differs.
+    private var claudeSessions: [ClaudeSession] = []
 
     private var reselectTimer: Timer?
 
@@ -556,6 +561,17 @@ final class NotchViewModel: ObservableObject {
         spotify.onUpdate = { [weak self] model in
             self?.spotifyModel = model
             self?.recomputeSource()
+        }
+        // Full rate while the poll is the only source (the adapter has no
+        // Spotify track — a browser owns the session), or while a panel is
+        // open and its scrubber and toggles are actually drawn from it.
+        // Otherwise the adapter pushes every change a collapsed island shows,
+        // and the poll can relax — see `SpotifyController.tick`.
+        spotify.wantsFullRate = { [weak self] in
+            guard let self else { return false }
+            return !self.adapterModel.hasTrack
+                || self.hoveredIslands > 0
+                || self.autoExpandsForActivity
         }
 
         claudeWatcher.onStatuses = { [weak self] statuses in
@@ -1102,6 +1118,11 @@ final class NotchViewModel: ObservableObject {
             artworkPalette = model.artwork.map { ArtworkColors.palette(from: $0) }
         }
 
+        // The anchor above is the only thing that needs the timing fields, and
+        // it has them now. Publish only when something a view draws has
+        // changed — otherwise every 1 Hz poll re-evaluated the whole notch
+        // (shape, glyph, equalizer bridge, palette) to redraw nothing.
+        guard !model.hasSameDisplay(as: media) else { return }
         media = model
     }
 
@@ -1154,6 +1175,23 @@ final class NotchViewModel: ObservableObject {
     /// dismissed by a stray move nearby. Called by `IslandPresentation`.
     func noteAlertVisited() {
         if hasLiveActivity { alertWasHovered = true }
+    }
+
+    /// How many islands the pointer currently holds open. The pointer is only
+    /// ever on one screen, so this is 0 or 1 in practice; a count rather than
+    /// a flag so two islands changing in the same event can't leave it wrong.
+    /// Feeds the Spotify poll's cadence — see `spotify.wantsFullRate`.
+    private var hoveredIslands = 0
+
+    /// An island's hover flipped. Called by `IslandPresentation` on every
+    /// transition, in both directions.
+    func islandHoverChanged(_ hovering: Bool) {
+        hoveredIslands = max(0, hoveredIslands + (hovering ? 1 : -1))
+        // Opening the panel puts the scrubber on screen: bring the position
+        // current now rather than at the next relaxed read.
+        if hovering, hoveredIslands == 1 {
+            spotify.pollNow()
+        }
     }
 
     /// The pointer left an island. Hovering away from an auto-opened alert the

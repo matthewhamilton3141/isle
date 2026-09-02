@@ -11,6 +11,7 @@
 //
 
 import Foundation
+import AppKit
 import Combine
 import SwiftUI
 
@@ -166,9 +167,27 @@ final class AppSettings: ObservableObject {
     }
 
     /// The resolved palette for the current accent, ready to draw with.
+    ///
+    /// Cached against the two inputs. Resolving is not cheap — `.system`, the
+    /// default, measures the system accent against every swatch, which means
+    /// parsing three hex strings and bridging a `Color` to `NSColor` for each
+    /// of seven candidates and running the Lab conversion on all of them — and
+    /// the notch reads this several times per body evaluation whenever there
+    /// is no artwork to draw from. The system accent itself is the one input
+    /// that changes without touching either key, so `systemColorsDidChange`
+    /// drops the cache (see `init`).
     var claudeAccentPalette: ArtworkPalette {
-        claudeAccent.palette(customHex: claudeAccentHex)
+        if let cached = accentPaletteCache,
+           cached.accent == claudeAccent, cached.hex == claudeAccentHex {
+            return cached.palette
+        }
+        let palette = claudeAccent.palette(customHex: claudeAccentHex)
+        accentPaletteCache = (claudeAccent, claudeAccentHex, palette)
+        return palette
     }
+
+    private var accentPaletteCache: (accent: ClaudeAccent, hex: String, palette: ArtworkPalette)?
+    private var systemColorsObserver: NSObjectProtocol?
 
     // MARK: - Power
 
@@ -302,6 +321,28 @@ final class AppSettings: ObservableObject {
         pomodoroLongBreakMinutes = defaults.object(forKey: Self.pomodoroLongBreakMinutesKey) as? Int ?? 15
         pomodoroSessionsPerCycle = defaults.object(forKey: Self.pomodoroSessionsPerCycleKey) as? Int ?? 4
         pomodoroSound = defaults.object(forKey: Self.pomodoroSoundKey) as? Bool ?? true
+
+        // A change to the system accent in System Settings changes what
+        // `.system` resolves to without either cache key moving. Drop the cache
+        // and publish, so an island drawn from the accent follows the change
+        // rather than holding the old colour until something else re-renders it.
+        systemColorsObserver = NotificationCenter.default.addObserver(
+            forName: NSColor.systemColorsDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.claudeAccent == .system else { return }
+                self.accentPaletteCache = nil
+                self.objectWillChange.send()
+            }
+        }
+    }
+
+    deinit {
+        if let systemColorsObserver {
+            NotificationCenter.default.removeObserver(systemColorsObserver)
+        }
     }
 }
 
