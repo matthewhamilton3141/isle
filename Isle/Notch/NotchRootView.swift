@@ -133,8 +133,8 @@ struct NotchRootView: View {
                 .padding(.top, state.isExpanded ? notchBandHeight + 2 : 0)
                 .padding(.bottom, state.isExpanded ? 8 : 0)
 
-            // The Music/Claude switcher, parked in the housing band to the
-            // right of the physical cutout (only in `.both` mode). It sits in
+            // The face switcher, parked in the housing band to the right of
+            // the physical cutout (only when more than one face is on). It sits in
             // the band rather than below it — the band right of the camera is
             // ordinary screen, not hardware. Inside the ZStack so it clips to
             // the notch outline; opacity-gated so it fades in with the rest of
@@ -233,11 +233,12 @@ struct NotchRootView: View {
     /// Diameter of the single toggle button.
     private static let tabBarHeight: CGFloat = 34
 
-    /// A single toggle rather than a two-segment pill: it shows the *other*
-    /// tab's icon (the one you'd switch to), so on Music it's the 3x3 Claude
-    /// mark and on Claude it's the music note. Tapping flips to that tab.
+    /// A single toggle rather than a segmented pill: it shows the *next*
+    /// face's icon (the one you'd switch to), so on Music it's the 3x3 Claude
+    /// mark and on Claude it's the music note — or the calendar, when the
+    /// agenda is on and it's next in the cycle. Tapping goes to that face.
     private var tabBar: some View {
-        let target = viewModel.expandedTab.other
+        let target = viewModel.nextTab
         return Button {
             // No withAnimation here: the content cross-fade is handled by
             // ExpandedNotchView's own `.animation(value: expandedTab)`.
@@ -253,10 +254,15 @@ struct NotchRootView: View {
         .animation(.easeInOut(duration: 0.15), value: viewModel.expandedTab)
     }
 
-    /// Music keeps its SF Symbol; Claude uses the dot mark.
+    /// Music and Agenda keep their SF Symbols; Claude uses the dot mark.
     @ViewBuilder
     private func tabIcon(for tab: IsleTab) -> some View {
         switch tab {
+        case .agenda:
+            Image(systemName: "calendar")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 18, height: 18)
         case .music:
             // A 4-bar waveform, sized to the same 16x16 box as the Claude dot
             // grid so neither icon outweighs the other in the toggle.
@@ -326,7 +332,7 @@ private struct NotchPreviewStage<Content: View>: View {
 /// Runs the toast cycle live in the canvas. A view of its own so the loop is
 /// owned by something with a lifetime — started in `.task`, cancelled when the
 /// canvas tears the preview down, rather than left spinning behind it.
-private struct PowerToastPreviewLoop: View {
+private struct ToastPreviewLoop: View {
     @ObservedObject var viewModel: NotchViewModel
     let island: IslandPresentation
 
@@ -336,21 +342,21 @@ private struct PowerToastPreviewLoop: View {
     }
 }
 
-/// The one to watch: all five toasts on a loop, through the real queue and the
+/// The one to watch: every toast on a loop, through the real queue and the
 /// real timers, with Claude working underneath so each toast is seen taking the
 /// island and handing it back.
-#Preview("Notch — power toasts (live)") {
+#Preview("Notch — toasts (live)") {
     // Something for the toast to displace and return to. `working` is ambient,
     // so it doesn't suppress the toast the way an approval would — see
-    // `NotchViewModel.showsPowerToast`.
+    // `NotchViewModel.showsToast`.
     let (vm, island) = NotchPreview.island { $0.claudeState = .working }
     return NotchPreviewStage {
-        PowerToastPreviewLoop(viewModel: vm, island: island)
+        ToastPreviewLoop(viewModel: vm, island: island)
     }
 }
 
 /// Stills, for checking copy, colour and width without waiting for the cycle.
-#Preview("Notch — power toasts (stills)") {
+#Preview("Notch — toasts (stills)") {
     let pinned = NotchViewModel.previewToasts().map { toast in
         NotchPreview.island { $0.pinPreviewToast(toast) }
     }

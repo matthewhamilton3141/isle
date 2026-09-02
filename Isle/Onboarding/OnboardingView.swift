@@ -2,9 +2,10 @@
 //  OnboardingView.swift
 //
 //  First-run picker. Asks what the user wants Isle to be — Music, Claude
-//  Code, or Both — then which of the two permission-costing extras they
-//  want (the live waveform, device batteries), so the app configures itself
-//  and only ever asks macOS for what was actually chosen. For Claude/Both it
+//  Code, or Both — then which of the permission-costing extras they
+//  want (the live waveform, device batteries, calendar and reminders), so
+//  the app configures itself and only ever asks macOS for what was actually
+//  chosen. For Claude/Both it
 //  offers to install the hook inline, so the bridge is live immediately.
 //
 //  The mode is written *last*, after the extras step: on a first launch the
@@ -35,6 +36,7 @@ struct OnboardingView: View {
     @State private var selection: IsleMode
     @State private var liveWaveform: Bool
     @State private var deviceBattery: Bool
+    @State private var agenda: Bool
     @State private var hookInstalled = HookInstaller.isInstalled
     @State private var hookError: String?
 
@@ -46,6 +48,13 @@ struct OnboardingView: View {
         _selection = State(initialValue: settings.mode ?? .both)
         _liveWaveform = State(initialValue: settings.waveformSource.capturesAudio)
         _deviceBattery = State(initialValue: settings.showDeviceBattery)
+        // Ticked on a first run, like the other two — the prompt is expected
+        // here. Re-opened, it reflects what's actually on: the stored default
+        // is off, so an install that predates the feature never gets asked
+        // for Calendar access on the strength of an update.
+        _agenda = State(initialValue: settings.hasChosenMode
+                        ? settings.showCalendarEvents || settings.showReminders
+                        : true)
     }
 
     var body: some View {
@@ -61,7 +70,7 @@ struct OnboardingView: View {
             }
             .padding(32)
         }
-        .frame(width: 520, height: 460)
+        .frame(width: 520, height: 500)
         .foregroundStyle(.white)
     }
 
@@ -157,10 +166,20 @@ struct OnboardingView: View {
                     consequence: "Asks for Bluetooth access as soon as you continue. Unticked, Isle never looks.",
                     isOn: $deviceBattery
                 )
+                // One card for two permissions: at this size the screen can't
+                // seat a fourth, and the two are one idea to someone deciding
+                // whether Isle may read their day. Settings splits them.
+                optionCard(
+                    symbol: "calendar",
+                    title: "Events & reminders",
+                    subtitle: "The expanded notch lists today's events and reminders, and the island shows each as it comes up.",
+                    consequence: "Asks for Calendar and Reminders access as soon as you continue. Unticked, Isle never looks.",
+                    isOn: $agenda
+                )
             }
             .padding(.top, 24)
 
-            Text("Isle is signed without an Apple Developer ID, so macOS ties these answers to this exact build and asks again after an update. Both can be changed any time in Settings.")
+            Text("Isle is signed without an Apple Developer ID, so macOS ties these answers to this exact build and asks again after an update. All of these can be changed any time in Settings.")
                 .font(.system(size: 10))
                 .foregroundStyle(.white.opacity(0.4))
                 .fixedSize(horizontal: false, vertical: true)
@@ -210,6 +229,13 @@ struct OnboardingView: View {
             settings.waveformSource = liveWaveform ? .live : .animated
         }
         settings.showDeviceBattery = deviceBattery
+        // One tick stands for two switches, so it's only written when it
+        // actually changed — re-running Setup with just reminders on keeps
+        // it that way rather than quietly switching the calendar on too.
+        if agenda != (settings.showCalendarEvents || settings.showReminders) {
+            settings.showCalendarEvents = agenda
+            settings.showReminders = agenda
+        }
         settings.mode = selection
 
         if selection.showsClaude {
