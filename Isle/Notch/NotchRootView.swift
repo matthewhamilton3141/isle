@@ -144,6 +144,7 @@ struct NotchRootView: View {
                     // Parked in the bottom-right corner of the panel rather than
                     // up in the housing band — inset enough to clear the rounded
                     // bottom corner and the transport keys, which stay centred.
+                    // The directory row grows leftward from the same corner.
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                     .padding(.trailing, 22)
                     .padding(.bottom, 16)
@@ -233,18 +234,41 @@ struct NotchRootView: View {
     /// Diameter of the single toggle button.
     private static let tabBarHeight: CGFloat = 34
 
+    /// Diameter of one cell in the directory row, and the gap between cells.
+    /// Smaller than the toggle: three of them have to fit where one did.
+    private static let directoryCell: CGFloat = 22
+    private static let directoryGap: CGFloat = 3
+    private static let directoryInset: CGFloat = 4
+
+    /// Width of the directory row for a given number of faces, so a face can
+    /// keep its content clear of it — see `AgendaExpandedView`.
+    static func directoryWidth(faces: Int) -> CGFloat {
+        CGFloat(faces) * directoryCell + CGFloat(max(0, faces - 1)) * directoryGap + 2 * directoryInset
+    }
+
+    /// Two faces get a single toggle; three or more get a row with one
+    /// button per face — see `NotchViewModel.showsTabDirectory`.
+    @ViewBuilder
+    private var tabBar: some View {
+        if viewModel.showsTabDirectory {
+            tabDirectory
+        } else {
+            tabToggle
+        }
+    }
+
     /// A single toggle rather than a segmented pill: it shows the *next*
     /// face's icon (the one you'd switch to), so on Music it's the 3x3 Claude
     /// mark and on Claude it's the music note — or the calendar, when the
     /// agenda is on and it's next in the cycle. Tapping goes to that face.
-    private var tabBar: some View {
+    private var tabToggle: some View {
         let target = viewModel.nextTab
         return Button {
             // No withAnimation here: the content cross-fade is handled by
             // ExpandedNotchView's own `.animation(value: expandedTab)`.
             viewModel.selectTab(target)
         } label: {
-            tabIcon(for: target)
+            tabIcon(for: target, color: .white, size: 18)
                 .frame(width: Self.tabBarHeight, height: Self.tabBarHeight)
                 .background(Circle().fill(.black.opacity(0.35)))
                 .contentShape(Circle())
@@ -254,24 +278,51 @@ struct NotchRootView: View {
         .animation(.easeInOut(duration: 0.15), value: viewModel.expandedTab)
     }
 
-    /// Music and Agenda keep their SF Symbols; Claude uses the dot mark.
+    /// One button per face, the current one lit: a white disc with the icon
+    /// cut out in black, the others as plain white marks. Same corner as the
+    /// toggle, so the two switchers are found in the same place.
+    private var tabDirectory: some View {
+        HStack(spacing: Self.directoryGap) {
+            ForEach(viewModel.availableTabs) { tab in
+                let active = tab == viewModel.expandedTab
+                Button {
+                    viewModel.selectTab(tab)
+                } label: {
+                    tabIcon(for: tab, color: active ? .black : .white.opacity(0.7), size: 13)
+                        .frame(width: Self.directoryCell, height: Self.directoryCell)
+                        .background(Circle().fill(active ? .white : .clear))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(tab.title)
+                .accessibilityAddTraits(active ? [.isSelected] : [])
+            }
+        }
+        .padding(Self.directoryInset)
+        // A faint track so the row reads as one control against the black,
+        // where the toggle's own darker disc can't.
+        .background(Capsule().fill(.white.opacity(0.08)))
+        .animation(.easeInOut(duration: 0.15), value: viewModel.expandedTab)
+    }
+
+    /// Music and Agenda keep their SF Symbols; Claude uses the dot mark. All
+    /// three are drawn into the same square so none outweighs the others.
     @ViewBuilder
-    private func tabIcon(for tab: IsleTab) -> some View {
+    private func tabIcon(for tab: IsleTab, color: Color, size: CGFloat) -> some View {
         switch tab {
         case .agenda:
             Image(systemName: "calendar")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 18, height: 18)
+                .font(.system(size: size * 0.85, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: size, height: size)
         case .music:
-            // A 4-bar waveform, sized to the same 16x16 box as the Claude dot
-            // grid so neither icon outweighs the other in the toggle.
-            WaveformIcon(color: .white)
-                .frame(width: 18, height: 18)
+            // A 4-bar waveform, sized to the same box as the Claude dot grid.
+            WaveformIcon(color: color)
+                .frame(width: size, height: size)
         case .claude:
             // A simpler 3x3 grid reads better than 5x5 at tab-icon size.
-            DotGridIcon(color: .white, dimension: 3)
-                .frame(width: 18, height: 18)
+            DotGridIcon(color: color, dimension: 3)
+                .frame(width: size, height: size)
         }
     }
 
