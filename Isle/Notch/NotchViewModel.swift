@@ -1228,21 +1228,6 @@ final class NotchViewModel: ObservableObject {
         return tabs.first ?? .music
     }
 
-    /// Whether the switcher is a row of every face rather than a single
-    /// toggle. Two faces flip; from three, cycling makes someone pass through
-    /// a face they didn't want to reach the one they did, so each gets its
-    /// own button.
-    var showsTabDirectory: Bool {
-        availableTabs.count > 2
-    }
-
-    /// The face the single toggle offers: the one after the current, cycling.
-    /// With two faces that is simply the other one, as it always was.
-    var nextTab: IsleTab {
-        let tabs = availableTabs
-        guard let index = tabs.firstIndex(of: expandedTab) else { return tabs.first ?? .music }
-        return tabs[(index + 1) % tabs.count]
-    }
 
     /// A user tap on the Music/Claude switcher. Records the pick and, when an
     /// alert is live, marks it as a manual override so `expandedTab` stops

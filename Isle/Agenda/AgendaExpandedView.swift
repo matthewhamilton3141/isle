@@ -115,9 +115,7 @@ struct AgendaExpandedView: View {
                     row(item, at: now)
                 }
             }
-            // Clear the face switcher parked in the panel's bottom-right corner
-            // — the single toggle, or the wider directory row.
-            .padding(.trailing, switcherClearance)
+            .padding(.trailing, 8)
         }
         .scrollIndicators(.hidden)
         .frame(height: Self.rowHeight * CGFloat(Self.visibleRows))
@@ -139,14 +137,6 @@ struct AgendaExpandedView: View {
     /// Width of the time column, so titles line up whatever the time reads.
     private static let timeWidth: CGFloat = 58
 
-    /// How far the rows stop short of the column's right edge so the bottom
-    /// ones don't run under the switcher. The column ends 26pt inside the
-    /// panel edge and the switcher is inset 22, so the clearance is the
-    /// switcher's width plus a few points of air, less that difference.
-    private var switcherClearance: CGFloat {
-        guard viewModel.showsTabDirectory else { return 44 }
-        return NotchRootView.directoryWidth(faces: viewModel.availableTabs.count) + 6
-    }
 
     private func row(_ item: AgendaItem, at now: Date) -> some View {
         let label = timeLabel(for: item, at: now)
@@ -220,7 +210,6 @@ struct AgendaExpandedView: View {
                 .lineLimit(2)
                 .minimumScaleFactor(0.8)
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(.trailing, 44)
         }
     }
 

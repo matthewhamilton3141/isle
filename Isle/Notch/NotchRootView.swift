@@ -134,20 +134,20 @@ struct NotchRootView: View {
                 .padding(.bottom, state.isExpanded ? 8 : 0)
 
             // The face switcher, parked in the housing band to the right of
-            // the physical cutout (only when more than one face is on). It sits in
-            // the band rather than below it — the band right of the camera is
-            // ordinary screen, not hardware. Inside the ZStack so it clips to
-            // the notch outline; opacity-gated so it fades in with the rest of
-            // the expanded content instead of popping mid-animation.
+            // the physical cutout (only when more than one face is on). The
+            // band right of the camera is ordinary screen, not hardware, and
+            // nothing else uses it but the waveform at the far right — so the
+            // strip sits there, out of the way of every face's content,
+            // rather than in a corner where it crowded the transport keys.
+            // Inside the ZStack so it clips to the notch outline; opacity-
+            // gated so it fades in with the rest of the expanded content
+            // instead of popping mid-animation.
             if state.isExpanded && viewModel.showsTabBar {
                 tabBar
-                    // Parked in the bottom-right corner of the panel rather than
-                    // up in the housing band — inset enough to clear the rounded
-                    // bottom corner and the transport keys, which stay centred.
-                    // The directory row grows leftward from the same corner.
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                    .padding(.trailing, 22)
-                    .padding(.bottom, 16)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .padding(.trailing, Self.tabStripTrailing)
+                    // Centred in the band's height.
+                    .padding(.top, max(0, (notchBandHeight - Self.tabStripCell) / 2))
                     .opacity(expandedContentOpacity)
             }
         }
@@ -231,82 +231,55 @@ struct NotchRootView: View {
 
     // MARK: - Tab switcher
 
-    /// Diameter of the single toggle button.
-    private static let tabBarHeight: CGFloat = 34
+    /// Square hit area of one face in the strip, and the gap between them.
+    /// Small enough that four of them fit between the cutout and the
+    /// waveform on the narrowest housing.
+    private static let tabStripCell: CGFloat = 20
+    private static let tabStripGap: CGFloat = 6
 
-    /// Diameter of one cell in the directory row, and the gap between cells.
-    /// Smaller than the toggle: three of them have to fit where one did.
-    private static let directoryCell: CGFloat = 22
-    private static let directoryGap: CGFloat = 3
-    private static let directoryInset: CGFloat = 4
+    /// Inset from the panel's right edge: past the waveform pinned at the
+    /// top-right (22 panel padding + 4 + 30 wide) with a little air. Constant
+    /// whether or not the waveform is showing, so the strip never hops.
+    private static let tabStripTrailing: CGFloat = 64
 
-    /// Width of the directory row for a given number of faces, so a face can
-    /// keep its content clear of it — see `AgendaExpandedView`.
-    static func directoryWidth(faces: Int) -> CGFloat {
-        CGFloat(faces) * directoryCell + CGFloat(max(0, faces - 1)) * directoryGap + 2 * directoryInset
-    }
-
-    /// Two faces get a single toggle; three or more get a row with one
-    /// button per face — see `NotchViewModel.showsTabDirectory`.
-    @ViewBuilder
+    /// A strip of every face, the current one lit and underlined, the rest
+    /// dimmed. Tapping any goes straight there — no cycling through faces
+    /// you didn't want to reach the one you did.
     private var tabBar: some View {
-        if viewModel.showsTabDirectory {
-            tabDirectory
-        } else {
-            tabToggle
-        }
-    }
-
-    /// A single toggle rather than a segmented pill: it shows the *next*
-    /// face's icon (the one you'd switch to), so on Music it's the 3x3 Claude
-    /// mark and on Claude it's the music note — or the calendar, when the
-    /// agenda is on and it's next in the cycle. Tapping goes to that face.
-    private var tabToggle: some View {
-        let target = viewModel.nextTab
-        return Button {
-            // No withAnimation here: the content cross-fade is handled by
-            // ExpandedNotchView's own `.animation(value: expandedTab)`.
-            viewModel.selectTab(target)
-        } label: {
-            tabIcon(for: target, color: .white, size: 18)
-                .frame(width: Self.tabBarHeight, height: Self.tabBarHeight)
-                .background(Circle().fill(.black.opacity(0.35)))
-                .contentShape(Circle())
-        }
-        .animation(.easeInOut(duration: 0.15), value: viewModel.expandedTab)
-    }
-
-    /// One button per face, the current one lit: a white disc with the icon
-    /// cut out in black, the others as plain white marks. Same corner as the
-    /// toggle, so the two switchers are found in the same place.
-    private var tabDirectory: some View {
-        HStack(spacing: Self.directoryGap) {
+        HStack(spacing: Self.tabStripGap) {
             ForEach(viewModel.availableTabs) { tab in
                 let active = tab == viewModel.expandedTab
                 Button {
+                    // No withAnimation here: the content cross-fade is handled
+                    // by ExpandedNotchView's own `.animation(value: expandedTab)`.
                     viewModel.selectTab(tab)
                 } label: {
-                    tabIcon(for: tab, color: active ? .black : .white.opacity(0.7), size: 13)
-                        .frame(width: Self.directoryCell, height: Self.directoryCell)
-                        .background(Circle().fill(active ? .white : .clear))
-                        .contentShape(Circle())
+                    tabIcon(for: tab)
+                        .opacity(active ? 1 : 0.4)
+                        .frame(width: Self.tabStripCell, height: Self.tabStripCell)
+                        .overlay(alignment: .bottom) {
+                            Capsule()
+                                .fill(.white)
+                                .frame(width: 10, height: 2)
+                                .opacity(active ? 1 : 0)
+                        }
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(tab.title)
                 .accessibilityAddTraits(active ? [.isSelected] : [])
             }
         }
-        .padding(Self.directoryInset)
-        // A faint track so the row reads as one control against the black,
-        // where the toggle's own darker disc can't.
-        .background(Capsule().fill(.white.opacity(0.08)))
         .animation(.easeInOut(duration: 0.15), value: viewModel.expandedTab)
     }
 
     /// Music, Pomodoro and Agenda keep their SF Symbols; Claude uses the dot
-    /// mark. All are drawn into the same square so none outweighs the others.
+    /// mark. All are drawn into the same square so none outweighs the others
+    /// in the strip.
     @ViewBuilder
-    private func tabIcon(for tab: IsleTab, color: Color, size: CGFloat) -> some View {
+    private func tabIcon(for tab: IsleTab) -> some View {
+        let color = Color.white
+        let size: CGFloat = 13
         switch tab {
         case .agenda:
             Image(systemName: "calendar")
