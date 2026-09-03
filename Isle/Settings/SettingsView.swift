@@ -371,6 +371,11 @@ struct SettingsView: View {
                 }
             }
 
+            if settings.showCalendarEvents || settings.showReminders {
+                soundRow("Sound when one appears",
+                         enabled: $settings.agendaSoundEnabled, sound: $settings.agendaSound)
+            }
+
             Text("With either on, hovering the notch gains an Agenda face. Switching both off removes it and stops Isle reading. Calendar and Reminders keep their own alerts either way; Isle adds a glance, not a replacement.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -437,12 +442,36 @@ struct SettingsView: View {
                     }
                 }
 
-                Toggle("Sound when an interval ends", isOn: $settings.pomodoroSound)
+                soundRow("Sound when an interval ends",
+                         enabled: $settings.pomodoroSoundEnabled, sound: $settings.pomodoroSound)
 
                 Text("Changes to the lengths apply from the next interval; the one that's running keeps its time.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// A switch, and beneath it — only while on — a menu of the bundled
+    /// sounds. Switching on plays the current pick and choosing another plays
+    /// that, so the choice is made by ear rather than by name.
+    private func soundRow(
+        _ title: String, enabled: Binding<Bool>, sound: Binding<NotificationSound>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(title, isOn: enabled)
+                .onChange(of: enabled.wrappedValue) { _, on in
+                    if on { sound.wrappedValue.play() }
+                }
+            if enabled.wrappedValue {
+                Picker("Sound", selection: sound) {
+                    ForEach(NotificationSound.allCases) { Text($0.title).tag($0) }
+                }
+                .onChange(of: sound.wrappedValue) { _, picked in
+                    picked.play()
+                }
+                .padding(.leading, 20)
             }
         }
     }
@@ -531,6 +560,18 @@ struct SettingsView: View {
                     .labelsHidden()
                 }
             }
+
+            VStack(alignment: .leading, spacing: 4) {
+                soundRow("Sound for alerts",
+                         enabled: $settings.claudeAlertSoundEnabled, sound: $settings.claudeAlertSound)
+                Text("Plays when Claude needs an approval, asks a question, or hits an error.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            soundRow("Sound when a turn finishes",
+                     enabled: $settings.claudeDoneSoundEnabled, sound: $settings.claudeDoneSound)
 
             VStack(alignment: .leading, spacing: 4) {
                 Toggle("Show “Waiting” in the island", isOn: $settings.showWaitingStatus)

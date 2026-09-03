@@ -43,7 +43,17 @@ final class AppSettings: ObservableObject {
     private static let pomodoroShortBreakMinutesKey = "isle.pomodoro.shortBreakMinutes"
     private static let pomodoroLongBreakMinutesKey = "isle.pomodoro.longBreakMinutes"
     private static let pomodoroSessionsPerCycleKey = "isle.pomodoro.sessionsPerCycle"
-    private static let pomodoroSoundKey = "isle.pomodoro.sound"
+    /// The pre-0.5 on/off switch. Read once at launch to seed the picker
+    /// below for an install that had turned the chime off; never written.
+    private static let legacyPomodoroSoundKey = "isle.pomodoro.sound"
+    private static let pomodoroSoundEnabledKey = "isle.pomodoro.soundEnabled"
+    private static let pomodoroSoundKey = "isle.pomodoro.soundName"
+    private static let claudeAlertSoundEnabledKey = "isle.claudeAlertSoundEnabled"
+    private static let claudeAlertSoundKey = "isle.claudeAlertSound"
+    private static let claudeDoneSoundEnabledKey = "isle.claudeDoneSoundEnabled"
+    private static let claudeDoneSoundKey = "isle.claudeDoneSound"
+    private static let agendaSoundEnabledKey = "isle.agendaSoundEnabled"
+    private static let agendaSoundKey = "isle.agendaSound"
 
     /// The user's chosen mode, or `nil` until onboarding sets one
     /// (Milestone 2). Persisted on change.
@@ -166,6 +176,41 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    // Every sound is a switch plus a choice rather than a picker with a
+    // "None" entry. The switch is what makes it optional — off by default for
+    // the Claude and agenda chimes, since an update must not start making
+    // noise on its own — and keeping the choice separate means switching a
+    // sound on lands on a sensible pick rather than an empty menu.
+
+    /// Whether Claude needing the user — an approval, a question, or an
+    /// error — plays a sound. It earns its keep for the person who prompts,
+    /// switches to another window, and would otherwise miss the island asking
+    /// for them; someone whose terminal is in front of them has no use for it.
+    @Published var claudeAlertSoundEnabled: Bool {
+        didSet { defaults.set(claudeAlertSoundEnabled, forKey: Self.claudeAlertSoundEnabledKey) }
+    }
+
+    @Published var claudeAlertSound: NotificationSound {
+        didSet {
+            guard claudeAlertSound != oldValue else { return }
+            defaults.set(claudeAlertSound.rawValue, forKey: Self.claudeAlertSoundKey)
+        }
+    }
+
+    /// Whether a finished turn plays a sound. Separate from the alert because
+    /// the two mean different things — one asks for you, the other lets you
+    /// go — and a single chime for both would say neither.
+    @Published var claudeDoneSoundEnabled: Bool {
+        didSet { defaults.set(claudeDoneSoundEnabled, forKey: Self.claudeDoneSoundEnabledKey) }
+    }
+
+    @Published var claudeDoneSound: NotificationSound {
+        didSet {
+            guard claudeDoneSound != oldValue else { return }
+            defaults.set(claudeDoneSound.rawValue, forKey: Self.claudeDoneSoundKey)
+        }
+    }
+
     /// The resolved palette for the current accent, ready to draw with.
     ///
     /// Cached against the two inputs. Resolving is not cheap — `.system`, the
@@ -244,6 +289,22 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    /// Whether an event or reminder toast plays a sound. One switch for both,
+    /// since both are "something is about to happen on your schedule" and each
+    /// already has its own show/hide switch above. Battery toasts have no
+    /// sound: macOS chimes for a charger itself, and the rest are glanceable
+    /// rather than urgent.
+    @Published var agendaSoundEnabled: Bool {
+        didSet { defaults.set(agendaSoundEnabled, forKey: Self.agendaSoundEnabledKey) }
+    }
+
+    @Published var agendaSound: NotificationSound {
+        didSet {
+            guard agendaSound != oldValue else { return }
+            defaults.set(agendaSound.rawValue, forKey: Self.agendaSoundKey)
+        }
+    }
+
     // MARK: - Pomodoro
 
     /// Whether the built-in Pomodoro timer exists at all. Off by default and
@@ -274,9 +335,17 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(pomodoroSessionsPerCycle, forKey: Self.pomodoroSessionsPerCycleKey) }
     }
 
-    /// Play a short system sound when an interval ends.
-    @Published var pomodoroSound: Bool {
-        didSet { defaults.set(pomodoroSound, forKey: Self.pomodoroSoundKey) }
+    /// Whether an interval ending plays a sound. On by default, as the timer
+    /// has always rung — a Pomodoro is a timer and a silent one is a clock.
+    @Published var pomodoroSoundEnabled: Bool {
+        didSet { defaults.set(pomodoroSoundEnabled, forKey: Self.pomodoroSoundEnabledKey) }
+    }
+
+    @Published var pomodoroSound: NotificationSound {
+        didSet {
+            guard pomodoroSound != oldValue else { return }
+            defaults.set(pomodoroSound.rawValue, forKey: Self.pomodoroSoundKey)
+        }
     }
 
     /// Whether the user has ever picked a mode. Onboarding keys off this.
@@ -320,7 +389,21 @@ final class AppSettings: ObservableObject {
         pomodoroShortBreakMinutes = defaults.object(forKey: Self.pomodoroShortBreakMinutesKey) as? Int ?? 5
         pomodoroLongBreakMinutes = defaults.object(forKey: Self.pomodoroLongBreakMinutesKey) as? Int ?? 15
         pomodoroSessionsPerCycle = defaults.object(forKey: Self.pomodoroSessionsPerCycleKey) as? Int ?? 4
-        pomodoroSound = defaults.object(forKey: Self.pomodoroSoundKey) as? Bool ?? true
+        claudeAlertSoundEnabled = defaults.object(forKey: Self.claudeAlertSoundEnabledKey) as? Bool ?? false
+        claudeAlertSound = NotificationSound(rawValue: defaults.string(forKey: Self.claudeAlertSoundKey) ?? "")
+            ?? .alert
+        claudeDoneSoundEnabled = defaults.object(forKey: Self.claudeDoneSoundEnabledKey) as? Bool ?? false
+        claudeDoneSound = NotificationSound(rawValue: defaults.string(forKey: Self.claudeDoneSoundKey) ?? "")
+            ?? .simple2
+        agendaSoundEnabled = defaults.object(forKey: Self.agendaSoundEnabledKey) as? Bool ?? false
+        agendaSound = NotificationSound(rawValue: defaults.string(forKey: Self.agendaSoundKey) ?? "")
+            ?? .simple1
+        // Prefer the new switch; fall back to the pre-0.5 one so an install
+        // that had silenced the timer stays silent after the update.
+        pomodoroSoundEnabled = defaults.object(forKey: Self.pomodoroSoundEnabledKey) as? Bool
+            ?? (defaults.object(forKey: Self.legacyPomodoroSoundKey) as? Bool ?? true)
+        pomodoroSound = NotificationSound(rawValue: defaults.string(forKey: Self.pomodoroSoundKey) ?? "")
+            ?? .fanfare
 
         // A change to the system accent in System Settings changes what
         // `.system` resolves to without either cache key moving. Drop the cache
