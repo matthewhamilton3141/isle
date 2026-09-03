@@ -14,9 +14,9 @@
 const GEOMETRY = Object.freeze({
   // The stand-in for the camera cutout. Height is the collapsed island's
   // height; width is the gap between the music and Claude clusters.
-  cutout: { width: 74, height: 32 },
+  cutout: { width: 100, height: 32 },
   // Resting size when there is nothing to show: a bare pill, still hoverable.
-  idle: { width: 120, height: 32 },
+  idle: { width: 140, height: 32 },
   expanded: { width: 520, height: 146 },
   // How far outside the drawn panel the pointer may stray before it collapses.
   stayOpenPad: { top: 10, side: 16, bottom: 26 },
