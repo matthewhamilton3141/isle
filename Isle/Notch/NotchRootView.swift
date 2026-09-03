@@ -280,8 +280,7 @@ struct NotchRootView: View {
         .animation(.easeInOut(duration: 0.15), value: viewModel.expandedTab)
     }
 
-    /// A strip of every face, the current one lit and underlined, the rest
-    /// dimmed. Tapping any goes straight there — no cycling through faces
+    /// A strip of every face, the current one lit and the rest dimmed. Tapping any goes straight there — no cycling through faces
     /// you didn't want to reach the one you did.
     private var tabStrip: some View {
         HStack(spacing: Self.tabStripGap) {
@@ -295,12 +294,6 @@ struct NotchRootView: View {
                     tabIcon(for: tab, size: 13)
                         .opacity(active ? 1 : 0.4)
                         .frame(width: Self.tabStripCell, height: Self.tabStripCell)
-                        .overlay(alignment: .bottom) {
-                            Capsule()
-                                .fill(.white)
-                                .frame(width: 10, height: 2)
-                                .opacity(active ? 1 : 0)
-                        }
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
