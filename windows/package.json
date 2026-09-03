@@ -1,0 +1,17 @@
+{
+  "name": "isle-windows",
+  "productName": "Isle",
+  "version": "0.1.0",
+  "description": "A Dynamic Island for Windows — for Spotify, Claude Code and a Pomodoro timer.",
+  "main": "src/main/main.js",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "cli": "node src/main/claude/isle-cli.js"
+  },
+  "devDependencies": {
+    "electron": "43.4.1"
+  }
+}

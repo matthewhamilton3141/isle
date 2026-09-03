@@ -32,5 +32,8 @@ Vendor/mediaremote-adapter/MediaRemoteAdapter.framework/
 # Release artifacts (built by scripts/sign-release.sh)
 dist/
 
+# Windows port
+windows/node_modules/
+
 # Video working files for the README demo (the GIF is tracked)
 assets/*.mp4

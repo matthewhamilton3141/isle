@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; media-src 'self' blob:;">
+  <title>Isle</title>
+  <link rel="stylesheet" href="overlay.css">
+</head>
+<body>
+  <div id="stage">
+    <div id="notch">
+      <div id="collapsed" class="face">
+        <div id="leading" class="side leading"></div>
+        <div id="cutout" class="cutout"></div>
+        <div id="trailing" class="side trailing"></div>
+      </div>
+
+      <div id="expanded" class="face">
+        <div id="tabbar"></div>
+        <div id="wave-expanded" class="wave-expanded"><canvas id="eq-expanded"></canvas></div>
+
+        <section id="tab-music" class="tab">
+          <div class="hero hero-music">
+            <img id="artwork" alt="">
+            <div id="artwork-placeholder" class="artwork-placeholder"></div>
+          </div>
+          <div class="column column-music">
+            <div id="music-track" class="track-block">
+              <div class="labels">
+                <div id="marquee-title" class="marquee title"></div>
+                <div id="marquee-artist" class="marquee artist"></div>
+              </div>
+              <div id="scrubber" class="scrubber">
+                <div id="scrub-hit" class="scrub-hit">
+                  <div class="scrub-track"><div id="scrub-fill" class="scrub-fill"></div></div>
+                </div>
+                <div class="times"><span id="time-elapsed">0:00</span><span id="time-remaining">-0:00</span></div>
+              </div>
+              <div id="controls" class="controls">
+                <button id="btn-shuffle" class="control toggle" data-size="15" aria-label="Shuffle"></button>
+                <button id="btn-prev" class="control" data-size="21" aria-label="Previous"></button>
+                <button id="btn-play" class="control" data-size="28" aria-label="Play or pause"></button>
+                <button id="btn-next" class="control" data-size="21" aria-label="Next"></button>
+                <button id="btn-repeat" class="control toggle" data-size="15" aria-label="Repeat"></button>
+              </div>
+            </div>
+            <div id="music-idle" class="idle-block">
+              <div class="headline">Nothing playing</div>
+              <div class="detail">Start something in Spotify</div>
+              <div class="info-filler"></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="tab-claude" class="tab">
+          <div class="hero hero-claude"><canvas id="dots-expanded"></canvas></div>
+          <div class="column column-claude">
+            <div id="claude-headline" class="headline"></div>
+            <div id="claude-detail" class="detail"></div>
+            <div class="info-row">
+              <span id="claude-project" class="chip"></span>
+              <span id="claude-meta" class="meta"></span>
+            </div>
+          </div>
+        </section>
+
+        <section id="tab-pomodoro" class="tab">
+          <div class="hero hero-pomodoro">
+            <svg id="ring-expanded" class="ring" viewBox="0 0 114 114">
+              <circle class="ring-track" cx="57" cy="57" r="54"></circle>
+              <circle class="ring-fill" cx="57" cy="57" r="54"></circle>
+            </svg>
+            <div id="pomodoro-clock-large" class="clock-large">25:00</div>
+          </div>
+          <div class="column column-pomodoro">
+            <div id="pomodoro-headline" class="headline">Focus</div>
+            <div id="pomodoro-detail" class="detail"></div>
+            <div class="pomodoro-row">
+              <div id="cycle-dots" class="cycle-dots"></div>
+              <div class="pomodoro-controls">
+                <button id="pom-reset" class="control" data-size="14" aria-label="Reset"></button>
+                <button id="pom-toggle" class="control" data-size="22" aria-label="Start or pause"></button>
+                <button id="pom-skip" class="control" data-size="14" aria-label="Skip"></button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <span id="measure-status" class="measure status-font"></span>
+  <span id="measure-clock" class="measure clock-font"></span>
+
+  <script type="module" src="overlay.js"></script>
+</body>
+</html>

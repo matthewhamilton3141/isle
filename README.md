@@ -9,6 +9,10 @@ island. It shows what's playing and reacts to the music with a real audio
 waveform, and it reports what your Claude Code session is doing, opening on its
 own when Claude needs you. It expands on hover and folds away when you're done.
 
+> **Windows:** a port with the same island, Music / Claude Code / Pomodoro
+> faces and hook bridge lives in [`windows/`](windows/README.md). It is an
+> Electron app driven by Windows' media session API — no Xcode involved.
+
 ---
 
 ## Install
