@@ -341,9 +341,13 @@ Isle is released under the [MIT License](LICENSE), © 2026 Matthew Hamilton.
 - **[`mediaremote-adapter`][mra]** — BSD-3-Clause, © 2025 Jonas van den Berg.
   Vendored into `Isle/Resources/` by the build script, with its license text
   copied alongside it.
+- **[Material Design sound resources][mds]** — CC BY 4.0, © Google. The
+  notification sounds in `Isle/Sounds/`, re-encoded to AAC; see
+  `ATTRIBUTION.txt` alongside them.
 - **[boring.notch][bn]** — GPL-3.0, credited as prior art for overlay-window and
   now-playing technique. No code from it is used in Isle, and none can be
   without relicensing Isle under the GPL.
 
 [mra]: https://github.com/ungive/mediaremote-adapter
+[mds]: https://m2.material.io/design/sound/sound-resources.html
 [bn]: https://github.com/TheBoredTeam/boring.notch

@@ -1,0 +1,7 @@
+The sounds in this folder are from Google's Material Design sound resources
+(https://m2.material.io/design/sound/sound-resources.html), © Google, and are
+licensed under the Creative Commons Attribution 4.0 International License
+(https://creativecommons.org/licenses/by/4.0/).
+
+Four of the set are bundled. They have been re-encoded from the original WAV files to AAC in an .m4a
+container so the app bundle stays small. No other changes were made.

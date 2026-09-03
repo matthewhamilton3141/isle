@@ -542,8 +542,8 @@ final class NotchViewModel: ObservableObject {
             .store(in: &cancellables)
 
         pomodoro.onIntervalEnded = { [weak self] _ in
-            guard let self, self.settings.pomodoroSound else { return }
-            NSSound(named: "Glass")?.play()
+            guard let self, self.settings.pomodoroSoundEnabled else { return }
+            self.settings.pomodoroSound.play()
         }
 
         // Switching the feature off takes the timer with it: a clock that kept
@@ -918,6 +918,7 @@ final class NotchViewModel: ObservableObject {
             // Re-arm the Claude-tab auto-jump: a fresh interrupt gets to grab
             // the tab once again, even if the user overrode the previous one.
             tabOverriddenDuringAlert = false
+            playSound(for: status.state, errorType: status.errorType)
         }
         withAnimation(.easeInOut(duration: 0.25)) {
             claudeState = status.state
@@ -978,6 +979,30 @@ final class NotchViewModel: ObservableObject {
             withAnimation(.easeInOut(duration: 0.25)) {
                 self?.claudeState = .idle
             }
+        }
+    }
+
+    /// The chime for a state the user asked to hear about. Only called on a
+    /// genuine state change, so a still-pending approval being re-written
+    /// doesn't ring again, and a `done` that eased back to idle and is then
+    /// re-selected rings only if the turn genuinely finished again (the
+    /// `lastAppliedStatus` guard above handles the re-selection case).
+    ///
+    /// A usage-limit failure is deliberately silent: it is pinned for as
+    /// long as hours, and there is nothing to do about it but wait.
+    private func playSound(for state: ClaudeCodeState, errorType: String?) {
+        switch state {
+        case .needsApproval, .needsQuestion:
+            guard settings.claudeAlertSoundEnabled else { return }
+            settings.claudeAlertSound.play()
+        case .failed:
+            guard settings.claudeAlertSoundEnabled, errorType != "usage_limit" else { return }
+            settings.claudeAlertSound.play()
+        case .done:
+            guard settings.claudeDoneSoundEnabled else { return }
+            settings.claudeDoneSound.play()
+        default:
+            return
         }
     }
 
@@ -1282,6 +1307,28 @@ final class NotchViewModel: ObservableObject {
     /// more than one face to switch between; a single source is just shown.
     var showsTabBar: Bool {
         availableTabs.count > 1
+    }
+
+    /// Whether the switcher is the strip of every face in the housing band
+    /// rather than a single toggle in the corner. Two faces flip: the toggle
+    /// shows the other face's icon and there is nothing to cycle past. From
+    /// three, cycling would make someone pass through a face they didn't
+    /// want to reach the one they did, so each gets its own button.
+    var showsTabStrip: Bool {
+        availableTabs.count > 2
+    }
+
+    /// The single toggle is on: exactly two faces — see `showsTabStrip`.
+    var showsTabToggle: Bool {
+        showsTabBar && !showsTabStrip
+    }
+
+    /// The face the single toggle offers: the one after the current, cycling.
+    /// With two faces that is simply the other one.
+    var nextTab: IsleTab {
+        let tabs = availableTabs
+        guard let index = tabs.firstIndex(of: expandedTab) else { return tabs.first ?? .music }
+        return tabs[(index + 1) % tabs.count]
     }
 
     /// Which content the expanded panel should render right now. Normally the
@@ -1662,6 +1709,12 @@ final class NotchViewModel: ObservableObject {
     /// outside any SwiftUI transaction.
     private func showToast(_ toast: IslandToast) {
         toastTask?.cancel()
+        // Chime as the toast lands, not when it's accepted: a queued toast
+        // that rang on arrival and appeared four seconds later would have the
+        // sound pointing at the wrong message.
+        if settings.agendaSoundEnabled, toast.gate == .calendar || toast.gate == .reminders {
+            settings.agendaSound.play()
+        }
         withAnimation(.easeInOut(duration: 0.25)) {
             activeToast = toast
         }
