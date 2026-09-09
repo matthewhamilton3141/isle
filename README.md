@@ -19,7 +19,7 @@ from there.
 
 ### 1. Download and drag to Applications
 
-[**Download Isle 0.3.1**](https://github.com/matthewhamilton3141/isle/releases/latest)
+[**Download Isle 0.4.1**](https://github.com/matthewhamilton3141/isle/releases/latest)
 — universal (Apple Silicon and Intel), macOS 14 or newer. Open the disk image and drag **Isle** into
 **Applications**.
 
@@ -43,7 +43,7 @@ quarantined, so it does not recur on later versions.
 The same flag, applied to the download:
 
 ```bash
-xattr -dr com.apple.quarantine ~/Downloads/Isle-0.1.3.dmg
+xattr -dr com.apple.quarantine ~/Downloads/Isle-0.4.1.dmg
 ```
 </details>
 
@@ -124,15 +124,33 @@ Isle runs as a menu bar app with no Dock icon.
 - **Live Claude Code status.** Working, waiting on you, done, or failed, with a
   breathing glyph while a turn runs and a checkmark when it lands.
 - **Both sources at once.** In Both mode the collapsed island splits between
-  music and Claude, and the expanded view cycles between its faces.
+  music and Claude. The expanded panel carries a face per source — Music,
+  Claude, Pomodoro, Agenda — and shows a switcher once there is more than one:
+  a single corner toggle for two faces, and a strip of icons in the housing
+  band from three, so reaching one face never means passing through another.
+- **A Pomodoro timer.** Off by default; switched on in Settings it adds a
+  Pomodoro face with a progress ring, the clock, the cycle tally, and
+  start / pause / skip / reset. Focus, short break, long break and the number
+  of focus intervals per cycle are all adjustable. Once started, the timer
+  keeps a seat in the collapsed island — beside music or Claude, or on its own
+  straddling the camera, ring left and clock right — until it is reset. The
+  countdown is anchored to a wall-clock end date rather than counted down, so
+  it cannot drift.
 - **Your day, at a glance.** With Calendar or Reminders on, the expanded
   notch has an Agenda face: today's date, then what's left of the day — events
   still to come or in progress, and reminders due — each in its calendar's
-  colour. Three lines show at a time; swipe to scroll the rest, or click the
+  colour. Four lines show at a time; swipe to scroll the rest, or click the
   date to open Calendar. A calendar event also borrows the collapsed island a few minutes
   before it starts, and a reminder as it comes due, then hands it straight
   back. All-day events and date-only reminders are listed but never announced,
   and declined invitations are left out.
+- **Optional sounds.** Anything that claims the island can chime: Claude
+  needing you, a turn finishing, an event or reminder arriving, a Pomodoro
+  interval ending. Each is its own switch and its own pick from four bundled
+  tones, so the sound for *Claude needs you* need not be the one for *your
+  turn is done*. The Claude and agenda chimes are off by default; the Pomodoro
+  one is on. A sound fires only on a genuine state change, so a still-pending
+  approval never rings twice.
 - **Stays out of the way.** A borderless, non-activating overlay that never
   takes focus and never resizes the window under the cursor.
 
@@ -142,7 +160,7 @@ Isle runs as a menu bar app with no Dock icon.
 |---|---|
 | Toggle Notch | Show or hide the island |
 | Pop out notch for alerts | Whether Claude alerts expand the island on their own |
-| Settings… | Mode, music options, Claude hook, power and calendar updates, app updates |
+| Settings… | Six pages in a fixed sidebar: General, Music, Claude Code, Calendar & Reminders, Pomodoro, Updates |
 | Setup… | Re-run the first-launch mode and permissions picker |
 | Check for Updates… | Check for a new version immediately |
 | Marker Editor… | Design the dot-matrix markers for each Claude state |
@@ -217,6 +235,12 @@ invitations you declined are skipped entirely.
 `isle-cli` entries. Sessions started before the hook was installed do not
 report.
 
+**Nothing chimes.** Sounds are per event, not one global setting, and the
+Claude and agenda chimes ship off — switch on the one you want under
+**Settings → Claude Code** or **Calendar & Reminders**, and the Pomodoro one
+under **Settings → Pomodoro**. Each fires only on a genuine change of state, so
+a still-pending approval or a re-selected finished session stays quiet.
+
 ---
 
 ## Development
@@ -275,15 +299,18 @@ framework ships as a plain resource.
 ```
 Isle/
 ├── IsleApp.swift              # @main, agent app + menu bar item
-├── Core/                      # AppSettings, IsleMode (music / claude / both)
+├── Core/                      # AppSettings, IsleMode (music / claude / both),
+│                              # NotificationSound (the optional chimes)
 ├── Notch/                     # the overlay: window, shape, state, views
 │   ├── NotchWindow.swift              borderless non-activating NSPanel
 │   ├── NotchHostingView.swift         hit-testing clipped to the drawn shape
 │   ├── NotchViewModel.swift           media + Claude feeds, playback clock
 │   ├── IslandToast.swift              the momentary island message (power, calendar)
+│   ├── IsleTab.swift                  the faces of the expanded panel
 │   ├── CollapsedNotchView.swift
-│   ├── ExpandedNotchView.swift        music tab
-│   └── ClaudeExpandedView.swift       Claude tab
+│   ├── ExpandedNotchView.swift        music face
+│   ├── ClaudeExpandedView.swift       Claude face
+│   └── PomodoroExpandedView.swift     Pomodoro face
 ├── Media/
 │   ├── MediaPlaybackModel.swift       now-playing snapshot (value type)
 │   ├── MediaRemoteAdapterClient.swift reads (subprocess)
@@ -303,10 +330,14 @@ Isle/
 │   ├── AgendaMonitor.swift            calendar events and reminders (EventKit)
 │   ├── AgendaExpandedView.swift       the Agenda face of the expanded panel
 │   └── AgendaToast.swift              the event and reminder messages
+├── Pomodoro/
+│   ├── PomodoroTimer.swift            the focus / break state machine
+│   └── PomodoroRing.swift             the progress ring, collapsed and expanded
 ├── Markers/                   # designable dot-matrix markers per Claude state
 ├── Components/                # MarqueeText, EqualizerView, ArtworkColors
-├── Settings/, Onboarding/     # settings pane, first-launch mode picker
+├── Settings/, Onboarding/     # sidebar settings pane, first-launch mode picker
 ├── Update/                    # signed-manifest updater
+├── Sounds/                    # the four bundled chimes + ATTRIBUTION.txt
 └── Resources/                 # adapter framework + .pl (build script output)
 ```
 
