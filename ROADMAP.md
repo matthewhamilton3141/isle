@@ -527,81 +527,208 @@ Ship-ready framing for the "Dynamic Island + Claude Code" story.
 
 ---
 
-## Milestone 7 — Act from the Notch
+## Milestone 7 — Act from the Notch: approvals *and* questions
 
 Turn the Claude island from a *notifier* into a *control surface*. Today a
-`needs_approval` interrupt opens the notch (`hasLiveActivity` →
-`liveActivityExpanded`) but you still alt-tab to the terminal to answer it. This
-milestone lets you approve or deny a tool call **in the notch**, and have that
-click actually decide the call.
+permission prompt or an `AskUserQuestion` opens the notch, and you still
+alt-tab to the terminal to answer it. This milestone lets you **approve or
+deny a tool call** and **pick an answer to a question** in the notch, with the
+click actually deciding the call in the session — and a fallback that always
+lands on Claude's own terminal prompt when the notch doesn't answer.
 
-This is also the feature that unblocks **Scheduled Prompts** (see "Parked"):
-both need the same primitive — a way for the notch to *talk back* into a live
-Claude Code session. Building the blocking-hook + decision-file handshake here
-de-risks that work.
+This is a second attempt, and the first one is worth understanding before
+judging the idea by its outcome.
 
-### Goal
-When Claude Code asks permission for a tool, the expanded Claude panel shows the
-exact tool + target with **Approve** / **Deny** buttons, and clicking one
-resolves the pending call in the session — with a hard timeout that falls back
-to Claude's normal in-terminal prompt.
+### What happened the first time
 
-### How it works
-Claude Code's `PreToolUse` hook has the two properties this needs: it is an
-ordinary command, so **it can block** as long as it likes before it prints; and
-it can **return a permission decision** on stdout. Current schema (confirm
-against live docs before building — this is the load-bearing detail):
+Approve/Deny shipped in `04d44aa` on a blocking `PermissionRequest` hook and
+was removed in `9a0b93e` ("approvals are unified into questions … the
+Approve/Deny UI and its plumbing are gone"). The removed script printed
 
 ```json
-{ "hookSpecificOutput": {
-    "hookEventName": "PreToolUse",
-    "permissionDecision": "allow" | "deny" | "ask",
-    "permissionDecisionReason": "…" } }
+{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":"allow"}}
 ```
 
-The handshake:
-1. `PreToolUse` calls `isle-cli` in a new `ask` mode. It writes `needs_approval`
-   with the already-captured `action`/`target` and a request id keyed by
-   `session_id`, and clears any stale decision file.
-2. The script **blocks**, polling `~/.isle/claude-decision-<session_id>.json`
-   with a timeout.
-3. The notch is already open (via `isAttention`); `ClaudeExpandedView` renders
-   the command/target with Approve / Deny.
-4. The click writes the decision file; the blocked hook reads it, prints the
-   matching JSON, exits. Claude proceeds or is stopped with the reason fed back.
-5. **Timeout or Isle-not-running → exit 0 with no decision**, so Claude falls
-   back to its own permission prompt. Never silently allow.
+but `decision` is an **object**, not a string: the real schema is
+`"decision": {"behavior": "allow"}`. So a notch click could never have resolved
+a prompt — every one fell through to the 30s timeout and the terminal, which
+reads exactly like "the button doesn't work". The mechanism was sound; the
+payload was wrong.
 
-### Scope
-- `isle-cli`: new `ask` verb (write request + block-poll for decision + timeout)
-  and a `decide <session_id> <allow|deny>` verb the app calls. Keep
-  `HookInstaller.scriptBody` byte-for-byte in sync (they're intentionally
-  duplicated).
-- `integration/claude-code-hooks/settings.json`: point `PreToolUse` at `ask`.
-- `ClaudeStatus` / `ClaudeStatusWatcher`: carry the request id through.
-- `ClaudeExpandedView`: Approve / Deny buttons (only when `needsApproval`),
-  showing the exact tool + target.
-- `NotchViewModel`: an action that writes the decision file for the live
-  session.
+### What was verified before this draft (2026-09-03, Claude Code 2.1.259)
+
+Interactive sessions driven with `expect` against throwaway hooks in a scratch
+directory, so nothing here is read off the docs alone. Findings, in the order
+they matter:
+
+| # | Finding | Consequence for the design |
+|---|---|---|
+| 1 | `PermissionRequest` → `{"decision":{"behavior":"allow"}}` resolved the prompt: the transcript shows *Allowed by PermissionRequest hook* and the tool ran. | The approval channel exists and works. |
+| 2 | **The terminal permission dialog is shown *while* the hook runs.** In a hook that slept 6s before allowing, the dialog was up from the start and the hook then dismissed it. | A blocked approval hook costs the user nothing: they can answer in the notch *or* the terminal, whichever they're looking at. The block can be long. |
+| 3 | A hook that reaches its `timeout`, or exits with no output, leaves the dialog in place; Enter approved it normally. | Falling through is safe. Never auto-allow. |
+| 4 | **A terminal answer does not stop the hook.** A 60s heartbeat hook ran to completion after the dialog was answered; its late output was ignored. | Isle must notice a request that resolved elsewhere and retire its buttons. The hook can't tell on its own. |
+| 5 | `PreToolUse` on `AskUserQuestion` returning `permissionDecision: "allow"` + `updatedInput` with an `answers` map answered the question **in an interactive session**: no terminal UI, transcript shows *User answered Claude's questions: … Apples*, the model continued with that label. | Questions are answerable from a hook. The old spec's "questions need terminal injection, out of scope" is no longer true. |
+| 6 | Unlike permissions, **the terminal question UI is held back until the hook returns or times out** (only the spinner shows). At timeout it appeared and was answerable. | A question hook must block briefly, and the notch needs an explicit *Answer in terminal* release. |
+| 7 | A hook cancelled at `timeout` gets `SIGTERM` (a `trap … TERM` fired). | Cleanup on `TERM`/`EXIT` is reliable. |
+| 8 | `-p` mode has no `AskUserQuestion` tool, and auto-allowed commands (`echo`) never fire `PermissionRequest`. | Don't test with either. |
+| 9 | `permission_suggestions` for a `touch` carried `addDirectories` + `setMode: acceptEdits` — the dialog's "Yes, and always allow…" option, echoable as `updatedPermissions`. | "Always allow" is available later without new plumbing. |
+
+**Not verified:** free-text answers via `answers` (the dialog's *Type
+something* row), the exact multi-select join (docs say comma-joined), what Esc
+in the terminal does to a blocked hook, and the *Chat about this* row.
+
+### Goal
+
+- A permission prompt shows the **exact tool and command/target** with
+  **Approve** / **Deny** in the expanded Claude panel; a click resolves it.
+- An `AskUserQuestion` shows the **question and its options**; a click on an
+  option answers it, and Claude continues with that label.
+- Both carry an **Answer in terminal** escape, and both fall back to the
+  terminal on timeout or when Isle isn't running. Nothing is ever auto-allowed.
+
+### How it works — the handshake
+
+Three files, all under `~/.isle`, all written by rename (Isle watches
+directories, and an in-place rewrite fires no event — the rule from the
+status bridge applies unchanged):
+
+| Path | Written by | Meaning |
+|---|---|---|
+| `run/answering` | Isle | Contains Isle's pid. Present only while the Settings toggle is on and Isle is running; removed on quit or when the toggle is turned off. The hook checks `kill -0 <pid>`, so a crash leaves a stale file that gates *off*, never on. |
+| `requests/<request-id>.json` | `isle-cli` | The hook's **raw stdin**, verbatim. Created when the hook starts blocking, removed by the hook's `EXIT`/`TERM` trap. Its existence *is* "a hook is waiting". |
+| `requests/<request-id>.response.json` | Isle | The **complete stdout payload** for the hook, which `cat`s it and exits. Isle has `JSONSerialization`; the script stays jq-free and never builds JSON. |
+
+The session status file gets `request_id` back (the field still exists in
+`ClaudeStatus`), plus `request_kind` (`approval` | `question`).
+
+**Approval** — `PermissionRequest` → `isle-cli ask`:
+
+1. Read stdin. If `run/answering` is absent or its pid is dead, behave exactly
+   as today: write `needs_question`, exit 0, no block.
+2. `REQUEST_ID="$SESSION_ID-$(date +%s)-$$"`. Write stdin to
+   `requests/$REQUEST_ID.json`; write status `needs_approval` with the id.
+3. Poll every 0.2s until one of:
+   - the response file exists → `cat` it to stdout, exit 0;
+   - the session status file's `request_id` is no longer ours — some other
+     verb wrote (`PostToolUse`, `Stop`, the next `PreToolUse`), which is how
+     "answered in the terminal" shows up (finding 4) → exit 0 silently;
+   - the deadline (300s) passes → rewrite status without the id, exit 0
+     silently. Claude's dialog is still up (finding 3).
+4. The trap removes the request file on every exit path.
+
+**Question** — `PreToolUse` with `"matcher": "AskUserQuestion"` →
+`isle-cli ask-question`: the same loop with state `needs_question` and a
+**45s** deadline, because the terminal shows nothing but a spinner until the
+hook returns (finding 6). Two consequences:
+
+- The generic `PreToolUse` → `set-state working` fires **in parallel** with
+  this one, and its existing `AskUserQuestion → needs_question` conversion
+  would clobber the request id. `set-state` must skip a `PreToolUse` for
+  `AskUserQuestion` and leave that write to `ask-question`.
+- `Notification` fires the `permission_prompt` nudge ~6s into a prompt; the
+  `notify` guard that keeps an active `needs_question` must also keep an
+  active `needs_approval` that carries a request id.
+
+**Response payloads** Isle writes, exactly:
+
+```json
+// Approve
+{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}
+// Deny — no `interrupt`, so Claude can try another way, as after a terminal "No"
+{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied from the Isle notch"}}}
+// Answer — `questions` echoed verbatim from the request; multi-select joins labels with ", "
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"questions":[…],"answers":{"Which framework?":"React"}}}}
+// Answer in terminal — the hook prints nothing and Claude shows its own UI
+{}
+```
+
+### Isle side
+
+- **`ClaudeRequestWatcher`** (`Isle/Claude/`) — a directory watch on
+  `~/.isle/requests`, same shape as `ClaudeStatusWatcher`, decoding each
+  `<id>.json` into a `ClaudeRequest`: `kind`, `id`, `sessionId`, `toolName`,
+  the **full** `tool_input` (this is where the exact command comes from —
+  the status file's 48-char hygienic `target` is for the collapsed island,
+  not for a decision), and for a question the `questions` array as-is.
+- **`NotchViewModel.pendingRequest`** — the request whose id matches the
+  selected session's `request_id` *and* whose file still exists. Either half
+  going away retires the buttons: the file, when the hook exits (timeout,
+  terminal answer noticed, Isle's own response); the id, when any other verb
+  writes. `decide(allow:)`, `answer(_:)` and `deferToTerminal()` write the
+  response file (temp name not ending in `.json`, then rename, as the status
+  writes do) and set an in-flight flag so a double-click can't write twice.
+  `questionRevertSeconds` must not fire while a request file exists.
+- **`ClaudeExpandedView`** —
+  - *Approval:* headline "Needs your approval"; detail is the tool plus the
+    exact command/target, monospaced, two lines, middle-truncated; the info
+    row becomes **Approve** / **Deny** / **Terminal**. Real `Button`s so a tap
+    is consumed and doesn't fall through to the card's dismiss gesture (the
+    removed build had this right — lift it from `04d44aa`).
+  - *Question:* the `header` as a chip where the project chip sits, the
+    question as the detail line, then the options as rows (label, with the
+    description in the secondary weight). One question at a time with
+    "1 of 3" and Next; `multiSelect` rows toggle and a Done button commits.
+    **Answer in terminal** always present.
+  - Collapsed word: `Approve` for a live approval (it was folded into
+    `Question` when the buttons went; unfold it), `Question` otherwise.
+- **`AppSettings` / `SettingsView`** — one toggle in the Claude section,
+  *Answer questions and approvals from the notch*, default on; it owns the
+  `run/answering` marker. The two deadlines are constants, not settings.
+- **`HookInstaller`** — bump to **v9**. `hookEvents` grows an optional
+  `matcher` and `timeout` per entry: `PreToolUse` gets a second entry
+  `{"matcher": "AskUserQuestion", "timeout": 60}` → `ask-question`, and the
+  `PermissionRequest` entry sets `"timeout": 330` so Claude Code's cancel
+  lands *after* the script's own 300s deadline, never before it. `refersToIsleCLI`
+  matches on the command prefix, so uninstall and re-merge already handle two
+  entries on one event. `integration/claude-code-hooks/` stays byte-for-byte
+  in sync as before.
+- **`IsleApp`** — remove the marker in `applicationWillTerminate`, and on
+  launch remove a stale one before deciding whether to write a fresh one.
+
+### Panel height
+
+`NotchMetrics.expandedSize` is 520×146 and the same for every face. Approve /
+Deny fit: the buttons replace the info row, as in the removed build. A
+question with four options and descriptions does not. Two ways out, one to
+lock below: grow the panel while a question is live (only then; every other
+face keeps 146), or render label-only rows and lose the descriptions.
 
 ### Acceptance
-- A tool permission prompt shows Approve / Deny in the notch; Approve lets the
-  tool run, Deny blocks it with the reason surfaced to Claude.
-- Quitting Isle (or a 30s timeout) mid-prompt never wedges the session — Claude
-  falls back to the terminal prompt.
-- Two concurrent sessions each get their own prompt (decisions keyed by
-  `session_id`).
+
+- A permission prompt shows Approve / Deny in the notch. Approve runs the
+  tool; Deny blocks it and Claude sees *Denied from the Isle notch*. The
+  transcript shows *Allowed/Denied by PermissionRequest hook*.
+- An `AskUserQuestion` shows its options; clicking one continues Claude with
+  that label and no terminal UI appears. Multi-select and multi-question both
+  work; the transcript shows *User answered Claude's questions*.
+- Answering in the terminal instead retires the notch buttons within a
+  status write (no stale Approve after the fact).
+- Quitting Isle mid-prompt, the toggle being off, a crash, or a timeout
+  never wedges the session — the terminal prompt is there every time.
+- Two concurrent sessions each get their own request; a click on one can
+  never resolve the other (ids are session-scoped and the hook validates
+  by filename).
+- With the toggle off, behaviour is identical to today, and `isle-cli ask`
+  returns immediately.
 
 ### Boundaries & decisions to lock
-- **Tool approvals only.** `needsQuestion` (free-text `AskUserQuestion`) can't be
-  answered by allow/deny — that needs text injected into the session (the
-  fragile terminal-injection problem). Out of scope here; it stays a
-  "go to the terminal" case.
-- **Timeout length** — default 30s, then fall back. Confirm the number.
-- **Permission posture** — a notch click authorizes a tool. Always show the exact
-  command/target; default-deny on timeout; never auto-allow.
 
----
+- **No free text from the notch.** `NotchWindow` is a non-activating panel
+  with `canBecomeKey` false; a text field would have to take key focus,
+  which is the one thing the overlay must never do to the terminal. *Type
+  something* and *Chat about this* stay "Answer in terminal".
+- **"Always allow" is deferred.** The suggestions are in the request file
+  (finding 9), so a third button that echoes one as `updatedPermissions` is
+  a later, additive change.
+- **Deadlines** — approvals 300s (the dialog is concurrent, a long block is
+  free), questions 45s (the terminal is blank meanwhile). *Confirm both.*
+- **Panel growth for questions** — *recommend growing, capped around 230pt,
+  only while a question is live*; the descriptions are usually the whole
+  reason the option exists.
+- **Toggle default** — *recommend on*: the hook path is gated on the marker,
+  so nothing changes for anyone until Isle is running with it on.
+- **Permission posture** — a notch click authorises a tool. Always show the
+  exact command; deny is the only thing a timeout can mean.
 
 ## Milestone 8 — Multi-Display  ✅
 
