@@ -12,7 +12,10 @@
 //  bars react to any audible sound — a YouTube tab, a system alert — which
 //  read as wrong for a Spotify overlay. The tap is bound to Spotify's audio
 //  process object, resolved from its PID, and rebuilt when Spotify launches
-//  or relaunches (its PID, and therefore the process object, changes).
+//  or relaunches (its PID, and therefore the process object, changes). It is
+//  also rebuilt when the default output device changes: the aggregate device
+//  the tap is read through is built on the output device of the moment, and
+//  does not survive that device going away.
 //
 //  Everything here fails soft. If the OS is too old, Spotify isn't running,
 //  the user declines the audio-capture prompt, or the device can't be
@@ -45,7 +48,7 @@ final class SystemAudioLevels: ObservableObject {
 
     /// Serialises capture setup and teardown, and keeps both off the main
     /// thread. Serial so a stop can never overtake the start it's undoing.
-    private static let captureQueue = DispatchQueue(
+    private nonisolated static let captureQueue = DispatchQueue(
         label: "com.isle.audio-capture", qos: .userInitiated
     )
 
@@ -105,6 +108,13 @@ final class SystemAudioLevels: ObservableObject {
         for observer in lifecycleObservers {
             center.removeObserver(observer)
         }
+        if let outputDeviceListener {
+            var address = Self.defaultOutputDeviceAddress()
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject), &address,
+                Self.captureQueue, outputDeviceListener
+            )
+        }
     }
 
     // MARK: - Lifecycle
@@ -116,8 +126,10 @@ final class SystemAudioLevels: ObservableObject {
         }
         wantsCapture = true
         // Rebuild the tap whenever Spotify comes or goes — its PID, and so its
-        // audio process object, changes across launches. Registered once.
+        // audio process object, changes across launches — and whenever the
+        // default output device does. Both registered once.
         observeSpotifyLifecycle()
+        observeOutputDevice()
         beginCaptureIfNeeded()
     }
 
@@ -316,6 +328,67 @@ final class SystemAudioLevels: ObservableObject {
     private func restart() {
         endCapture()
         beginCaptureIfNeeded()
+    }
+
+    // MARK: - Output device
+
+    /// The block registered with the HAL for default-output-device changes,
+    /// kept so it can be removed again in `deinit`.
+    private var outputDeviceListener: AudioObjectPropertyListenerBlock?
+
+    /// Coalesces a burst of change notifications into one rebuild.
+    private var outputDeviceChangeTask: Task<Void, Never>?
+
+    private nonisolated static func defaultOutputDeviceAddress() -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+    }
+
+    /// Rebuilds the tap when the default output device changes.
+    ///
+    /// The aggregate device is built on the output device of the moment
+    /// (`CaptureSession.startCapture`). A process tap follows the process, so
+    /// merely switching output between two present devices keeps the meter
+    /// running — but when the device the aggregate was built on goes away
+    /// (AirPods disconnecting, a display unplugged) the aggregate loses its
+    /// sub-device, the IOProc stops firing, and the bars freeze on their last
+    /// frame: the release decay runs in the audio callback, so nothing brings
+    /// them down. The meter then looks stuck until something else — a
+    /// relaunch, a screen lock — happens to rebuild it. Same path as a
+    /// relaunch, and gated the same way: nothing is built unless the owner
+    /// still wants it.
+    private func observeOutputDevice() {
+        guard outputDeviceListener == nil else { return }
+        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            Task { @MainActor in self?.outputDeviceDidChange() }
+        }
+        var address = Self.defaultOutputDeviceAddress()
+        let status = AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &address, Self.captureQueue, listener
+        )
+        guard status == noErr else {
+            NSLog("Isle: could not watch the default output device (\(status))")
+            return
+        }
+        outputDeviceListener = listener
+    }
+
+    private func outputDeviceDidChange() {
+        guard wantsCapture else { return }
+        outputDeviceChangeTask?.cancel()
+        // A switch can arrive as a small burst — the device, then its stream
+        // format settling — and the new device may still be coming up on the
+        // first one. A short wait folds the burst into one rebuild against a
+        // device that is ready.
+        outputDeviceChangeTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled, let self else { return }
+            self.outputDeviceChangeTask = nil
+            self.restart()
+        }
     }
 
     func stop() {
