@@ -563,7 +563,23 @@ final class NotchViewModel: ObservableObject {
 
         adapter.onUpdate = { [weak self] model in
             guard let self else { return }
+            let wasPlaying = self.adapterModel.isPlaying
             self.adapterModel = model
+            // For a track both sources can see, the poll — not the adapter —
+            // supplies `isPlaying` (see `recomputeSource`), and a collapsed
+            // island reads that poll only every third second. So a play
+            // pressed anywhere but in the panel — Spotify's own button, a
+            // media key, a phone on Spotify Connect — took up to three
+            // seconds to be believed. Nothing on a collapsed island shows the
+            // transport, so the only visible symptom was the waveform: past
+            // the pause grace the tap is suspended, and it is this flag that
+            // resumes it, so the bars stayed dots for those seconds while
+            // music played. Measured at 0.0/1.0/3.0s before, 0.3s after.
+            // The adapter hears the change in ~0.2s; take that as the cue to
+            // read the truth now rather than at the next relaxed tick.
+            if model.isPlaying != wasPlaying {
+                self.spotify.pollNow()
+            }
             // The adapter losing Spotify's track is the moment the poll's
             // model — and so its cover — becomes the one on screen. Any cover
             // the poll held back while the adapter was supplying one is
