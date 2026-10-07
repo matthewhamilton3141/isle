@@ -28,6 +28,16 @@
 //  schema change degrades to "no registry" and the hook bridge carries on
 //  alone. `cliVersion` is retained so a future guard can gate on it.
 //
+//  Freshness note: the CLI rewrites each record *in place* (verified on
+//  2.1.292 — same inode, file mtime moves, directory mtime doesn't). A
+//  directory watch only fires when an entry is added, removed or renamed, so it
+//  sees sessions start and exit and nothing in between: an `idle` → `busy`
+//  flip, or a session id changing under the same pid, is invisible to it. A
+//  SIGKILLed CLI leaves its record behind and fires nothing either. So the
+//  watch is only the cue for start/exit — anyone about to act on `status`,
+//  `sessionId` or liveness calls `refresh()` first rather than trusting the
+//  last snapshot.
+//
 
 import Foundation
 
@@ -84,8 +94,9 @@ final class ClaudeSessionRegistry {
     private var lastSessions: [ClaudeSession] = []
     private var isRunning = false
 
-    /// The registry is rewritten on every status change, and several sessions
-    /// can move at once. Coalescing collapses that burst into one rescan.
+    /// Several sessions can start or exit at once (and each start creates a
+    /// `.key` file beside its record). Coalescing collapses that burst into
+    /// one rescan.
     private static let coalesceInterval: Duration = .milliseconds(120)
 
     /// The directory is injectable so the watch can be exercised against a
@@ -152,9 +163,12 @@ final class ClaudeSessionRegistry {
         }
     }
 
-    /// Rescans the directory and publishes the live sessions. Every event
-    /// funnels here, so it must be idempotent.
-    private func refresh() {
+    /// Rescans the directory and publishes the live sessions, synchronously,
+    /// if anything changed. Every event funnels here, so it must be
+    /// idempotent. Callable from outside because the directory watch can't see
+    /// records being rewritten in place — see the freshness note above. Cheap:
+    /// one small record per live session.
+    func refresh() {
         guard isRunning else { return }
 
         let names = (try? FileManager.default.contentsOfDirectory(atPath: directoryURL.path)) ?? []

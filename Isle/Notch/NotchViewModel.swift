@@ -302,10 +302,14 @@ final class NotchViewModel: ObservableObject {
     /// for liveness: a session killed with SIGKILL fires no SessionEnd, and its
     /// pid simply stops existing here.
     ///
-    /// Not published: no view reads it, and the registry is rewritten on every
-    /// CLI status change, so publishing it invalidated the whole notch on each
-    /// one for nothing. Selection re-runs on the change (see `onSessions`) and
+    /// Not published: no view reads it, and it changes with every CLI status
+    /// flip, so publishing it would invalidate the whole notch on each one for
+    /// nothing. Selection re-runs on the change (see `onSessions`) and
     /// publishes through `claudeState` only when the result differs.
+    ///
+    /// Only as fresh as the last `sessionRegistry.refresh()` — the directory
+    /// watch sees sessions start and exit, not status changes — so selection
+    /// paths refresh it before reading.
     private var claudeSessions: [ClaudeSession] = []
 
     private var reselectTimer: Timer?
@@ -318,10 +322,10 @@ final class NotchViewModel: ObservableObject {
     /// makes no claim either way, in text or in treatment, and the island holds
     /// the last state it was actually told about.
     ///
-    /// The timer earns its place on the other job: the registry's directory
-    /// event normally re-runs selection itself, but an interrupt can leave the
-    /// CLI record untouched (already `idle`), and then nothing else would ever
-    /// re-examine the stuck record.
+    /// The timer earns its place on the other job: nothing else re-examines a
+    /// stuck record. An interrupt fires no hook, and the registry's directory
+    /// watch can't see the CLI rewriting its record in place, so each tick
+    /// re-reads the registry and re-selects.
     private func updateReselectTimer(for state: ClaudeCodeState) {
         guard state == .working || state == .compacting || state == .waitingInput else {
             stopReselectTimer()
@@ -331,6 +335,9 @@ final class NotchViewModel: ObservableObject {
         let timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
+                // The registry's watch misses in-place rewrites and killed
+                // pids, so the tick is also what keeps it current.
+                self.sessionRegistry.refresh()
                 // Apply only on a real change, so an unchanged state doesn't
                 // re-render the island every tick.
                 let resolved = self.selectStatus(from: self.claudeStatuses)
@@ -616,6 +623,15 @@ final class NotchViewModel: ObservableObject {
         claudeWatcher.onStatuses = { [weak self] statuses in
             guard let self else { return }
             self.claudeStatuses = statuses
+            // Selection reads the registry's `status` and session ids, which
+            // the CLI rewrites in place where the registry's watch can't see
+            // it. Re-read it now: a snapshot left at `idle` from before the
+            // prompt makes `reconciled` retire a turn that is still running,
+            // and one holding an outdated session id would filter the live
+            // session out.
+            // (A change publishes through `onSessions`, which re-selects; the
+            // apply below is then a no-op.)
+            self.sessionRegistry.refresh()
             self.applyClaudeStatus(self.selectStatus(from: statuses))
         }
 
