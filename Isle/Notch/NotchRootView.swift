@@ -62,8 +62,8 @@ struct NotchRootView: View {
     /// see `NotchMetrics.questionPanelHeight`). Only ever read for an expanded
     /// state.
     private var expandedHeight: CGFloat {
-        guard let rows = viewModel.questionOptionRows else { return NotchMetrics.expandedSize.height }
-        return NotchMetrics.questionPanelHeight(optionRows: rows, bandHeight: notchBandHeight)
+        guard let content = viewModel.questionContentHeight else { return NotchMetrics.expandedSize.height }
+        return NotchMetrics.questionPanelHeight(contentHeight: content, bandHeight: notchBandHeight)
     }
 
     /// Room the music face takes below the player for its lyric line: only

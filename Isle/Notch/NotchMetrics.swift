@@ -64,22 +64,15 @@ struct NotchMetrics {
     /// `maximumFrame`), since it is never resized while drawing.
     static let questionPanelMaxHeight: CGFloat = 230
 
-    /// The question face's fixed rows — header, question (two lines), and the
-    /// action row, with their gaps — and the height of one option row plus
-    /// its gap. Mirrors the layout in `ClaudeExpandedView.questionFace`.
-    static let questionChromeHeight: CGFloat = 89
-    static let questionOptionPitch: CGFloat = 25
-
-    /// Panel height for a question with `optionRows` options, below a camera
-    /// housing `bandHeight` tall. Never shorter than the standard panel, never
-    /// taller than the cap; at the cap the question gives up its second line
-    /// first.
-    static func questionPanelHeight(optionRows: Int, bandHeight: CGFloat) -> CGFloat {
+    /// Panel height for a question face whose content wants `contentHeight`
+    /// (see `ClaudePanelLayout.questionContentHeight`), below a camera housing
+    /// `bandHeight` tall. Never shorter than the standard panel, never taller
+    /// than the cap; at the cap the question gives up its second line first,
+    /// and past that the options scroll.
+    static func questionPanelHeight(contentHeight: CGFloat, bandHeight: CGFloat) -> CGFloat {
         // The expanded content's top inset (band + 2) and bottom inset (8)
-        // from NotchRootView, then the rows.
-        let rows = CGFloat(min(optionRows, 4))
-        let content = questionChromeHeight + rows * questionOptionPitch - 3
-        return min(questionPanelMaxHeight, max(expandedSize.height, bandHeight + 2 + 8 + content))
+        // from NotchRootView, then the face.
+        min(questionPanelMaxHeight, max(expandedSize.height, bandHeight + 2 + 8 + ceil(contentHeight)))
     }
 
     /// Fraction of the collapsed width given to music when both music and a

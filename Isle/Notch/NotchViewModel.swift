@@ -1951,17 +1951,27 @@ final class NotchViewModel: ObservableObject {
         return tabs.first ?? .music
     }
 
-    /// How many option rows the question face needs, while it is the face on
-    /// screen — the one case where the panel grows past `expandedSize` (see
+    /// The height the question face wants, while it is the face on screen —
+    /// the one case where the panel grows past `expandedSize` (see
     /// `NotchMetrics.questionPanelHeight`). Nil for every other face, which
     /// all keep the standard height. The tallest question of a multi-question
-    /// ask sizes it, so stepping through them doesn't bob the panel.
-    var questionOptionRows: Int? {
+    /// ask sizes it, so stepping through them doesn't bob the panel. Depends
+    /// on the description setting (row heights) and on the corner toggle
+    /// (which narrows the rows, so a description may wrap sooner).
+    var questionContentHeight: CGFloat? {
         guard expandedTab == .claude, let request = pendingRequest, request.kind == .question else {
             return nil
         }
-        return request.questions.map(\.options.count).max()
+        let clearance = showsTabToggle ? ClaudePanelLayout.toggleClearance : 0
+        return request.questions.map {
+            ClaudePanelLayout.questionContentHeight(
+                $0, descriptions: optionDescriptions, trailingClearance: clearance
+            )
+        }.max()
     }
+
+    /// How much of each option's description the question face shows.
+    var optionDescriptions: OptionDescriptions { settings.optionDescriptions }
 
 
     /// A user tap on the Music/Claude switcher. Records the pick and, when an

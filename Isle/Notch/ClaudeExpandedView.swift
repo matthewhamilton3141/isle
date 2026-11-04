@@ -2,20 +2,24 @@
 //  ClaudeExpandedView.swift
 //
 //  The Claude face of the expanded panel. Mirrors the music tab's weight — a
-//  large marker on the left where the album art sits, and a text column with
-//  the status, what Claude is doing, and the project + elapsed — so the tab
-//  fills the panel instead of floating a small glyph in dead space. Shown as
-//  the whole panel in `.claude` mode, or under the Claude tab in `.both`.
+//  large marker on the left where the album art sits, and a text column
+//  beside it — so the tab fills the panel instead of floating a small glyph
+//  in dead space. Shown as the whole panel in `.claude` mode, or under the
+//  Claude tab in `.both`.
 //
-//  While a hook is blocked on the notch (Milestone 7) the face becomes the
-//  place to answer it: an approval swaps the info row for Approve / Deny /
-//  Terminal under the exact command, and a question becomes its own face —
-//  the options as rows, in a panel grown to seat them. Every control here is
-//  a real `Button`, so its tap is consumed and never falls through to the
-//  card's dismiss gesture.
+//  Every face is one layout (see `ClaudePanelLayout`): an eyebrow naming the
+//  session and what else is going on, a title, a body, and an action row
+//  pinned to the bottom. A status fills it with the state, what Claude is
+//  doing, and an empty action row; an approval (Milestone 7) puts the exact
+//  command in the body and Approve / Deny / Terminal in the row; a question
+//  puts the question in the title and its options in the body, in a panel
+//  grown to seat them. Every control here is a real `Button`, so its tap is
+//  consumed and never falls through to the card's dismiss gesture.
 //
 
 import SwiftUI
+
+private typealias L = ClaudePanelLayout
 
 struct ClaudeExpandedView: View {
     @ObservedObject var viewModel: NotchViewModel
@@ -31,17 +35,23 @@ struct ClaudeExpandedView: View {
     }
 
     var body: some View {
-        Group {
-            if let request = viewModel.pendingRequest, request.kind == .question,
-               let question = viewModel.currentQuestion {
-                questionFace(request, question: question)
-                    .transition(.opacity)
-            } else {
-                statusFace
-                    .transition(.opacity)
+        HStack(alignment: .top, spacing: L.glyphGap) {
+            glyph
+
+            Group {
+                if let request = viewModel.pendingRequest, request.kind == .question,
+                   let question = viewModel.currentQuestion {
+                    questionFace(request, question: question)
+                        .transition(.opacity)
+                } else {
+                    statusFace
+                        .transition(.opacity)
+                }
             }
+            .frame(width: L.columnWidth, alignment: .topLeading)
+            .frame(maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .foregroundStyle(.white)
         // Click the alert panel to retract it (no-op unless an alert is live and
         // dismissing is enabled). contentShape so taps land on the whole card,
@@ -50,101 +60,169 @@ struct ClaudeExpandedView: View {
         .onTapGesture { island.dismissAlert() }
     }
 
+    /// Occupies the album cover's exact footprint (size + raise), so the
+    /// glyph reads as the same block on both tabs and the dots scale up to
+    /// fill it — the frame is the only cap on dot size. Safe to raise into
+    /// the housing band: the glyph sits left of the camera cutout, on
+    /// ordinary screen, just like the album.
+    private var glyph: some View {
+        ClaudeStatusGlyphView(state: state, kind: viewModel.claudeMarkerKind, palette: palette)
+            .frame(width: L.glyphSize, height: L.glyphSize)
+            .offset(y: -L.glyphRaise)
+    }
+
     // MARK: - Status face
 
+    /// A status, or an approval: the same rows, with the command and the
+    /// decision taking the body and the action row.
     private var statusFace: some View {
-        // Same skeleton as the music tab: a 114pt block on the left where the
-        // album art sits, then a text column — but with a bold headline and a
-        // width-spanning info row so the panel doesn't read as empty.
-        HStack(spacing: 14) {
-            glyph(raise: 10)
+        VStack(alignment: .leading, spacing: 0) {
+            eyebrow {
+                projectLabel
+            } extra: {
+                if viewModel.claudeUpdatedAt != nil, state != .disconnected {
+                    if viewModel.claudeProject?.isEmpty == false { separator }
+                    elapsed
+                }
+            }
 
-            VStack(alignment: .leading, spacing: 0) {
-                Spacer(minLength: 0)
+            Spacer().frame(height: L.eyebrowGap)
 
-                Text(headline)
-                    .font(.system(size: 24, weight: .bold))
-                    .foregroundStyle(.white)
+            Text(headline)
+                .font(L.headlineFont)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .contentTransition(.opacity)
+                .frame(height: L.headlineLine, alignment: .leading)
+                // Level with the waveform pinned at the panel's top-right by
+                // ExpandedNotchView; stop short of it.
+                .padding(.trailing, L.waveformClearance)
+
+            Spacer().frame(height: L.headlineGap)
+
+            if let approval {
+                approvalCommand(approval)
+            } else {
+                Text(detail)
+                    .font(L.detailFont)
+                    .foregroundStyle(.white.opacity(0.72))
                     .lineLimit(1)
+                    // Shrink a long filename to fit before resorting to an
+                    // ellipsis, so "Editing SomeLongComponentName.swift" stays
+                    // whole instead of getting clipped mid-name.
                     .minimumScaleFactor(0.7)
-                    .contentTransition(.opacity)
-                    // Clear the waveform pinned at the panel's top-right by
-                    // ExpandedNotchView, so the headline stops short of it.
-                    .padding(.trailing, 36)
+                    .truncationMode(.middle)
+                    .frame(height: L.detailLine, alignment: .leading)
+                    .padding(.trailing, switcherClearance)
+            }
 
-                Spacer().frame(height: 2)
+            Spacer(minLength: 2)
 
-                if let approval {
-                    approvalDetail(approval)
-                    Spacer().frame(height: 8)
+            actionRow {
+                if approval != nil {
                     approvalActions
                 } else {
-                    detailLine
-                        .font(.system(size: 12.5, weight: .regular))
-                        .foregroundStyle(.white.opacity(0.72))
-                        .lineLimit(1)
-                        // Shrink a long filename to fit before resorting to an
-                        // ellipsis, so "Editing SomeLongComponentName.swift" stays
-                        // whole instead of getting clipped mid-name.
-                        .minimumScaleFactor(0.7)
-                        .truncationMode(.middle)
-
-                    Spacer().frame(height: 11)
-
-                    infoRow
+                    // Held empty, at the height every face gives it, so the
+                    // rows above sit where they do on an approval. Reserved:
+                    // jump to the session on the leading side (Milestone 11),
+                    // the plan usage row on the trailing side (Milestone 12).
+                    // Neither is drawn until there's real data behind it.
+                    Spacer(minLength: 0)
                 }
-
-                Spacer(minLength: 0)
             }
-            .frame(minWidth: 340, maxWidth: 340, maxHeight: .infinity, alignment: .leading)
-            // Nudged up so the headline/detail/info block sits higher in the
-            // panel. The approval block is 18pt taller (a two-line detail and
-            // the buttons) and centres, so it is nudged half that less — which
-            // keeps the headline exactly where it sits on every other state,
-            // clear of the camera housing above it.
-            .offset(y: approval == nil ? -21 : -12)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    /// `raise` lifts it out of its slot; the two faces lay the glyph out
-    /// differently (centred / top-aligned) and pass whatever lands it on the
-    /// same spot.
-    private func glyph(raise: CGFloat) -> some View {
-        ClaudeStatusGlyphView(state: state, kind: viewModel.claudeMarkerKind, palette: palette)
-            // Occupies the album cover's exact footprint (size + raise), so
-            // the glyph reads as the same block on both tabs and the dots
-            // scale up to fill it — the frame is the only cap on dot size.
-            // Safe to raise into the housing band: the glyph sits left of
-            // the camera cutout, on ordinary screen, just like the album.
-            .frame(width: 114, height: 114)
-            .offset(y: -raise)
-    }
-
-    /// The project chip and the elapsed time, grouped together on the left so
-    /// the time isn't stranded at the far right of the panel.
-    private var infoRow: some View {
-        HStack(spacing: 10) {
-            if let project = viewModel.claudeProject, !project.isEmpty {
-                chip(project, systemImage: "folder.fill")
-            }
-
-            if viewModel.claudeUpdatedAt != nil, state != .disconnected {
-                metaLine
-            }
-
-            Spacer(minLength: 0)
         }
     }
 
-    private func chip(_ title: String, systemImage: String) -> some View {
-        Label(title, systemImage: systemImage)
-            .font(.system(size: 10, weight: .medium))
-            .foregroundStyle(.white.opacity(0.85))
-            .lineLimit(1)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(Capsule().fill(.white.opacity(0.12)))
+    // MARK: - Eyebrow
+
+    /// The face's top row: what it's about on the left, and on the right the
+    /// marks that hold whatever the face shows — the other live sessions and
+    /// the keep-awake hold. Same height and place on every face.
+    ///
+    /// When it's crowded it gives way in order of what matters least:
+    /// `extra` first (the elapsed time), then the keep-awake mark's word,
+    /// leaving its cup; the project is cut short only after both.
+    private func eyebrow<Leading: View, Extra: View>(
+        @ViewBuilder leading: () -> Leading,
+        @ViewBuilder extra: () -> Extra = { EmptyView() }
+    ) -> some View {
+        let leading = leading()
+        let extra = extra()
+        return ViewThatFits(in: .horizontal) {
+            eyebrowRow(compactMarks: false) { leading; extra }
+            eyebrowRow(compactMarks: false) { leading }
+            eyebrowRow(compactMarks: true) { leading }
+        }
+        .font(L.eyebrowFont)
+        .labelStyle(EyebrowLabelStyle())
+        .foregroundStyle(.white.opacity(0.5))
+        .lineLimit(1)
+        .frame(height: L.eyebrowHeight)
+        // Level with the waveform at the top-right; clear it.
+        .padding(.trailing, L.waveformClearance)
+    }
+
+    private func eyebrowRow<Leading: View>(compactMarks: Bool,
+                                           @ViewBuilder leading: () -> Leading) -> some View {
+        HStack(spacing: 5) {
+            leading()
+            Spacer(minLength: 6)
+            marks(compact: compactMarks)
+        }
+    }
+
+    @ViewBuilder
+    private var projectLabel: some View {
+        if let project = viewModel.claudeProject, !project.isEmpty {
+            Label(project, systemImage: "folder.fill")
+                .foregroundStyle(.white.opacity(0.8))
+                .truncationMode(.tail)
+                // The first thing to give way when the marks need the room.
+                .layoutPriority(-1)
+        }
+    }
+
+    private var separator: some View {
+        Text("·").foregroundStyle(.white.opacity(0.3))
+    }
+
+    /// Other sessions and the keep-awake hold. Each is shown only while the
+    /// thing it names is true — the count from the registry's live sessions,
+    /// the cup from the assertion itself (`isKeepingAwake`) — and neither has
+    /// an "off" form.
+    private func marks(compact: Bool) -> some View {
+        HStack(spacing: 8) {
+            let others = viewModel.otherSessions
+            if others.needYou > 0 {
+                Text("+\(others.needYou) \(others.needYou == 1 ? "needs" : "need") you")
+                    .foregroundStyle(.white.opacity(0.8))
+                    .accessibilityLabel("\(others.needYou) other \(others.needYou == 1 ? "session needs" : "sessions need") you")
+            }
+            if others.working > 0 {
+                Text("+\(others.working) working")
+                    .accessibilityLabel("\(others.working) other \(others.working == 1 ? "session" : "sessions") working")
+            }
+            if viewModel.isKeepingAwake {
+                Label("Mac awake", systemImage: "cup.and.saucer.fill")
+                    .labelStyle(EyebrowLabelStyle(iconOnly: compact))
+                    .accessibilityLabel("Keeping the Mac awake while Claude works")
+            }
+        }
+        .fixedSize()
+        .animation(.easeInOut(duration: 0.2), value: viewModel.otherSessions)
+        .animation(.easeInOut(duration: 0.2), value: viewModel.isKeepingAwake)
+    }
+
+    /// Live "… ago", ticking once a second.
+    @ViewBuilder
+    private var elapsed: some View {
+        if let date = viewModel.claudeUpdatedAt {
+            TimelineView(.periodic(from: date, by: 1)) { context in
+                Text(Self.relative(from: date, to: context.date))
+                    .monospacedDigit()
+            }
+            .fixedSize()
+        }
     }
 
     // MARK: - Approval
@@ -154,22 +232,20 @@ struct ClaudeExpandedView: View {
     /// authorises. Monospaced, two lines, cut from the middle so both the
     /// program and the end of the command survive. A fixed two-line box, so
     /// the buttons below never move with the command's length.
-    private func approvalDetail(_ request: ClaudeRequest) -> some View {
+    private func approvalCommand(_ request: ClaudeRequest) -> some View {
         let subject = (request.subject ?? "")
             // A heredoc or a multi-line script would otherwise spend both lines
             // on its first line break.
             .replacingOccurrences(of: "\n", with: " ↵ ")
         return (Text(request.toolName).fontWeight(.semibold).foregroundStyle(.white.opacity(0.9))
                 + Text(subject.isEmpty ? "" : "  " + subject))
-            .font(.system(size: 11.5, design: .monospaced))
+            .font(L.commandFont)
             .foregroundStyle(.white.opacity(0.72))
-            .lineLimit(2)
+            .lineLimit(L.commandLines)
             .truncationMode(.middle)
-            .frame(height: 30, alignment: .topLeading)
-            // A long command fills the width, and its first line runs level
-            // with the waveform pinned at the top-right; stop short of it, as
-            // the headline does.
-            .padding(.trailing, 36)
+            .frame(height: CGFloat(L.commandLines) * L.commandLine, alignment: .topLeading)
+            // Its second line runs level with the corner toggle in Both mode.
+            .padding(.trailing, switcherClearance)
     }
 
     private var approvalActions: some View {
@@ -185,18 +261,16 @@ struct ClaudeExpandedView: View {
             }
             Spacer(minLength: 0)
         }
-        .frame(height: 24)
         .disabled(viewModel.isAnsweringRequest)
         .opacity(viewModel.isAnsweringRequest ? 0.5 : 1)
     }
 
     // MARK: - Question
 
-    /// One question of an `AskUserQuestion`: its header as a chip, the
-    /// question, its options as rows (label, then the description in the
-    /// secondary weight), and the way out to the terminal. The panel has grown
-    /// to fit — see `NotchMetrics.questionPanelHeight`, whose arithmetic
-    /// follows these rows; change one, change the other.
+    /// One question of an `AskUserQuestion`: its header and step in the
+    /// eyebrow, the question as the title, its options as rows, and the way
+    /// out to the terminal. The panel has grown to fit — sized from the same
+    /// `ClaudePanelLayout` numbers these rows are drawn at.
     ///
     /// No free text: answering "Type something" would need a text field, and
     /// a text field needs key focus, which the notch must never take from the
@@ -205,60 +279,71 @@ struct ClaudeExpandedView: View {
         let index = viewModel.questionIndex
         let isLast = index + 1 >= request.questions.count
         let picks = viewModel.questionPicks.indices.contains(index) ? viewModel.questionPicks[index] : []
+        let descriptions = viewModel.optionDescriptions
 
-        return HStack(alignment: .top, spacing: 14) {
-            // Top-aligned here rather than centred in a 104pt band, so it takes
-            // a further 5pt to sit exactly where the status face draws it.
-            glyph(raise: 15)
+        return GeometryReader { proxy in
+            // At the cap, the question gives up its second line first; past
+            // that, the options scroll rather than push the actions off.
+            let room = proxy.size.height
+            let natural = L.naturalQuestionLines(question)
+            let needed = L.questionContentHeight(question, descriptions: descriptions,
+                                                 trailingClearance: switcherClearance,
+                                                 questionLines: natural)
+            let lines = needed > room ? 1 : natural
+            let optionsRoom = max(0, room - L.questionChromeHeight(questionLines: lines))
+            let optionsHeight = L.optionsHeight(question, descriptions: descriptions,
+                                                trailingClearance: switcherClearance)
 
             VStack(alignment: .leading, spacing: 0) {
-                // Header row: the question's chip, and where in a multi-part
-                // ask this is. Clear of the waveform at the top-right.
-                HStack(spacing: 8) {
-                    chip(question.header ?? "Question", systemImage: "questionmark.bubble.fill")
+                eyebrow {
+                    projectLabel
+                    separator
+                    Label(question.header ?? "Question", systemImage: "questionmark.bubble.fill")
+                        .foregroundStyle(.white.opacity(0.8))
+                        .layoutPriority(-0.5)
                     if request.questions.count > 1 {
-                        if index > 0 {
-                            Button {
-                                viewModel.previousQuestion()
-                            } label: {
-                                Image(systemName: "chevron.left")
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .frame(width: 18, height: 18)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Previous question")
-                        }
-                        Text("\(index + 1) of \(request.questions.count)")
-                            .font(.system(size: 10.5, weight: .medium).monospacedDigit())
-                            .foregroundStyle(.white.opacity(0.5))
+                        separator
+                        step(index: index, count: request.questions.count)
                     }
-                    Spacer(minLength: 0)
                 }
-                .frame(height: 18)
-                .padding(.trailing, 36)
 
-                Spacer().frame(height: 5)
+                Spacer().frame(height: L.eyebrowGap)
 
-                // Up to two lines, and the only row that can give way: if the
-                // panel is at its cap, the question loses its second line
-                // before anything else moves.
                 Text(question.question)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1...2)
+                    .font(L.questionFont)
+                    .lineLimit(lines)
                     .truncationMode(.tail)
+                    .frame(height: CGFloat(lines) * L.questionLine, alignment: .topLeading)
                     // Level with the waveform at the top-right; clear it.
-                    .padding(.trailing, 36)
+                    .padding(.trailing, L.waveformClearance)
 
-                Spacer().frame(height: 6)
+                Spacer().frame(height: L.questionGap)
 
-                optionRows(question, picks: picks)
-                    .fixedSize(horizontal: false, vertical: true)
+                Group {
+                    if optionsHeight <= optionsRoom + 0.5 {
+                        optionRows(question, picks: picks, descriptions: descriptions)
+                    } else {
+                        ScrollView(.vertical) {
+                            optionRows(question, picks: picks, descriptions: descriptions)
+                        }
+                        .scrollIndicators(.hidden)
+                        .frame(height: optionsRoom)
+                        // A row cut by the edge reads as clipped; fading the
+                        // last few points says there's more below instead.
+                        .mask(
+                            VStack(spacing: 0) {
+                                Color.black
+                                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                                    .frame(height: 14)
+                            }
+                        )
+                    }
+                }
+                .padding(.trailing, switcherClearance)
 
-                Spacer().frame(height: 6)
+                Spacer(minLength: L.actionGap)
 
-                HStack(spacing: 8) {
+                actionRow {
                     pill("Answer in terminal", systemImage: "terminal", fill: .white.opacity(0.14)) {
                         answerInTerminal()
                     }
@@ -272,67 +357,88 @@ struct ClaudeExpandedView: View {
                         .disabled(picks.isEmpty)
                     }
                 }
-                .frame(height: 22)
-                .padding(.trailing, switcherClearance)
             }
-            .frame(minWidth: 340, maxWidth: 340, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .disabled(viewModel.isAnsweringRequest)
         .opacity(viewModel.isAnsweringRequest ? 0.5 : 1)
         .animation(.easeInOut(duration: 0.2), value: index)
     }
 
-    private func optionRows(_ question: ClaudeQuestion, picks: Set<String>) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            // AskUserQuestion offers two to four; anything past four still
-            // fits by scrolling rather than by pushing the actions off the
-            // panel.
-            if question.options.count > 4 {
-                ScrollView(.vertical) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        ForEach(Array(question.options.enumerated()), id: \.offset) { _, option in
-                            optionRow(option, multiSelect: question.multiSelect, picked: picks.contains(option.label))
-                        }
-                    }
+    /// "‹ 2 of 3": where in a multi-part ask this is, and the way back.
+    private func step(index: Int, count: Int) -> some View {
+        HStack(spacing: 2) {
+            if index > 0 {
+                Button {
+                    viewModel.previousQuestion()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 9.5, weight: .bold))
+                        .frame(width: 16, height: L.eyebrowHeight)
+                        .contentShape(Rectangle())
                 }
-                .scrollIndicators(.hidden)
-                .frame(height: 4 * NotchMetrics.questionOptionPitch - 3)
-            } else {
-                ForEach(Array(question.options.enumerated()), id: \.offset) { _, option in
-                    optionRow(option, multiSelect: question.multiSelect, picked: picks.contains(option.label))
-                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.white.opacity(0.8))
+                .accessibilityLabel("Previous question")
             }
+            Text("\(index + 1) of \(count)")
+                .monospacedDigit()
         }
-        .padding(.trailing, switcherClearance)
+        .fixedSize()
     }
 
-    private func optionRow(_ option: ClaudeQuestion.Option, multiSelect: Bool, picked: Bool) -> some View {
-        Button {
+    private func optionRows(_ question: ClaudeQuestion, picks: Set<String>,
+                            descriptions: OptionDescriptions) -> some View {
+        let width = L.optionTextWidth(multiSelect: question.multiSelect, trailingClearance: switcherClearance)
+        return VStack(alignment: .leading, spacing: L.optionGap) {
+            ForEach(Array(question.options.enumerated()), id: \.offset) { _, option in
+                optionRow(option, multiSelect: question.multiSelect, picked: picks.contains(option.label),
+                          descriptions: descriptions, textWidth: width)
+            }
+        }
+    }
+
+    private func optionRow(_ option: ClaudeQuestion.Option, multiSelect: Bool, picked: Bool,
+                           descriptions: OptionDescriptions, textWidth: CGFloat) -> some View {
+        let lines = L.descriptionLines(option, descriptions: descriptions, width: textWidth)
+        let height = L.optionRowHeight(option, descriptions: descriptions, textWidth: textWidth)
+        return Button {
             viewModel.pickOption(option.label)
         } label: {
-            HStack(spacing: 7) {
+            HStack(alignment: lines > 0 ? .top : .center, spacing: 7) {
                 if multiSelect {
                     Image(systemName: picked ? "checkmark.square.fill" : "square")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.white.opacity(picked ? 1 : 0.6))
+                        .frame(width: L.checkboxWidth - 7, height: L.optionLabelLine)
                 }
-                Text(option.label)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .layoutPriority(1)
-                if let description = option.description {
-                    Text(description)
-                        .font(.system(size: 11, weight: .regular))
-                        .foregroundStyle(.white.opacity(0.55))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                if lines > 0 {
+                    // Full: the label, then its description wrapped under it.
+                    VStack(alignment: .leading, spacing: L.optionStackedGap) {
+                        optionLabel(option)
+                            .frame(height: L.optionLabelLine)
+                        Text(option.description ?? "")
+                            .font(L.optionDescriptionFont)
+                            .foregroundStyle(.white.opacity(0.55))
+                            .lineLimit(lines)
+                            .truncationMode(.tail)
+                            .frame(height: CGFloat(lines) * L.optionDescriptionLine, alignment: .topLeading)
+                    }
+                } else {
+                    optionLabel(option)
+                        .layoutPriority(1)
+                    if descriptions == .oneLine, let description = option.description {
+                        Text(description)
+                            .font(L.optionDescriptionFont)
+                            .foregroundStyle(.white.opacity(0.55))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 8)
-            .frame(height: NotchMetrics.questionOptionPitch - 3)
+            .padding(.horizontal, L.optionHorizontalPadding)
+            .padding(.vertical, lines > 0 ? L.optionStackedPadding : 0)
+            .frame(height: height)
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(.white.opacity(picked ? 0.24 : 0.08))
@@ -340,11 +446,29 @@ struct ClaudeExpandedView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // Read out in full whatever the setting hides.
         .accessibilityLabel(option.description.map { "\(option.label), \($0)" } ?? option.label)
         .accessibilityAddTraits(picked ? [.isSelected] : [])
     }
 
+    private func optionLabel(_ option: ClaudeQuestion.Option) -> some View {
+        Text(option.label)
+            .font(L.optionLabelFont)
+            .foregroundStyle(.white)
+            .lineLimit(1)
+    }
+
     // MARK: - Controls
+
+    /// The bottom row every face shares: one height, one place.
+    private func actionRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 8) {
+            content()
+        }
+        .frame(height: L.actionHeight)
+        .padding(.trailing, switcherClearance)
+        .padding(.bottom, L.bottomInset)
+    }
 
     /// A capsule button with an icon, for the decisions. Real `Button`s, so
     /// the tap is consumed and doesn't retract the card.
@@ -356,7 +480,7 @@ struct ClaudeExpandedView: View {
     ) -> some View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
-                .font(.system(size: 11.5, weight: .semibold))
+                .font(L.pillFont)
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .padding(.horizontal, 12)
@@ -374,11 +498,11 @@ struct ClaudeExpandedView: View {
         island.dismissAlert()
     }
 
-    /// How far rows stop short of the column's right edge. With the face
-    /// toggle parked in the panel's bottom-right corner, enough that the lower
-    /// rows don't run under it; with the strip up in the housing band, nothing.
+    /// How far the lower rows stop short of the column's right edge. With the
+    /// face toggle parked in the panel's bottom-right corner, enough that they
+    /// don't run under it; with the strip up in the housing band, nothing.
     private var switcherClearance: CGFloat {
-        viewModel.showsTabToggle ? 44 : 0
+        viewModel.showsTabToggle ? L.toggleClearance : 0
     }
 
     // MARK: - Text
@@ -395,12 +519,6 @@ struct ClaudeExpandedView: View {
         case .failed: return "Error"
         case .compacting: return "Compacting"
         }
-    }
-
-    /// The detail line under the headline. The shared text modifiers are
-    /// applied by the caller.
-    private var detailLine: some View {
-        Text(detail)
     }
 
     /// The secondary line under the headline — what's actually happening.
@@ -436,23 +554,28 @@ struct ClaudeExpandedView: View {
         viewModel.claudeActivity?.phrase
     }
 
-    /// Live "… ago", ticking once a second. Project lives in its own chip.
-    @ViewBuilder
-    private var metaLine: some View {
-        if let date = viewModel.claudeUpdatedAt {
-            TimelineView(.periodic(from: date, by: 1)) { context in
-                Text(Self.relative(from: date, to: context.date))
-                    .font(.system(size: 11, weight: .medium).monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.5))
-            }
-        }
-    }
-
     private static func relative(from date: Date, to now: Date) -> String {
         let seconds = max(0, Int(now.timeIntervalSince(date)))
         if seconds < 60 { return "\(seconds)s ago" }
         let minutes = seconds / 60
         if minutes < 60 { return "\(minutes)m ago" }
         return "\(minutes / 60)h ago"
+    }
+}
+
+/// An eyebrow label: the symbol a touch smaller than the text and tucked in
+/// closer than `Label`'s default, so a mark reads as one word.
+private struct EyebrowLabelStyle: LabelStyle {
+    /// Drops the word, for a crowded eyebrow.
+    var iconOnly = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 3) {
+            configuration.icon
+                .imageScale(.small)
+            if !iconOnly {
+                configuration.title
+            }
+        }
     }
 }

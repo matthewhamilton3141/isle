@@ -608,7 +608,7 @@ struct SettingsView: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Toggle("Keep Mac awake while Claude works", isOn: $settings.keepAwakeWhileWorking)
-                Text("Prevents idle sleep while any session is working. The display can still sleep.")
+                Text("Prevents idle sleep while any session is working. The display can still sleep. While it’s held, the Claude panel shows ☕ Mac awake.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
