@@ -13,11 +13,11 @@
 //  that fails leaves the device that is actually playing marked, not the
 //  one that was asked for.
 //
-//  A switch made here is the same event as one made in Control Center or
-//  Sound settings — the system default changing — so the waveform's tap
-//  hears about it the way it hears about any other and rebuilds through its
-//  own listener (`SystemAudioLevels.observeOutputDevice`). Nothing here
-//  touches the tap.
+//  A switch made here is the same HAL event as one made in Control Center or
+//  Sound settings — the system default changing. The waveform's tap doesn't
+//  care which output is current (it reads the player's process, through an
+//  aggregate holding no real device; see `SystemAudioLevels`), and nothing
+//  here touches it.
 //
 //  Separate from the view model for the same reason the lyric clock is: a
 //  device coming or going redraws the switcher and nothing else. And it only
@@ -110,6 +110,17 @@ final class OutputDevices: ObservableObject {
         label: "com.isle.output-devices", qos: .userInitiated
     )
 
+    /// The re-read waiting to run, if one is. A switch arrives as a burst of
+    /// notifications — the device list, the default, the system output, and
+    /// again as a Bluetooth device changes profile — and each one used to
+    /// queue a full re-read of every device. Now each replaces the last, so
+    /// a burst costs one read, taken once it's over.
+    private var pendingRefresh: DispatchWorkItem?
+
+    /// How long a re-read waits for the rest of a burst. Short enough that
+    /// the tick moves with the switch, not after it.
+    private nonisolated static let refreshCoalescing: DispatchTimeInterval = .milliseconds(60)
+
     private var viewers = 0
 
     /// Bumped on every detach, so a read that lands after it stays quiet.
@@ -128,13 +139,15 @@ final class OutputDevices: ObservableObject {
         viewers += 1
         guard viewers == 1 else { return }
         startListening()
-        refresh()
+        refresh(coalescing: false)
     }
 
     func detach() {
         viewers = max(0, viewers - 1)
         guard viewers == 0 else { return }
         stopListening()
+        pendingRefresh?.cancel()
+        pendingRefresh = nil
         generation += 1
         // Cleared rather than left standing, so the next open starts from
         // what the HAL says then instead of flashing what it said last time.
@@ -145,6 +158,18 @@ final class OutputDevices: ObservableObject {
     /// Asks the HAL to make `device` the system default output. Nothing is
     /// published from here: the default listener reports the outcome, and on
     /// failure a re-read shows the device that's still the default.
+    ///
+    /// Only ever called from a tap on the list. Nothing in Isle writes the
+    /// default in answer to a notification, so a change can't feed back.
+    ///
+    /// One thing this can't do is tell macOS the switch was the user's own.
+    /// Control Center's switches reach the AirPods' automatic switching as a
+    /// "manual route", which holds off its routing the AirPods back for a
+    /// while; a HAL write isn't one, and there's no public way to make it
+    /// one. With in-ear AirPods connected, macOS may still route them back
+    /// the next time something starts playing — its rule, which Isle
+    /// doesn't fight (it never writes the default back) and doesn't trigger
+    /// itself (the level meter no longer stops or starts on a switch).
     func select(_ device: OutputDevice) {
         guard device.id != currentID else { return }
         let id = device.id
@@ -152,7 +177,7 @@ final class OutputDevices: ObservableObject {
             let status = Self.setDefaultOutput(id)
             guard status != noErr else { return }
             NSLog("Isle: could not switch output to \(device.name) (\(status))")
-            Task { @MainActor in self?.refresh() }
+            Task { @MainActor in self?.refresh(coalescing: false) }
         }
     }
 
@@ -188,17 +213,25 @@ final class OutputDevices: ObservableObject {
 
     /// Re-reads the list and the default off the main thread and publishes
     /// both together, so the mark never points at a device the list hasn't
-    /// caught up with.
-    private func refresh() {
+    /// caught up with. Coalesced: see `pendingRefresh`. The first read on
+    /// attach isn't delayed, so the list opens on the HAL's answer.
+    private func refresh(coalescing: Bool = true) {
         guard viewers > 0 else { return }
+        pendingRefresh?.cancel()
         let generation = generation
-        Self.queue.async { [weak self] in
+        let read = DispatchWorkItem { [weak self] in
             let snapshot = Self.snapshot()
             Task { @MainActor in
                 guard let self, self.viewers > 0, self.generation == generation else { return }
                 if self.devices != snapshot.devices { self.devices = snapshot.devices }
                 if self.currentID != snapshot.currentID { self.currentID = snapshot.currentID }
             }
+        }
+        pendingRefresh = read
+        if coalescing {
+            Self.queue.asyncAfter(deadline: .now() + Self.refreshCoalescing, execute: read)
+        } else {
+            Self.queue.async(execute: read)
         }
     }
 
