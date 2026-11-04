@@ -2470,4 +2470,29 @@ extension NotchViewModel {
         }
     }
 }
+
+/// Puts the Claude face into a fixed state for previews and the offscreen
+/// render harness — see `ClaudePanelFixture`. Sets the published values the
+/// face reads directly, with no watcher, hook or timer behind them, so a
+/// render shows exactly the state described and nothing eases it away.
+extension NotchViewModel {
+    func applyPreviewFixture(_ fixture: ClaudePanelFixture) {
+        claudeState = fixture.state
+        claudeProject = fixture.project
+        claudeSessionId = fixture.request?.sessionId ?? "preview-session"
+        claudeAction = fixture.action
+        claudeTarget = fixture.target
+        claudeErrorType = fixture.errorType
+        claudeResetAt = fixture.resetAt
+        claudeUpdatedAt = fixture.state == .disconnected ? nil : fixture.updatedAt
+        claudeRequestId = fixture.request?.id
+        pendingRequest = fixture.request
+        questionIndex = fixture.questionIndex
+        questionPicks = fixture.picks.isEmpty
+            ? Array(repeating: [], count: fixture.request?.questions.count ?? 0)
+            : fixture.picks
+        if let word = fixture.workingWord { workingWord = word }
+        activeTab = .claude
+    }
+}
 #endif
