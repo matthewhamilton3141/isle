@@ -12,7 +12,7 @@
 import Foundation
 
 enum IsleMode: String, CaseIterable, Identifiable {
-    /// Spotify now-playing island only.
+    /// Now-playing island only (Spotify or Apple Music).
     case music
 
     /// Claude Code live-activity island only.
@@ -47,7 +47,7 @@ enum IsleMode: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .music:
-            return "A Spotify island — now playing, controls, and a live waveform."
+            return "A Spotify or Apple Music island — now playing, controls, and a live waveform."
         case .claude:
             return "A live status island for your Claude Code session."
         case .both:

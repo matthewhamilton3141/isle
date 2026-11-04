@@ -22,8 +22,9 @@ enum WaveformSource: String, CaseIterable, Identifiable {
     /// starts the tap — no prompt, no Core Audio.
     case animated
 
-    /// No waveform. The collapsed island keeps its shape; the bars' slot is
-    /// simply left empty so the album doesn't move.
+    /// No waveform. In music mode the bars' slot is left empty so the album
+    /// stays put and the island keeps its shape; when Claude shares the island
+    /// the space goes back and the island narrows instead.
     case off
 
     var id: String { rawValue }
@@ -49,7 +50,7 @@ enum WaveformSource: String, CaseIterable, Identifiable {
         case .animated:
             return "The bars move on their own whenever something is playing. Isle never listens, so macOS never asks."
         case .off:
-            return "No waveform. The island keeps its shape and shows just the album cover."
+            return "No waveform. Music mode keeps the island's shape and shows just the album cover; alongside Claude the island narrows."
         }
     }
 }

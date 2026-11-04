@@ -3,21 +3,22 @@
 //
 //  Real audio-reactive levels for the notch waveform.
 //
-//  Taps Spotify's audio with Core Audio's process-tap API (macOS 14.4+),
+//  Taps the player's audio with Core Audio's process-tap API (macOS 14.4+),
 //  runs an FFT over the captured samples, and reduces the spectrum to a
 //  handful of log-spaced bands.
 //
-//  A process-scoped tap rather than a global one: Isle is Spotify-only, so
-//  the waveform must reflect Spotify and nothing else. A global tap made the
+//  A process-scoped tap rather than a global one: the waveform must reflect
+//  the player the island is showing and nothing else. A global tap made the
 //  bars react to any audible sound — a YouTube tab, a system alert — which
-//  read as wrong for a Spotify overlay. The tap is bound to Spotify's audio
-//  process object, resolved from its PID, and rebuilt when Spotify launches
-//  or relaunches (its PID, and therefore the process object, changes). It is
-//  also rebuilt when the default output device changes: the aggregate device
-//  the tap is read through is built on the output device of the moment, and
-//  does not survive that device going away.
+//  read as wrong for a now-playing overlay. The tap is bound to the target
+//  player's audio process object, resolved from its PID, and rebuilt when
+//  that player launches or relaunches (its PID, and therefore the process
+//  object, changes) — or when the owner routes the island to the other
+//  player (`setTarget`). It is also rebuilt when the default output device
+//  changes: the aggregate device the tap is read through is built on the
+//  output device of the moment, and does not survive that device going away.
 //
-//  Everything here fails soft. If the OS is too old, Spotify isn't running,
+//  Everything here fails soft. If the OS is too old, the player isn't running,
 //  the user declines the audio-capture prompt, or the device can't be
 //  tapped, `levels` simply stays empty and EqualizerView falls back to its
 //  procedural pattern.
@@ -125,11 +126,28 @@ final class SystemAudioLevels: ObservableObject {
             return
         }
         wantsCapture = true
-        // Rebuild the tap whenever Spotify comes or goes — its PID, and so its
-        // audio process object, changes across launches — and whenever the
+        // Rebuild the tap whenever the player comes or goes — its PID, and so
+        // its audio process object, changes across launches — and whenever the
         // default output device does. Both registered once.
-        observeSpotifyLifecycle()
+        observePlayerLifecycle()
         observeOutputDevice()
+        beginCaptureIfNeeded()
+    }
+
+    /// The player whose process the tap is bound to. Spotify until the owner
+    /// says otherwise, which it does whenever the island routes to a
+    /// different player (see `NotchViewModel.recomputeSource`).
+    private(set) var targetBundleID = MediaPlayers.spotifyBundleID
+
+    /// Re-aims the tap at another player. A no-op for the same target; for a
+    /// new one the current tap is torn down and, if capture is still wanted,
+    /// rebuilt against the new process — same path as a relaunch.
+    func setTarget(_ bundleID: String) {
+        guard bundleID != targetBundleID else { return }
+        targetBundleID = bundleID
+        guard wantsCapture else { return }
+        endCapture()
+        levels = []
         beginCaptureIfNeeded()
     }
 
@@ -218,9 +236,9 @@ final class SystemAudioLevels: ObservableObject {
         }
     }
 
-    /// Brings the tap up if the owner wants it, Spotify is running, and it
-    /// isn't already up. Every path that can start capture goes through here
-    /// so the gates can't be skipped.
+    /// Brings the tap up if the owner wants it, the target player is running,
+    /// and it isn't already up. Every path that can start capture goes through
+    /// here so the gates can't be skipped.
     ///
     /// Not gated on playback: the tap is built whenever it *could* be needed
     /// and merely suspended while nothing plays, so that pressing play is
@@ -232,9 +250,9 @@ final class SystemAudioLevels: ObservableObject {
         // Which pid to tap is a cheap local lookup and stays here. Everything
         // after it is Core Audio, and goes to the queue.
         guard let app = NSRunningApplication
-            .runningApplications(withBundleIdentifier: SpotifyController.bundleID)
+            .runningApplications(withBundleIdentifier: targetBundleID)
             .first, app.processIdentifier > 0 else {
-            // Spotify isn't running yet. Not an error — the launch observer
+            // The player isn't running yet. Not an error — the launch observer
             // will start capture once it appears. Leave `levels` empty so the
             // waveform rests as dots rather than reacting to other apps.
             return
@@ -287,11 +305,14 @@ final class SystemAudioLevels: ObservableObject {
         }
     }
 
-    // MARK: - Spotify lifecycle
+    // MARK: - Player lifecycle
 
     private var lifecycleObservers: [NSObjectProtocol] = []
 
-    private func observeSpotifyLifecycle() {
+    /// Watches every supported player's launch and exit, and acts only on the
+    /// one the tap is aimed at — the target can change after the observers
+    /// are registered, so the filter is applied at delivery, not at setup.
+    private func observePlayerLifecycle() {
         guard lifecycleObservers.isEmpty else { return }
         let center = NSWorkspace.shared.notificationCenter
 
@@ -299,32 +320,39 @@ final class SystemAudioLevels: ObservableObject {
             forName: NSWorkspace.didLaunchApplicationNotification,
             object: nil, queue: .main
         ) { [weak self] note in
-            guard Self.isSpotify(note) else { return }
-            Task { @MainActor in self?.restart() }
+            guard let id = Self.playerBundleID(note) else { return }
+            Task { @MainActor in
+                guard let self, id == self.targetBundleID else { return }
+                self.restart()
+            }
         })
 
         lifecycleObservers.append(center.addObserver(
             forName: NSWorkspace.didTerminateApplicationNotification,
             object: nil, queue: .main
         ) { [weak self] note in
-            guard Self.isSpotify(note) else { return }
+            guard let id = Self.playerBundleID(note) else { return }
             // Tap is bound to the now-dead process; tear it down so the bars
             // rest rather than freezing on the last frame. The owner's ask
             // stands, so a relaunch brings it back.
             Task { @MainActor in
-                self?.endCapture()
-                self?.levels = []
+                guard let self, id == self.targetBundleID else { return }
+                self.endCapture()
+                self.levels = []
             }
         })
     }
 
-    private nonisolated static func isSpotify(_ note: Notification) -> Bool {
-        (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
-            .bundleIdentifier == SpotifyController.bundleID
+    /// The bundle id of the app the notification is about, when it is one of
+    /// the supported players.
+    private nonisolated static func playerBundleID(_ note: Notification) -> String? {
+        guard let id = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
+            .bundleIdentifier, MediaPlayers.supported.contains(id) else { return nil }
+        return id
     }
 
-    /// Tear down and bring capture back up against Spotify's current process —
-    /// if the owner still wants it, which `beginCaptureIfNeeded` checks.
+    /// Tear down and bring capture back up against the target player's current
+    /// process — if the owner still wants it, which `beginCaptureIfNeeded` checks.
     private func restart() {
         endCapture()
         beginCaptureIfNeeded()

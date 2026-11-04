@@ -152,7 +152,10 @@ final class NotchViewModel: ObservableObject {
 
     private let settings: AppSettings
     private let adapter = MediaRemoteAdapterClient()
-    private let spotify = SpotifyController()
+    /// One controller per supported player, in cold-start preference order.
+    /// Commands go to the one whose track the island is showing — see
+    /// `routedPlayer` — never to a fixed app.
+    private let players: [MediaPlayerController] = [SpotifyController(), AppleMusicController()]
     private let audio = SystemAudioLevels()
     private let claudeWatcher = ClaudeStatusWatcher()
     private let sessionRegistry = ClaudeSessionRegistry()
@@ -488,14 +491,30 @@ final class NotchViewModel: ObservableObject {
     /// Focus intervals per Pomodoro cycle (Settings), for the tally dots.
     var pomodoroSessionsPerCycle: Int { settings.pomodoroSessionsPerCycle }
 
-    // The two now-playing sources, kept separately and merged in
-    // `recomputeSource`. The adapter (MediaRemote) is preferred when Spotify
-    // owns the system session — it pushes updates and ships artwork as bytes.
-    // The AppleScript poll is the fallback for when something else (a browser
-    // tab, say) owns the session, so the notch still shows Spotify.
+    // The now-playing sources, kept separately and merged in
+    // `recomputeSource`. The adapter (MediaRemote) is preferred when a
+    // supported player owns the system session — it pushes updates and ships
+    // artwork as bytes. The per-player AppleScript polls are the fallback for
+    // when something else (a browser tab, say) owns the session, so the notch
+    // still shows the player.
     private var adapterModel = MediaPlaybackModel()
-    private var spotifyModel: MediaPlaybackModel?
+    /// Each player's latest poll, keyed by bundle id. Absent when that player
+    /// isn't running or is stopped.
+    private var pollModels: [String: MediaPlaybackModel] = [:]
     private var lastApplied = MediaPlaybackModel()
+
+    /// The player whose track the island is showing, by bundle id — the one
+    /// every command is sent to. Nil while nothing is showing.
+    private var routedPlayerID: String?
+
+    /// The last player that was routed. Breaks the tie when both players are
+    /// running with a track and neither is playing: the one the island was
+    /// on stays, rather than a cold-start default displacing it.
+    private var lastActivePlayerID: String?
+
+    private var routedPlayer: MediaPlayerController? {
+        players.first { $0.bundleID == routedPlayerID }
+    }
 
     // After a manual transport action, trust the optimistic value and ignore
     // contradicting source reads until a source confirms it or this window
@@ -524,8 +543,8 @@ final class NotchViewModel: ObservableObject {
     /// than from `AppSettings` so a change re-renders them through this model.
     var waveformSource: WaveformSource { settings.waveformSource }
 
-    /// Whether a waveform is drawn at all. Off leaves its slot in place but
-    /// empty (see `waveSlot`), so the collapsed layout doesn't depend on this.
+    /// Whether a waveform is drawn at all. Off gives the bars' space back in
+    /// the split layout and holds it in music-solo — see `waveSlot`.
     var showsWaveform: Bool { settings.waveformSource.isShown }
 
     /// Why audio capture isn't running, if it isn't.
@@ -577,47 +596,60 @@ final class NotchViewModel: ObservableObject {
             // island reads that poll only every third second. So a play
             // pressed anywhere but in the panel — Spotify's own button, a
             // media key, a phone on Spotify Connect — took up to three
-            // seconds to be believed. Nothing on a collapsed island shows the
-            // transport, so the only visible symptom was the waveform: past
-            // the pause grace the tap is suspended, and it is this flag that
-            // resumes it, so the bars stayed dots for those seconds while
-            // music played. Measured at 0.0/1.0/3.0s before, 0.3s after.
-            // The adapter hears the change in ~0.2s; take that as the cue to
-            // read the truth now rather than at the next relaxed tick.
+            // seconds to be believed. Nothing on a collapsed island shows
+            // the transport, so the only visible symptom was the waveform:
+            // past the pause grace the tap is suspended, and it is this flag
+            // that resumes it, so the bars stayed dots for those seconds
+            // while music played. The adapter hears the change in ~100ms;
+            // take that as the cue to read the truth now rather than at the
+            // next relaxed tick.
             if model.isPlaying != wasPlaying {
-                self.spotify.pollNow()
+                self.players.first { $0.bundleID == model.bundleIdentifier }?.pollNow()
             }
-            // The adapter losing Spotify's track is the moment the poll's
-            // model — and so its cover — becomes the one on screen. Any cover
-            // the poll held back while the adapter was supplying one is
-            // fetched now; see `spotify.wantsArtwork` below.
-            if !model.hasTrack {
-                self.spotify.fetchArtworkIfNeeded()
-            }
+            // The adapter losing the track is the moment a poll's model — and
+            // so its cover — becomes the one on screen. `recomputeSource`
+            // fetches any cover the routed player's poll held back while the
+            // adapter was supplying one; see `wantsArtwork` below.
             self.recomputeSource()
         }
-        spotify.onUpdate = { [weak self] model in
-            self?.spotifyModel = model
-            self?.recomputeSource()
-        }
-        // The poll's cover is only drawn when the adapter has no Spotify
-        // track (`recomputeSource` prefers the adapter's model whole, artwork
-        // included). Fetching it otherwise was a download and a decode per
-        // track change that never reached the screen.
-        spotify.wantsArtwork = { [weak self] in
-            guard let self else { return false }
-            return !self.adapterModel.hasTrack
-        }
-        // Full rate while the poll is the only source (the adapter has no
-        // Spotify track — a browser owns the session), or while a panel is
-        // open and its scrubber and toggles are actually drawn from it.
-        // Otherwise the adapter pushes every change a collapsed island shows,
-        // and the poll can relax — see `SpotifyController.tick`.
-        spotify.wantsFullRate = { [weak self] in
-            guard let self else { return false }
-            return !self.adapterModel.hasTrack
-                || self.hoveredIslands > 0
-                || self.autoExpandsForActivity
+        for player in players {
+            let id = player.bundleID
+            player.onUpdate = { [weak self] model in
+                guard let self else { return }
+                self.pollModels[id] = model
+                self.recomputeSource()
+            }
+            // A poll's cover is only drawn when its player is the one the
+            // island is routed to and the adapter isn't supplying the track
+            // (`recomputeSource` prefers the adapter's model whole, artwork
+            // included). Fetching it otherwise was a download — or, for
+            // Music, an Apple-event blob — and a decode per track change that
+            // never reached the screen. "Routed to nobody" counts as yes: the
+            // first poll to show a track is about to become the island.
+            player.wantsArtwork = { [weak self] in
+                guard let self else { return false }
+                return !self.adapterModel.hasTrack
+                    && (self.routedPlayerID == nil || self.routedPlayerID == id)
+            }
+            // Full rate while this player's poll is the only source (the
+            // adapter has no track — a browser owns the session), or while a
+            // panel is open and its scrubber and toggles are actually drawn
+            // from it. Otherwise the adapter pushes every change a collapsed
+            // island shows, and the poll can relax — see `tick` in either
+            // controller. A player the island isn't routed to always relaxes —
+            // including when nothing is routed at all, so an open-but-stopped
+            // player isn't sent an Apple event every second for nothing. It
+            // only needs to be noticed if it starts playing: the adapter hears
+            // that in ~100ms when the player takes the session, and three
+            // seconds is soon enough when a browser holds it. Hovering an
+            // empty island still asks every player at once.
+            player.wantsFullRate = { [weak self] in
+                guard let self else { return false }
+                guard self.routedPlayerID == id else { return false }
+                return !self.adapterModel.hasTrack
+                    || self.hoveredIslands > 0
+                    || self.autoExpandsForActivity
+            }
         }
 
         claudeWatcher.onStatuses = { [weak self] statuses in
@@ -847,10 +879,10 @@ final class NotchViewModel: ObservableObject {
         mediaRunning = running
         if running {
             adapter.start()
-            spotify.start()
+            players.forEach { $0.start() }
         } else {
             adapter.stop()
-            spotify.stop()
+            players.forEach { $0.stop() }
         }
     }
 
@@ -1038,27 +1070,29 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
-    /// Picks which source drives the notch and feeds it through `apply`.
+    /// Picks which source drives the notch, which player the island is routed
+    /// to, and feeds the result through `apply`.
     ///
-    /// Prefer the adapter whenever it carries a Spotify track (Spotify owns
-    /// the system session); otherwise fall back to the AppleScript poll. The
-    /// equality guard matters: without it, a 1 Hz poll tick would re-apply an
-    /// unchanged adapter model and yank the scrubber back to that model's
-    /// now-stale elapsed time every second.
+    /// Prefer the adapter whenever it carries a supported player's track (that
+    /// player owns the system session); otherwise fall back to a poll — see
+    /// `fallbackPollModel` for which. The equality guard matters: without it,
+    /// a 1 Hz poll tick would re-apply an unchanged adapter model and yank the
+    /// scrubber back to that model's now-stale elapsed time every second.
     private func recomputeSource() {
         var effective = adapterModel.hasTrack
             ? adapterModel
-            : (spotifyModel ?? MediaPlaybackModel())
+            : (fallbackPollModel() ?? MediaPlaybackModel())
 
-        // The AppleScript poll reads Spotify's *true* player position, which
-        // the adapter's cached elapsed lags after a seek/restart (MediaRemote
-        // catches up on its own schedule). For a Spotify-scoped app the poll is
-        // the ground truth for the clock, so let it drive the timing fields
-        // while the adapter still supplies metadata and byte artwork. Without
-        // this, a stale adapter position snaps the bar back over a fresh seek;
-        // apply()'s drift easing absorbs the steady 1 Hz corrections so this
-        // doesn't reintroduce jitter, and a restart self-corrects within ~1s.
-        if let poll = spotifyModel, poll.hasTrack,
+        // The AppleScript poll reads the player's *true* position, which the
+        // adapter's cached elapsed lags after a seek/restart (MediaRemote
+        // catches up on its own schedule). The poll is the ground truth for
+        // the clock, so let it drive the timing fields while the adapter still
+        // supplies metadata and byte artwork. Without this, a stale adapter
+        // position snaps the bar back over a fresh seek; apply()'s drift
+        // easing absorbs the steady 1 Hz corrections so this doesn't
+        // reintroduce jitter, and a restart self-corrects within ~1s. Keyed by
+        // the track's owner, so Music's poll can never time Spotify's track.
+        if let poll = pollModels[effective.bundleIdentifier], poll.hasTrack,
            poll.title == effective.title, poll.album == effective.album {
             effective.reportedElapsed = poll.reportedElapsed
             effective.timestamp = poll.timestamp
@@ -1067,16 +1101,42 @@ final class NotchViewModel: ObservableObject {
             // Shuffle/repeat come from the poll too: the MediaRemote adapter
             // doesn't report them for Spotify (they're absent from its payload),
             // so without this the toggles would read permanently off and never
-            // light up even when Spotify has them on.
+            // light up even when the player has them on.
             effective.isShuffled = poll.isShuffled
             effective.repeatMode = poll.repeatMode
         }
 
         holdOptimisticTransport(&effective)
 
+        // Route to whoever owns the track on screen. The waveform's tap
+        // follows: it is bound to one process, and it must be this one.
+        routedPlayerID = effective.hasTrack ? effective.bundleIdentifier : nil
+        if let routedPlayerID {
+            lastActivePlayerID = routedPlayerID
+            audio.setTarget(routedPlayerID)
+        }
+        // With the adapter silent, the routed poll's model — and so its cover —
+        // is the one on screen. Any cover it held back while the adapter was
+        // supplying one, or while another player was routed, is fetched now.
+        if !adapterModel.hasTrack {
+            routedPlayer?.fetchArtworkIfNeeded()
+        }
+
         guard effective != lastApplied else { return }
         lastApplied = effective
         apply(effective)
+    }
+
+    /// Which poll drives the island when the adapter is silent: the player
+    /// that's playing; failing that, the one the island was already on; and on
+    /// a cold start with two paused players, the first in `players` order —
+    /// Spotify, the behaviour Isle has always had. Nil when no player has a
+    /// track.
+    private func fallbackPollModel() -> MediaPlaybackModel? {
+        let candidates = players.compactMap { pollModels[$0.bundleID] }.filter(\.hasTrack)
+        return candidates.first(where: \.isPlaying)
+            ?? candidates.first(where: { $0.bundleIdentifier == lastActivePlayerID })
+            ?? candidates.first
     }
 
     /// Keeps the user's last play/pause or seek in place until a source agrees
@@ -1272,7 +1332,7 @@ final class NotchViewModel: ObservableObject {
     /// How many islands the pointer currently holds open. The pointer is only
     /// ever on one screen, so this is 0 or 1 in practice; a count rather than
     /// a flag so two islands changing in the same event can't leave it wrong.
-    /// Feeds the Spotify poll's cadence — see `spotify.wantsFullRate`.
+    /// Feeds the player polls' cadence — see `wantsFullRate` in `init`.
     private var hoveredIslands = 0
 
     /// An island's hover flipped. Called by `IslandPresentation` on every
@@ -1280,9 +1340,10 @@ final class NotchViewModel: ObservableObject {
     func islandHoverChanged(_ hovering: Bool) {
         hoveredIslands = max(0, hoveredIslands + (hovering ? 1 : -1))
         // Opening the panel puts the scrubber on screen: bring the position
-        // current now rather than at the next relaxed read.
+        // current now rather than at the next relaxed read. With nothing
+        // routed, every player gets asked, so whichever has a track is found.
         if hovering, hoveredIslands == 1 {
-            spotify.pollNow()
+            (routedPlayer.map { [$0] } ?? players).forEach { $0.pollNow() }
         }
     }
 
@@ -1530,8 +1591,10 @@ final class NotchViewModel: ObservableObject {
 
         if shouldSplitCollapsed {
             // Music cluster is album + waveform, with the waveform tucked toward
-            // the camera so the album sits outboard, clear of the housing. The
-            // other side seats Claude, the timer, or both in that order.
+            // the camera so the album sits outboard, clear of the housing. With
+            // the waveform off the album is the whole cluster and the island
+            // narrows — see `waveSlot`. The other side seats Claude, the timer,
+            // or both in that order.
             let leading = s.album + waveSlot + g
             var trailing: CGFloat = 0
             if hasClaudeActivity { trailing += s.dots + statusSlot }
@@ -1568,14 +1631,16 @@ final class NotchViewModel: ObservableObject {
         return (s.minSide, s.minSide)   // resting
     }
 
-    /// The waveform's share of the music cluster — the gap plus the bars.
+    /// The waveform's share of the music cluster — the gap plus the bars, or
+    /// nothing when the bars are switched off.
     ///
-    /// Reserved even when the waveform is off. Giving the space back moved the
-    /// album 31pt inboard (and nudged the whole island), which read as the
-    /// cover jumping toward the camera and slipping under the housing. Holding
-    /// the slot means turning the bars off changes nothing but the bars.
+    /// Only the music-solo layout holds the empty seat (see `collapsedSideWidths`),
+    /// where album and waveform straddle the camera and the seat is what keeps
+    /// the two sides even. In the split layout Claude already sits on the other
+    /// side, so an empty seat is just 31pt of dead air between the album and the
+    /// housing: it goes back and the island narrows with it.
     private var waveSlot: CGFloat {
-        CollapsedSize.gap + CollapsedSize.wave
+        showsWaveform ? CollapsedSize.gap + CollapsedSize.wave : 0
     }
 
     /// The timer's compact cluster on the trailing side: a small glyph, a gap,
@@ -1781,11 +1846,11 @@ final class NotchViewModel: ObservableObject {
 
     // MARK: - Transport
 
-    // Spotify handles every command over AppleScript, so controls are live
-    // whenever a track is showing, regardless of which app owns the system
-    // now-playing session.
-    var canControlPlayback: Bool { media.hasTrack }
-    var canSeek: Bool { media.hasTrack && media.duration > 0 }
+    // The routed player handles every command over AppleScript, so controls
+    // are live whenever a track is showing, regardless of which app owns the
+    // system now-playing session.
+    var canControlPlayback: Bool { media.hasTrack && routedPlayer != nil }
+    var canSeek: Bool { canControlPlayback && media.duration > 0 }
 
     /// Shuffle/repeat state for the transport buttons, read from the merged
     /// model so the optimistic hold in `holdOptimisticTransport` shows through.
@@ -1793,7 +1858,8 @@ final class NotchViewModel: ObservableObject {
     var repeatMode: RepeatMode { media.repeatMode }
 
     func togglePlayPause() {
-        spotify.playPause()
+        guard let player = routedPlayer else { return }
+        player.playPause()
         // Optimistic: flip locally so the icon and scrubber react at once
         // rather than waiting up to a second for the next poll to confirm.
         // Re-anchor the clock at the current position with the new rate so
@@ -1807,19 +1873,19 @@ final class NotchViewModel: ObservableObject {
         lastApplied = media
 
         // Hold this state until a source confirms it, so the next poll can't
-        // flicker it back before Spotify has processed the command.
+        // flicker it back before the player has processed the command.
         pendingPlayState = media.isPlaying
         pendingCommandDeadline = Date().addingTimeInterval(Self.commandGrace)
     }
 
-    func nextTrack() { spotify.nextTrack() }
-    func previousTrack() { spotify.previousTrack() }
+    func nextTrack() { routedPlayer?.nextTrack() }
+    func previousTrack() { routedPlayer?.previousTrack() }
 
     /// Toggle shuffle, optimistically, then hold it until a source confirms so a
-    /// stale 1 Hz poll can't flicker it back before Spotify processes the flip.
+    /// stale 1 Hz poll can't flicker it back before the player processes the flip.
     func toggleShuffle() {
-        guard canControlPlayback else { return }
-        spotify.toggleShuffle()
+        guard let player = routedPlayer, canControlPlayback else { return }
+        player.toggleShuffle()
         let want = !media.isShuffled
         media.isShuffled = want
         lastApplied = media
@@ -1827,11 +1893,13 @@ final class NotchViewModel: ObservableObject {
         pendingCommandDeadline = Date().addingTimeInterval(Self.commandGrace)
     }
 
-    /// Toggle repeat, optimistically. Spotify's AppleScript has no repeat-one, so
-    /// this is a boolean off↔all — matching what the poll can read back.
+    /// Toggle repeat, optimistically. Off ↔ all in both players: Spotify's
+    /// AppleScript has no repeat-one at all, and Music's `one` — set in Music
+    /// itself, shown here as the lit repeat-1 key — clears to off, which is
+    /// what pressing a lit key should do. One control, one meaning.
     func toggleRepeat() {
-        guard canControlPlayback else { return }
-        spotify.toggleRepeat()
+        guard let player = routedPlayer, canControlPlayback else { return }
+        player.toggleRepeat()
         let want: RepeatMode = media.repeatMode == .off ? .all : .off
         media.repeatMode = want
         lastApplied = media
@@ -1842,12 +1910,12 @@ final class NotchViewModel: ObservableObject {
     /// Commits a scrub. Called on drag end, not continuously — seeking on
     /// every drag sample makes the source app stutter.
     func commitScrub() {
-        guard let scrubTarget, media.duration > 0 else {
+        guard let scrubTarget, media.duration > 0, let player = routedPlayer else {
             self.scrubTarget = nil
             return
         }
         let seconds = scrubTarget * media.duration
-        spotify.seek(to: seconds)
+        player.seek(to: seconds)
 
         // Optimistically move our own clock, otherwise the thumb snaps back
         // to the old position until the source reports the new one. The

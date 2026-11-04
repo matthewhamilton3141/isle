@@ -9,10 +9,11 @@
 //     shows Spotify whenever Spotify is running, which MediaRemote alone
 //     cannot do (it only ever exposes the single active session).
 //
-//   - Sending every transport command. Isle is Spotify-scoped, so commands
-//     must target Spotify by name. MediaRemote's send-command path aims at
-//     whichever app owns the now-playing session, which may be a browser —
-//     pressing play there would control the wrong app.
+//   - Sending every transport command. Commands must target a player by name
+//     (this one is Spotify's; see `MediaPlayerController` for the shape).
+//     MediaRemote's send-command path aims at whichever app owns the
+//     now-playing session, which may be a browser — pressing play there
+//     would control the wrong app.
 //
 //  Sending a command to `application "Spotify"` launches it if it isn't
 //  running, so the read path guards on the process existing (asked of the
@@ -23,9 +24,12 @@ import Foundation
 import AppKit
 
 @MainActor
-final class SpotifyController {
+final class SpotifyController: MediaPlayerController {
     /// Latest Spotify state, or nil when Spotify isn't running or is stopped.
     var onUpdate: ((MediaPlaybackModel?) -> Void)?
+
+    var bundleID: String { Self.bundleID }
+    var displayName: String { "Spotify" }
 
     /// Asked at every tick whether the read should run at full rate. Nil, or
     /// true, means once a second; false relaxes it to every `relaxedEvery`
