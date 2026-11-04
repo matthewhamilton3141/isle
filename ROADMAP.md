@@ -786,9 +786,20 @@ installer v9):
   under the cap) and leads with the header chip and "1 of 3"; single-select
   rows answer and advance on tap, multi-select rows toggle with Next/Done,
   and a chevron steps back. The tallest question sizes the panel so it
-  doesn't bob between steps; at the cap the question text yields its second
-  line first. "Answer in terminal" and "Terminal" also retract the panel
-  (when the dismiss setting allows).
+  doesn't bob between steps. "Answer in terminal" and "Terminal" also
+  retract the panel (when the dismiss setting allows).
+- Every option is always on screen. Claude Code 2.1.318's schema caps an
+  `AskUserQuestion` at 1–4 questions of 2–4 options each (a hard zod
+  `min(2).max(4)`, multi-select included; its own *Other* row is added by
+  the terminal and is "Answer in terminal" here). On the question face the
+  glyph shrinks into its top-left corner and the options take the face's
+  full width; when the cap can't hold the descriptions as the setting draws
+  them, the longest lose lines first, then all move beside their labels,
+  then go, and only then does the question give up its second line. Four
+  options fit side by side under a two-line question below a 32pt housing
+  (3pt to spare), and label-only rows fit five, so nothing scrolls within
+  the schema (a scroll, with an "N options" count beside the action, is
+  kept only for a future schema that allows more).
 - Two approvals pending at once *in one session* (parallel tool calls)
   can't both be answered: the second's status write supersedes the first's
   id, which falls through to the terminal. Safe, just not notch-answerable.

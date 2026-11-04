@@ -722,11 +722,11 @@ struct SettingsView: View {
     private var optionDescriptionsCaption: String {
         switch settings.optionDescriptions {
         case .full:
-            return "Each option’s description wraps under it, up to three lines. Long ones may need a scroll."
+            return "Each option’s description wraps under it, up to three lines. When they don’t all fit, they’re shortened so every option stays in view."
         case .oneLine:
             return "Each option’s description follows its label on the same line, cut off where the row ends."
         case .hidden:
-            return "Labels only. The rows are shorter, so more options fit."
+            return "Labels only, in the shortest rows."
         }
     }
 

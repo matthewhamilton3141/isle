@@ -90,6 +90,44 @@ extension ClaudePanelFixture {
         multiSelect: false
     )
 
+    static let threeOptions = ClaudeQuestion(
+        question: "Where should the lyric cache live?",
+        header: "Cache",
+        options: [
+            .init(label: "Application Support", description: "Survives restarts; cleared only when Isle is removed."),
+            .init(label: "Caches", description: "The system may purge it when space runs low."),
+            .init(label: "Memory only", description: "Gone on quit; nothing written to disk."),
+        ],
+        multiSelect: false
+    )
+
+    /// The schema's worst case for one question: four options (the most
+    /// `AskUserQuestion` accepts), every one with a description that wraps
+    /// past two lines in the column, under a question that takes two.
+    static let fourLong = ClaudeQuestion(
+        question: "The request watcher can miss a rename that lands during a re-read. How should I close the gap before the release?",
+        header: "Race fix",
+        options: [
+            .init(label: "Re-read on every event", description: "Rescan the whole requests directory whenever the watch fires, and diff against what's on screen; costs a directory listing per event but can't miss a file."),
+            .init(label: "Sequence numbers", description: "Have isle-cli stamp each request with a counter and have Isle notice a gap; precise, but it changes the hook script and needs a HookInstaller bump."),
+            .init(label: "Poll as a backstop", description: "Keep the watch and add a slow two-second poll while any request is live, so a missed event costs at most two seconds of a stale panel."),
+            .init(label: "Leave it", description: "It needs a rename inside a few milliseconds of a re-read; not seen in testing, so note it in the roadmap and move on to the release."),
+        ],
+        multiSelect: false
+    )
+
+    static let fourLongMulti = ClaudeQuestion(
+        question: "Which of these should go into the release notes for 0.4.5?",
+        header: "Notes",
+        options: [
+            .init(label: "Question face", description: "Every option stays in view, descriptions shorten to fit, and the glyph moves to the corner while a question is up."),
+            .init(label: "Approvals", description: "Approve and Deny from the notch now show the exact command across two lines, cut from the middle so both ends survive."),
+            .init(label: "Keep-awake", description: "The Mac stays awake while Claude works, shown as a cup in the panel's top row only while the hold is actually taken."),
+            .init(label: "Output switching", description: "Pick the output device and set its volume from the music face, with a note when the switch is something Isle can't do."),
+        ],
+        multiSelect: true
+    )
+
     static let multiSelect = ClaudeQuestion(
         question: "Which checks should run before the release build?",
         header: "Checks",
@@ -141,16 +179,37 @@ extension ClaudePanelFixture {
             .init(name: "both_approval", mode: .both, state: .needsApproval, action: "Bash", target: "npm",
                   request: approval("Bash", "npm run lint -- --fix")),
             .init(name: "both_question_4", mode: .both, state: .needsQuestion, request: question([fourOptions])),
-        ] + descriptionModes + liveExtras
+        ] + descriptionModes + worstCases + liveExtras
     }
 
-    /// Two and four options under each description setting, and the same in
-    /// Both mode where the corner toggle narrows the rows.
+    /// The most `AskUserQuestion` sends at once (four options a question,
+    /// four questions an ask): four long descriptions under Full, alone and
+    /// as the multi-select step of a four-question ask in Both mode, where
+    /// the corner toggle narrows the rows.
+    static var worstCases: [ClaudePanelFixture] {
+        [
+            .init(name: "question_4long_full", state: .needsQuestion,
+                  request: question([fourLong]), descriptions: .full),
+            .init(name: "both_question_4long_full", mode: .both, state: .needsQuestion,
+                  request: question([fourLong]), descriptions: .full),
+            .init(name: "both_question_worst_full", mode: .both, state: .needsQuestion,
+                  request: question([fourLong, fourLongMulti, threeOptions, thirdQuestion]),
+                  questionIndex: 1, picks: [["Leave it"], ["Approvals", "Keep-awake"], [], []],
+                  descriptions: .full),
+            .init(name: "question_4long_multi_oneLine", state: .needsQuestion,
+                  request: question([fourLongMulti]), picks: [["Question face"]], descriptions: .oneLine),
+        ]
+    }
+
+    /// Two, three and four options under each description setting, and the
+    /// same in Both mode where the corner toggle narrows the rows.
     static var descriptionModes: [ClaudePanelFixture] {
         OptionDescriptions.allCases.flatMap { mode in
             [
                 ClaudePanelFixture(name: "question_2_\(mode.rawValue)", state: .needsQuestion,
                                    request: question([twoOptions]), descriptions: mode),
+                ClaudePanelFixture(name: "question_3_\(mode.rawValue)", state: .needsQuestion,
+                                   request: question([threeOptions]), descriptions: mode),
                 ClaudePanelFixture(name: "question_4_\(mode.rawValue)", state: .needsQuestion,
                                    request: question([fourOptions]), descriptions: mode),
                 ClaudePanelFixture(name: "both_question_4_\(mode.rawValue)", mode: .both, state: .needsQuestion,

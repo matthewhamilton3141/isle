@@ -1950,14 +1950,18 @@ final class NotchViewModel: ObservableObject {
     /// ask sizes it, so stepping through them doesn't bob the panel. Depends
     /// on the description setting (row heights) and on the corner toggle
     /// (which narrows the rows, so a description may wrap sooner).
-    var questionContentHeight: CGFloat? {
+    ///
+    /// Each question is fitted to `room`, the most the capped panel holds, so
+    /// a question whose descriptions had to shorten asks for the height it's
+    /// drawn at rather than the cap with a gap above the buttons.
+    func questionContentHeight(room: CGFloat) -> CGFloat? {
         guard expandedTab == .claude, let request = pendingRequest, request.kind == .question else {
             return nil
         }
         let clearance = showsTabToggle ? ClaudePanelLayout.toggleClearance : 0
         return request.questions.map {
             ClaudePanelLayout.questionContentHeight(
-                $0, descriptions: optionDescriptions, trailingClearance: clearance
+                $0, descriptions: optionDescriptions, trailingClearance: clearance, room: room
             )
         }.max()
     }
