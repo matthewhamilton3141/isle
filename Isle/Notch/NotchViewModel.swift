@@ -93,6 +93,39 @@ final class NotchViewModel: ObservableObject {
     /// Claude expanded view. `nil` when disconnected.
     @Published private(set) var claudeUpdatedAt: Date?
 
+    // MARK: Answering from the notch (Milestone 7)
+
+    /// The request the selected session's hook says it is blocked on — the
+    /// status file's `request_id`. Nil once any other verb has written.
+    private var claudeRequestId: String?
+
+    /// Every request a hook is blocked on right now, as `requestWatcher` last
+    /// reported it.
+    private var claudeRequests: [ClaudeRequest] = []
+
+    /// The request the notch can answer right now: the one whose id the
+    /// selected session's status names *and* whose file still exists. Either
+    /// half going away retires the buttons — the file when the hook exits (an
+    /// answer, its deadline, Esc in the terminal), the id when any other verb
+    /// writes (the prompt was answered in the terminal and Claude moved on).
+    /// Isle offers nothing it can't back with a hook that is actually waiting.
+    @Published private(set) var pendingRequest: ClaudeRequest?
+
+    /// The request a click has already answered, from the moment the response
+    /// is written until the hook takes it and the request goes away. Disables
+    /// the buttons so a double-click can't write twice.
+    @Published private(set) var answeredRequestId: String?
+
+    /// Which of a multi-question `AskUserQuestion` is on screen, and what has
+    /// been picked for each so far. Held here rather than in the view so every
+    /// island shows the same step.
+    @Published private(set) var questionIndex = 0
+    @Published private(set) var questionPicks: [Set<String>] = []
+
+    /// Whether `run/answering` is currently down, so it's only touched on a
+    /// change.
+    private var answeringMarkerWritten = false
+
     /// The tab the user last selected in `.both` mode. Backed by AppSettings so
     /// it survives relaunch. Display may override this during an interrupt —
     /// see `expandedTab`.
@@ -175,6 +208,7 @@ final class NotchViewModel: ObservableObject {
     private let players: [MediaPlayerController] = [SpotifyController(), AppleMusicController()]
     private let audio = SystemAudioLevels()
     private let claudeWatcher = ClaudeStatusWatcher()
+    private let requestWatcher = ClaudeRequestWatcher()
     private let sessionRegistry = ClaudeSessionRegistry()
     private let keepAwake = ClaudeKeepAwake()
     private let power = PowerMonitor()
@@ -273,6 +307,9 @@ final class NotchViewModel: ObservableObject {
     /// Except when the transcript carries the interrupt marker, which decides
     /// it on its own — see below.
     private func reconciled(_ status: ClaudeStatus) -> ClaudeStatus {
+        if status.state.isAttention {
+            return reconciledPrompt(status)
+        }
         guard status.state == .working,
               let id = status.sessionId,
               let session = claudeSessions.first(where: { $0.sessionId == id }),
@@ -304,6 +341,38 @@ final class NotchViewModel: ObservableObject {
         corrected.state = .idle
         corrected.action = nil
         corrected.target = nil
+        return corrected
+    }
+
+    /// Retires a prompt that was dismissed with Esc.
+    ///
+    /// Esc on Claude Code's permission dialog (or its question UI) interrupts
+    /// the turn and fires no hook. It does cancel a hook blocked on the
+    /// prompt — that much was verified — but the status file it leaves behind
+    /// still says the prompt is up, and an approval has no revert timer, so
+    /// without this the panel would sit open asking for something nobody is
+    /// waiting on until the next prompt.
+    ///
+    /// Same evidence as the `working` case: the interrupt marker at the
+    /// transcript's tail, which is written for no other reason. And never
+    /// while a hook is still waiting under the status's request id — a live
+    /// request is a prompt that is genuinely still up.
+    private func reconciledPrompt(_ status: ClaudeStatus) -> ClaudeStatus {
+        if let requestId = status.requestId, claudeRequests.contains(where: { $0.id == requestId }) {
+            return status
+        }
+        guard let id = status.sessionId,
+              let session = claudeSessions.first(where: { $0.sessionId == id }),
+              let tail = transcriptTail(for: session),
+              tail.interrupted
+        else {
+            return status
+        }
+        var corrected = status
+        corrected.state = .idle
+        corrected.action = nil
+        corrected.target = nil
+        corrected.requestId = nil
         return corrected
     }
 
@@ -354,8 +423,12 @@ final class NotchViewModel: ObservableObject {
     /// so the island can sit on a state the timer ignores while a background
     /// session holds the Mac awake — and that session's interrupt or SIGKILL
     /// is only ever noticed by a tick.
+    ///
+    /// A prompt dismissed with Esc is the same kind of stuck record — no hook
+    /// fires — so the attention states ride along (see `reconciledPrompt`).
     private func updateReselectTimer(for state: ClaudeCodeState) {
-        guard keepAwake.isHeld || state == .working || state == .compacting || state == .waitingInput else {
+        guard keepAwake.isHeld || state == .working || state == .compacting || state == .waitingInput
+                || state.isAttention else {
             stopReselectTimer()
             return
         }
@@ -732,6 +805,19 @@ final class NotchViewModel: ObservableObject {
             self.updateKeepAwake()
         }
 
+        requestWatcher.onRequests = { [weak self] requests in
+            guard let self else { return }
+            self.claudeRequests = requests
+            self.refreshPendingRequest()
+            // A request that disappears with no status write behind it is a
+            // hook Claude Code cancelled — Esc on its prompt. Re-select so an
+            // interrupted prompt stops asking (see `reconciledPrompt`); the
+            // reselect timer catches it if the transcript marker lands after
+            // this.
+            self.sessionRegistry.refresh()
+            self.applyClaudeStatus(self.selectStatus(from: self.claudeStatuses))
+        }
+
         sessionRegistry.onSessions = { [weak self] sessions in
             guard let self else { return }
             self.claudeSessions = sessions
@@ -818,7 +904,10 @@ final class NotchViewModel: ObservableObject {
             self.settings.$showReminders.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             self.settings.$eventLeadMinutes.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             self.settings.$waveformSource.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            self.settings.$keepAwakeWhileWorking.dropFirst().map { _ in () }.eraseToAnyPublisher()
+            self.settings.$keepAwakeWhileWorking.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            // Puts down or picks up `run/answering`. Off releases every hook
+            // that is waiting on the notch, back to its terminal prompt.
+            self.settings.$answerFromNotch.dropFirst().map { _ in () }.eraseToAnyPublisher()
         )
         .receive(on: RunLoop.main)
         .sink { [weak self] in
@@ -884,6 +973,7 @@ final class NotchViewModel: ObservableObject {
         setAudioRunning(media && settings.waveformSource.capturesAudio)
         setClaudeRunning(settings.effectiveMode.showsClaude)
         updateKeepAwake()
+        updateAnsweringMarker()
         // Power is ambient — it runs in every mode, gated only by its own two
         // toggles. Suppressed while the display is off for the same reason the
         // media pipeline is: nothing it produces could be seen.
@@ -992,14 +1082,20 @@ final class NotchViewModel: ObservableObject {
         claudeRunning = running
         if running {
             claudeWatcher.start()
+            requestWatcher.start()
             sessionRegistry.start()
         } else {
             claudeWatcher.stop()
+            requestWatcher.stop()
             sessionRegistry.stop()
             // Not watching means nothing to back the claim with.
             keepAwake.release()
             claudeSessions = []
             claudeStatuses = []
+            claudeRequests = []
+            claudeRequestId = nil
+            pendingRequest = nil
+            answeredRequestId = nil
             lastAppliedStatus = nil
             doneRevertTask?.cancel()
             doneRevertTask = nil
@@ -1013,6 +1109,23 @@ final class NotchViewModel: ObservableObject {
             claudeErrorType = nil
             claudeResetAt = nil
             claudeUpdatedAt = nil
+        }
+        updateAnsweringMarker()
+    }
+
+    /// Puts `run/answering` down exactly while the Claude bridge is running
+    /// with "Answer from the notch" on, and picks it up otherwise — so a hook
+    /// only ever blocks when there is a notch on screen that can answer it.
+    /// Hiding the notch, a mode without Claude, and quitting all stop the
+    /// bridge, and with it every wait.
+    private func updateAnsweringMarker() {
+        let answering = claudeRunning && settings.answerFromNotch
+        guard answering != answeringMarkerWritten else { return }
+        answeringMarkerWritten = answering
+        if answering {
+            ClaudeAnsweringMarker.write()
+        } else {
+            ClaudeAnsweringMarker.remove()
         }
     }
 
@@ -1088,6 +1201,8 @@ final class NotchViewModel: ObservableObject {
         claudeToolActive = status.toolActive
         claudeResetAt = status.resetAt
         claudeUpdatedAt = status.state == .disconnected ? nil : Date()
+        claudeRequestId = status.requestId
+        refreshPendingRequest()
 
         // Rotate the "thinking" word only while actually working.
         if status.state == .working {
@@ -1119,7 +1234,8 @@ final class NotchViewModel: ObservableObject {
             // A question is answered in the terminal, and nothing clears it if
             // you decline or ignore it (Claude Code fires no hook for a declined
             // tool). So ease it back to idle after a spell rather than letting
-            // "Question" wedge the island until the next prompt.
+            // "Question" wedge the island until the next prompt. Held while
+            // a hook is still waiting on the notch — see `scheduleIdleRevert`.
             revertDelay = Self.questionRevertSeconds
         case .compacting:
             // Only PreCompact fires — a cancelled compaction sends no follow-up,
@@ -1128,14 +1244,30 @@ final class NotchViewModel: ObservableObject {
             revertDelay = Self.compactingRevertSeconds
         default: return
         }
+        scheduleIdleRevert(after: revertDelay)
+    }
+
+    /// Eases the island back to idle after `delay`, unless something else
+    /// arrives first (any new status cancels it).
+    ///
+    /// Never while a request is pending: a question the notch is offering is
+    /// not an abandoned one, however long it has been up. The revert then
+    /// stands down, and `refreshPendingRequest` re-arms it once the request
+    /// goes away.
+    private func scheduleIdleRevert(after delay: TimeInterval) {
+        doneRevertTask?.cancel()
         doneRevertTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(revertDelay))
-            guard !Task.isCancelled else { return }
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self else { return }
+            guard self.pendingRequest == nil else {
+                self.doneRevertTask = nil
+                return
+            }
             // Idle is quiescent — nothing left to re-select for, unless a
             // background session is holding the Mac awake.
-            self?.updateReselectTimer(for: .idle)
+            self.updateReselectTimer(for: .idle)
             withAnimation(.easeInOut(duration: 0.25)) {
-                self?.claudeState = .idle
+                self.claudeState = .idle
             }
         }
     }
@@ -1541,6 +1673,132 @@ final class NotchViewModel: ObservableObject {
         return true
     }
 
+    // MARK: - Answering from the notch
+
+    /// Re-derives `pendingRequest` from the status's request id and the
+    /// requests on disk. Called whenever either side moves.
+    private func refreshPendingRequest() {
+        let match = claudeRequests.first { request in
+            guard request.id == claudeRequestId else { return false }
+            // The id is session-scoped already; this just refuses to show one
+            // session's request under another's status.
+            if let session = request.sessionId, session != claudeSessionId { return false }
+            switch request.kind {
+            case .approval: return claudeState == .needsApproval
+            case .question: return claudeState == .needsQuestion
+            }
+        }
+        guard match != pendingRequest else { return }
+
+        if match?.id != pendingRequest?.id {
+            // A different request (or none): start its questions from the top
+            // and re-arm the buttons.
+            questionIndex = 0
+            questionPicks = Array(repeating: [], count: match?.questions.count ?? 0)
+            answeredRequestId = nil
+        }
+        withAnimation(.easeInOut(duration: 0.25)) {
+            pendingRequest = match
+        }
+
+        // The question went back to the terminal (or was answered) without a
+        // status write to restart the clock: let it ease off as any other
+        // question would.
+        if match == nil, claudeState == .needsQuestion, doneRevertTask == nil {
+            scheduleIdleRevert(after: Self.questionRevertSeconds)
+        }
+    }
+
+    /// A click has been sent for the pending request and is waiting for the
+    /// hook to take it.
+    var isAnsweringRequest: Bool {
+        guard let id = pendingRequest?.id else { return false }
+        return answeredRequestId == id
+    }
+
+    /// Approve or Deny the pending tool call.
+    func decide(allow: Bool) {
+        guard let request = pendingRequest, request.kind == .approval, !isAnsweringRequest else { return }
+        send(allow ? .allow : .deny, to: request)
+    }
+
+    /// The question currently on screen, when a question is pending.
+    var currentQuestion: ClaudeQuestion? {
+        guard let request = pendingRequest, request.kind == .question,
+              request.questions.indices.contains(questionIndex) else { return nil }
+        return request.questions[questionIndex]
+    }
+
+    /// A tap on an option. Single-select records it and moves on — to the
+    /// next question, or, on the last, sends every answer. Multi-select only
+    /// toggles; `advanceQuestion` commits it.
+    func pickOption(_ label: String) {
+        guard let question = currentQuestion, !isAnsweringRequest,
+              questionPicks.indices.contains(questionIndex) else { return }
+        if question.multiSelect {
+            if questionPicks[questionIndex].contains(label) {
+                questionPicks[questionIndex].remove(label)
+            } else {
+                questionPicks[questionIndex].insert(label)
+            }
+        } else {
+            questionPicks[questionIndex] = [label]
+            advanceQuestion()
+        }
+    }
+
+    /// Next / Done: moves past the current question once it has an answer,
+    /// and sends them all after the last.
+    func advanceQuestion() {
+        guard let request = pendingRequest, request.kind == .question, !isAnsweringRequest,
+              questionPicks.indices.contains(questionIndex),
+              !questionPicks[questionIndex].isEmpty
+        else { return }
+
+        if questionIndex + 1 < request.questions.count {
+            withAnimation(.easeInOut(duration: 0.2)) { questionIndex += 1 }
+            return
+        }
+
+        // Keyed by the question text, as Claude Code expects. A multi-select's
+        // labels go in the order the options were offered, comma-joined.
+        var answers: [String: String] = [:]
+        for (index, question) in request.questions.enumerated() {
+            let picked = questionPicks[index]
+            answers[question.question] = question.options
+                .map(\.label)
+                .filter { picked.contains($0) }
+                .joined(separator: ", ")
+        }
+        send(.answers(answers), to: request)
+    }
+
+    /// Back to the previous question of a multi-question ask.
+    func previousQuestion() {
+        guard currentQuestion != nil, questionIndex > 0, !isAnsweringRequest else { return }
+        withAnimation(.easeInOut(duration: 0.2)) { questionIndex -= 1 }
+    }
+
+    /// Answer in terminal: releases the hook with no decision, so Claude shows
+    /// its own prompt now rather than at the deadline. For a question that is
+    /// the difference between a blank terminal and the question UI.
+    func deferToTerminal() {
+        guard let request = pendingRequest, !isAnsweringRequest else { return }
+        send(.terminal, to: request)
+    }
+
+    private func send(_ reply: ClaudeRequestWatcher.Reply, to request: ClaudeRequest) {
+        answeredRequestId = request.id
+        guard requestWatcher.respond(reply, to: request) else {
+            // The hook let go first (its deadline, Esc in the terminal) or the
+            // write failed. Claim nothing: re-arm, and re-scan so buttons for a
+            // request that is already gone retire now.
+            answeredRequestId = nil
+            requestWatcher.refresh()
+            return
+        }
+    }
+
     /// Whether the agenda face is on at all — either switch is enough. The
     /// face shows even when access was declined, so the panel can say so;
     /// hiding it would leave the switch in Settings looking like it did nothing.
@@ -1610,6 +1868,18 @@ final class NotchViewModel: ObservableObject {
         }
         if tabs.contains(activeTab) { return activeTab }
         return tabs.first ?? .music
+    }
+
+    /// How many option rows the question face needs, while it is the face on
+    /// screen — the one case where the panel grows past `expandedSize` (see
+    /// `NotchMetrics.questionPanelHeight`). Nil for every other face, which
+    /// all keep the standard height. The tallest question of a multi-question
+    /// ask sizes it, so stepping through them doesn't bob the panel.
+    var questionOptionRows: Int? {
+        guard expandedTab == .claude, let request = pendingRequest, request.kind == .question else {
+            return nil
+        }
+        return request.questions.map(\.options.count).max()
     }
 
 
@@ -1863,9 +2133,12 @@ final class NotchViewModel: ObservableObject {
             // is wrong. Past the staleness threshold the word just dims
             // (`claudeTint`) — the island says nothing it can't back up.
             return (isThinking ? "Thinking" : workingWord) + "…"
-        // Approvals are surfaced as a question — the expanded panel still offers
-        // the Approve/Deny buttons for a live `ask`, but the word is unified.
-        case .needsApproval, .needsQuestion: return "Question"
+        // "Approve" only while a hook is actually waiting on the notch's
+        // Approve / Deny; every other prompt — a question, or an approval
+        // whose wait has ended and lives on only in the terminal — reads as
+        // the one word for "it needs you".
+        case .needsApproval, .needsQuestion:
+            return pendingRequest?.kind == .approval ? "Approve" : "Question"
         case .waitingInput: return "Waiting"
         case .done: return "Done"
         case .idle: return "Ready"

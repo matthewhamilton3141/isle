@@ -54,9 +54,16 @@ struct NotchRootView: View {
                 height: metrics.notchSize.height
             )
         }
-        var expanded = metrics.windowSize(for: state)
-        expanded.height += lyricLineHeight
-        return expanded
+        return CGSize(width: metrics.windowSize(for: state).width, height: expandedHeight + lyricLineHeight)
+    }
+
+    /// The open panel's height: the standard 146, except while a question is
+    /// live on the Claude face, when it grows to seat the options (capped —
+    /// see `NotchMetrics.questionPanelHeight`). Only ever read for an expanded
+    /// state.
+    private var expandedHeight: CGFloat {
+        guard let rows = viewModel.questionOptionRows else { return NotchMetrics.expandedSize.height }
+        return NotchMetrics.questionPanelHeight(optionRows: rows, bandHeight: notchBandHeight)
     }
 
     /// Room the music face takes below the player for its lyric line: only
@@ -120,6 +127,11 @@ struct NotchRootView: View {
         // above so a close that also drops the line can't pick up the
         // overshooting open spring.
         .animation(state.isExpanded ? .notchOpen : .notchClose, value: lyricLineHeight)
+        // A question arriving while the panel is already open (or leaving it)
+        // changes the height without changing the state; give that its own
+        // spring rather than a jump. The same curves, by direction.
+        .animation(expandedHeight > NotchMetrics.expandedSize.height ? .notchOpen : .notchClose,
+                   value: expandedHeight)
         .onChange(of: state) { previous, current in
             // Only on the open/close transition itself, not on changes between
             // the two expanded states — those aren't a gesture the user made

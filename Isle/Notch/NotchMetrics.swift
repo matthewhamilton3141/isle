@@ -58,6 +58,30 @@ struct NotchMetrics {
     /// all but a few points of the 146 panel.
     static let lyricLineHeight: CGFloat = 20
 
+    /// The tallest the panel ever gets: the question face, while an
+    /// `AskUserQuestion` is live in it. Every other face keeps
+    /// `expandedSize`. The window is sized to hold this from the start (see
+    /// `maximumFrame`), since it is never resized while drawing.
+    static let questionPanelMaxHeight: CGFloat = 230
+
+    /// The question face's fixed rows — header, question (two lines), and the
+    /// action row, with their gaps — and the height of one option row plus
+    /// its gap. Mirrors the layout in `ClaudeExpandedView.questionFace`.
+    static let questionChromeHeight: CGFloat = 89
+    static let questionOptionPitch: CGFloat = 25
+
+    /// Panel height for a question with `optionRows` options, below a camera
+    /// housing `bandHeight` tall. Never shorter than the standard panel, never
+    /// taller than the cap; at the cap the question gives up its second line
+    /// first.
+    static func questionPanelHeight(optionRows: Int, bandHeight: CGFloat) -> CGFloat {
+        // The expanded content's top inset (band + 2) and bottom inset (8)
+        // from NotchRootView, then the rows.
+        let rows = CGFloat(min(optionRows, 4))
+        let content = questionChromeHeight + rows * questionOptionPitch - 3
+        return min(questionPanelMaxHeight, max(expandedSize.height, bandHeight + 2 + 8 + content))
+    }
+
     /// Fraction of the collapsed width given to music when both music and a
     /// Claude Code activity are live. See the split-view rule in spec 3.1 —
     /// kept here as a constant so a future "cycle instead of split" setting
@@ -155,6 +179,14 @@ struct NotchMetrics {
         expanded.origin.y -= Self.lyricLineHeight
         expanded.size.height += Self.lyricLineHeight
         let collapsed = windowFrame(for: .collapsed)
-        return expanded.union(collapsed)
+        // Room for the question face to grow into. Transparent and
+        // click-through like the rest of the window outside the drawn notch.
+        let question = NSRect(
+            x: expanded.minX,
+            y: screen.frame.maxY - Self.questionPanelMaxHeight,
+            width: expanded.width,
+            height: Self.questionPanelMaxHeight
+        )
+        return expanded.union(collapsed).union(question)
     }
 }

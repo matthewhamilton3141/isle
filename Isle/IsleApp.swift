@@ -43,6 +43,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // that clears the island when a session closes). No-op if not installed.
         HookInstaller.refreshIfNeeded()
 
+        // A marker left by a crash names a dead pid, which already gates the
+        // hooks off — but clear it anyway before anything decides whether to
+        // write a fresh one, so the file on disk only ever names this process.
+        ClaudeAnsweringMarker.remove()
+
         notchController = NotchWindowController()
 
         if AppSettings.shared.hasChosenMode {
@@ -76,6 +81,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         notchController?.shutdown()
+        // Stopping the Claude bridge already removes it; this is the backstop,
+        // because a marker that outlives Isle is what would keep a hook waiting
+        // on a notch that can no longer answer. (Its pid would be dead within
+        // the moment anyway — this just doesn't rely on that.)
+        ClaudeAnsweringMarker.remove()
     }
 
     // MARK: - Menu bar

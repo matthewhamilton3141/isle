@@ -552,6 +552,16 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Answer questions and approvals from the notch", isOn: $settings.answerFromNotch)
+                Text(settings.answerFromNotch
+                     ? "Approve, deny or pick an answer right in the notch. Whatever the notch doesn’t answer falls back to the terminal prompt."
+                     : "Questions and approvals show in the notch, but you answer them in the terminal.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             accentPicker
 
             LabeledContent("Keep “done” checkmark for") {

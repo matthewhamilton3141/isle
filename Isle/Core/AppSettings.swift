@@ -33,6 +33,7 @@ final class AppSettings: ObservableObject {
     private static let dismissAlertPanelKey = "isle.dismissAlertPanel"
     private static let showWaitingKey = "isle.showWaiting"
     private static let keepAwakeWhileWorkingKey = "isle.keepAwakeWhileWorking"
+    private static let answerFromNotchKey = "isle.answerFromNotch"
     private static let claudeAccentKey = "isle.claudeAccent"
     private static let claudeAccentHexKey = "isle.claudeAccentHex"
     private static let showBatteryEventsKey = "isle.showBatteryEvents"
@@ -172,6 +173,16 @@ final class AppSettings: ObservableObject {
     /// for, never assumed. See `ClaudeKeepAwake`.
     @Published var keepAwakeWhileWorking: Bool {
         didSet { defaults.set(keepAwakeWhileWorking, forKey: Self.keepAwakeWhileWorkingKey) }
+    }
+
+    /// Whether a permission prompt or an `AskUserQuestion` can be answered from
+    /// the notch (Milestone 7). This is what puts Isle's `run/answering` marker
+    /// down; without it every hook returns at once and the terminal is the only
+    /// place to answer, exactly as before. On by default: nothing blocks until
+    /// Isle is running with it on, and the terminal prompt is always the
+    /// fallback.
+    @Published var answerFromNotch: Bool {
+        didSet { defaults.set(answerFromNotch, forKey: Self.answerFromNotchKey) }
     }
 
     /// The colour a Claude-only island draws itself in — it supplies the
@@ -396,6 +407,7 @@ final class AppSettings: ObservableObject {
         dismissAlertPanel = defaults.object(forKey: Self.dismissAlertPanelKey) as? Bool ?? true
         showWaitingStatus = defaults.object(forKey: Self.showWaitingKey) as? Bool ?? true
         keepAwakeWhileWorking = defaults.object(forKey: Self.keepAwakeWhileWorkingKey) as? Bool ?? false
+        answerFromNotch = defaults.object(forKey: Self.answerFromNotchKey) as? Bool ?? true
         claudeAccent = ClaudeAccent(rawValue: defaults.string(forKey: Self.claudeAccentKey) ?? "")
             ?? .system
         claudeAccentHex = defaults.string(forKey: Self.claudeAccentHexKey) ?? "#9438E0"
