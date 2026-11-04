@@ -54,7 +54,16 @@ struct NotchRootView: View {
                 height: metrics.notchSize.height
             )
         }
-        return metrics.windowSize(for: state)
+        return CGSize(width: metrics.windowSize(for: state).width, height: expandedHeight)
+    }
+
+    /// The open panel's height: the standard 146, except while a question is
+    /// live on the Claude face, when it grows to seat the options (capped —
+    /// see `NotchMetrics.questionPanelHeight`). Only ever read for an expanded
+    /// state.
+    private var expandedHeight: CGFloat {
+        guard let rows = viewModel.questionOptionRows else { return NotchMetrics.expandedSize.height }
+        return NotchMetrics.questionPanelHeight(optionRows: rows, bandHeight: notchBandHeight)
     }
 
     /// The collapsed sides are asymmetric (Claude's side is usually wider), so
@@ -105,6 +114,11 @@ struct NotchRootView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .animation(state.isExpanded ? .notchOpen : .notchClose, value: state)
+        // A question arriving while the panel is already open (or leaving it)
+        // changes the height without changing the state; give that its own
+        // spring rather than a jump. The same curves, by direction.
+        .animation(expandedHeight > NotchMetrics.expandedSize.height ? .notchOpen : .notchClose,
+                   value: expandedHeight)
         .onChange(of: state) { previous, current in
             // Only on the open/close transition itself, not on changes between
             // the two expanded states — those aren't a gesture the user made

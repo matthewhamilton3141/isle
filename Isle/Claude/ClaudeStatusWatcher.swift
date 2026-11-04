@@ -58,8 +58,9 @@ struct ClaudeStatus: Equatable {
     /// When the hook wrote this record. Breaks ties between sessions of equal
     /// urgency — see `NotchViewModel.selectStatus`.
     var updatedAt: Date?
-    /// For a `.needsApproval` raised by the `ask` (PermissionRequest) hook, the
-    /// id of the blocked request. Nil when the approval didn't come from `ask`.
+    /// While `ask` / `ask-question` is blocked waiting on the notch, the id of
+    /// its request (see ClaudeRequestWatcher). Any other write clears it, which
+    /// is half of how a request that resolved elsewhere retires its buttons.
     var requestId: String?
 
     static let disconnected = ClaudeStatus(state: .disconnected, project: nil, sessionId: nil)
