@@ -4,10 +4,11 @@
       { "hooks": [{ "type": "command", "command": "isle-cli set-state working" }] }
     ],
     "PreToolUse": [
-      { "hooks": [{ "type": "command", "command": "isle-cli set-state working" }] }
+      { "hooks": [{ "type": "command", "command": "isle-cli set-state working" }] },
+      { "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": "isle-cli ask-question", "timeout": 60 }] }
     ],
     "PermissionRequest": [
-      { "hooks": [{ "type": "command", "command": "isle-cli ask" }] }
+      { "hooks": [{ "type": "command", "command": "isle-cli ask", "timeout": 330 }] }
     ],
     "PostToolUse": [
       { "hooks": [{ "type": "command", "command": "isle-cli set-state working" }] }

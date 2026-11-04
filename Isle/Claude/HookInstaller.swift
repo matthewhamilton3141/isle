@@ -3,7 +3,7 @@
 //
 //  Installs the Claude Code side of the bridge so the user doesn't have to
 //  hand-edit ~/.claude/settings.json. It drops the `isle-cli` helper into
-//  ~/.isle/bin and merges the five hook events into the user's Claude Code
+//  ~/.isle/bin and merges its hook events into the user's Claude Code
 //  settings, referencing the helper by *absolute path* so it works regardless
 //  of the user's PATH (Claude runs hooks in its own shell environment).
 //
@@ -28,40 +28,59 @@ enum HookInstaller {
         }
     }
 
+    /// One hook entry Isle owns: the event, the `isle-cli` arguments for it,
+    /// and — for the two that block — a tool matcher and Claude Code's own
+    /// `timeout` (seconds) for the command.
+    private struct HookEntry {
+        let event: String
+        let args: String
+        var matcher: String? = nil
+        var timeout: Int? = nil
+    }
+
     /// Hook event → the `isle-cli` arguments for it. `Notification` uses the
     /// `notify` subcommand, which classifies the message into question /
-    /// waiting; the rest set a fixed state.
-    private static let hookEvents: [(event: String, args: String)] = [
-        ("UserPromptSubmit", "set-state working"),
-        ("PreToolUse", "set-state working"),
+    /// waiting; the rest set a fixed state. An event may carry more than one
+    /// entry (PreToolUse does).
+    private static let hookEvents: [HookEntry] = [
+        HookEntry(event: "UserPromptSubmit", args: "set-state working"),
+        HookEntry(event: "PreToolUse", args: "set-state working"),
+        // An AskUserQuestion, offered in the notch. Runs in parallel with the
+        // generic entry above (which stands aside for this tool) and blocks
+        // for up to 45s — the terminal shows only a spinner meanwhile, so the
+        // wait is kept short. 60 puts Claude Code's cancel well after the
+        // script's own deadline.
+        HookEntry(event: "PreToolUse", args: "ask-question", matcher: "AskUserQuestion", timeout: 60),
         // Fires only when a tool call actually needs a permission decision (not
-        // on auto-allowed tools). Isle has no Approve/Deny UI, so `ask` just
-        // surfaces a question in the notch and returns immediately — the decision
-        // is made in the terminal.
-        ("PermissionRequest", "ask"),
+        // on auto-allowed tools). With Isle answering, `ask` blocks for a notch
+        // Approve / Deny for up to 300s — which costs nothing, since Claude Code
+        // shows its own dialog *while* the hook runs. 330 so Claude Code's
+        // cancel lands after the script's deadline, never before it. Without
+        // Isle answering it returns at once, as it always did.
+        HookEntry(event: "PermissionRequest", args: "ask", timeout: 330),
         // PostToolUse clears an attention state the moment a tool completes —
         // above all, it's what closes the notch when an AskUserQuestion is
         // answered. The `AskUserQuestion → needs_question` conversion is gated
         // to PreToolUse so this can't re-raise it.
-        ("PostToolUse", "set-state working"),
-        ("Notification", "notify"),
-        ("Stop", "set-state done"),
+        HookEntry(event: "PostToolUse", args: "set-state working"),
+        HookEntry(event: "Notification", args: "notify"),
+        HookEntry(event: "Stop", args: "set-state done"),
         // Fires only when a turn ends on an API error (rate limit, overloaded,
         // server error, …); `Stop` never fires in that case. Surfaces the
         // failure in the notch instead of leaving it frozen on "working".
-        ("StopFailure", "fail"),
+        HookEntry(event: "StopFailure", args: "fail"),
         // Fires before Claude compacts the conversation context; shows the
         // compacting marker in the island. A finished compaction clears it via
         // the SessionStart (source=compact) event below; a *cancelled* one fires
         // nothing, so the view model also eases it back to idle on a timeout.
-        ("PreCompact", "set-state compacting"),
-        ("SessionStart", "set-state idle"),
+        HookEntry(event: "PreCompact", args: "set-state compacting"),
+        HookEntry(event: "SessionStart", args: "set-state idle"),
         // Fires when a session ends (exit, Ctrl-D, terminal closed). Clears the
         // island back to disconnected — otherwise a session closed mid-work
         // leaves the last state (e.g. "working") frozen on the notch, since no
         // Stop fires on an abrupt close. Guarded in `end` so one session ending
         // can't wipe another's live status (single shared status file).
-        ("SessionEnd", "end"),
+        HookEntry(event: "SessionEnd", args: "end"),
     ]
 
     /// Bumped whenever the embedded script or the hook set changes, so an
@@ -79,8 +98,11 @@ enum HookInstaller {
     /// session's event overwrite every other session's state. v8: write the
     /// status file by rename instead of in place — Isle watches the directory,
     /// and an in-place rewrite changes no directory entry, so every state
-    /// change after a session's first was invisible to the app.)
-    private static let currentVersion = 8
+    /// change after a session's first was invisible to the app. v9: answering
+    /// from the notch — `ask` blocks for a notch decision, a second PreToolUse
+    /// entry (matched to AskUserQuestion) runs `ask-question`, and both blocking
+    /// entries carry their own `timeout`.)
+    private static let currentVersion = 9
     private static let versionKey = "HookInstaller.installedVersion"
 
     private static var home: URL {
@@ -136,19 +158,27 @@ enum HookInstaller {
         var hooks = root["hooks"] as? [String: Any] ?? [:]
         let command = scriptURL.path
 
-        for (event, args) in hookEvents {
-            // Drop any prior Isle entry for this event first, so re-installing
-            // over an older config (e.g. the old fixed `set-state needs_approval`
-            // for Notification) replaces it rather than stacking a duplicate.
-            var groups = (hooks[event] as? [[String: Any]] ?? [])
+        // Drop every prior Isle entry for each event first, so re-installing
+        // over an older config (e.g. the old fixed `set-state needs_approval`
+        // for Notification) replaces it rather than stacking a duplicate. Once
+        // per event, up front: PreToolUse has two entries, and filtering again
+        // before the second would throw away the first.
+        for event in Set(hookEvents.map(\.event)) {
+            hooks[event] = (hooks[event] as? [[String: Any]] ?? [])
                 .filter { !refersToIsleCLI($0, command: command) }
-            groups.append([
-                "hooks": [[
-                    "type": "command",
-                    "command": "\(command) \(args)",
-                ]]
-            ])
-            hooks[event] = groups
+        }
+
+        for entry in hookEvents {
+            var hook: [String: Any] = [
+                "type": "command",
+                "command": "\(command) \(entry.args)",
+            ]
+            if let timeout = entry.timeout { hook["timeout"] = timeout }
+            var group: [String: Any] = ["hooks": [hook]]
+            if let matcher = entry.matcher { group["matcher"] = matcher }
+            var groups = hooks[entry.event] as? [[String: Any]] ?? []
+            groups.append(group)
+            hooks[entry.event] = groups
         }
 
         root["hooks"] = hooks
@@ -240,7 +270,8 @@ enum HookInstaller {
     # Usage:
     #   isle-cli set-state <disconnected|idle|working|done>   # state comes from the hook
     #   isle-cli notify                                        # classify a Notification
-    #   isle-cli ask                                           # permission → surface a question
+    #   isle-cli ask                                           # permission → block for the notch
+    #   isle-cli ask-question                                  # AskUserQuestion → block for the notch
     #   isle-cli end                                           # session ended — clear the island
     #
     # Kept in sync with Isle's embedded HookInstaller.scriptBody.
@@ -255,8 +286,26 @@ enum HookInstaller {
     # and picks which session owns the island.
     SESSION_DIR="$STATUS_DIR/sessions"
 
-    # Writes the status file Isle watches. $1 = state, $2 = request id (always
-    # empty now — the notch no longer resolves decisions). Computes its own
+    # The answering handshake (`ask` / `ask-question`). A blocked hook leaves its
+    # raw stdin at requests/<id>.json for as long as it waits; Isle answers by
+    # renaming the complete stdout payload into place at requests/<id>.response.json.
+    # Isle owns run/answering, which holds its pid and exists only while it is
+    # running with "Answer questions and approvals from the notch" on — no marker,
+    # or a dead pid, and nothing blocks at all.
+    REQUEST_DIR="$STATUS_DIR/requests"
+    ANSWERING_MARKER="$STATUS_DIR/run/answering"
+
+    # How long each blocking verb waits for the notch before falling through to
+    # Claude's own prompt. An approval can wait long: Claude Code shows its
+    # terminal dialog *while* the hook runs, so the block costs nothing. A question
+    # can't: the terminal shows only a spinner until the hook returns. Both sit
+    # inside the hook's own `timeout` in settings.json (330 / 60), so the script
+    # always gives up before Claude Code has to kill it.
+    ASK_APPROVAL_SECONDS=300
+    ASK_QUESTION_SECONDS=45
+
+    # Writes the status file Isle watches. $1 = state, $2 = request id (empty for
+    # every write except a blocked `ask` / `ask-question`). Computes its own
     # timestamp so each write carries a fresh "… ago".
     write_status() {
       local ts sf tmp
@@ -284,10 +333,25 @@ enum HookInstaller {
       "tool_active": $TOOL_ACTIVE,
       "reset_at": "$RESET_AT",
       "request_id": "$2",
+      "request_kind": "${3:-}",
       "updated_at": "$ts"
     }
     EOF
       mv -f "$tmp" "$sf"
+    }
+
+    # True when Isle is running and will answer from the notch: the marker exists
+    # and the pid inside it is alive. A crash leaves the marker behind, and a dead
+    # pid gates *off* — never on. Builtins only (`read`, `kill`), since `ask`
+    # re-checks this on every tick of its wait.
+    isle_answering() {
+      local pid=""
+      [ -f "$ANSWERING_MARKER" ] || return 1
+      read -r pid < "$ANSWERING_MARKER" 2>/dev/null || true
+      case "$pid" in
+        ''|*[!0-9]*) return 1 ;;
+      esac
+      kill -0 "$pid" 2>/dev/null
     }
 
     CMD="${1:-}"
@@ -305,14 +369,14 @@ enum HookInstaller {
       fail)
         STATE="error"   # the turn ended on an API error (StopFailure hook)
         ;;
-      ask)
+      ask|ask-question)
         STATE=""   # handled entirely in the `ask` block below
         ;;
       end)
         STATE="disconnected"   # SessionEnd — clear the island (guarded below)
         ;;
       *)
-        echo "Usage: isle-cli <set-state <state> | notify | fail | ask | end>" >&2
+        echo "Usage: isle-cli <set-state <state> | notify | fail | ask | ask-question | end>" >&2
         exit 1
         ;;
     esac
@@ -388,13 +452,102 @@ enum HookInstaller {
         | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
     fi
 
-    # `ask` (PermissionRequest hook): Claude needs the user's attention for this
-    # tool. Isle has no Approve/Deny UI — every prompt is surfaced as a question
-    # and answered in the terminal — so never block: write the question state and
-    # emit nothing, so Claude shows its own prompt right away.
-    if [ "$CMD" = "ask" ]; then
-      write_status "needs_question" ""
-      exit 0
+    # `ask` (PermissionRequest hook) and `ask-question` (PreToolUse, matched to
+    # AskUserQuestion): Claude is waiting on the user for this exact call. When
+    # Isle is there to answer, leave the request where it can see it and block
+    # until the notch decides, the prompt is answered somewhere else, or the
+    # deadline passes. Every way out but an answer from the notch prints nothing,
+    # and nothing is exactly what lets Claude fall back to its own prompt — so a
+    # timeout, a quit, a crash or a missing marker can only ever mean "ask in the
+    # terminal". Never allow on anyone's behalf.
+    if [ "$CMD" = "ask" ] || [ "$CMD" = "ask-question" ]; then
+      if [ "$CMD" = "ask" ]; then
+        KIND="approval"; WAIT_STATE="needs_approval"; WAIT_SECONDS=$ASK_APPROVAL_SECONDS
+      else
+        KIND="question"; WAIT_STATE="needs_question"; WAIT_SECONDS=$ASK_QUESTION_SECONDS
+      fi
+
+      # Nobody to answer (Isle isn't running, or the toggle is off), or nothing to
+      # hand over: behave exactly as before the handshake existed — surface a
+      # question, print nothing, return at once.
+      #
+      # Also a PermissionRequest *for AskUserQuestion*. Claude Code raises one the
+      # moment `ask-question` returns without an answer (its deadline, or "Answer
+      # in terminal") — that is how the terminal's question UI comes up. It is the
+      # same question, already handed to the terminal, and it is not a tool
+      # approval: Approve / Deny would be the wrong buttons for it.
+      if [ -z "${STDIN_JSON:-}" ] || ! isle_answering \
+         || { [ "$CMD" = "ask" ] && [ "$ACTION" = "AskUserQuestion" ]; }; then
+        write_status "needs_question" ""
+        exit 0
+      fi
+
+      # Session-scoped, and unique per hook process. The trailing pid is the
+      # hook's own, which Isle uses to tell a waiting hook from a SIGKILLed one.
+      SAFE_SESSION="$(printf '%s' "${SESSION_ID:-}" | tr -cd 'A-Za-z0-9_-')"
+      REQUEST_ID="${SAFE_SESSION:-unknown}-$(date +%s)-$$"
+      REQUEST_FILE="$REQUEST_DIR/$REQUEST_ID.json"
+      RESPONSE_FILE="$REQUEST_DIR/$REQUEST_ID.response.json"
+      STATUS_FILE="$SESSION_DIR/${SESSION_ID:-unknown}.json"
+
+      # The request lives exactly as long as this process. Whatever ends the wait
+      # — an answer, the deadline, Claude Code's SIGTERM at the hook's timeout — it
+      # goes, and with it Isle's buttons.
+      trap 'rm -f "$REQUEST_FILE" "$RESPONSE_FILE" "$REQUEST_FILE.tmp.$$"' EXIT
+      trap 'exit 0' TERM INT HUP
+
+      # The raw stdin, verbatim: Isle reads the full tool_input (the exact command,
+      # the questions) from it, not the status file's trimmed target. By rename,
+      # like every other write here — and the temp name doesn't end in .json.
+      mkdir -p "$REQUEST_DIR"
+      printf '%s' "$STDIN_JSON" > "$REQUEST_FILE.tmp.$$"
+      mv -f "$REQUEST_FILE.tmp.$$" "$REQUEST_FILE"
+      write_status "$WAIT_STATE" "$REQUEST_ID" "$KIND"
+
+      SECONDS=0
+      while :; do
+        if [ -f "$RESPONSE_FILE" ]; then
+          RESPONSE="$(cat "$RESPONSE_FILE" 2>/dev/null || true)"
+          case "$RESPONSE" in
+            ''|'{}')
+              # "Answer in terminal": no decision. Claude shows its own prompt the
+              # moment this exits; drop the id so nothing offers buttons for it.
+              write_status "$WAIT_STATE" ""
+              ;;
+            *)
+              # Decided in the notch. Claude moves on either way — the tool runs,
+              # or the model hears the denial and tries something else — so the
+              # island stops asking now rather than at the next hook.
+              case "$RESPONSE" in
+                *'"behavior":"allow"'*|*'"permissionDecision":"allow"'*) TOOL_ACTIVE=true ;;
+                *) TOOL_ACTIVE=false ;;
+              esac
+              write_status "working" ""
+              printf '%s\n' "$RESPONSE"
+              ;;
+          esac
+          exit 0
+        fi
+
+        # Another verb has written this session's status since — the tool ran
+        # (PostToolUse), the turn ended, a new prompt arrived. That's how an answer
+        # given in the terminal shows up: Claude Code doesn't stop a hook whose
+        # prompt was answered elsewhere, and ignores what it prints afterwards. So
+        # step aside without a word or a write; the status is already newer.
+        if ! grep -qF "\"request_id\": \"$REQUEST_ID\"" "$STATUS_FILE" 2>/dev/null; then
+          exit 0
+        fi
+
+        # Out of time, or Isle went away (quit, crash, toggle off): hand the prompt
+        # back to Claude. The status keeps its state — the prompt is still up — but
+        # loses the id, so no button outlives the wait.
+        if [ "$SECONDS" -ge "$WAIT_SECONDS" ] || ! isle_answering; then
+          write_status "$WAIT_STATE" ""
+          exit 0
+        fi
+
+        sleep 0.2
+      done
     fi
 
     # Classify a Notification from its message: an idle "waiting for your input"
@@ -404,15 +557,34 @@ enum HookInstaller {
       # more specific signal, and the notification that follows it is just "waiting
       # on you" for the same prompt — don't let it downgrade.
       # The question clears on its own when Claude moves on (next tool use / Stop).
-      if [ -f "$SESSION_DIR/${SESSION_ID:-unknown}.json" ] \
-         && grep -q '"state": "needs_question"' "$SESSION_DIR/${SESSION_ID:-unknown}.json" 2>/dev/null; then
-        exit 0
+      # Likewise an approval that `ask` is blocked on: the permission_prompt
+      # notification lands a few seconds into the wait, and rewriting the status
+      # would drop the request id the hook is waiting under (which it reads as
+      # "answered elsewhere" and gives up).
+      sf="$SESSION_DIR/${SESSION_ID:-unknown}.json"
+      if [ -f "$sf" ]; then
+        if grep -q '"state": "needs_question"' "$sf" 2>/dev/null; then
+          exit 0
+        fi
+        if grep -q '"state": "needs_approval"' "$sf" 2>/dev/null \
+           && grep -qE '"request_id": "[^"]+"' "$sf" 2>/dev/null; then
+          exit 0
+        fi
       fi
       lower="$(printf '%s' "$MESSAGE" | tr '[:upper:]' '[:lower:]')"
       case "$lower" in
         *waiting*) STATE="waiting_input" ;;
         *)         STATE="needs_question" ;;
       esac
+    fi
+
+    # A PreToolUse for AskUserQuestion belongs to `ask-question`, which Claude Code
+    # runs in parallel with this generic entry (it has its own matcher) and which
+    # owns the request id. Writing here as well would race it, and a write landing
+    # after its own would drop the id and end the wait it's in. So stand aside.
+    if [ "$CMD" = "set-state" ] && [ "$ACTION" = "AskUserQuestion" ] \
+       && [ "$HOOK_EVENT" = "PreToolUse" ]; then
+      exit 0
     fi
 
     # A tool that asks the user a question surfaces as a question, not plain work —
