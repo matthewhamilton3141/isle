@@ -574,6 +574,14 @@ struct SettingsView: View {
                      enabled: $settings.claudeDoneSoundEnabled, sound: $settings.claudeDoneSound)
 
             VStack(alignment: .leading, spacing: 4) {
+                Toggle("Keep Mac awake while Claude works", isOn: $settings.keepAwakeWhileWorking)
+                Text("Prevents idle sleep while any session is working. The display can still sleep.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
                 Toggle("Show “Waiting” in the island", isOn: $settings.showWaitingStatus)
                 Text(settings.showWaitingStatus
                      ? "The island shows when Claude has handed the turn back to you."

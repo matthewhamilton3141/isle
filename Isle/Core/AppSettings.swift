@@ -31,6 +31,7 @@ final class AppSettings: ObservableObject {
     private static let expandOnAlertKey = "isle.expandOnAlert"
     private static let dismissAlertPanelKey = "isle.dismissAlertPanel"
     private static let showWaitingKey = "isle.showWaiting"
+    private static let keepAwakeWhileWorkingKey = "isle.keepAwakeWhileWorking"
     private static let claudeAccentKey = "isle.claudeAccent"
     private static let claudeAccentHexKey = "isle.claudeAccentHex"
     private static let showBatteryEventsKey = "isle.showBatteryEvents"
@@ -154,6 +155,14 @@ final class AppSettings: ObservableObject {
     /// state (working, questions, errors) is unaffected.
     @Published var showWaitingStatus: Bool {
         didSet { defaults.set(showWaitingStatus, forKey: Self.showWaitingKey) }
+    }
+
+    /// Whether Isle holds a power assertion that stops the Mac idling to sleep
+    /// while any Claude Code session is working. Off by default: keeping a
+    /// machine awake is a change to the user's power behaviour, so it's asked
+    /// for, never assumed. See `ClaudeKeepAwake`.
+    @Published var keepAwakeWhileWorking: Bool {
+        didSet { defaults.set(keepAwakeWhileWorking, forKey: Self.keepAwakeWhileWorkingKey) }
     }
 
     /// The colour a Claude-only island draws itself in — it supplies the
@@ -376,6 +385,7 @@ final class AppSettings: ObservableObject {
         expandOnAlert = defaults.object(forKey: Self.expandOnAlertKey) as? Bool ?? true
         dismissAlertPanel = defaults.object(forKey: Self.dismissAlertPanelKey) as? Bool ?? true
         showWaitingStatus = defaults.object(forKey: Self.showWaitingKey) as? Bool ?? true
+        keepAwakeWhileWorking = defaults.object(forKey: Self.keepAwakeWhileWorkingKey) as? Bool ?? false
         claudeAccent = ClaudeAccent(rawValue: defaults.string(forKey: Self.claudeAccentKey) ?? "")
             ?? .system
         claudeAccentHex = defaults.string(forKey: Self.claudeAccentHexKey) ?? "#9438E0"
