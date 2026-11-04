@@ -636,12 +636,16 @@ final class NotchViewModel: ObservableObject {
             // panel is open and its scrubber and toggles are actually drawn
             // from it. Otherwise the adapter pushes every change a collapsed
             // island shows, and the poll can relax — see `tick` in either
-            // controller. A player the island isn't routed to always relaxes:
-            // it only needs to be noticed if it starts playing, and three
-            // seconds is soon enough for that.
+            // controller. A player the island isn't routed to always relaxes —
+            // including when nothing is routed at all, so an open-but-stopped
+            // player isn't sent an Apple event every second for nothing. It
+            // only needs to be noticed if it starts playing: the adapter hears
+            // that in ~100ms when the player takes the session, and three
+            // seconds is soon enough when a browser holds it. Hovering an
+            // empty island still asks every player at once.
             player.wantsFullRate = { [weak self] in
                 guard let self else { return false }
-                guard self.routedPlayerID == nil || self.routedPlayerID == id else { return false }
+                guard self.routedPlayerID == id else { return false }
                 return !self.adapterModel.hasTrack
                     || self.hoveredIslands > 0
                     || self.autoExpandsForActivity
