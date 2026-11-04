@@ -144,6 +144,17 @@ final class NotchViewModel: ObservableObject {
     /// the thumb doesn't fight the playback clock under the finger.
     @Published var scrubTarget: Double?
 
+    /// The current track's synced lyrics: set when lyrics are switched on and
+    /// LRCLIB had a timed match for this very recording, nil otherwise.
+    /// Changes at most once a track — the line itself turns over on
+    /// `lyricsClock`, which only the lyric line observes.
+    @Published private(set) var lyrics: SyncedLyrics?
+
+    /// Keeps the lyric line current against the playback clock below. Handed
+    /// out whole, like `audioLevelSource`, so a line change redraws the line
+    /// and nothing else.
+    let lyricsClock = LyricsClock()
+
     /// What's left of today — events still to come or in progress, and
     /// reminders due by the end of the day — as `AgendaMonitor` last reported
     /// it. Empty when both agenda switches are off. Drawn by the agenda face
@@ -162,6 +173,7 @@ final class NotchViewModel: ObservableObject {
     private let power = PowerMonitor()
     private let bluetoothBattery = BluetoothBatteryMonitor()
     private let agenda = AgendaMonitor()
+    private let lyricsLibrary = LyricsLibrary()
     private var cancellables = Set<AnyCancellable>()
 
     /// The Pomodoro clock. Always constructed (it's cheap and idle until
@@ -759,6 +771,29 @@ final class NotchViewModel: ObservableObject {
             self.applyMode()
         }
         .store(in: &cancellables)
+
+        // The lyric line reads the same anchored clock the scrubber does.
+        lyricsClock.position = { [weak self] in
+            guard let self else { return (0, 0) }
+            return (self.projectedElapsed(at: Date()), self.anchorRate)
+        }
+        // The panel grows for the lyric only once a line is in effect (see
+        // `showsLyricLine`); that moment comes from the clock, not from a
+        // publish here, so pass it on.
+        lyricsClock.onStartedChange = { [weak self] in
+            self?.objectWillChange.send()
+        }
+
+        // On: look the current track up now rather than at the next track
+        // change. Off: drop what's held and cancel what's in flight.
+        self.settings.$syncedLyrics
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.syncLyrics(to: self.media)
+            }
+            .store(in: &cancellables)
     }
 
     func start() {
@@ -1274,6 +1309,10 @@ final class NotchViewModel: ObservableObject {
         // it has them now. Publish only when something a view draws has
         // changed — otherwise every 1 Hz poll re-evaluated the whole notch
         // (shape, glyph, equalizer bridge, palette) to redraw nothing.
+        //
+        // The lyrics follow either way — the anchor may have moved even when
+        // nothing drawn did — and last, so they read the model just applied.
+        defer { syncLyrics(to: model) }
         guard !model.hasSameDisplay(as: media) else { return }
         media = model
     }
@@ -1284,6 +1323,79 @@ final class NotchViewModel: ObservableObject {
         let raw = anchorElapsed + date.timeIntervalSince(anchorDate) * anchorRate
         guard media.duration > 0 else { return max(0, raw) }
         return min(max(0, raw), media.duration)
+    }
+
+    // MARK: - Lyrics
+
+    // Synced lyrics, from LRCLIB, for the music face. Off unless the user
+    // turned them on; on, a track is looked up once — when it is first seen
+    // playing with a known length — and the answer, lyrics or none, holds
+    // until the track changes. No polling, no retry beyond the library's own
+    // single one for a busy server: a track that found nothing shows nothing.
+
+    /// The track the lyrics state below belongs to, as title/artist/album.
+    private var lyricsTrack: String?
+    /// Whether that track has been asked about yet.
+    private var lyricsRequested = false
+    private var lyricsTask: Task<Void, Never>?
+
+    /// Whether the music face shows its lyric line, and so whether the panel
+    /// grows for it. Only from the first line on: a track's intro, or the
+    /// playhead dragged back before the first line, leaves the panel at its
+    /// usual height rather than holding an empty band open. A gap later in
+    /// the song keeps the band (and shows nothing in it), so the panel
+    /// doesn't bob at every instrumental break.
+    var showsLyricLine: Bool {
+        guard settings.syncedLyrics, media.hasTrack, let lyrics else { return false }
+        return lyrics.index(at: projectedElapsed(at: Date()) + LyricsClock.lead) != nil
+    }
+
+    /// Brings the lyrics in line with `model`: drops them on a track change,
+    /// starts the one lookup a track gets, and re-times the line against the
+    /// anchor, which every caller has just moved.
+    private func syncLyrics(to model: MediaPlaybackModel) {
+        defer { lyricsClock.resync() }
+
+        guard settings.syncedLyrics, model.hasTrack else {
+            clearLyrics()
+            return
+        }
+
+        let track = [model.title, model.artist, model.album].joined(separator: "\n")
+        if track != lyricsTrack {
+            clearLyrics()
+            lyricsTrack = track
+        }
+
+        // Nothing is sent for a track that's only sitting paused in a player,
+        // and without a length there's no telling one version from another.
+        guard !lyricsRequested, model.isPlaying, model.duration > 0 else { return }
+        lyricsRequested = true
+
+        let query = LyricsQuery(
+            title: model.title,
+            artist: model.artist,
+            album: model.album,
+            duration: model.duration
+        )
+        let library = lyricsLibrary
+        lyricsTask = Task { [weak self] in
+            let found = await library.lyrics(for: query)
+            // Dropped if the track moved on, or lyrics were switched off,
+            // while this was in flight.
+            guard let self, !Task.isCancelled, self.lyricsTrack == track else { return }
+            self.lyrics = found
+            self.lyricsClock.lyrics = found
+        }
+    }
+
+    private func clearLyrics() {
+        lyricsTask?.cancel()
+        lyricsTask = nil
+        lyricsTrack = nil
+        lyricsRequested = false
+        if lyrics != nil { lyrics = nil }
+        lyricsClock.lyrics = nil
     }
 
     // MARK: - Derived state
@@ -1871,6 +1983,9 @@ final class NotchViewModel: ObservableObject {
         media.playbackRate = media.isPlaying ? 1 : 0
         anchorRate = media.playbackRate
         lastApplied = media
+        // Stops or restarts the lyric timer with the bar — and, for a track
+        // that had only sat paused until now, makes its one lookup.
+        syncLyrics(to: media)
 
         // Hold this state until a source confirms it, so the next poll can't
         // flicker it back before the player has processed the command.
@@ -1927,6 +2042,8 @@ final class NotchViewModel: ObservableObject {
         anchorDate = Date()
         lastApplied = media
         self.scrubTarget = nil
+        // The line jumps with the thumb rather than at the next report.
+        lyricsClock.resync()
 
         // Hold the seek target so a stale poll can't snap the bar back to the
         // pre-seek position before Spotify reports the new one.

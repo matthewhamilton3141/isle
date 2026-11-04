@@ -514,6 +514,14 @@ struct SettingsView: View {
 
             Toggle("Show scrubber", isOn: $settings.showScrubber)
             Toggle("Show shuffle & repeat", isOn: $settings.showShuffleRepeat)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Show synced lyrics", isOn: $settings.syncedLyrics)
+                Text("The line being sung appears under the player. To find it, each track's title, artist, album and length are sent to lrclib.net; a track without timed lyrics shows nothing.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

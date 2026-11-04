@@ -126,6 +126,24 @@ struct ExpandedNotchView: View {
         // Centres the album+text pair between the panel edges.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .foregroundStyle(.white)
+        // The synced lyric line, in the strip NotchRootView keeps clear below
+        // the content while one is in effect (see `lyricLineHeight` there).
+        // Hung from this face's bottom edge rather than stacked into it, so
+        // the album and the text column don't move a point for it. As wide
+        // as the album+text pair (114 + 14 + 340) and centred under it.
+        .overlay(alignment: .bottom) {
+            if viewModel.showsLyricLine {
+                LyricLineView(clock: viewModel.lyricsClock)
+                    .frame(width: 468, height: NotchMetrics.lyricLineHeight)
+                    .alignmentGuide(.bottom) { $0[.top] }
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        // The clock only runs while this face is on screen — no timer behind
+        // a collapsed island or another face.
+        .onAppear { viewModel.lyricsClock.attach() }
+        .onDisappear { viewModel.lyricsClock.detach() }
     }
 
     // MARK: - Artwork
@@ -344,5 +362,44 @@ struct ExpandedNotchView: View {
                 .animation(.easeInOut(duration: 0.15), value: active)
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Lyric line
+
+/// The line being sung. Observes the lyrics clock alone, so a line turning
+/// over redraws this text and nothing else in the notch.
+///
+/// One line, never wrapped and never scrolled: it's on screen for a few
+/// seconds, which is no time for a marquee to get anywhere. A long one
+/// tightens a little, then truncates. A gap in the song shows nothing.
+private struct LyricLineView: View {
+    @ObservedObject var clock: LyricsClock
+
+    var body: some View {
+        ZStack {
+            if let line = clock.line, !line.text.isEmpty {
+                // Between the title and the artist line in weight, a step
+                // down from white like the artist, so it reads as part of the
+                // player rather than a headline over it.
+                Text(line.text)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                    .truncationMode(.tail)
+                    // Keyed on the line, not the words, so a repeated line
+                    // still visibly turns over.
+                    .id(line.index)
+                    // Each line rises into place as the last one lifts away.
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .offset(y: 5)),
+                        removal: .opacity.combined(with: .offset(y: -5))
+                    ))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+        .animation(.easeInOut(duration: 0.25), value: clock.line)
     }
 }

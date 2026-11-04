@@ -24,6 +24,7 @@ final class AppSettings: ObservableObject {
     private static let tabKey = "isle.lastTab"
     private static let showScrubberKey = "isle.showScrubber"
     private static let showShuffleRepeatKey = "isle.showShuffleRepeat"
+    private static let syncedLyricsKey = "isle.syncedLyrics"
     private static let waveformSourceKey = "isle.waveformSource"
     private static let doneToastKey = "isle.doneToastSeconds"
     private static let hapticsKey = "isle.haptics"
@@ -107,6 +108,14 @@ final class AppSettings: ObservableObject {
     /// expanded panel. Off leaves just prev / play-pause / next.
     @Published var showShuffleRepeat: Bool {
         didSet { defaults.set(showShuffleRepeat, forKey: Self.showShuffleRepeatKey) }
+    }
+
+    /// Show the line being sung under the player in the expanded panel, timed
+    /// to the playhead. Off by default: finding the lyrics means sending the
+    /// track's title, artist, album and length to LRCLIB, and Isle sends
+    /// nothing anywhere unless asked to. Off, no request is ever made.
+    @Published var syncedLyrics: Bool {
+        didSet { defaults.set(syncedLyrics, forKey: Self.syncedLyricsKey) }
     }
 
     /// Where the waveform gets its motion — and, with it, whether the audio
@@ -370,6 +379,7 @@ final class AppSettings: ObservableObject {
             ?? .builtIn
         showScrubber = defaults.object(forKey: Self.showScrubberKey) as? Bool ?? true
         showShuffleRepeat = defaults.object(forKey: Self.showShuffleRepeatKey) as? Bool ?? true
+        syncedLyrics = defaults.object(forKey: Self.syncedLyricsKey) as? Bool ?? false
         waveformSource = WaveformSource(rawValue: defaults.string(forKey: Self.waveformSourceKey) ?? "")
             ?? .live
         doneToastSeconds = defaults.object(forKey: Self.doneToastKey) as? Double ?? 4
