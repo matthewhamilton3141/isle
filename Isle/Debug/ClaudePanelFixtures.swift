@@ -29,6 +29,9 @@ struct ClaudePanelFixture: Identifiable {
     var request: ClaudeRequest? = nil
     var questionIndex = 0
     var picks: [Set<String>] = []
+    var descriptions: OptionDescriptions = .default
+    var keepAwake = false
+    var others = ClaudeOtherSessions()
 
     var id: String { name }
 
@@ -36,6 +39,7 @@ struct ClaudePanelFixture: Identifiable {
     @MainActor
     func configure(_ settings: AppSettings) {
         settings.mode = mode
+        settings.optionDescriptions = descriptions
     }
 }
 
@@ -137,6 +141,45 @@ extension ClaudePanelFixture {
             .init(name: "both_approval", mode: .both, state: .needsApproval, action: "Bash", target: "npm",
                   request: approval("Bash", "npm run lint -- --fix")),
             .init(name: "both_question_4", mode: .both, state: .needsQuestion, request: question([fourOptions])),
+        ] + descriptionModes + liveExtras
+    }
+
+    /// Two and four options under each description setting, and the same in
+    /// Both mode where the corner toggle narrows the rows.
+    static var descriptionModes: [ClaudePanelFixture] {
+        OptionDescriptions.allCases.flatMap { mode in
+            [
+                ClaudePanelFixture(name: "question_2_\(mode.rawValue)", state: .needsQuestion,
+                                   request: question([twoOptions]), descriptions: mode),
+                ClaudePanelFixture(name: "question_4_\(mode.rawValue)", state: .needsQuestion,
+                                   request: question([fourOptions]), descriptions: mode),
+                ClaudePanelFixture(name: "both_question_4_\(mode.rawValue)", mode: .both, state: .needsQuestion,
+                                   request: question([fourOptions]), descriptions: mode),
+                ClaudePanelFixture(name: "question_multi_\(mode.rawValue)", state: .needsQuestion,
+                                   request: question([twoOptions, multiSelect, thirdQuestion]),
+                                   questionIndex: 1, picks: [["Run now"], ["Unit tests"], []],
+                                   descriptions: mode),
+            ]
+        }
+    }
+
+    /// The marks that ride along with any state: the keep-awake hold and
+    /// other live sessions.
+    static var liveExtras: [ClaudePanelFixture] {
+        [
+            .init(name: "keepawake_working", state: .working, action: "Bash", target: "swift",
+                  keepAwake: true),
+            .init(name: "keepawake_others_working", state: .working, action: "Read", target: "ROADMAP.md",
+                  keepAwake: true, others: .init(working: 2)),
+            .init(name: "others_approval", state: .needsApproval, action: "Bash", target: "git",
+                  request: approval("Bash", "git push --force-with-lease origin feature/claude-panel-rework"),
+                  keepAwake: true, others: .init(working: 1, needYou: 1)),
+            .init(name: "others_question", state: .needsQuestion, request: question([fourOptions]),
+                  keepAwake: true, others: .init(working: 1)),
+            .init(name: "both_keepawake_failed", mode: .both, state: .failed, errorType: "overloaded",
+                  keepAwake: true, others: .init(working: 1)),
+            .init(name: "long_project", state: .done, project: "an-extremely-long-project-directory-name",
+                  keepAwake: true, others: .init(working: 3)),
         ]
     }
 }
