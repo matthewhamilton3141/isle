@@ -3,7 +3,8 @@
 //
 //  The open panel: artwork, ticker text, seekable scrubber, transport row,
 //  and the output switcher at the head of that row, whose device list
-//  stands in for the text column while it's open.
+//  stands in for the text column while it's open, the output's volume
+//  across its header.
 //  When Claude Code opened the notch rather than the pointer, its status
 //  card takes the leading position and music shares the row (spec 3.1).
 //
@@ -492,24 +493,34 @@ private struct OutputButton: View {
 /// one is lit and ticked; tapping another asks for it and closes the list.
 /// The tick moves when the HAL reports the new default, not on the tap — a
 /// switch that doesn't take leaves the tick on the device still playing.
+///
+/// The current output's volume shares the header line, across from the back
+/// control and ending on the ticks' edge, so the rows keep all the height
+/// they had.
 private struct OutputList: View {
     @ObservedObject var devices: OutputDevices
     var close: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Button(action: close) {
-                HStack(spacing: 4) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 9, weight: .semibold))
-                    Text("Output")
-                        .font(.system(size: 11, weight: .semibold))
+            HStack(spacing: 0) {
+                Button(action: close) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text("Output")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(.white.opacity(0.55))
+                    .frame(height: 16)
+                    .contentShape(Rectangle())
                 }
-                .foregroundStyle(.white.opacity(0.55))
-                .frame(height: 16)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+
+                Spacer(minLength: 20)
+
+                OutputVolumeSlider(volume: devices.volume)
             }
-            .buttonStyle(.plain)
 
             // Four rows fit; a fifth scrolls rather than growing the panel.
             ScrollView(.vertical) {
@@ -526,6 +537,9 @@ private struct OutputList: View {
         .padding(.trailing, 36)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .foregroundStyle(.white)
+        // The volume listens to the HAL only while the list is up.
+        .onAppear { devices.volume.attach() }
+        .onDisappear { devices.volume.detach() }
     }
 
     private func row(_ device: OutputDevice) -> some View {
@@ -556,3 +570,98 @@ private struct OutputList: View {
         .accessibilityAddTraits(isCurrent ? [.isSelected] : [])
     }
 }
+
+/// The current output's volume: a mute key and a track, styled after the
+/// playbar's — a 6pt capsule, white fill on a faint track, grabbed anywhere
+/// across its height. A drag sets the level as it goes, as the system's own
+/// sliders do (the playbar seeks only on release, but a seek is costly to
+/// the player and a volume change isn't); `OutputVolume` spaces the writes.
+/// Like the playbar it's a plain drag gesture, so the non-activating panel
+/// never has to take focus for it.
+///
+/// Drawn only when the device has a volume Isle can read. One it can read
+/// but not set is shown greyed and inert; one it can't read leaves the space
+/// empty, at the same size, so nothing in the header moves.
+private struct OutputVolumeSlider: View {
+    @ObservedObject var volume: OutputVolume
+
+    var body: some View {
+        ZStack {
+            if let state = volume.state {
+                HStack(spacing: 6) {
+                    muteKey(state)
+                    track(state)
+                }
+                .transition(.opacity)
+            }
+        }
+        .frame(width: 150, height: 16)
+        .animation(.easeInOut(duration: 0.15), value: volume.state == nil)
+    }
+
+    @ViewBuilder
+    private func muteKey(_ state: OutputVolume.State) -> some View {
+        let glyph = Image(systemName: symbol(state))
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(.white.opacity(0.55))
+            // Leading-aligned in a fixed slot: the wave glyphs differ in
+            // width, and the track mustn't shift as the level crosses them.
+            .frame(width: 18, height: 16, alignment: .leading)
+            .contentShape(Rectangle())
+        if state.canMute {
+            Button(action: volume.toggleMute) { glyph }
+                .buttonStyle(.plain)
+                .accessibilityLabel(state.isMuted == true ? "Unmute" : "Mute")
+        } else {
+            glyph
+        }
+    }
+
+    private func track(_ state: OutputVolume.State) -> some View {
+        let muted = state.isMuted == true
+        return GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(.white.opacity(0.22))
+                // Muted, the level stays where it is — that's what unmuting
+                // returns to — but dims, as the device is silent.
+                Capsule()
+                    .fill(.white.opacity(muted ? 0.35 : 1))
+                    .frame(width: max(0, proxy.size.width * CGFloat(state.level)))
+            }
+            .frame(height: 6)
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        guard proxy.size.width > 0 else { return }
+                        volume.setLevel(Float(value.location.x / proxy.size.width))
+                    }
+            )
+        }
+        .opacity(state.canSetLevel ? 1 : 0.4)
+        .allowsHitTesting(state.canSetLevel)
+        .accessibilityElement()
+        .accessibilityLabel("Output volume")
+        .accessibilityValue("\(Int((state.level * 100).rounded())) percent")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: volume.setLevel(state.level + 1.0 / 16.0)
+            case .decrement: volume.setLevel(state.level - 1.0 / 16.0)
+            @unknown default: break
+            }
+        }
+    }
+
+    private func symbol(_ state: OutputVolume.State) -> String {
+        if state.isMuted == true { return "speaker.slash.fill" }
+        switch state.level {
+        case ..<0.001: return "speaker.fill"
+        case ..<0.34: return "speaker.wave.1.fill"
+        case ..<0.67: return "speaker.wave.2.fill"
+        default: return "speaker.wave.3.fill"
+        }
+    }
+}
+

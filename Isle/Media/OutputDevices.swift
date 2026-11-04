@@ -19,6 +19,9 @@
 //  aggregate holding no real device; see `SystemAudioLevels`), and nothing
 //  here touches it.
 //
+//  The default output's volume and mute live alongside, in `volume`, for
+//  the slider at the head of the device list.
+//
 //  Separate from the view model for the same reason the lyric clock is: a
 //  device coming or going redraws the switcher and nothing else. And it only
 //  listens while someone is looking — the music face attaches on appear and
@@ -102,11 +105,16 @@ final class OutputDevices: ObservableObject {
         devices.first { $0.id == currentID }
     }
 
+    /// The current default output's volume and mute. Follows `currentID`;
+    /// listens to the HAL only while the device list is open.
+    let volume = OutputVolume()
+
     /// HAL reads and writes happen here, off the main thread: a default
     /// switch to a Bluetooth device can block while it wakes, and a
     /// listener's re-read is no business of the main run loop. Serial so a
-    /// re-read can't overtake the switch that prompted it.
-    private nonisolated static let queue = DispatchQueue(
+    /// re-read can't overtake the switch that prompted it — and shared with
+    /// `OutputVolume`, so a volume write can't race a switch either.
+    nonisolated static let queue = DispatchQueue(
         label: "com.isle.output-devices", qos: .userInitiated
     )
 
@@ -153,6 +161,7 @@ final class OutputDevices: ObservableObject {
         // what the HAL says then instead of flashing what it said last time.
         devices = []
         currentID = nil
+        volume.follow(nil)
     }
 
     /// Asks the HAL to make `device` the system default output. Nothing is
@@ -225,6 +234,7 @@ final class OutputDevices: ObservableObject {
                 guard let self, self.viewers > 0, self.generation == generation else { return }
                 if self.devices != snapshot.devices { self.devices = snapshot.devices }
                 if self.currentID != snapshot.currentID { self.currentID = snapshot.currentID }
+                self.volume.follow(snapshot.currentID)
             }
         }
         pendingRefresh = read
