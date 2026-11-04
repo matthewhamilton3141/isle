@@ -1,7 +1,9 @@
 //
 //  ExpandedNotchView.swift
 //
-//  The open panel: artwork, ticker text, seekable scrubber, transport row.
+//  The open panel: artwork, ticker text, seekable scrubber, transport row,
+//  and the output switcher at the head of that row, whose device list
+//  stands in for the text column while it's open.
 //  When Claude Code opened the notch rather than the pointer, its status
 //  card takes the leading position and music shares the row (spec 3.1).
 //
@@ -14,6 +16,12 @@ struct ExpandedNotchView: View {
     var palette: ArtworkPalette
 
     private var media: MediaPlaybackModel { viewModel.media }
+
+    /// The output list is showing in place of the text column. Per island
+    /// rather than on the view model: it's this panel's state, and it goes
+    /// when the panel collapses (this view is torn down) or the face changes
+    /// (see `musicBody`'s `onDisappear`).
+    @State private var showsOutputs = false
 
     var body: some View {
         // The face switcher itself lives in NotchRootView, positioned
@@ -108,15 +116,40 @@ struct ExpandedNotchView: View {
                     // playbar rather than floating below it.
                     Spacer().frame(height: viewModel.showScrubber ? 2 : 8)
                     controls
+                        // The output switcher, in the slack left of the
+                        // centred keys and flush with the title's leading
+                        // edge. An overlay so the keys stay centred, and
+                        // outside `controls` so a player that can't take
+                        // commands doesn't grey out the Mac's own output.
+                        .overlay(alignment: .leading) {
+                            OutputButton(devices: viewModel.outputDevices) {
+                                withAnimation(.easeInOut(duration: 0.2)) { showsOutputs = true }
+                            }
+                        }
                     Spacer(minLength: 0)
                 } else {
                     idlePlaceholder
                 }
             }
+            // While the output list is up the column keeps its layout and
+            // just steps aside, so closing the list puts everything back
+            // exactly where it was.
+            .opacity(showingOutputs ? 0 : 1)
+            .allowsHitTesting(!showingOutputs)
             // Fixed width rather than filling: a filling column would stretch
             // to the right edge and the "pair" could never be centred. 340 is
             // the width it occupied before, so the playbar length is unchanged.
             .frame(minWidth: 340, maxWidth: 340, maxHeight: .infinity, alignment: .leading)
+            // The list takes the column's own box: the album stays, nothing
+            // moves, and it never reaches past the panel the pointer is in.
+            .overlay {
+                if showingOutputs {
+                    OutputList(devices: viewModel.outputDevices) {
+                        withAnimation(.easeInOut(duration: 0.2)) { showsOutputs = false }
+                    }
+                    .transition(.opacity)
+                }
+            }
             // Vertical position of the whole text column (title, artist,
             // playbar, transport). The column is ~107 tall against 114 of
             // usable space, so there is only a few points of slack top and
@@ -141,9 +174,24 @@ struct ExpandedNotchView: View {
             }
         }
         // The clock only runs while this face is on screen — no timer behind
-        // a collapsed island or another face.
-        .onAppear { viewModel.lyricsClock.attach() }
-        .onDisappear { viewModel.lyricsClock.detach() }
+        // a collapsed island or another face. Likewise the outputs: HAL
+        // listeners only while this face is up. Leaving the face closes the
+        // list, so coming back finds the player.
+        .onAppear {
+            viewModel.lyricsClock.attach()
+            viewModel.outputDevices.attach()
+        }
+        .onDisappear {
+            viewModel.lyricsClock.detach()
+            viewModel.outputDevices.detach()
+            showsOutputs = false
+        }
+    }
+
+    /// Only with a track: without one the column shows the idle text, and
+    /// the switcher that opened the list isn't on screen.
+    private var showingOutputs: Bool {
+        showsOutputs && media.hasTrack
     }
 
     // MARK: - Artwork
@@ -401,5 +449,110 @@ private struct LyricLineView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
         .animation(.easeInOut(duration: 0.25), value: clock.line)
+    }
+}
+
+// MARK: - Output switcher
+
+/// The system output, as a glyph at the head of the transport row. Quiet —
+/// the grey of an unlit toggle and a size under the shuffle key — because
+/// it's read far more often than it's pressed. Observes the device list
+/// alone, so an output coming or going redraws this and nothing else.
+///
+/// Absent until the HAL has answered, so a closed list never shows a guess.
+private struct OutputButton: View {
+    @ObservedObject var devices: OutputDevices
+    var open: () -> Void
+
+    var body: some View {
+        ZStack {
+            if !devices.devices.isEmpty {
+                Button(action: open) {
+                    // The default can be a device the list leaves out (a
+                    // driver that says it can't be default, but is); then the
+                    // plain speaker stands in rather than a guessed kind.
+                    Image(systemName: devices.current?.symbolName ?? "speaker.wave.2")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.5))
+                        // Leading-aligned so the glyph lines up with the
+                        // title and the elapsed time above it.
+                        .frame(width: 22, height: 22, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(devices.current.map { "Output: \($0.name)" } ?? "Output")
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: devices.current?.symbolName)
+    }
+}
+
+/// Every output a user could pick, in the text column's place. The current
+/// one is lit and ticked; tapping another asks for it and closes the list.
+/// The tick moves when the HAL reports the new default, not on the tap — a
+/// switch that doesn't take leaves the tick on the device still playing.
+private struct OutputList: View {
+    @ObservedObject var devices: OutputDevices
+    var close: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button(action: close) {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 9, weight: .semibold))
+                    Text("Output")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .foregroundStyle(.white.opacity(0.55))
+                .frame(height: 16)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            // Four rows fit; a fifth scrolls rather than growing the panel.
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(devices.devices) { device in
+                        row(device)
+                    }
+                }
+            }
+            .scrollIndicators(.never)
+        }
+        // Clear of the waveform pinned at the panel's top-right and the face
+        // toggle in its bottom-right corner, the same inset the title keeps.
+        .padding(.trailing, 36)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .foregroundStyle(.white)
+    }
+
+    private func row(_ device: OutputDevice) -> some View {
+        let isCurrent = device.id == devices.currentID
+        return Button {
+            devices.select(device)
+            close()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: device.symbolName)
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: 18, alignment: .leading)
+                Text(device.name)
+                    .font(.system(size: 12, weight: isCurrent ? .semibold : .regular))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 8)
+                if isCurrent {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+            }
+            .foregroundStyle(isCurrent ? .white : .white.opacity(0.7))
+            .frame(height: 21)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isCurrent ? [.isSelected] : [])
     }
 }

@@ -155,6 +155,12 @@ final class NotchViewModel: ObservableObject {
     /// and nothing else.
     let lyricsClock = LyricsClock()
 
+    /// The audio outputs and the system default, for the music face's output
+    /// switcher. Handed out whole like `lyricsClock`, so a device coming or
+    /// going redraws the switcher alone; it listens to the HAL only while
+    /// that face is on screen.
+    let outputDevices = OutputDevices()
+
     /// What's left of today — events still to come or in progress, and
     /// reminders due by the end of the day — as `AgendaMonitor` last reported
     /// it. Empty when both agenda switches are off. Drawn by the agenda face
