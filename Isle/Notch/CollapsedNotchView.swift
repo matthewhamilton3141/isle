@@ -60,9 +60,12 @@ struct CollapsedNotchView: View {
             // right rather than displacing the music.
             HStack(spacing: CollapsedSize.gap) {
                 artworkThumbnail
-                // The slot stays even with the waveform off, so the album
-                // doesn't move — see NotchViewModel.waveSlot.
-                waveformSlot
+                // No held seat here: Claude is already on the other side of
+                // the camera, so with the waveform off the space goes back and
+                // the island narrows — see NotchViewModel.waveSlot.
+                if viewModel.showsWaveform {
+                    equalizer(width: CollapsedSize.wave)
+                }
             }
         } else if viewModel.isClaudeSolo {
             // Claude solo: the dot glyph sits to the left of the camera, in the
@@ -117,7 +120,8 @@ struct CollapsedNotchView: View {
     }
 
     /// The waveform, or an empty frame of the same size when it's switched
-    /// off — so the layout is identical either way and nothing shifts.
+    /// off. Music-solo only: the empty seat is what keeps the album and the
+    /// waveform's place even either side of the camera.
     @ViewBuilder
     private var waveformSlot: some View {
         if viewModel.showsWaveform {

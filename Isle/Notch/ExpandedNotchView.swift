@@ -284,8 +284,10 @@ struct ExpandedNotchView: View {
 
     private var controls: some View {
         // Shuffle · prev · play/pause · next · repeat, centred. Shuffle and
-        // repeat toggle over Spotify's AppleScript; repeat is boolean there
-        // (no repeat-one), so it lights for .all and clears for .off. The two
+        // repeat toggle over the routed player's AppleScript. Repeat is a
+        // toggle in both players — off ↔ all — so the key lights for .all and
+        // clears for .off; Music's repeat-one (set in Music itself) reads back
+        // as the lit repeat-1 glyph and clears to off when pressed. The two
         // toggles show white when on and grey when off; the transport keys
         // stay white throughout (they aren't stateful).
         HStack(spacing: 16) {

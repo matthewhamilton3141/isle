@@ -1,6 +1,6 @@
 # Isle
 
-**A Dynamic Island for the MacBook notch — for Spotify and Claude Code.**
+**A Dynamic Island for the MacBook notch — for Spotify, Apple Music and Claude Code.**
 
 ![Isle in action](assets/isle-demo.gif)
 
@@ -65,7 +65,7 @@ is in this repository, and a build you compile yourself never carries the flag.
 
 First launch asks what Isle should be: **Music**, **Claude Code**, or **Both**.
 The choice is changeable at any time in Settings. Only the subsystems the active
-mode needs are started, so a Claude-only install never requests Spotify
+mode needs are started, so a Claude-only install never requests media
 permissions.
 
 ### 4. Choose what Isle may ask for
@@ -86,8 +86,10 @@ left ticked:
   *Reminders* as soon as you continue. Unticked, Isle never looks. Settings
   can switch the two on and off separately.
 
-In Music and Both modes, macOS also asks for **Automation → Spotify** on first
-use, for the transport controls. That one is required for playback control.
+In Music and Both modes, macOS also asks for **Automation** on first use, for
+the transport controls — once for Spotify and once for Music, each the first
+time the island sends that player a command. That one is required for playback
+control.
 
 All of these can be changed later in **System Settings → Privacy & Security**,
 and the waveform, device, calendar and reminder toggles live in Isle's
@@ -104,7 +106,7 @@ Isle runs as a menu bar app with no Dock icon.
 | Operating system | macOS 14 Sonoma or newer |
 | Processor | Apple Silicon or Intel (universal build) |
 | Waveform | macOS 14.4 or newer (Core Audio process-tap API) |
-| Music source | Spotify |
+| Music source | Spotify or Apple Music |
 | Claude source | Claude Code |
 | Building from source | Xcode 16 or newer |
 
@@ -114,11 +116,11 @@ Isle runs as a menu bar app with no Dock icon.
 
 - **Now playing at a glance.** Album art, title, and artist in the collapsed
   notch; hover to expand into full controls and a scrubbable playbar.
-- **An audio-reactive waveform.** A Core Audio process tap on Spotify drives the
-  equalizer from the actual signal, so it moves with the music and not with
+- **An audio-reactive waveform.** A Core Audio process tap on the player drives
+  the equalizer from the actual signal, so it moves with the music and not with
   anything else on the system.
 - **Transport controls.** Play, pause, next, previous, scrub, shuffle, and
-  repeat, sent directly to Spotify.
+  repeat, sent directly to Spotify or Apple Music — whichever owns the track.
 - **Sharp artwork.** Cover art is decoded at true pixel resolution, so the small
   collapsed thumbnail stays crisp.
 - **Live Claude Code status.** Working, waiting on you, done, or failed, with a
@@ -202,7 +204,7 @@ macOS 14.4 or newer and permission to record audio — the *Audio Recording
 Privacy…* button in that section opens the right pane. Isle can't tell a
 declined permission from silence, so it won't say which it is.
 
-**The controls do nothing.** Automation permission for Spotify was declined.
+**The controls do nothing.** Automation permission for the player was declined.
 Re-enable Isle under **System Settings → Privacy & Security → Automation**.
 
 **No event or reminder ever shows.** Check the two switches under
@@ -250,20 +252,22 @@ of macOS 26.5.
 | Operation | Mechanism | Source |
 |---|---|---|
 | Read now-playing | `mediaremote-adapter` subprocess | `Media/MediaRemoteAdapterClient.swift` |
-| Play, pause, next, previous, seek | AppleScript to Spotify | `Media/SpotifyController.swift` |
-| Audio waveform | Core Audio process tap on Spotify | `Media/SystemAudioLevels.swift` |
+| Play, pause, next, previous, seek | AppleScript to the routed player | `Media/SpotifyController.swift`, `Media/AppleMusicController.swift` |
+| Audio waveform | Core Audio process tap on the routed player | `Media/SystemAudioLevels.swift` |
 | Claude status | Per-session JSON and file-system events | `Claude/ClaudeStatusWatcher.swift` |
 
 Reads go through [`mediaremote-adapter`][mra], which loads MediaRemote inside
 `/usr/bin/perl` — an Apple-signed binary that does hold the entitlement — and
 streams JSON lines back over a pipe. Isle runs it as a long-lived child process.
-A 1 Hz AppleScript poll of Spotify runs alongside it and owns the playback
-clock, since it reads Spotify's true player position and stays accurate through
-seeks and restarts.
+A 1 Hz AppleScript poll of each running player runs alongside it and owns the
+playback clock, since it reads the player's true position and stays accurate
+through seeks and restarts.
 
-Commands address Spotify by name over AppleScript. Isle is Spotify-scoped, so
-targeting the app directly is both simpler and more accurate than routing
-through whichever app currently owns the system session.
+Commands address a player by name over AppleScript — the one whose track the
+island is showing, chosen from the adapter's bundle identifier, or from
+whichever player is playing when the adapter is silent. Targeting the app
+directly is both simpler and more accurate than routing through whichever app
+currently owns the system session, and a player is never launched.
 
 `scripts/build-mediaremote-adapter.sh` fetches a pinned upstream tag, compiles a
 universal framework with `clang`, and installs it and the Perl driver into
@@ -287,7 +291,9 @@ Isle/
 ├── Media/
 │   ├── MediaPlaybackModel.swift       now-playing snapshot (value type)
 │   ├── MediaRemoteAdapterClient.swift reads (subprocess)
-│   ├── SpotifyController.swift        poll + commands (AppleScript)
+│   ├── MediaPlayerController.swift    the per-player protocol + routing helpers
+│   ├── SpotifyController.swift        Spotify poll + commands (AppleScript)
+│   ├── AppleMusicController.swift     Apple Music poll + commands (AppleScript)
 │   └── SystemAudioLevels.swift        audio-reactive waveform
 ├── Claude/
 │   ├── ClaudeStatusWatcher.swift      per-session status files

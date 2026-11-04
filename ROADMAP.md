@@ -892,6 +892,85 @@ estimating one. Same rule as the Claude island's silence: no inferred state.
 
 ---
 
+## Milestone 10 — Apple Music Compatibility
+
+**Status: built (0.4.1 branch, September 2026).** `MediaPlayerController` +
+`AppleMusicController`; the adapter passes Music through; the view model
+routes commands, the poll clock, the artwork fallback and the audio tap to the
+player whose track is showing. Decisions taken as recommended: repeat is a
+toggle in both players; with the adapter silent the playing player wins, then
+the one last routed, then Spotify. Verified so far: build, and every Music
+script compiles against Music's dictionary; not yet exercised against a
+running Music.app.
+
+*Same island, different player.* Isle is Spotify-scoped by construction: the
+adapter reads whatever owns the system now-playing session, but every transport
+command, the position poll, and the artwork fetch go to
+`application "Spotify"` by name. Apple Music users already see their track
+(the empty state even says "Start something in Spotify or Music") and then hit
+a play button that launches Spotify.
+
+### Goal
+Music mode works end to end with Apple Music as the player — read, transport,
+scrub, shuffle/repeat, artwork — with no Spotify installed at all, and picks
+the right target when both are running.
+
+### Scope
+- Lift the Spotify-specific half of `SpotifyController` behind a
+  `MediaPlayerController` protocol (poll, `playPause`, `nextTrack`,
+  `previousTrack`, `seek`, `toggleShuffle`, `toggleRepeat`, `fetchArtworkIfNeeded`,
+  `bundleID`). Spotify keeps its implementation unchanged.
+- New `Isle/Media/AppleMusicController.swift` over AppleScript to
+  `application "Music"` (`com.apple.Music`): `player state`, `player position`,
+  `current track` name/artist/album/duration, `shuffle enabled`,
+  `song repeat` (three-state: `off`/`one`/`all`), and `artwork 1 of current
+  track` for the cover when the adapter doesn't carry one.
+- **Routing.** Commands go to the app that owns the track the island is
+  showing, keyed on `MediaPlaybackModel.bundleIdentifier` from the adapter;
+  when the adapter is silent, fall back to whichever supported player is
+  running. Never launch a player: the process-exists guard from
+  `SpotifyController` applies to both.
+- Empty-state copy and the "open in player" affordance follow the routed
+  player, not Spotify.
+- Automation permission is per target app in TCC, so the first Music command
+  raises its own prompt. Onboarding's permission step should say which player
+  it is asking for and skip a player that isn't installed.
+
+### Files
+- New `Isle/Media/MediaPlayerController.swift` (protocol), new
+  `Isle/Media/AppleMusicController.swift`.
+- `Isle/Media/SpotifyController.swift` — conform, no behaviour change.
+- `Isle/Notch/NotchViewModel.swift` — replace the single `spotify` owner and
+  `spotifyModel` merge with a routed player; the adapter-preferred /
+  poll-fallback rule in `recomputeSource` stays, generalised per player.
+- `Isle/Notch/ExpandedNotchView.swift` — repeat control becomes three-state
+  when the routed player is Music.
+- `Isle/Onboarding/` — Automation step names the player.
+
+### Acceptance
+- With Spotify uninstalled, playing a song in Music shows the track, cover,
+  and a scrubber that tracks the real position; play/pause, next, previous,
+  seek, shuffle, and repeat all act on Music.
+- With both running, the island controls the one whose track it is showing,
+  and never launches the other.
+- Nothing about the Spotify path changes: same poll cadence, same artwork
+  rule, same permission prompt.
+
+### Decisions to lock
+- **Repeat in Music is three-state**, Spotify's AppleScript is boolean. Either
+  the control cycles off → all → one for Music, or it stays a toggle
+  (off ↔ all) everywhere. *Recommend the toggle: one control that means the same
+  thing in both players.*
+- **Which player wins when both are running and the adapter is silent.**
+  *Recommend the most recently playing one, falling back to Spotify (the
+  existing behaviour) on a cold start.*
+- **Artwork for Music** comes from the adapter when it has it, else from
+  `artwork 1 of current track` — a data blob over AppleScript, so fetched on
+  track change only, the same way `wantsArtwork` gates the Spotify CDN fetch.
+  Palette extraction from the cover is unchanged.
+
+---
+
 ## Suggested sequencing
 
 ```
@@ -901,7 +980,8 @@ M1 Mode archetype ─┬─> M2 Onboarding
                    └───────────────────────> M5 Settings ──────┴─> M6 Launch
                                               │                     │
                                               ├─> M8 Display picker │
-                                              └─> M9 Power/charging │
+                                              ├─> M9 Power/charging │
+                                              └─> M10 Apple Music   │
                                      M7 unblocks ──> Scheduled Prompts (Parked)
 ```
 
@@ -914,6 +994,8 @@ M1 Mode archetype ─┬─> M2 Onboarding
 - **M8 and M9 sit off the Claude track entirely.** Each is an engine plus a
   Settings section, so both want M5 to exist first — but neither blocks anything
   downstream, and neither gates a release.
+- **M10 (Apple Music) is a media-track change only** — it touches nothing on
+  the Claude side and can ship in any release after M5.
 - A credible public build = **M1 + M2 + M3 + M4** (the full three-mode island),
   with **M5**, **M7**, and **M6** finishing it for release.
 
