@@ -176,6 +176,7 @@ final class NotchViewModel: ObservableObject {
     private let audio = SystemAudioLevels()
     private let claudeWatcher = ClaudeStatusWatcher()
     private let sessionRegistry = ClaudeSessionRegistry()
+    private let keepAwake = ClaudeKeepAwake()
     private let power = PowerMonitor()
     private let bluetoothBattery = BluetoothBatteryMonitor()
     private let agenda = AgendaMonitor()
@@ -347,8 +348,14 @@ final class NotchViewModel: ObservableObject {
     /// stuck record. An interrupt fires no hook, and the registry's directory
     /// watch can't see the CLI rewriting its record in place, so each tick
     /// re-reads the registry and re-selects.
+    ///
+    /// Also kept running while the keep-awake assertion is held, whatever the
+    /// island shows: a session needing attention outranks one still working,
+    /// so the island can sit on a state the timer ignores while a background
+    /// session holds the Mac awake — and that session's interrupt or SIGKILL
+    /// is only ever noticed by a tick.
     private func updateReselectTimer(for state: ClaudeCodeState) {
-        guard state == .working || state == .compacting || state == .waitingInput else {
+        guard keepAwake.isHeld || state == .working || state == .compacting || state == .waitingInput else {
             stopReselectTimer()
             return
         }
@@ -359,6 +366,7 @@ final class NotchViewModel: ObservableObject {
                 // The registry's watch misses in-place rewrites and killed
                 // pids, so the tick is also what keeps it current.
                 self.sessionRegistry.refresh()
+                self.updateKeepAwake()
                 // Apply only on a real change, so an unchanged state doesn't
                 // re-render the island every tick.
                 let resolved = self.selectStatus(from: self.claudeStatuses)
@@ -454,6 +462,44 @@ final class NotchViewModel: ObservableObject {
     private func stopReselectTimer() {
         reselectTimer?.invalidate()
         reselectTimer = nil
+    }
+
+    // MARK: - Keep awake
+
+    /// Holds the keep-awake assertion exactly while the setting is on and at
+    /// least one live session is working, and releases it on every other path.
+    ///
+    /// Read from the per-session records, not from `claudeState`: selection is
+    /// urgency-ranked, so an approval or a failure in one session takes the
+    /// island while another is still mid-turn — and that turn is the one that
+    /// needs the Mac awake.
+    ///
+    /// Each record goes through `reconciled`, the same correction selection
+    /// applies, so an interrupted turn stops holding the Mac awake at the
+    /// moment the island stops calling it working — no second opinion about
+    /// what a frozen `working` means. Liveness is stricter than selection's,
+    /// though: selection falls back to every record when the registry is empty
+    /// rather than blank the island, but a record with no live pid behind it is
+    /// exactly the SIGKILL residue that would otherwise pin the Mac awake
+    /// forever. Holding a power assertion needs a process Isle can see.
+    private func updateKeepAwake() {
+        let wasHeld = keepAwake.isHeld
+        keepAwake.setHeld(settings.keepAwakeWhileWorking && claudeRunning && anyLiveSessionWorking)
+        // The tick is what notices a background session's interrupt or kill,
+        // so it has to run for as long as the assertion does.
+        if keepAwake.isHeld != wasHeld {
+            updateReselectTimer(for: claudeState)
+        }
+    }
+
+    private var anyLiveSessionWorking: Bool {
+        claudeStatuses.contains { status in
+            guard status.state == .working,
+                  let id = status.sessionId,
+                  claudeSessions.contains(where: { $0.sessionId == id })
+            else { return false }
+            return reconciled(status).state == .working
+        }
     }
 
     // MARK: - Working words
@@ -683,6 +729,7 @@ final class NotchViewModel: ObservableObject {
             // apply below is then a no-op.)
             self.sessionRegistry.refresh()
             self.applyClaudeStatus(self.selectStatus(from: statuses))
+            self.updateKeepAwake()
         }
 
         sessionRegistry.onSessions = { [weak self] sessions in
@@ -693,6 +740,7 @@ final class NotchViewModel: ObservableObject {
             // fires no SessionEnd, so the file lingers and no status event will
             // ever arrive. Re-running selection here is what retires it.
             self.applyClaudeStatus(self.selectStatus(from: self.claudeStatuses))
+            self.updateKeepAwake()
         }
 
         power.onEvent = { [weak self] toast in
@@ -769,7 +817,8 @@ final class NotchViewModel: ObservableObject {
             self.settings.$showCalendarEvents.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             self.settings.$showReminders.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             self.settings.$eventLeadMinutes.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            self.settings.$waveformSource.dropFirst().map { _ in () }.eraseToAnyPublisher()
+            self.settings.$waveformSource.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            self.settings.$keepAwakeWhileWorking.dropFirst().map { _ in () }.eraseToAnyPublisher()
         )
         .receive(on: RunLoop.main)
         .sink { [weak self] in
@@ -834,6 +883,7 @@ final class NotchViewModel: ObservableObject {
         setMediaRunning(media)
         setAudioRunning(media && settings.waveformSource.capturesAudio)
         setClaudeRunning(settings.effectiveMode.showsClaude)
+        updateKeepAwake()
         // Power is ambient — it runs in every mode, gated only by its own two
         // toggles. Suppressed while the display is off for the same reason the
         // media pipeline is: nothing it produces could be seen.
@@ -946,6 +996,8 @@ final class NotchViewModel: ObservableObject {
         } else {
             claudeWatcher.stop()
             sessionRegistry.stop()
+            // Not watching means nothing to back the claim with.
+            keepAwake.release()
             claudeSessions = []
             claudeStatuses = []
             lastAppliedStatus = nil
@@ -1079,8 +1131,9 @@ final class NotchViewModel: ObservableObject {
         doneRevertTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(revertDelay))
             guard !Task.isCancelled else { return }
-            // Idle is quiescent — nothing left to re-select for.
-            self?.stopReselectTimer()
+            // Idle is quiescent — nothing left to re-select for, unless a
+            // background session is holding the Mac awake.
+            self?.updateReselectTimer(for: .idle)
             withAnimation(.easeInOut(duration: 0.25)) {
                 self?.claudeState = .idle
             }
