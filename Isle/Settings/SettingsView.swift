@@ -562,6 +562,21 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            VStack(alignment: .leading, spacing: 4) {
+                Picker("Option descriptions", selection: $settings.optionDescriptions) {
+                    ForEach(OptionDescriptions.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(optionDescriptionsCaption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // Options only appear in the notch when it's answering.
+            .disabled(!settings.answerFromNotch)
+
             accentPicker
 
             LabeledContent("Keep “done” checkmark for") {
@@ -593,7 +608,7 @@ struct SettingsView: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Toggle("Keep Mac awake while Claude works", isOn: $settings.keepAwakeWhileWorking)
-                Text("Prevents idle sleep while any session is working. The display can still sleep.")
+                Text("Prevents idle sleep while any session is working. The display can still sleep. While it’s held, the Claude panel shows ☕ Mac awake.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -704,6 +719,17 @@ struct SettingsView: View {
     /// art whenever there is any, and only falls through to the accent when
     /// nothing is playing. Saying so is better than hiding the control, which
     /// would leave a Both-mode user watching a colour they can't change.
+    private var optionDescriptionsCaption: String {
+        switch settings.optionDescriptions {
+        case .full:
+            return "Each option’s description wraps under it, up to three lines. Long ones may need a scroll."
+        case .oneLine:
+            return "Each option’s description follows its label on the same line, cut off where the row ends."
+        case .hidden:
+            return "Labels only. The rows are shorter, so more options fit."
+        }
+    }
+
     private var accentCaption: String {
         guard settings.effectiveMode == .both else { return familyCaption }
         return familyCaption

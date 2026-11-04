@@ -32,6 +32,17 @@ enum CollapsedSize {
     static let statusFontSize: CGFloat = 10
 }
 
+/// How many live sessions besides the island's own are busy or blocked —
+/// see `NotchViewModel.otherSessions`.
+struct ClaudeOtherSessions: Equatable {
+    /// Working or compacting.
+    var working = 0
+    /// Blocked on an approval or a question.
+    var needYou = 0
+
+    var isEmpty: Bool { working == 0 && needYou == 0 }
+}
+
 /// Everything the island *shows*, shared by every island on every screen.
 ///
 /// Hover and per-screen geometry are not here — they belong to one island and
@@ -92,6 +103,18 @@ final class NotchViewModel: ObservableObject {
     /// When the last Claude status change arrived, for the "… ago" line in the
     /// Claude expanded view. `nil` when disconnected.
     @Published private(set) var claudeUpdatedAt: Date?
+
+    /// Isle is holding the keep-awake assertion right now. A mirror of
+    /// `ClaudeKeepAwake.isHeld`, re-published after every take and release,
+    /// so the panel's mark is the assertion itself rather than the setting:
+    /// on while `pmset -g assertions` lists the hold, off the moment it goes.
+    @Published private(set) var isKeepingAwake = false
+
+    /// Live sessions other than the one on the island that are busy or
+    /// blocked — selection shows one session, and this is how the panel
+    /// admits the rest. Counted only from sessions the registry vouches for,
+    /// so a crashed session's leftover file never inflates it.
+    @Published private(set) var otherSessions = ClaudeOtherSessions()
 
     // MARK: Answering from the notch (Milestone 7)
 
@@ -418,16 +441,18 @@ final class NotchViewModel: ObservableObject {
     /// watch can't see the CLI rewriting its record in place, so each tick
     /// re-reads the registry and re-selects.
     ///
-    /// Also kept running while the keep-awake assertion is held, whatever the
-    /// island shows: a session needing attention outranks one still working,
-    /// so the island can sit on a state the timer ignores while a background
-    /// session holds the Mac awake — and that session's interrupt or SIGKILL
-    /// is only ever noticed by a tick.
+    /// Also kept running while the keep-awake assertion is held, or the panel
+    /// is counting other busy sessions, whatever the island shows: a session
+    /// needing attention outranks one still working, so the island can sit on
+    /// a state the timer ignores while a background session holds the Mac
+    /// awake or is counted as working — and that session's interrupt or
+    /// SIGKILL is only ever noticed by a tick.
     ///
     /// A prompt dismissed with Esc is the same kind of stuck record — no hook
     /// fires — so the attention states ride along (see `reconciledPrompt`).
     private func updateReselectTimer(for state: ClaudeCodeState) {
-        guard keepAwake.isHeld || state == .working || state == .compacting || state == .waitingInput
+        guard keepAwake.isHeld || !otherSessions.isEmpty
+                || state == .working || state == .compacting || state == .waitingInput
                 || state.isAttention else {
             stopReselectTimer()
             return
@@ -556,8 +581,12 @@ final class NotchViewModel: ObservableObject {
     /// exactly the SIGKILL residue that would otherwise pin the Mac awake
     /// forever. Holding a power assertion needs a process Isle can see.
     private func updateKeepAwake() {
+        liveSessionStates = readLiveSessionStates()
         let wasHeld = keepAwake.isHeld
-        keepAwake.setHeld(settings.keepAwakeWhileWorking && claudeRunning && anyLiveSessionWorking)
+        keepAwake.setHeld(settings.keepAwakeWhileWorking && claudeRunning
+                          && liveSessionStates.values.contains(.working))
+        publishKeepAwake()
+        updateOtherSessions()
         // The tick is what notices a background session's interrupt or kill,
         // so it has to run for as long as the assertion does.
         if keepAwake.isHeld != wasHeld {
@@ -565,13 +594,59 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
-    private var anyLiveSessionWorking: Bool {
-        claudeStatuses.contains { status in
-            guard status.state == .working,
-                  let id = status.sessionId,
+    /// Mirrors the assertion into `isKeepingAwake`, publishing only on a
+    /// change. Called after every take or release, so the panel's mark can
+    /// never outlive the hold or show before it.
+    private func publishKeepAwake() {
+        if isKeepingAwake != keepAwake.isHeld { isKeepingAwake = keepAwake.isHeld }
+    }
+
+    /// The reconciled state of every session the registry can vouch for,
+    /// keyed by session id — the shared reading behind the keep-awake hold
+    /// and the other-sessions count. Liveness is the strict kind (see
+    /// `updateKeepAwake`): a record with no live pid behind it is left out,
+    /// and so is one with no session id to check. Reconciling reads each
+    /// working session's transcript tail, so this is done once per pass and
+    /// kept in `liveSessionStates`.
+    private func readLiveSessionStates() -> [String: ClaudeCodeState] {
+        var states: [String: ClaudeCodeState] = [:]
+        for status in claudeStatuses {
+            guard let id = status.sessionId,
                   claudeSessions.contains(where: { $0.sessionId == id })
-            else { return false }
-            return reconciled(status).state == .working
+            else { continue }
+            states[id] = status.state == .working || status.state.isAttention
+                ? reconciled(status).state
+                : status.state
+        }
+        return states
+    }
+
+    /// The last `readLiveSessionStates`. Re-read with the keep-awake decision
+    /// on every status, registry and tick; a re-selection in between only
+    /// changes which session is excluded from `otherSessions`.
+    private var liveSessionStates: [String: ClaudeCodeState] = [:]
+
+    /// Recounts `otherSessions` from `liveSessionStates`, leaving out the
+    /// session the island is showing. Publishes only on a change.
+    private func updateOtherSessions() {
+        var others = ClaudeOtherSessions()
+        if claudeRunning {
+            for (id, state) in liveSessionStates where id != claudeSessionId {
+                if state.isAttention {
+                    others.needYou += 1
+                } else if state == .working || state == .compacting {
+                    others.working += 1
+                }
+            }
+        }
+        guard others != otherSessions else { return }
+        let wasEmpty = otherSessions.isEmpty
+        otherSessions = others
+        // A busy background session is only ever noticed going quiet by an
+        // event or a tick — an interrupt fires no hook — so the tick runs
+        // for as long as the count does.
+        if others.isEmpty != wasEmpty {
+            updateReselectTimer(for: claudeState)
         }
     }
 
@@ -1090,6 +1165,9 @@ final class NotchViewModel: ObservableObject {
             sessionRegistry.stop()
             // Not watching means nothing to back the claim with.
             keepAwake.release()
+            publishKeepAwake()
+            liveSessionStates = [:]
+            otherSessions = ClaudeOtherSessions()
             claudeSessions = []
             claudeStatuses = []
             claudeRequests = []
@@ -1203,6 +1281,9 @@ final class NotchViewModel: ObservableObject {
         claudeUpdatedAt = status.state == .disconnected ? nil : Date()
         claudeRequestId = status.requestId
         refreshPendingRequest()
+        // The island may have moved to another session; the count leaves out
+        // whichever one it now shows.
+        updateOtherSessions()
 
         // Rotate the "thinking" word only while actually working.
         if status.state == .working {
@@ -1870,17 +1951,27 @@ final class NotchViewModel: ObservableObject {
         return tabs.first ?? .music
     }
 
-    /// How many option rows the question face needs, while it is the face on
-    /// screen — the one case where the panel grows past `expandedSize` (see
+    /// The height the question face wants, while it is the face on screen —
+    /// the one case where the panel grows past `expandedSize` (see
     /// `NotchMetrics.questionPanelHeight`). Nil for every other face, which
     /// all keep the standard height. The tallest question of a multi-question
-    /// ask sizes it, so stepping through them doesn't bob the panel.
-    var questionOptionRows: Int? {
+    /// ask sizes it, so stepping through them doesn't bob the panel. Depends
+    /// on the description setting (row heights) and on the corner toggle
+    /// (which narrows the rows, so a description may wrap sooner).
+    var questionContentHeight: CGFloat? {
         guard expandedTab == .claude, let request = pendingRequest, request.kind == .question else {
             return nil
         }
-        return request.questions.map(\.options.count).max()
+        let clearance = showsTabToggle ? ClaudePanelLayout.toggleClearance : 0
+        return request.questions.map {
+            ClaudePanelLayout.questionContentHeight(
+                $0, descriptions: optionDescriptions, trailingClearance: clearance
+            )
+        }.max()
     }
+
+    /// How much of each option's description the question face shows.
+    var optionDescriptions: OptionDescriptions { settings.optionDescriptions }
 
 
     /// A user tap on the Music/Claude switcher. Records the pick and, when an
@@ -2468,6 +2559,34 @@ extension NotchViewModel {
             }
             try? await Task.sleep(for: .seconds(1.5))
         }
+    }
+}
+
+/// Puts the Claude face into a fixed state for previews and the offscreen
+/// render harness — see `ClaudePanelFixture`. Sets the published values the
+/// face reads directly, with no watcher, hook or timer behind them, so a
+/// render shows exactly the state described and nothing eases it away.
+extension NotchViewModel {
+    func applyPreviewFixture(_ fixture: ClaudePanelFixture) {
+        claudeState = fixture.state
+        claudeProject = fixture.project
+        claudeSessionId = fixture.request?.sessionId ?? "preview-session"
+        claudeAction = fixture.action
+        claudeTarget = fixture.target
+        claudeErrorType = fixture.errorType
+        claudeResetAt = fixture.resetAt
+        claudeUpdatedAt = fixture.state == .disconnected ? nil : fixture.updatedAt
+        claudeRequestId = fixture.request?.id
+        pendingRequest = fixture.request
+        questionIndex = fixture.questionIndex
+        questionPicks = fixture.picks.isEmpty
+            ? Array(repeating: [], count: fixture.request?.questions.count ?? 0)
+            : fixture.picks
+        if let word = fixture.workingWord { workingWord = word }
+        // The published mirrors only — no assertion is taken for a preview.
+        isKeepingAwake = fixture.keepAwake
+        otherSessions = fixture.others
+        activeTab = .claude
     }
 }
 #endif

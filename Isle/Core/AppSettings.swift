@@ -34,6 +34,7 @@ final class AppSettings: ObservableObject {
     private static let showWaitingKey = "isle.showWaiting"
     private static let keepAwakeWhileWorkingKey = "isle.keepAwakeWhileWorking"
     private static let answerFromNotchKey = "isle.answerFromNotch"
+    private static let optionDescriptionsKey = "isle.optionDescriptions"
     private static let claudeAccentKey = "isle.claudeAccent"
     private static let claudeAccentHexKey = "isle.claudeAccentHex"
     private static let showBatteryEventsKey = "isle.showBatteryEvents"
@@ -183,6 +184,16 @@ final class AppSettings: ObservableObject {
     /// fallback.
     @Published var answerFromNotch: Bool {
         didSet { defaults.set(answerFromNotch, forKey: Self.answerFromNotchKey) }
+    }
+
+    /// How much of each question option's description the notch shows. One
+    /// line by default — the layout the question face shipped with. See
+    /// `OptionDescriptions`.
+    @Published var optionDescriptions: OptionDescriptions {
+        didSet {
+            guard optionDescriptions != oldValue else { return }
+            defaults.set(optionDescriptions.rawValue, forKey: Self.optionDescriptionsKey)
+        }
     }
 
     /// The colour a Claude-only island draws itself in — it supplies the
@@ -408,6 +419,8 @@ final class AppSettings: ObservableObject {
         showWaitingStatus = defaults.object(forKey: Self.showWaitingKey) as? Bool ?? true
         keepAwakeWhileWorking = defaults.object(forKey: Self.keepAwakeWhileWorkingKey) as? Bool ?? false
         answerFromNotch = defaults.object(forKey: Self.answerFromNotchKey) as? Bool ?? true
+        optionDescriptions = OptionDescriptions(rawValue: defaults.string(forKey: Self.optionDescriptionsKey) ?? "")
+            ?? .default
         claudeAccent = ClaudeAccent(rawValue: defaults.string(forKey: Self.claudeAccentKey) ?? "")
             ?? .system
         claudeAccentHex = defaults.string(forKey: Self.claudeAccentHexKey) ?? "#9438E0"
