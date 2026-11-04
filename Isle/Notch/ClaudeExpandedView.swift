@@ -13,7 +13,9 @@
 //  doing, and an empty action row; an approval (Milestone 7) puts the exact
 //  command in the body and Approve / Deny / Terminal in the row; a question
 //  puts the question in the title and its options in the body, in a panel
-//  grown to seat them. Every control here is a real `Button`, so its tap is
+//  grown to seat them — the one face where the glyph steps back to a mark in
+//  its corner so the options can have the full width. Every control here is
+//  a real `Button`, so its tap is
 //  consumed and never falls through to the card's dismiss gesture.
 //
 
@@ -34,21 +36,29 @@ struct ClaudeExpandedView: View {
         return request
     }
 
+    /// The question on screen, if the face is a question's.
+    private var asking: (request: ClaudeRequest, question: ClaudeQuestion)? {
+        guard let request = viewModel.pendingRequest, request.kind == .question,
+              let question = viewModel.currentQuestion else { return nil }
+        return (request, question)
+    }
+
     var body: some View {
-        HStack(alignment: .top, spacing: L.glyphGap) {
-            glyph
+        let isQuestion = asking != nil
+        return ZStack(alignment: .topLeading) {
+            glyph(compact: isQuestion)
 
             Group {
-                if let request = viewModel.pendingRequest, request.kind == .question,
-                   let question = viewModel.currentQuestion {
-                    questionFace(request, question: question)
+                if let asking {
+                    questionFace(asking.request, question: asking.question)
                         .transition(.opacity)
                 } else {
                     statusFace
+                        .padding(.leading, L.glyphSize + L.glyphGap)
                         .transition(.opacity)
                 }
             }
-            .frame(width: L.columnWidth, alignment: .topLeading)
+            .frame(width: L.faceWidth, alignment: .topLeading)
             .frame(maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -65,10 +75,19 @@ struct ClaudeExpandedView: View {
     /// fill it — the frame is the only cap on dot size. Safe to raise into
     /// the housing band: the glyph sits left of the camera cutout, on
     /// ordinary screen, just like the album.
-    private var glyph: some View {
+    ///
+    /// On the question face it steps back to a mark in the same top-left
+    /// corner (`compact`), so the options can run the face's width under it
+    /// rather than leave a tall empty column below a big glyph. Scaled, not
+    /// re-framed: the dot matrix rebuilds its animation for a new size, while
+    /// a scale is one transform Core Animation interpolates on the panel's
+    /// own spring as the panel grows or shrinks around it.
+    private func glyph(compact: Bool) -> some View {
         ClaudeStatusGlyphView(state: state, kind: viewModel.claudeMarkerKind, palette: palette)
             .frame(width: L.glyphSize, height: L.glyphSize)
+            .scaleEffect(compact ? L.compactGlyphSize / L.glyphSize : 1, anchor: .topLeading)
             .offset(y: -L.glyphRaise)
+            .animation(compact ? .notchOpen : .notchClose, value: compact)
     }
 
     // MARK: - Status face
@@ -270,7 +289,14 @@ struct ClaudeExpandedView: View {
     /// One question of an `AskUserQuestion`: its header and step in the
     /// eyebrow, the question as the title, its options as rows, and the way
     /// out to the terminal. The panel has grown to fit — sized from the same
-    /// `ClaudePanelLayout` numbers these rows are drawn at.
+    /// `ClaudePanelLayout.fit` these rows are drawn from.
+    ///
+    /// The glyph is a mark in the corner here (see `glyph(compact:)`); the
+    /// eyebrow and question sit beside it and the options run the face's
+    /// whole width beneath. Every option is always on screen: where the
+    /// capped panel can't hold the descriptions as the setting draws them,
+    /// they shorten instead (see `fit`), and the action row below is never
+    /// pushed off.
     ///
     /// No free text: answering "Type something" would need a text field, and
     /// a text field needs key focus, which the notch must never take from the
@@ -282,61 +308,50 @@ struct ClaudeExpandedView: View {
         let descriptions = viewModel.optionDescriptions
 
         return GeometryReader { proxy in
-            // At the cap, the question gives up its second line first; past
-            // that, the options scroll rather than push the actions off.
-            let room = proxy.size.height
-            let natural = L.naturalQuestionLines(question)
-            let needed = L.questionContentHeight(question, descriptions: descriptions,
-                                                 trailingClearance: switcherClearance,
-                                                 questionLines: natural)
-            let lines = needed > room ? 1 : natural
-            let optionsRoom = max(0, room - L.questionChromeHeight(questionLines: lines))
-            let optionsHeight = L.optionsHeight(question, descriptions: descriptions,
-                                                trailingClearance: switcherClearance)
+            let fit = L.fit(question, descriptions: descriptions,
+                            trailingClearance: switcherClearance, room: proxy.size.height)
 
             VStack(alignment: .leading, spacing: 0) {
-                eyebrow {
-                    projectLabel
-                    separator
-                    Label(question.header ?? "Question", systemImage: "questionmark.bubble.fill")
-                        .foregroundStyle(.white.opacity(0.8))
-                        .layoutPriority(-0.5)
-                    if request.questions.count > 1 {
+                VStack(alignment: .leading, spacing: 0) {
+                    eyebrow {
+                        projectLabel
                         separator
-                        step(index: index, count: request.questions.count)
+                        Label(question.header ?? "Question", systemImage: "questionmark.bubble.fill")
+                            .foregroundStyle(.white.opacity(0.8))
+                            .layoutPriority(-0.5)
+                        if request.questions.count > 1 {
+                            separator
+                            step(index: index, count: request.questions.count)
+                        }
                     }
+
+                    Spacer().frame(height: L.eyebrowGap)
+
+                    Text(question.question)
+                        .font(L.questionFont)
+                        .lineLimit(fit.questionLines)
+                        .truncationMode(.tail)
+                        .frame(height: CGFloat(fit.questionLines) * L.questionLine, alignment: .topLeading)
+                        // Level with the waveform at the top-right; clear it.
+                        .padding(.trailing, L.waveformClearance)
                 }
-
-                Spacer().frame(height: L.eyebrowGap)
-
-                Text(question.question)
-                    .font(L.questionFont)
-                    .lineLimit(lines)
-                    .truncationMode(.tail)
-                    .frame(height: CGFloat(lines) * L.questionLine, alignment: .topLeading)
-                    // Level with the waveform at the top-right; clear it.
-                    .padding(.trailing, L.waveformClearance)
+                // Beside the glyph's mark.
+                .padding(.leading, L.questionLeading)
 
                 Spacer().frame(height: L.questionGap)
 
                 Group {
-                    if optionsHeight <= optionsRoom + 0.5 {
-                        optionRows(question, picks: picks, descriptions: descriptions)
-                    } else {
+                    if fit.scrolls {
+                        // Past what AskUserQuestion can send today (see
+                        // `OptionsFit.scrolls`): a scroll, said out loud by
+                        // the count in the action row.
                         ScrollView(.vertical) {
-                            optionRows(question, picks: picks, descriptions: descriptions)
+                            optionRows(question, picks: picks, fit: fit)
                         }
-                        .scrollIndicators(.hidden)
-                        .frame(height: optionsRoom)
-                        // A row cut by the edge reads as clipped; fading the
-                        // last few points says there's more below instead.
-                        .mask(
-                            VStack(spacing: 0) {
-                                Color.black
-                                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
-                                    .frame(height: 14)
-                            }
-                        )
+                        .frame(height: max(0, proxy.size.height
+                                           - L.questionChromeHeight(questionLines: fit.questionLines)))
+                    } else {
+                        optionRows(question, picks: picks, fit: fit)
                     }
                 }
                 .padding(.trailing, switcherClearance)
@@ -346,6 +361,13 @@ struct ClaudeExpandedView: View {
                 actionRow {
                     pill("Answer in terminal", systemImage: "terminal", fill: .white.opacity(0.14)) {
                         answerInTerminal()
+                    }
+                    if fit.scrolls {
+                        Label("\(question.options.count) options", systemImage: "arrow.up.and.down")
+                            .font(L.eyebrowFont)
+                            .labelStyle(EyebrowLabelStyle())
+                            .foregroundStyle(.white.opacity(0.5))
+                            .fixedSize()
                     }
                     Spacer(minLength: 0)
                     if question.multiSelect {
@@ -387,20 +409,23 @@ struct ClaudeExpandedView: View {
     }
 
     private func optionRows(_ question: ClaudeQuestion, picks: Set<String>,
-                            descriptions: OptionDescriptions) -> some View {
-        let width = L.optionTextWidth(multiSelect: question.multiSelect, trailingClearance: switcherClearance)
-        return VStack(alignment: .leading, spacing: L.optionGap) {
-            ForEach(Array(question.options.enumerated()), id: \.offset) { _, option in
+                            fit: L.OptionsFit) -> some View {
+        VStack(alignment: .leading, spacing: L.optionGap) {
+            ForEach(Array(question.options.enumerated()), id: \.offset) { index, option in
                 optionRow(option, multiSelect: question.multiSelect, picked: picks.contains(option.label),
-                          descriptions: descriptions, textWidth: width)
+                          style: fit.style,
+                          descriptionLines: fit.style == .full ? fit.descriptionLines[index] : 0)
             }
         }
     }
 
+    /// One option, drawn in the form the fit chose: stacked with
+    /// `descriptionLines` of description under `.full`, label and
+    /// description on one line under `.oneLine`, the label alone under
+    /// `.hidden`.
     private func optionRow(_ option: ClaudeQuestion.Option, multiSelect: Bool, picked: Bool,
-                           descriptions: OptionDescriptions, textWidth: CGFloat) -> some View {
-        let lines = L.descriptionLines(option, descriptions: descriptions, width: textWidth)
-        let height = L.optionRowHeight(option, descriptions: descriptions, textWidth: textWidth)
+                           style: OptionDescriptions, descriptionLines lines: Int) -> some View {
+        let height = L.optionRowHeight(style: style, descriptionLines: lines)
         return Button {
             viewModel.pickOption(option.label)
         } label: {
@@ -426,7 +451,7 @@ struct ClaudeExpandedView: View {
                 } else {
                     optionLabel(option)
                         .layoutPriority(1)
-                    if descriptions == .oneLine, let description = option.description {
+                    if style == .oneLine, let description = option.description {
                         Text(description)
                             .font(L.optionDescriptionFont)
                             .foregroundStyle(.white.opacity(0.55))

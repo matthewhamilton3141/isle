@@ -15,16 +15,18 @@ import Foundation
 
 enum OptionDescriptions: String, CaseIterable, Identifiable {
     /// Each description under its label, wrapped to at most
-    /// `ClaudePanelLayout.fullDescriptionLines` lines. The tallest rows; with
-    /// four long descriptions the options scroll inside the capped panel.
+    /// `ClaudePanelLayout.fullDescriptionLines` lines. The tallest rows; when
+    /// the capped panel can't hold them, the longest descriptions shorten,
+    /// then all of them move beside their labels as under `.oneLine`, so
+    /// every option stays in view (see `ClaudePanelLayout.fit`).
     case full
 
     /// The description beside the label on the same line, cut off where the
     /// row ends. The default: every option keeps one row's height, so four
-    /// fit under the cap with the question on one line.
+    /// always fit under the cap.
     case oneLine
 
-    /// Labels only. The shortest rows, so more fit before the cap.
+    /// Labels only. The shortest rows and the smallest panel.
     case hidden
 
     static let `default`: OptionDescriptions = .oneLine

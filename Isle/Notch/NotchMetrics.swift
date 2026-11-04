@@ -67,12 +67,23 @@ struct NotchMetrics {
     /// Panel height for a question face whose content wants `contentHeight`
     /// (see `ClaudePanelLayout.questionContentHeight`), below a camera housing
     /// `bandHeight` tall. Never shorter than the standard panel, never taller
-    /// than the cap; at the cap the question gives up its second line first,
-    /// and past that the options scroll.
+    /// than the cap. The content is fitted to `questionContentRoom` before it
+    /// gets here — descriptions shortened so every option fits under the cap
+    /// — so it is only ever cut by the cap past what `AskUserQuestion` sends.
     static func questionPanelHeight(contentHeight: CGFloat, bandHeight: CGFloat) -> CGFloat {
-        // The expanded content's top inset (band + 2) and bottom inset (8)
-        // from NotchRootView, then the face.
-        min(questionPanelMaxHeight, max(expandedSize.height, bandHeight + 2 + 8 + ceil(contentHeight)))
+        min(questionPanelMaxHeight, max(expandedSize.height, contentInsets(bandHeight: bandHeight) + ceil(contentHeight)))
+    }
+
+    /// The most the question face's content can have: the cap, less the
+    /// expanded content's insets.
+    static func questionContentRoom(bandHeight: CGFloat) -> CGFloat {
+        questionPanelMaxHeight - contentInsets(bandHeight: bandHeight)
+    }
+
+    /// The expanded content's top inset (band + 2) and bottom inset (8), from
+    /// NotchRootView.
+    private static func contentInsets(bandHeight: CGFloat) -> CGFloat {
+        bandHeight + 2 + 8
     }
 
     /// Fraction of the collapsed width given to music when both music and a
