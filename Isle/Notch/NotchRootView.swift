@@ -54,7 +54,7 @@ struct NotchRootView: View {
                 height: metrics.notchSize.height
             )
         }
-        return CGSize(width: metrics.windowSize(for: state).width, height: expandedHeight + lyricLineHeight)
+        return CGSize(width: metrics.windowSize(for: state).width, height: expandedHeight)
     }
 
     /// The open panel's height: the standard 146, except while a question is
@@ -64,14 +64,6 @@ struct NotchRootView: View {
     private var expandedHeight: CGFloat {
         guard let content = viewModel.questionContentHeight else { return NotchMetrics.expandedSize.height }
         return NotchMetrics.questionPanelHeight(contentHeight: content, bandHeight: notchBandHeight)
-    }
-
-    /// Room the music face takes below the player for its lyric line: only
-    /// while that face is up and a line is in effect, zero everywhere else.
-    /// See `NotchViewModel.showsLyricLine` for when that is.
-    private var lyricLineHeight: CGFloat {
-        guard state.isExpanded, viewModel.expandedTab == .music, viewModel.showsLyricLine else { return 0 }
-        return NotchMetrics.lyricLineHeight
     }
 
     /// The collapsed sides are asymmetric (Claude's side is usually wider), so
@@ -122,11 +114,6 @@ struct NotchRootView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .animation(state.isExpanded ? .notchOpen : .notchClose, value: state)
-        // The lyric line arriving or leaving with the panel open grows or
-        // shrinks it on the same spring. Keyed to the same curve choice as
-        // above so a close that also drops the line can't pick up the
-        // overshooting open spring.
-        .animation(state.isExpanded ? .notchOpen : .notchClose, value: lyricLineHeight)
         // A question arriving while the panel is already open (or leaving it)
         // changes the height without changing the state; give that its own
         // spring rather than a jump. The same curves, by direction.
@@ -158,10 +145,7 @@ struct NotchRootView: View {
                 // physical hardware, and anything placed there is simply
                 // invisible rather than merely obscured.
                 .padding(.top, state.isExpanded ? notchBandHeight + 2 : 0)
-                // The lyric line's room is kept out of the content frame, so
-                // every face lays out in exactly the box it always has; the
-                // music face draws its line into this strip itself.
-                .padding(.bottom, state.isExpanded ? 8 + lyricLineHeight : 0)
+                .padding(.bottom, state.isExpanded ? 8 : 0)
 
             // The face switcher (only when more than one face is on). Inside
             // the ZStack so it clips to the notch outline; opacity-gated so it
@@ -187,10 +171,7 @@ struct NotchRootView: View {
                     tabToggle
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                         .padding(.trailing, Self.tabToggleTrailing)
-                        // Stays where it sits on a panel without lyrics, so
-                        // the line runs underneath it rather than the toggle
-                        // dropping onto the line.
-                        .padding(.bottom, Self.tabToggleBottom + lyricLineHeight)
+                        .padding(.bottom, Self.tabToggleBottom)
                         .opacity(expandedContentOpacity)
                 }
             }

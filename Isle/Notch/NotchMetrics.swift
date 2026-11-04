@@ -52,12 +52,6 @@ struct NotchMetrics {
     /// there — see the x-span note in ExpandedNotchView).
     static let expandedSize = CGSize(width: 520, height: 146)
 
-    /// Height the music face adds below the player for its synced lyric line,
-    /// only while a line is in effect (see `NotchViewModel.showsLyricLine`).
-    /// Added beneath rather than squeezed in: the text column already uses
-    /// all but a few points of the 146 panel.
-    static let lyricLineHeight: CGFloat = 20
-
     /// The tallest the panel ever gets: the question face, while an
     /// `AskUserQuestion` is live in it. Every other face keeps
     /// `expandedSize`. The window is sized to hold this from the start (see
@@ -166,11 +160,7 @@ struct NotchMetrics {
     /// and the *content* animates inside it — resizing an NSWindow every frame
     /// fights the compositor and produces visible tearing on the notch edge.
     var maximumFrame: NSRect {
-        var expanded = windowFrame(for: .hoverExpanded)
-        // The panel hangs down from the top edge, so the lyric line's room is
-        // taken off the bottom.
-        expanded.origin.y -= Self.lyricLineHeight
-        expanded.size.height += Self.lyricLineHeight
+        let expanded = windowFrame(for: .hoverExpanded)
         let collapsed = windowFrame(for: .collapsed)
         // Room for the question face to grow into. Transparent and
         // click-through like the rest of the window outside the drawn notch.

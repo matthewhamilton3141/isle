@@ -50,11 +50,6 @@ final class LyricsClock: ObservableObject {
     /// Supplied by the owner, which keeps the playback anchor.
     var position: (() -> (elapsed: TimeInterval, rate: Double))?
 
-    /// Called when `line` goes between nil and non-nil — i.e. when the first
-    /// line is reached, or the playhead leaves it again. The panel grows
-    /// for the lyric only from there, so the owner re-lays it out.
-    var onStartedChange: (() -> Void)?
-
     /// Lines are shown this much ahead of their stamp. LRC stamps mark where
     /// the voice comes in; a line that arrives with the voice reads as late,
     /// because reading takes a moment the singing doesn't wait for.
@@ -110,8 +105,6 @@ final class LyricsClock: ObservableObject {
 
     private func publish(_ new: Line?) {
         guard new != line else { return }
-        let wasStarted = line != nil
         line = new
-        if (new != nil) != wasStarted { onStartedChange?() }
     }
 }

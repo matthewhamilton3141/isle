@@ -996,12 +996,6 @@ final class NotchViewModel: ObservableObject {
             guard let self else { return (0, 0) }
             return (self.projectedElapsed(at: Date()), self.anchorRate)
         }
-        // The panel grows for the lyric only once a line is in effect (see
-        // `showsLyricLine`); that moment comes from the clock, not from a
-        // publish here, so pass it on.
-        lyricsClock.onStartedChange = { [weak self] in
-            self?.objectWillChange.send()
-        }
 
         // On: look the current track up now rather than at the next track
         // change. Off: drop what's held and cancel what's in flight.
@@ -1611,15 +1605,13 @@ final class NotchViewModel: ObservableObject {
     private var lyricsRequested = false
     private var lyricsTask: Task<Void, Never>?
 
-    /// Whether the music face shows its lyric line, and so whether the panel
-    /// grows for it. Only from the first line on: a track's intro, or the
-    /// playhead dragged back before the first line, leaves the panel at its
-    /// usual height rather than holding an empty band open. A gap later in
-    /// the song keeps the band (and shows nothing in it), so the panel
-    /// doesn't bob at every instrumental break.
-    var showsLyricLine: Bool {
-        guard settings.syncedLyrics, media.hasTrack, let lyrics else { return false }
-        return lyrics.index(at: projectedElapsed(at: Date()) + LyricsClock.lead) != nil
+    /// Whether the music face holds a place for the lyric line: lyrics are
+    /// on and this track has synced lyrics. True for the whole track, intro
+    /// and gaps included, so nothing on the face moves as lines come and go —
+    /// a line turns over in a place that is already there. Changes at most
+    /// twice a track: when the lookup answers, and when the track ends.
+    var showsLyrics: Bool {
+        settings.syncedLyrics && media.hasTrack && lyrics != nil
     }
 
     /// Brings the lyrics in line with `model`: drops them on a track change,
