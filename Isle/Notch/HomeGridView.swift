@@ -70,11 +70,22 @@ struct HomeGridView: View {
                 }
             }
         case .agenda:
-            // Once a minute, like the face: enough for "in 12 min" to count
-            // down and "Now" to arrive as a meeting starts.
-            TimelineView(.periodic(from: .now, by: 60)) { context in
-                HomeTile(title: tab.title, glance: agendaGlance(at: context.date)) {
+            // On the minute, like the face: enough for "in 12 min" to count
+            // down, "Now" to arrive as a meeting starts, and a call's Join to
+            // come forward when it should.
+            TimelineView(.everyMinute) { context in
+                let call = AgendaLayout.joinable(viewModel.agendaItems, at: context.date, lead: viewModel.agendaJoinLead)
+                HomeTile(title: tab.title, glance: agendaGlance(at: context.date, call: call?.0)) {
                     FaceIcon(tab: tab, size: 18)
+                }
+                // A call starting soon or under way: Join from Home, without
+                // going into the face. Its own button, inside the tile's.
+                .overlay(alignment: .topTrailing) {
+                    if let (event, url) = call {
+                        JoinPill(tint: event.color, url: url, compact: true)
+                            .padding(.top, 7)
+                            .padding(.trailing, 7)
+                    }
                 }
             }
         case .shelf:
@@ -217,9 +228,10 @@ struct HomeGridView: View {
 
     // MARK: - Agenda
 
-    /// The next thing left today and when it is.
-    private func agendaGlance(at now: Date) -> TileGlance? {
-        guard let item = viewModel.agendaItems.first else { return nil }
+    /// The next thing left today and when it is — or the call whose Join the
+    /// tile is offering, so the button and the words are about one thing.
+    private func agendaGlance(at now: Date, call: AgendaItem?) -> TileGlance? {
+        guard let item = call ?? viewModel.agendaItems.first else { return nil }
         return .init(item.title, Self.when(item, at: now))
     }
 
