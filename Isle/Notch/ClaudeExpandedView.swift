@@ -72,12 +72,11 @@ struct ClaudeExpandedView: View {
         // dismissing is enabled). contentShape so taps land on the whole card,
         // not just the glyph and text.
         .contentShape(Rectangle())
+        // Not while a field is taking keys: a click meant for the field must
+        // never retract the panel it's typing in. Esc is the way out.
         .onTapGesture {
-            if viewModel.composing != nil {
-                viewModel.endCompose()
-            } else {
-                island.dismissAlert()
-            }
+            guard viewModel.composing == nil else { return }
+            island.dismissAlert()
         }
     }
 
@@ -920,5 +919,9 @@ private struct ComposeField: View {
             // does on the same turn of the run loop that put this on screen.
             DispatchQueue.main.async { focused = true }
         }
+        // Gone from the face for any reason — a swipe to another face, an
+        // approval taking this one — and the keys go back with it, rather
+        // than the panel holding focus for a field nobody can see.
+        .onDisappear(perform: onCancel)
     }
 }
