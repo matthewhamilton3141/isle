@@ -26,9 +26,13 @@
 	  shuffle/repeat commands, so those two controls are routed to it
 	  over AppleScript instead (see MediaRemoteCommands). Without this
 	  key the automation request is denied silently on current macOS.
+	  Terminal and iTerm2 are scripted the same way, by tty, to bring a
+	  Claude Code session's tab forward and to type a reply into it (see
+	  TerminalBridge); the prompt names the app being asked about, so the
+	  string has to cover both uses.
 	-->
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Isle controls shuffle and repeat in Spotify from the notch.</string>
+	<string>Isle controls shuffle and repeat in Spotify, and shows or replies to a Claude Code session in its terminal, from the notch.</string>
 	<!--
 	  Required to observe Bluetooth devices. BluetoothBatteryMonitor registers
 	  for IOBluetooth connect notifications, which counts as a Bluetooth access
