@@ -18,6 +18,11 @@
 //  so its tap is consumed and never falls through to the card's dismiss
 //  gesture.
 //
+//  With more than one live session, the face also flips to a list of them
+//  all (Milestone 16): the other-sessions marks are the way in, a row's
+//  click puts that session on the face, and the eyebrow's chevron is the way
+//  back up.
+//
 
 import SwiftUI
 
@@ -27,6 +32,10 @@ struct ClaudeExpandedView: View {
     @ObservedObject var viewModel: NotchViewModel
     var island: IslandPresentation
     var palette: ArtworkPalette
+
+    /// The height the session list's rows have, as last laid out — so the
+    /// eyebrow can say when they scroll.
+    @State private var sessionRowsRoom: CGFloat = 0
 
     private var state: ClaudeCodeState { viewModel.claudeState }
 
@@ -354,6 +363,7 @@ struct ClaudeExpandedView: View {
     /// count in the eyebrow and the last row fading at the foot to say so.
     private var sessionListFace: some View {
         let rows = viewModel.sessionList
+        let scrolls = sessionRowsRoom > 0 && L.sessionRowsHeight(rows.count) > sessionRowsRoom + 0.5
         return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 5) {
                 Button {
@@ -369,6 +379,12 @@ struct ClaudeExpandedView: View {
                 separator
                 Text("\(rows.count) live")
                     .monospacedDigit()
+                if scrolls {
+                    // More than fit: the rest are a scroll away.
+                    Image(systemName: "arrow.up.and.down")
+                        .imageScale(.small)
+                        .accessibilityLabel("Scrolls")
+                }
                 Spacer(minLength: 6)
                 if viewModel.isKeepingAwake {
                     Label("Mac awake", systemImage: "cup.and.saucer.fill")
@@ -406,6 +422,8 @@ struct ClaudeExpandedView: View {
                     }
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+                .onAppear { sessionRowsRoom = proxy.size.height }
+                .onChange(of: proxy.size.height) { _, height in sessionRowsRoom = height }
             }
             .padding(.bottom, L.sessionListBottomInset)
         }
