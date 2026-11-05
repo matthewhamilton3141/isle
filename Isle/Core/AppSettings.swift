@@ -58,6 +58,7 @@ final class AppSettings: ObservableObject {
     private static let claudeDoneSoundKey = "isle.claudeDoneSound"
     private static let agendaSoundEnabledKey = "isle.agendaSoundEnabled"
     private static let agendaSoundKey = "isle.agendaSound"
+    private static let shelfPathsKey = "isle.shelf.paths"
 
     /// The user's chosen mode, or `nil` until onboarding sets one
     /// (Milestone 2). Persisted on change.
@@ -389,6 +390,19 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    // MARK: - Shelf
+
+    /// The paths on the shelf, oldest first. References, not copies: the
+    /// shelf holds what the user dropped where it already lives, and drops
+    /// anything that has gone from there (see `ShelfStore`). Not published:
+    /// the store publishes its own items, and this is only its disk.
+    var shelfPaths: [String] {
+        didSet {
+            guard shelfPaths != oldValue else { return }
+            defaults.set(shelfPaths, forKey: Self.shelfPathsKey)
+        }
+    }
+
     /// Whether the user has ever picked a mode. Onboarding keys off this.
     var hasChosenMode: Bool { mode != nil }
 
@@ -452,6 +466,7 @@ final class AppSettings: ObservableObject {
             ?? (defaults.object(forKey: Self.legacyPomodoroSoundKey) as? Bool ?? true)
         pomodoroSound = NotificationSound(rawValue: defaults.string(forKey: Self.pomodoroSoundKey) ?? "")
             ?? .fanfare
+        shelfPaths = defaults.stringArray(forKey: Self.shelfPathsKey) ?? []
 
         // A change to the system accent in System Settings changes what
         // `.system` resolves to without either cache key moving. Drop the cache
