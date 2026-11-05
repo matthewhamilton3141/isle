@@ -276,7 +276,6 @@ struct ClaudeExpandedView: View {
         .font(L.commandFont)
         .foregroundStyle(.white.opacity(0.72))
         .frame(height: CGFloat(L.commandLines) * L.commandLine, alignment: .topLeading)
-        // Its second line runs level with the corner toggle in Both mode.
         .padding(.trailing, switcherClearance)
     }
 
@@ -321,13 +320,10 @@ struct ClaudeExpandedView: View {
 
     /// Approve / Deny / Terminal, and "Always…" between Approve and Deny when
     /// Claude Code offered a way to stop asking — Terminal then gives up its
-    /// word to its icon, so the row still clears the corner toggle. On the
-    /// review, just the confirm and the way back.
+    /// word to its icon, so four pills fit the column. On the review, just
+    /// the confirm and the way back.
     private var approvalActions: some View {
         let offersRemember = approval?.remember != nil
-        // Four pills beside the corner toggle: words without their symbols, so
-        // none of them is cut to "Ap…".
-        let compact = offersRemember && viewModel.showsTabToggle
         return HStack(spacing: 8) {
             if offersRemember, viewModel.isReviewingRemember {
                 pill("Confirm", systemImage: "checkmark", fill: .green.opacity(0.85)) {
@@ -337,18 +333,18 @@ struct ClaudeExpandedView: View {
                     viewModel.cancelRemember()
                 }
             } else {
-                pill("Approve", systemImage: "checkmark", fill: .green.opacity(0.85), compact: compact) {
+                pill("Approve", systemImage: "checkmark", fill: .green.opacity(0.85)) {
                     viewModel.decide(allow: true)
                 }
                 if offersRemember {
-                    pill("Always…", systemImage: "infinity", fill: .green.opacity(0.3), compact: compact) {
+                    pill("Always…", systemImage: "infinity", fill: .green.opacity(0.3)) {
                         viewModel.reviewRemember()
                     }
                 }
-                pill("Deny", systemImage: "xmark", fill: .red.opacity(0.85), compact: compact) {
+                pill("Deny", systemImage: "xmark", fill: .red.opacity(0.85)) {
                     viewModel.decide(allow: false)
                 }
-                pill("Terminal", systemImage: "terminal", fill: .white.opacity(0.14), iconOnly: offersRemember, compact: compact) {
+                pill("Terminal", systemImage: "terminal", fill: .white.opacity(0.14), iconOnly: offersRemember) {
                     answerInTerminal()
                 }
             }

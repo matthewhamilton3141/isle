@@ -60,10 +60,6 @@ enum ClaudePanelLayout {
     /// pinned at the panel's top-right (the eyebrow and the title).
     static let waveformClearance: CGFloat = 36
 
-    /// Kept clear at the column's right edge by rows that reach the corner
-    /// face toggle in Both mode (see `NotchRootView.tabToggle`).
-    static let toggleClearance: CGFloat = 44
-
     // MARK: - Rows
 
     static let eyebrowHeight: CGFloat = 14
