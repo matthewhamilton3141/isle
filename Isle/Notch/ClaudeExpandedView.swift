@@ -138,6 +138,19 @@ struct ClaudeExpandedView: View {
                     .minimumScaleFactor(0.8)
                     .truncationMode(.tail)
                     .frame(height: L.detailLine, alignment: .leading)
+            } else if let said = claudeSaid {
+                // Claude's own words: up to two lines, cut at the end of a
+                // sentence where one falls (see `ClaudeDoneLine`), else at
+                // the tail. Never shrunk — it's prose, not a filename.
+                Text(said)
+                    .font(L.detailFont)
+                    .foregroundStyle(.white.opacity(0.72))
+                    .lineLimit(L.saidLines)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.trailing, switcherClearance)
+                    .contentTransition(.opacity)
             } else {
                 Text(detail)
                     .font(L.detailFont)
@@ -203,6 +216,10 @@ struct ClaudeExpandedView: View {
                 Text(hint).fixedSize()
             }
             marks(compact: compactMarks)
+            // On a status face only: a request's own row has Terminal.
+            if jumpIsLone, asking == nil, approval == nil {
+                jumpChip
+            }
         }
     }
 
@@ -419,7 +436,9 @@ struct ClaudeExpandedView: View {
                 onCancel: { viewModel.endCompose() }
             )
         } else {
-            if let target = viewModel.jumpTarget {
+            // Beside the reply field on a terminal Isle can type into; on
+            // any other, Jump is the eyebrow's chip and this row stays empty.
+            if let target = viewModel.jumpTarget, !jumpIsLone {
                 pill(target, systemImage: "arrow.up.forward.app", fill: .white.opacity(0.14)) {
                     viewModel.jumpToSession()
                 }
@@ -437,6 +456,42 @@ struct ClaudeExpandedView: View {
                     Spacer(minLength: 0)
                 }
             }
+        }
+    }
+
+    /// Jump with no reply beside it, ever: the session's terminal can't be
+    /// typed into (Ghostty, VS Code, Cursor, kitty, Warp…) or replying from
+    /// the notch is off. Decided by the host, not the state, so on a
+    /// terminal that does take replies the pill keeps its place in the row
+    /// while the reply field comes and goes beside it.
+    private var jumpIsLone: Bool {
+        viewModel.jumpTarget != nil && !viewModel.repliesFromNotch
+    }
+
+    /// The lone Jump, as a quiet chip: the session's app by name, at the
+    /// eyebrow's trailing end, on the row that already says where the
+    /// session is. Alone in the action row it was a big pill in an empty row,
+    /// bottom-left; here it takes no row of its own and leaves the room
+    /// below to what Claude said. Right of the camera cutout, and inside the
+    /// eyebrow's waveform clearance, so it meets neither.
+    @ViewBuilder
+    private var jumpChip: some View {
+        if let target = viewModel.jumpTarget {
+            Button {
+                viewModel.jumpToSession()
+            } label: {
+                Label(target, systemImage: "arrow.up.forward.app")
+                    .labelStyle(EyebrowLabelStyle())
+                    .foregroundStyle(.white.opacity(0.85))
+                    .padding(.horizontal, 7)
+                    .frame(height: 17)
+                    .background(Capsule().fill(.white.opacity(0.12)))
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .fixedSize()
+            .help("Show this session in \(target)")
+            .accessibilityLabel("Show this session in \(target)")
         }
     }
 
@@ -776,6 +831,16 @@ struct ClaudeExpandedView: View {
         case .done: return "Done"
         case .failed: return "Error"
         case .compacting: return "Compacting"
+        }
+    }
+
+    /// What Claude said last, for the states that follow a finished turn:
+    /// Done, the "Ready" it eases back to, and "Waiting for you". In place of
+    /// the stock line, and only when there are words to quote.
+    private var claudeSaid: String? {
+        switch state {
+        case .done, .idle, .waitingInput: return viewModel.claudeFinalLine
+        default: return nil
         }
     }
 

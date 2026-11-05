@@ -111,8 +111,12 @@ final class ClaudeRequestWatcher {
     private let directoryURL: URL
     private let queue = DispatchQueue(label: "isle.claude-request-watcher", qos: .utility)
 
-    private var directorySource: DispatchSourceFileSystemObject?
+    private var watch: DirectoryWatch?
     private var coalesceTask: Task<Void, Never>?
+    /// One re-sweep, set for when the youngest orphaned response is old
+    /// enough to go. Nothing else is due to look again: the directory may not
+    /// move for hours.
+    private var sweepTask: Task<Void, Never>?
 
     private var lastRequests: [ClaudeRequest] = []
     private var isRunning = false
@@ -154,29 +158,25 @@ final class ClaudeRequestWatcher {
         isRunning = false
         coalesceTask?.cancel()
         coalesceTask = nil
-        directorySource?.cancel()
-        directorySource = nil
+        sweepTask?.cancel()
+        sweepTask = nil
+        watch?.stop()
+        watch = nil
         lastRequests = []
     }
 
     // MARK: - Watch
 
+    /// By path, not by vnode: a reinstall that deletes and recreates
+    /// ~/.isle/requests would otherwise leave this watching the dead
+    /// directory, and no request would reach the notch until a restart.
     private func startDirectoryWatch() {
-        guard directorySource == nil else { return }
-        let fd = open(directoryURL.path, O_EVTONLY)
-        guard fd >= 0 else { return }
-
-        let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: fd,
-            eventMask: [.write, .delete, .rename],
-            queue: queue
-        )
-        source.setEventHandler { [weak self] in
+        guard watch == nil else { return }
+        let watch = DirectoryWatch(url: directoryURL, queue: queue) { [weak self] _ in
             Task { @MainActor in self?.scheduleRefresh() }
         }
-        source.setCancelHandler { close(fd) }
-        directorySource = source
-        source.resume()
+        self.watch = watch
+        watch.start()
     }
 
     private func scheduleRefresh() {
@@ -212,15 +212,39 @@ final class ClaudeRequestWatcher {
         return String(name.dropLast(".json".count))
     }
 
+    /// Removes answers nobody is left to read. One too young to be sure of
+    /// (its hook may be about to take it) is left, and a single re-sweep is
+    /// set for the moment the youngest such one comes of age — removing it
+    /// changes the directory, but nothing else is due to.
     private func sweepOrphanResponses(in names: [String], live: Set<String>) {
         let fm = FileManager.default
+        let now = Date()
+        var nextDue: TimeInterval?
         for name in names where name.hasSuffix(".response.json") {
             let id = String(name.dropLast(".response.json".count))
             guard !live.contains(id) else { continue }
             let url = directoryURL.appendingPathComponent(name)
-            let modified = (try? fm.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date
-            guard let modified, Date().timeIntervalSince(modified) > Self.orphanResponseAge else { continue }
-            try? fm.removeItem(at: url)
+            guard let modified = (try? fm.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date else {
+                continue
+            }
+            let age = now.timeIntervalSince(modified)
+            if age > Self.orphanResponseAge {
+                try? fm.removeItem(at: url)
+            } else {
+                let due = Self.orphanResponseAge - age
+                nextDue = min(nextDue ?? due, due)
+            }
+        }
+
+        sweepTask?.cancel()
+        sweepTask = nil
+        guard let nextDue else { return }
+        sweepTask = Task { [weak self] in
+            // A beat past the limit, so the file is strictly older by then.
+            try? await Task.sleep(for: .seconds(nextDue + 0.25))
+            guard !Task.isCancelled, let self else { return }
+            self.sweepTask = nil
+            self.refresh()
         }
     }
 

@@ -125,6 +125,15 @@ final class NotchViewModel: ObservableObject {
     /// countdown; the display eases back to idle at this moment. Nil when unknown.
     @Published private(set) var claudeResetAt: Date?
 
+    /// The start of what Claude said at the end of its last turn, as the face
+    /// and the home tile show it (see `ClaudeDoneLine`). Read from the
+    /// session's record, which carries the message from `Stop` until the next
+    /// prompt — so it stays through the checkmark easing back to "Ready" and
+    /// the "waiting for your input" nudge, and goes the moment a new turn
+    /// starts. Nil when the turn ended with nothing to quote (only code, or
+    /// no text), and on a helper older than v10.
+    @Published private(set) var claudeFinalLine: String?
+
     /// When the last Claude status change arrived, for the "… ago" line in the
     /// Claude expanded view. `nil` when disconnected.
     @Published private(set) var claudeUpdatedAt: Date?
@@ -419,7 +428,7 @@ final class NotchViewModel: ObservableObject {
               let session = claudeSessions.first(where: { $0.sessionId == id }),
               // No readable transcript is no second signal — leave the record
               // alone rather than guess.
-              let tail = transcriptTail(for: session)
+              let tail = transcriptTails[id]
         else {
             return status
         }
@@ -466,8 +475,8 @@ final class NotchViewModel: ObservableObject {
             return status
         }
         guard let id = status.sessionId,
-              let session = claudeSessions.first(where: { $0.sessionId == id }),
-              let tail = transcriptTail(for: session),
+              claudeSessions.contains(where: { $0.sessionId == id }),
+              let tail = transcriptTails[id],
               tail.interrupted
         else {
             return status
@@ -499,12 +508,12 @@ final class NotchViewModel: ObservableObject {
     ///
     /// Not published: no view reads it, and it changes with every CLI status
     /// flip, so publishing it would invalidate the whole notch on each one for
-    /// nothing. Selection re-runs on the change (see `onSessions`) and
-    /// publishes through `claudeState` only when the result differs.
+    /// nothing. Selection re-runs with each read and publishes through
+    /// `claudeState` only when the result differs.
     ///
-    /// Only as fresh as the last `sessionRegistry.refresh()` — the directory
-    /// watch sees sessions start and exit, not status changes — so selection
-    /// paths refresh it before reading.
+    /// Only as fresh as the last background read — the directory watch sees
+    /// sessions start and exit, not status changes — so every selection path
+    /// re-reads it first (`requestClaudeReading`).
     private var claudeSessions: [ClaudeSession] = []
 
     private var reselectTimer: Timer?
@@ -541,22 +550,124 @@ final class NotchViewModel: ObservableObject {
         guard reselectTimer == nil else { return }
         let timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self else { return }
                 // The registry's watch misses in-place rewrites and killed
-                // pids, so the tick is also what keeps it current.
-                self.sessionRegistry.refresh()
-                self.updateKeepAwake()
-                // Apply only on a real change, so an unchanged state doesn't
+                // pids, so the tick is also what keeps it current. Applied
+                // only on a real change of state, so an unchanged one doesn't
                 // re-render the island every tick.
-                let resolved = self.selectStatus(from: self.claudeStatuses)
-                guard resolved.state != self.claudeState else { return }
-                self.applyClaudeStatus(resolved)
+                self?.requestClaudeReading(.tick)
             }
         }
         // Coarse by design, so it can afford to be coalesced with whatever
         // else wakes the process.
         timer.tolerance = 1
         reselectTimer = timer
+    }
+
+    // MARK: - Reading Claude's state, off the main thread
+
+    /// The transcript's last conversation entry, as `reconciled` needs it.
+    struct TranscriptTail: Equatable {
+        /// A `user` turn the model still owes a response to.
+        let awaitingModel: Bool
+        /// The marker an interrupt (Esc) leaves.
+        let interrupted: Bool
+        let at: Date
+    }
+
+    /// One background pass: the registry, and the transcript tail of every
+    /// session whose record reconciliation may have to correct.
+    private struct ClaudeReading {
+        let sessions: [ClaudeSession]
+        let tails: [String: TranscriptTail]
+    }
+
+    /// Each live session's transcript tail, as the last background pass read
+    /// it. Only for the sessions `reconciled` consults — working, or showing a
+    /// prompt no hook is waiting on. Selection reads this, never the disk.
+    private var transcriptTails: [String: TranscriptTail] = [:]
+
+    /// Where the registry and transcript tails are read. Serial, so passes
+    /// finish in the order they were asked for.
+    private let claudeReadQueue = DispatchQueue(label: "isle.claude-read", qos: .utility)
+
+    /// Bumped by every pass asked for, and when the bridge stops. A pass
+    /// applies only if it is still the newest when it lands: the newest
+    /// event always wins, and a pass that read the disk before it never
+    /// overwrites one that read it after.
+    private var claudeReadGeneration = 0
+
+    /// Whether a pending pass was asked for by an event, which applies
+    /// whatever selection resolves, rather than by the tick alone, which
+    /// applies only a change of state. Survives a superseded pass, so an
+    /// event's apply can't be lost to a tick that overtook it.
+    private var claudeReadWantsApply = false
+
+    private enum ClaudeReadCause { case event, tick }
+
+    /// Re-reads the registry and the transcript tails off the main thread,
+    /// then re-runs selection on the main thread with what it found. Every
+    /// path that used to re-select in place — a status, a request, the
+    /// registry, the tick — comes through here, so the decoding and the
+    /// transcript parsing (megabytes of JSON lines, `split` and all) never
+    /// run on the main thread.
+    private func requestClaudeReading(_ cause: ClaudeReadCause = .event) {
+        guard claudeRunning else { return }
+        claudeReadGeneration += 1
+        if cause == .event { claudeReadWantsApply = true }
+        let generation = claudeReadGeneration
+        let statuses = claudeStatuses
+        let waitingRequests = Set(claudeRequests.map(\.id))
+        let registryURL = sessionRegistry.directoryURL
+        claudeReadQueue.async { [weak self] in
+            let reading = Self.readClaude(statuses: statuses, waitingRequests: waitingRequests,
+                                          registryURL: registryURL)
+            Task { @MainActor in
+                self?.applyClaudeReading(reading, generation: generation)
+            }
+        }
+    }
+
+    /// The read itself, on `claudeReadQueue`.
+    nonisolated private static func readClaude(statuses: [ClaudeStatus], waitingRequests: Set<String>,
+                                               registryURL: URL) -> ClaudeReading {
+        let sessions = ClaudeSessionRegistry.scan(registryURL)
+        var tails: [String: TranscriptTail] = [:]
+        for status in statuses where status.state == .working || status.state.isAttention {
+            guard let id = status.sessionId, tails[id] == nil,
+                  let session = sessions.first(where: { $0.sessionId == id })
+            else { continue }
+            // A prompt a hook is still blocked on is up for certain; its
+            // transcript has nothing to add (see `reconciledPrompt`).
+            if status.state.isAttention, let request = status.requestId, waitingRequests.contains(request) {
+                continue
+            }
+            tails[id] = transcriptTail(cwd: session.cwd, sessionId: id)
+        }
+        return ClaudeReading(sessions: sessions, tails: tails)
+    }
+
+    private func applyClaudeReading(_ reading: ClaudeReading, generation: Int) {
+        // A newer pass is on its way, or the bridge stopped since.
+        guard claudeRunning, generation == claudeReadGeneration else { return }
+        let applyAny = claudeReadWantsApply
+        claudeReadWantsApply = false
+
+        let sessionsChanged = reading.sessions != claudeSessions
+        claudeSessions = reading.sessions
+        transcriptTails = reading.tails
+
+        // A request that came or went shows (or retires) its buttons here,
+        // after the same hops as the status that goes with it — so a click's
+        // `working` and its request leaving land in the order they were
+        // written, and the bare prompt never flashes between them.
+        refreshPendingRequest()
+        let resolved = selectStatus(from: claudeStatuses)
+        if applyAny || resolved.state != claudeState {
+            applyClaudeStatus(resolved)
+        }
+        updateKeepAwake()
+        // The island's session may only now have a pid to resolve.
+        if sessionsChanged { updateSessionHost() }
     }
 
     /// The transcript's last timestamped entry: whether it leaves the model
@@ -567,23 +678,14 @@ final class NotchViewModel: ObservableObject {
     /// is called on a timer. Entries without a timestamp (`file-history-snapshot`
     /// and friends) are skipped rather than treated as the end, since they're
     /// interleaved with the real ones.
-    private func transcriptTail(for session: ClaudeSession) -> (awaitingModel: Bool, interrupted: Bool, at: Date)? {
-        let slug = session.cwd.replacingOccurrences(of: "/", with: "-")
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/projects/\(slug)/\(session.sessionId).jsonl")
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
-        defer { try? handle.close() }
-
-        guard let end = try? handle.seekToEnd() else { return nil }
-        let window: UInt64 = 64 * 1024
-        try? handle.seek(toOffset: end > window ? end - window : 0)
-        guard let data = try? handle.readToEnd(),
-              let text = String(data: data, encoding: .utf8)
-        else { return nil }
-
-        for line in text.split(separator: "\n").reversed() {
-            guard let lineData = line.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+    ///
+    /// Line by line from the end, on the bytes: the window's first line is
+    /// cut short (and may start inside a multi-byte character, which made the
+    /// whole window fail to decode as one string), and only the last few
+    /// lines are ever needed.
+    nonisolated static func transcriptTail(cwd: String, sessionId: String) -> TranscriptTail? {
+        for line in transcriptLines(cwd: cwd, sessionId: sessionId) {
+            guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
                   let type = object["type"] as? String,
                   // Only conversation turns answer the question. The transcript
                   // is interleaved with bookkeeping — `queue-operation`,
@@ -592,7 +694,7 @@ final class NotchViewModel: ObservableObject {
                   // make an unanswered turn look answered.
                   type == "user" || type == "assistant",
                   let stamp = object["timestamp"] as? String,
-                  let at = Self.transcriptDate(stamp)
+                  let at = transcriptDate(stamp)
             else { continue }
             // A `user` entry is either a fresh prompt or a tool result; both
             // leave the model owing output. An `assistant` entry means it has
@@ -600,12 +702,62 @@ final class NotchViewModel: ObservableObject {
             // synthetic `user` entry and fires no hook at all, so reading it as
             // an outstanding turn is precisely what pins the island on
             // `Thinking` with nothing running.
-            let interrupted = type == "user" && Self.isInterruption(object)
-            return (
-                awaitingModel: type == "user" && !interrupted,
-                interrupted: interrupted,
-                at: at
-            )
+            let interrupted = type == "user" && isInterruption(object)
+            return TranscriptTail(awaitingModel: type == "user" && !interrupted,
+                                  interrupted: interrupted, at: at)
+        }
+        return nil
+    }
+
+    /// The complete lines in the last 64 KB of a session's transcript, newest
+    /// first. Empty when there's no transcript to read.
+    nonisolated private static func transcriptLines(cwd: String, sessionId: String) -> [Data] {
+        guard let url = transcriptURL(cwd: cwd, sessionId: sessionId),
+              let handle = try? FileHandle(forReadingFrom: url)
+        else { return [] }
+        defer { try? handle.close() }
+
+        guard let end = try? handle.seekToEnd() else { return [] }
+        let window: UInt64 = 64 * 1024
+        let start = end > window ? end - window : 0
+        try? handle.seek(toOffset: start)
+        guard let data = try? handle.readToEnd() else { return [] }
+
+        var lines = data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true)
+        // Starting mid-file, the first line is a fragment.
+        if start > 0, !lines.isEmpty { lines.removeFirst() }
+        return lines.reversed().map { Data($0) }
+    }
+
+    /// A session's transcript, as Claude Code files it: under
+    /// ~/.claude/projects, in a folder named for the working directory with
+    /// every character but an ASCII letter or digit turned into "-" (one per
+    /// UTF-16 unit, as its JavaScript does). Only "/" used to be replaced
+    /// here, so a session in a folder with a dot, an underscore or a space in
+    /// its path — `~/.config`, `my_app`, `Side Projects` — had no transcript
+    /// as far as Isle could see, and neither the interrupt check nor reply
+    /// confirmation worked for it. A very long path is shortened by Claude
+    /// Code with a hash on the end; that folder is found by its prefix.
+    nonisolated static func transcriptURL(cwd: String, sessionId: String) -> URL? {
+        let projects = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects", isDirectory: true)
+        let slug = String(String.UnicodeScalarView(cwd.utf16.map { unit -> Unicode.Scalar in
+            let scalar = Unicode.Scalar(UInt8(truncatingIfNeeded: unit))
+            let alphanumeric = unit < 0x80
+                && (("a"..."z").contains(scalar) || ("A"..."Z").contains(scalar) || ("0"..."9").contains(scalar))
+            return alphanumeric ? scalar : "-"
+        }))
+        let file = "\(sessionId).jsonl"
+        let direct = projects.appendingPathComponent(slug).appendingPathComponent(file)
+        if FileManager.default.fileExists(atPath: direct.path) { return direct }
+
+        guard slug.count > 100,
+              let folders = try? FileManager.default.contentsOfDirectory(atPath: projects.path)
+        else { return nil }
+        let prefix = String(slug.prefix(100))
+        for folder in folders where folder.hasPrefix(prefix) {
+            let candidate = projects.appendingPathComponent(folder).appendingPathComponent(file)
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
         }
         return nil
     }
@@ -614,7 +766,7 @@ final class NotchViewModel: ObservableObject {
     /// user interrupts a turn ("[Request interrupted by user]", and the
     /// "…for tool use" variant). It arrives as a `user` entry but terminates a
     /// turn rather than opening one.
-    private static func isInterruption(_ object: [String: Any]) -> Bool {
+    nonisolated private static func isInterruption(_ object: [String: Any]) -> Bool {
         guard let message = object["message"] as? [String: Any] else { return false }
         let texts: [String]
         if let text = message["content"] as? String {
@@ -627,15 +779,12 @@ final class NotchViewModel: ObservableObject {
         return texts.contains { $0.hasPrefix("[Request interrupted") }
     }
 
-    private static let transcriptFormatter: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-
-    private static func transcriptDate(_ string: String) -> Date? {
-        transcriptFormatter.date(from: string)
-            ?? ISO8601DateFormatter().date(from: string)
+    nonisolated private static func transcriptDate(_ string: String) -> Date? {
+        // Formatters per call: this runs on the read queue and in reply
+        // confirmation, and making one is cheap next to the read.
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: string) ?? ISO8601DateFormatter().date(from: string)
     }
 
     private func stopReselectTimer() {
@@ -662,7 +811,9 @@ final class NotchViewModel: ObservableObject {
     /// exactly the SIGKILL residue that would otherwise pin the Mac awake
     /// forever. Holding a power assertion needs a process Isle can see.
     private func updateKeepAwake() {
+        let before = liveSessionStates
         liveSessionStates = readLiveSessionStates()
+        announceBackgroundFinishes(since: before)
         let wasHeld = keepAwake.isHeld
         keepAwake.setHeld(settings.keepAwakeWhileWorking && claudeRunning
                           && liveSessionStates.values.contains(.working))
@@ -700,6 +851,21 @@ final class NotchViewModel: ObservableObject {
                 : status.state
         }
         return states
+    }
+
+    /// A toast for each session the island isn't showing that has just
+    /// finished a turn — from mid-turn to `done`, as its own `Stop` wrote it,
+    /// never inferred. The island's own session says "Done" itself, and a
+    /// turn that ended any other way (an interrupt reconciled to idle, an
+    /// error) isn't a finish. Only between two readings that both saw the
+    /// session, so nothing is announced at launch.
+    private func announceBackgroundFinishes(since before: [String: ClaudeCodeState]) {
+        let midTurn: Set<ClaudeCodeState> = [.working, .compacting, .needsApproval, .needsQuestion]
+        for (id, state) in liveSessionStates where state == .done && id != claudeSessionId {
+            guard let previous = before[id], midTurn.contains(previous) else { continue }
+            let project = claudeStatuses.first { $0.sessionId == id }?.project
+            enqueueToast(.sessionDone(sessionId: id, project: project.flatMap { $0.isEmpty ? nil : $0 }))
+        }
     }
 
     /// The last `readLiveSessionStates`. Re-read with the keep-awake decision
@@ -958,41 +1124,30 @@ final class NotchViewModel: ObservableObject {
             self.claudeStatuses = statuses
             // Selection reads the registry's `status` and session ids, which
             // the CLI rewrites in place where the registry's watch can't see
-            // it. Re-read it now: a snapshot left at `idle` from before the
-            // prompt makes `reconciled` retire a turn that is still running,
-            // and one holding an outdated session id would filter the live
-            // session out.
-            // (A change publishes through `onSessions`, which re-selects; the
-            // apply below is then a no-op.)
-            self.sessionRegistry.refresh()
-            self.applyClaudeStatus(self.selectStatus(from: statuses))
-            self.updateKeepAwake()
+            // it, so the read re-scans it: a snapshot left at `idle` from
+            // before the prompt makes `reconciled` retire a turn that is still
+            // running, and one holding an outdated session id would filter the
+            // live session out.
+            self.requestClaudeReading()
         }
 
         requestWatcher.onRequests = { [weak self] requests in
             guard let self else { return }
             self.claudeRequests = requests
-            self.refreshPendingRequest()
             // A request that disappears with no status write behind it is a
             // hook Claude Code cancelled — Esc on its prompt. Re-select so an
             // interrupted prompt stops asking (see `reconciledPrompt`); the
             // reselect timer catches it if the transcript marker lands after
-            // this.
-            self.sessionRegistry.refresh()
-            self.applyClaudeStatus(self.selectStatus(from: self.claudeStatuses))
+            // this. The buttons themselves update when the read lands.
+            self.requestClaudeReading()
         }
 
-        sessionRegistry.onSessions = { [weak self] sessions in
-            guard let self else { return }
-            self.claudeSessions = sessions
+        sessionRegistry.onChange = { [weak self] in
             // A session dropping out of the registry is dead for real — its pid
             // is gone. A clean exit removes its status file too, but a SIGKILL
             // fires no SessionEnd, so the file lingers and no status event will
             // ever arrive. Re-running selection here is what retires it.
-            self.applyClaudeStatus(self.selectStatus(from: self.claudeStatuses))
-            self.updateKeepAwake()
-            // The island's session may only now have a pid to resolve.
-            self.updateSessionHost()
+            self?.requestClaudeReading()
         }
 
         power.onEvent = { [weak self] toast in
@@ -1147,6 +1302,7 @@ final class NotchViewModel: ObservableObject {
         case .calendar: return settings.showCalendarEvents
         case .reminders: return settings.showReminders
         case .fileDrag: return true
+        case .claudeSessions: return claudeRunning
         }
     }
 
@@ -1228,6 +1384,8 @@ final class NotchViewModel: ObservableObject {
             claudeWatcher.start()
             requestWatcher.start()
             sessionRegistry.start()
+            // The registry, even if no status file ever publishes.
+            requestClaudeReading()
         } else {
             claudeWatcher.stop()
             requestWatcher.stop()
@@ -1237,6 +1395,10 @@ final class NotchViewModel: ObservableObject {
             publishKeepAwake()
             liveSessionStates = [:]
             otherSessions = ClaudeOtherSessions()
+            // Drop any read still in flight.
+            claudeReadGeneration += 1
+            claudeReadWantsApply = false
+            transcriptTails = [:]
             claudeSessions = []
             claudeStatuses = []
             claudeRequests = []
@@ -1263,6 +1425,7 @@ final class NotchViewModel: ObservableObject {
             claudeTarget = nil
             claudeErrorType = nil
             claudeResetAt = nil
+            claudeFinalLine = nil
             claudeUpdatedAt = nil
         }
         updateAnsweringMarker()
@@ -1364,6 +1527,8 @@ final class NotchViewModel: ObservableObject {
         claudeErrorType = status.errorType
         claudeToolActive = status.toolActive
         claudeResetAt = status.resetAt
+        let finalLine = ClaudeDoneLine.line(from: status.lastMessage)
+        if claudeFinalLine != finalLine { claudeFinalLine = finalLine }
         claudeUpdatedAt = status.state == .disconnected ? nil : Date()
         claudeRequestId = status.requestId
         refreshPendingRequest()
@@ -1987,8 +2152,15 @@ final class NotchViewModel: ObservableObject {
     /// prompt as far as the island knows, and its terminal is one Isle can
     /// type into without focusing it. The stricter checks run at Send.
     var canReply: Bool {
-        settings.answerFromNotch && pendingRequest == nil
-            && sessionHost?.typingRoute != nil && Self.isAtPrompt(claudeState)
+        repliesFromNotch && pendingRequest == nil && Self.isAtPrompt(claudeState)
+    }
+
+    /// Whether this session's row ever holds a reply: the setting is on and
+    /// its terminal can be typed into. Not whether it can right now — that's
+    /// `canReply`, which comes and goes with the state. The face places Jump
+    /// by this, so the pill doesn't move when the reply field appears.
+    var repliesFromNotch: Bool {
+        settings.answerFromNotch && sessionHost?.typingRoute != nil
     }
 
     /// States in which Claude Code is waiting for the next prompt.
@@ -2081,8 +2253,9 @@ final class NotchViewModel: ObservableObject {
         deliveryTask?.cancel()
 
         let sessionId = session.sessionId
-        sessionRegistry.refresh()
-        guard let fresh = claudeSessions.first(where: { $0.sessionId == sessionId }),
+        // Read now, at the click: the CLI rewrites its record in place, and
+        // only a fresh read says it is at its prompt.
+        guard let fresh = sessionRegistry.currentSessions().first(where: { $0.sessionId == sessionId }),
               fresh.status == .idle
         else {
             replyDelivery = .failed(text: text, reason: "Claude isn't at its prompt right now")
@@ -2131,7 +2304,13 @@ final class NotchViewModel: ObservableObject {
         for _ in 0..<16 {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
-            if Self.transcriptHasHumanTurn(text, session: session, since: since) {
+            // Off the main thread: the read and the JSON are the transcript's.
+            let cwd = session.cwd, id = session.sessionId
+            let found = await Task.detached(priority: .userInitiated) {
+                Self.transcriptHasHumanTurn(text, cwd: cwd, sessionId: id, since: since)
+            }.value
+            guard !Task.isCancelled else { return }
+            if found {
                 replyDelivery = .sent(text)
                 return
             }
@@ -2166,7 +2345,7 @@ final class NotchViewModel: ObservableObject {
     }
 
     /// One line: a Return inside the text would submit the half before it.
-    private static func oneLine(_ text: String) -> String {
+    nonisolated private static func oneLine(_ text: String) -> String {
         text.components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
@@ -2177,20 +2356,10 @@ final class NotchViewModel: ObservableObject {
     /// by a person that ends with `text`. "Ends with": anything the user had
     /// already typed in the prompt is sent along with it, and that still
     /// delivered the reply.
-    private static func transcriptHasHumanTurn(_ text: String, session: ClaudeSession, since: Date) -> Bool {
-        let slug = session.cwd.replacingOccurrences(of: "/", with: "-")
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/projects/\(slug)/\(session.sessionId).jsonl")
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
-        defer { try? handle.close() }
-        guard let end = try? handle.seekToEnd() else { return false }
-        let window: UInt64 = 64 * 1024
-        try? handle.seek(toOffset: end > window ? end - window : 0)
-        guard let data = try? handle.readToEnd(), let tail = String(data: data, encoding: .utf8) else { return false }
-
-        for line in tail.split(separator: "\n").reversed() {
-            guard let lineData = line.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+    nonisolated private static func transcriptHasHumanTurn(_ text: String, cwd: String, sessionId: String,
+                                                           since: Date) -> Bool {
+        for line in transcriptLines(cwd: cwd, sessionId: sessionId) {
+            guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
                   object["type"] as? String == "user",
                   let stamp = object["timestamp"] as? String,
                   let at = transcriptDate(stamp)
@@ -3022,8 +3191,11 @@ extension NotchViewModel {
         sessionHost = fixture.host
         composing = fixture.composing
         replyDelivery = fixture.delivery
-        // In the face, not on the home grid, whatever the suite last had.
-        isHome = false
+        claudeFinalLine = ClaudeDoneLine.line(from: fixture.lastMessage)
+        if let toast = fixture.toast { pinPreviewToast(toast) }
+        // In the face, not on the home grid, whatever the suite last had —
+        // unless the fixture is the grid's.
+        isHome = fixture.home
         if let id = claudeSessionId { replyDrafts[id] = fixture.replyDraft.isEmpty ? nil : fixture.replyDraft }
         answerDraft = fixture.answerDraft
         denialDraft = fixture.denialDraft

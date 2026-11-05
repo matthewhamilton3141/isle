@@ -113,6 +113,24 @@ original report, not the report itself.
   displayed state, so a stuck background record also stops outranking the
   session the user is actually watching.
 
+### Review fixes (`feature/claude-done-and-watch-fixes`, 2026-11-05)
+
+| Was | Now |
+|---|---|
+| Every watch (`~/.isle/requests`, `~/.isle/sessions`, `~/.claude/sessions`) held its directory's vnode. Delete and recreate the directory (a reinstall, `rm -rf ~/.isle`) and the watch stayed on the dead one: no request, status or session reached the island until a stop/start. The registry also never watched at all if Claude Code created `~/.claude/sessions` after Isle started. | `DirectoryWatch` follows the path. On `.delete`/`.rename`/`.revoke` it re-arms on whatever is at the path; while the directory is missing it watches the nearest ancestor that exists and walks back down as each level reappears. It re-checks once the watch has registered (by inode), because a directory unlinked between `open` and registration never reports its own deletion — that race is real, mid-`rm -rf`. No timers. |
+| An orphaned `*.response.json` under 5s old was skipped and only swept on the next directory event, which might never come. | The sweep sets one re-sweep for when the youngest orphan comes of age. |
+| While Claude was active, every status event decoded every session file, re-scanned the registry and parsed transcript tails with `split` on the main thread, twice (selection, then keep-awake). | `ClaudeStatusWatcher` scans on its own queue and publishes only if still the newest (generation counter). Every re-selection path — status, request, registry, tick — asks for one background read of the registry and the tails `reconciled` needs; selection runs on main against that, and a superseded read is dropped. An event's apply survives a tick that overtakes it. Request changes reach the buttons through the same read, so a click's `working` and its request leaving land in write order. Reply confirmation reads off main too. |
+| The transcript path replaced only `/` in the cwd. Claude Code replaces every non-alphanumeric character (`/private/…/my_dir.v2 sp` → `…-my-dir-v2-sp`), so a session under a path with a dot, underscore or space had no transcript for Isle: no interrupt reconciliation, and reply confirmation always failed. | `transcriptURL` uses Claude Code's rule (per UTF-16 unit), and finds a very long path's hashed folder by prefix. |
+| The 64 KB tail window could start inside a multi-byte character, and then the whole window failed to decode as one string. | Lines are split on bytes; the partial first line is dropped. |
+
+Verified: a watcher test against a scratch tree (13 checks: write, directory
+deleted, recreated, all of `~/.isle` deleted and recreated, renamed away,
+requests recreated, young orphan kept then swept with no further event,
+registry created late and recreated, stop drops in-flight scans, restart
+rescans), three runs clean. The pre-fix watcher fails the recreate check.
+Transcript tails read correctly for a real session under `my_dir.v2 sp`
+(~1 ms per read, now off main).
+
 ### Verified
 
 A forced retry storm (local always-500 server via `ANTHROPIC_BASE_URL`) held the
@@ -1131,6 +1149,105 @@ capsule clean.
   focus does.
 - **Focusing a kept draft selects it all** (the AppKit default), so typing
   replaces it.
+
+### Lone Jump (2026-11-05)
+
+Matthew found Jump awkward where it's the only action: a big pill alone at
+the bottom-left of an empty row. Three placements were rendered for Done,
+Working and Waiting, single face and Both (`lj_*` fixtures):
+
+- **(a) a chip at the eyebrow's trailing end** — chosen. It sits on the row
+  that already says where the session is, right of the camera cutout and
+  inside the waveform clearance, and gives way to nothing (the eyebrow
+  drops the elapsed time and the cup's word first). The action row is
+  simply empty, which leaves the room to what Claude said (M15).
+- (b) inline after the detail: with a two-line M15 message it pushed the
+  stack up, and the eyebrow rose to within 4pt of the band. Rejected.
+- (c) right-aligned in the row: reads as a primary button, and is still a
+  pill alone in a row.
+
+Placement is decided by the host, not the state (`repliesFromNotch`): on a
+terminal Isle can type into, Jump keeps its place in the row while the
+reply field comes and goes beside it, so nothing moves between Working and
+Done. The chip is for hosts that never take a reply (Ghostty, VS Code,
+Cursor, kitty, Warp), or when replying from the notch is off.
+
+## Milestone 15 — Done says what happened
+
+From Field scan 2: a competitor shows what an agent did when it finishes.
+The `Stop` hook's stdin carries `last_assistant_message`, so Isle can show
+the start of what Claude actually said — never a summary Isle invents.
+
+### The payload (Claude Code 2.1.318, captured)
+
+`Stop` stdin, one line, `JSON.stringify` shape: `session_id`,
+`transcript_path`, `cwd`, `prompt_id`, `permission_mode`, `effort`,
+`hook_event_name`, `stop_hook_active`, `last_assistant_message`,
+`background_tasks`, `session_crons`. The message is only the final text
+block: in a turn that used tools it's the closing sentence, with no tool
+noise. Non-ASCII arrives raw (UTF-8); quotes, backslashes, tabs and
+newlines as escapes. Same shape in `-p` and interactive sessions.
+
+### The helper (v10)
+
+- A `Stop` writes `last_message`: the first 300 characters, **kept in the
+  JSON-escaped form Claude Code sent** — so the script never escapes it
+  again — cut on whole tokens (an escape, or one character under a UTF-8
+  locale) with a `grep -E` of two runs of 150 (255 is the most one repeat
+  counts). A cut can't land inside an escape or a multi-byte character, a
+  bare quote or backslash can't get through, and a `\u` escape for half a
+  surrogate pair isn't a token, so the excerpt ends before one. A raw DEL
+  is dropped, and anything still not valid UTF-8 (`iconv`) drops the
+  excerpt. ~40 ms per Stop on a 60 KB message.
+- The idle nudge (`waiting_input`) copies `last_message` from the record
+  verbatim; a new prompt's `working` drops it.
+- The project name is now escaped (`json_escape`, pure bash): a `"` in a
+  folder name used to make the whole record unreadable.
+- Verified with 44 hostile payloads under a scratch HOME (quotes,
+  backslashes, `\n`/`\r`/`\t`, control characters and ANSI, emoji and ZWJ
+  sequences, flags, combining marks, RTL, `$(…)` and backticks, a fake
+  nested key, every escape and multi-byte character at the 298–300
+  boundary, lone and paired surrogate escapes, pretty-printed and missing
+  keys, hostile project names) plus every real capture: all valid JSON,
+  every excerpt an exact prefix of the message. Round trip through Isle's
+  own decoder (`ClaudeStatusWatcher.decode`) exact for real interactive
+  Stops and the carried nudge.
+
+### Isle
+
+- `ClaudeDoneLine` turns the excerpt into the face's line: the first line
+  of prose (a heading only if nothing else; a line ending in `:` carries on
+  into the one it introduces), Markdown taken off (emphasis, links, lists,
+  quotes, backticks; `snake_case` and `__init__.py` survive), cut at the
+  end of a sentence when one ends within ~two lines, else truncated at the
+  tail — with "…" when the helper's 300-character cut lands in the line.
+  Code blocks (fenced, or cut off before their closing fence), rules and
+  control characters are left out. Only code, or no text → nil.
+- The detail line shows it for Done, the Ready it eases back to, and
+  Waiting for you, up to two lines, in place of the stock line only when
+  there are words. The home grid's Claude tile uses it too.
+- **Toast:** the island's own session already says "Done" collapsed, so
+  it gets none. A session the island isn't showing — which used to finish
+  silently — gets one, naming its project: `isle-website · done`.
+
+### Renders
+
+`done-renders/after_m15_*`: short, long, Markdown, list, hostile and
+code-only messages; Ready and Waiting after a turn; Terminal (with Reply),
+Ghostty, crowded eyebrow; Both; home tile (short, long, code-only); the
+background toast (short and long project).
+
+### Decisions to confirm
+
+- **Claude's words stay through Ready and Waiting**, not just the few
+  seconds of Done, until the next prompt. Without that the line is visible
+  only for `doneToastSeconds`.
+- **Plain text, not quoted.** The face doesn't mark the line as Claude's
+  words beyond its place under "Done".
+- **A first sentence under 24 characters** ("Done.") takes the next one
+  with it.
+- **The background toast** has no setting of its own; it's on whenever the
+  bridge is.
 
 ## Milestone 8 — Multi-Display  ✅
 

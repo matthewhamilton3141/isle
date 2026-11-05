@@ -118,6 +118,10 @@ enum ClaudePanelLayout {
     /// with its length.
     static let commandLines = 2
 
+    /// What Claude said last, on a status face (Milestone 15): two lines at
+    /// most, in the room the status face has to spare above its action row.
+    static let saidLines = 2
+
     // MARK: - Options
 
     static let optionGap: CGFloat = 3

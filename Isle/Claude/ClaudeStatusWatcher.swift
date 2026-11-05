@@ -62,6 +62,11 @@ struct ClaudeStatus: Equatable {
     /// its request (see ClaudeRequestWatcher). Any other write clears it, which
     /// is half of how a request that resolved elsewhere retires its buttons.
     var requestId: String?
+    /// For `.done`, the start of what Claude said last: up to 300 characters
+    /// of its final message, as the `Stop` hook carried it. Raw — the face
+    /// takes its first sentence (see `ClaudeDoneLine`). Nil when there was
+    /// nothing to quote, or on a helper older than v10.
+    var lastMessage: String?
 
     static let disconnected = ClaudeStatus(state: .disconnected, project: nil, sessionId: nil)
 }
@@ -73,13 +78,21 @@ final class ClaudeStatusWatcher {
     var onStatuses: (([ClaudeStatus]) -> Void)?
 
     private let directoryURL: URL
+    /// Where the watch's events land, and where every scan runs: reading and
+    /// decoding each session file is file I/O and JSON, and none of it needs
+    /// the main thread. Serial, so scans run in the order they were asked for.
     private let queue = DispatchQueue(label: "isle.claude-status-watcher", qos: .utility)
 
-    private var directorySource: DispatchSourceFileSystemObject?
+    private var watch: DirectoryWatch?
     private var coalesceTask: Task<Void, Never>?
 
     private var lastStatuses: [ClaudeStatus] = []
     private var isRunning = false
+    /// Bumped by every scan asked for, and by `stop`. A scan publishes only if
+    /// it is still the newest one when it lands, so a slow scan can never
+    /// overwrite what a newer one already reported — nor one from before a
+    /// stop reach a watcher that has since been restarted.
+    private var generation = 0
 
     private static let coalesceInterval: Duration = .milliseconds(80)
 
@@ -105,38 +118,25 @@ final class ClaudeStatusWatcher {
             withIntermediateDirectories: true
         )
 
-        startDirectoryWatch()
+        // By path, not by vnode: a reinstall that deletes and recreates the
+        // directory would otherwise leave this watching the dead one.
+        let watch = DirectoryWatch(url: directoryURL, queue: queue) { [weak self] _ in
+            Task { @MainActor in self?.scheduleRefresh() }
+        }
+        self.watch = watch
+        watch.start()
         refresh()
     }
 
     func stop() {
         guard isRunning else { return }
         isRunning = false
+        generation += 1
         coalesceTask?.cancel()
         coalesceTask = nil
-        directorySource?.cancel()   // cancel handler closes the fd
-        directorySource = nil
+        watch?.stop()
+        watch = nil
         lastStatuses = []
-    }
-
-    // MARK: - Watch
-
-    private func startDirectoryWatch() {
-        guard directorySource == nil else { return }
-        let fd = open(directoryURL.path, O_EVTONLY)
-        guard fd >= 0 else { return }
-
-        let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: fd,
-            eventMask: [.write, .delete, .rename],
-            queue: queue
-        )
-        source.setEventHandler { [weak self] in
-            Task { @MainActor in self?.scheduleRefresh() }
-        }
-        source.setCancelHandler { close(fd) }
-        directorySource = source
-        source.resume()
     }
 
     // MARK: - Refresh
@@ -151,52 +151,65 @@ final class ClaudeStatusWatcher {
         }
     }
 
-    /// Re-reads every session file and publishes. Every event funnels here, so
-    /// it must be idempotent.
+    /// Re-reads every session file off the main thread and publishes the
+    /// result, if it's still the newest and anything changed. Every event
+    /// funnels here, so it must be idempotent.
     private func refresh() {
         guard isRunning else { return }
-
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: directoryURL.path)) ?? []
-        let statuses = names
-            .compactMap(status(named:))
-            .sorted { ($0.sessionId ?? "") < ($1.sessionId ?? "") }
-
-        guard statuses != lastStatuses else { return }
-        lastStatuses = statuses
-        onStatuses?(statuses)
+        generation += 1
+        let generation = generation
+        let directoryURL = directoryURL
+        queue.async { [weak self] in
+            let statuses = Self.scan(directoryURL)
+            Task { @MainActor in
+                guard let self, self.isRunning, self.generation == generation,
+                      statuses != self.lastStatuses
+                else { return }
+                self.lastStatuses = statuses
+                self.onStatuses?(statuses)
+            }
+        }
     }
 
-    /// Parses one `<session-id>.json`. Any failure — unreadable bytes, malformed
-    /// JSON, unknown state string — drops that one record rather than faulting
-    /// the whole scan, so a single bad file can't blind the island to the rest.
-    /// The filename is the fallback session id, since it *is* the session id.
-    private func status(named name: String) -> ClaudeStatus? {
-        let url = URL(fileURLWithPath: name, relativeTo: directoryURL)
-        guard url.pathExtension == "json",
-              let data = try? Data(contentsOf: url),
-              let payload = try? JSONDecoder().decode(StatusPayload.self, from: data)
-        else {
+    /// Every session file in `directoryURL`, decoded, in session-id order.
+    nonisolated private static func scan(_ directoryURL: URL) -> [ClaudeStatus] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directoryURL.path)) ?? []
+        return names
+            .compactMap { name -> ClaudeStatus? in
+                let url = URL(fileURLWithPath: name, relativeTo: directoryURL)
+                guard url.pathExtension == "json", let data = try? Data(contentsOf: url) else { return nil }
+                return decode(data, fileStem: url.deletingPathExtension().lastPathComponent)
+            }
+            .sorted { ($0.sessionId ?? "") < ($1.sessionId ?? "") }
+    }
+
+    /// Parses one `<session-id>.json`. Any failure — malformed JSON, unknown
+    /// state string — drops that one record rather than faulting the whole
+    /// scan, so a single bad file can't blind the island to the rest. The
+    /// filename is the fallback session id, since it *is* the session id.
+    nonisolated static func decode(_ data: Data, fileStem: String) -> ClaudeStatus? {
+        guard let payload = try? JSONDecoder().decode(StatusPayload.self, from: data) else {
             return nil
         }
         return ClaudeStatus(
             state: payload.claudeState,
             project: payload.project,
-            sessionId: payload.session_id.flatMap { $0.isEmpty ? nil : $0 }
-                ?? url.deletingPathExtension().lastPathComponent,
+            sessionId: payload.session_id.flatMap { $0.isEmpty ? nil : $0 } ?? fileStem,
             action: payload.action.flatMap { $0.isEmpty ? nil : $0 },
             target: payload.target.flatMap { $0.isEmpty ? nil : $0 },
             errorType: payload.error_type.flatMap { $0.isEmpty ? nil : $0 },
             toolActive: payload.tool_active ?? false,
             resetAt: payload.resetDate,
-            updatedAt: payload.updated_at.flatMap(Self.timestamp(from:)),
-            requestId: payload.request_id.flatMap { $0.isEmpty ? nil : $0 }
+            updatedAt: payload.updated_at.flatMap(timestamp(from:)),
+            requestId: payload.request_id.flatMap { $0.isEmpty ? nil : $0 },
+            lastMessage: payload.last_message.flatMap { $0.isEmpty ? nil : $0 }
         )
     }
 
-    private static let timestampFormatter = ISO8601DateFormatter()
-
-    private static func timestamp(from string: String) -> Date? {
-        string.isEmpty ? nil : timestampFormatter.date(from: string)
+    nonisolated private static func timestamp(from string: String) -> Date? {
+        // A formatter per call: this runs on the scan queue, where a shared
+        // one would need a lock, and making one is cheap next to the read.
+        string.isEmpty ? nil : ISO8601DateFormatter().date(from: string)
     }
 }
 
@@ -216,6 +229,8 @@ private struct StatusPayload: Decodable {
     let tool_active: Bool?
     let reset_at: String?
     let request_id: String?
+    /// The start of Claude's final message, written on `Stop` (helper v10).
+    let last_message: String?
 
     /// The usage-limit reset moment, parsed from the epoch string the helper
     /// writes. Accepts seconds (10-digit) or milliseconds (13-digit); anything
