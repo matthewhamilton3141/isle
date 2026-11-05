@@ -1044,6 +1044,11 @@ final class NotchViewModel: ObservableObject {
         shelf.objectWillChange
             .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        shelf.$items
+            .map(\.count)
+            .removeDuplicates()
+            .sink { [weak self] count in self?.fitShelfRows(count) }
+            .store(in: &cancellables)
 
         pomodoro.onIntervalEnded = { [weak self] _ in
             guard let self, self.settings.pomodoroSoundEnabled else { return }
@@ -1929,6 +1934,8 @@ final class NotchViewModel: ObservableObject {
             // watch can't (a volume that went before its watch was set).
             shelf.prune()
         }
+        // Closed: the shelf can give back a row it was holding.
+        if hoveredIslands == 0 { fitShelfRows(shelf.items.count) }
     }
 
     /// The pointer left an island. Hovering away from an auto-opened alert the
@@ -2502,6 +2509,7 @@ final class NotchViewModel: ObservableObject {
         switch expandedPlace {
         case .face(.claude): return questionContentHeight(room: room)
         case .face(.agenda): return min(room, AgendaLayout.contentHeight)
+        case .face(.shelf): return min(room, ShelfLayout.contentHeight(rows: shelfRows))
         case .home, .face: return nil
         }
     }
@@ -2955,6 +2963,20 @@ final class NotchViewModel: ObservableObject {
     }
 
     // MARK: - Drop and shelf
+
+    /// The rows the shelf face lays its items out in, which set its height
+    /// (see `ShelfLayout`). They follow the items — one up to five, two past
+    /// that — except that while a panel is open they only ever grow. An item
+    /// removed from six leaves the face as it was, two rows with a gap,
+    /// rather than pulling the panel's edge up from under a pointer that was
+    /// just at the bottom of it, on the button; the next open is one row.
+    @Published private(set) var shelfRows = 1
+
+    private func fitShelfRows(_ count: Int) {
+        let needed = ShelfLayout.rows(for: count)
+        let rows = hoveredIslands > 0 ? max(shelfRows, needed) : needed
+        if shelfRows != rows { shelfRows = rows }
+    }
 
     /// The collapsed island says "Drop on Isle" while a file drag is under
     /// way — but never over a live alert, which outranks everything.

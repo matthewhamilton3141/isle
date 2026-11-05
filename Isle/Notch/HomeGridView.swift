@@ -205,15 +205,15 @@ struct HomeGridView: View {
 
     // MARK: - Shelf
 
-    /// The latest thing kept, by its own Finder icon. The tile is only on the
-    /// grid while the shelf holds something, so there's always one.
+    /// The latest thing kept: its thumbnail, as the face shows it, or its
+    /// icon while it has none. The tile is only on the grid while the shelf
+    /// holds something, so there's always one.
     @ViewBuilder
     private var shelfLead: some View {
         if let item = viewModel.shelf.items.last {
-            Image(nsImage: viewModel.shelf.icon(for: item))
-                .resizable()
-                .interpolation(.high)
-                .frame(width: homeTileLead, height: homeTileLead)
+            ShelfPreviewImage(icon: viewModel.shelf.icon(for: item),
+                              thumbnail: viewModel.shelf.thumbnail(for: item),
+                              side: homeTileLead, corner: 3)
         } else {
             FaceIcon(tab: .shelf, size: 18)
         }

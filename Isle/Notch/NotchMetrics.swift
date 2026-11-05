@@ -55,10 +55,11 @@ struct NotchMetrics {
     /// The tallest the panel ever gets, whichever face asks. Most faces keep
     /// `expandedSize`; a face with more to show reports the content height
     /// it wants (`NotchViewModel.faceContentHeight`) — the question face
-    /// while an `AskUserQuestion` is live, the agenda always — and gets it up
-    /// to this cap. One cap for every face that grows, so the window, which
-    /// is sized to hold it from the start (see `maximumFrame`) and never
-    /// resized while drawing, needs no per-face case.
+    /// while an `AskUserQuestion` is live, the agenda always, the shelf by
+    /// its rows — and gets it up to this cap. One cap for every face that
+    /// grows, so the window, which is sized to hold it from the start (see
+    /// `maximumFrame`) and never resized while drawing, needs no per-face
+    /// case.
     static let panelMaxHeight: CGFloat = 230
 
     /// How far either side of the open panel the pointer may stray before it
