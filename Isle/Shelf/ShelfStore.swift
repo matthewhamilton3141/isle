@@ -26,6 +26,12 @@
 //  gone can show for as long as that takes; it can't stay, because the
 //  answer always lands.
 //
+//  The previews follow the same model (see `ShelfPreviews.swift`). An item
+//  shows the icon for its kind at once, Finder's own icon once the queue has
+//  read it, and its thumbnail once QuickLook has drawn it. A watch that sees
+//  the file written, and every open of the panel, has the queue read the
+//  file's stamp again, and a stamp that moved on gets a new thumbnail.
+//
 
 import AppKit
 import Combine
@@ -57,13 +63,31 @@ struct ShelfItem: Identifiable, Equatable {
 struct ShelfFileSystem: Sendable {
     var exists: @Sendable (URL) -> Bool
     var isFolder: @Sendable (URL) -> Bool
+    /// What the file is now, for its preview. Nil when it can't be read.
+    var stamp: @Sendable (URL) -> ShelfStamp?
+    /// Finder's icon for it.
+    var icon: @Sendable (URL) -> NSImage
 
     static let live = ShelfFileSystem(
         exists: { $0.isFileURL && FileManager.default.fileExists(atPath: $0.path) },
         isFolder: { url in
             let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
             return (values?.isDirectory ?? false) && !(values?.isPackage ?? false)
-        }
+        },
+        stamp: { url in
+            // A fresh URL: one that's been asked before answers from its own
+            // cache, and the point is what's on disk now.
+            let values = try? URL(fileURLWithPath: url.path).resourceValues(
+                forKeys: [.contentModificationDateKey, .fileSizeKey, .volumeIsLocalKey]
+            )
+            guard let values else { return nil }
+            return ShelfStamp(
+                modified: values.contentModificationDate ?? .distantPast,
+                size: values.fileSize ?? 0,
+                isLocal: values.volumeIsLocal ?? false
+            )
+        },
+        icon: { NSWorkspace.shared.icon(forFile: $0.path) }
     )
 }
 
@@ -141,20 +165,58 @@ final class ShelfStore: ObservableObject {
     private var addCount = 0
     private var addedAt: [String: Int] = [:]
 
-    /// File icons, keyed by path. `NSWorkspace.icon(forFile:)` is a Launch
-    /// Services lookup; the face redraws on a selection, and asking again
-    /// each time bought nothing.
-    private var icons: [String: NSImage] = [:]
+    /// How each item looks, keyed by path: its icon and its thumbnail, as
+    /// far as they've come (see `ShelfPreview`).
+    @Published private(set) var previews: [String: ShelfPreview] = [:]
 
-    init(settings: AppSettings, fileSystem: ShelfFileSystem = .live) {
+    private let thumbnailer: ShelfThumbnailer
+
+    /// The size thumbnails are drawn at: the largest anything shows one
+    /// (see `ShelfLayout.thumbnailSide`), at the screen's scale. Smaller
+    /// places scale it down.
+    private let thumbnailSize: CGSize
+    private let scale: CGFloat
+
+    /// Thumbnails made, by what they're of. A changed file is a new key, so
+    /// nothing here is ever stale for the key it's under; a file taken off
+    /// and put back unchanged finds its own again. Bounded: see `remember`.
+    private var thumbnailCache: [ShelfPreviewKey: NSImage] = [:]
+
+    /// Thumbnails on their way, by path. One each: a newer stamp calls off
+    /// the older one.
+    private var generating: [String: ShelfPreviewJob] = [:]
+
+    /// Items the queue is reading a stamp for, and those asked about again
+    /// meanwhile — a file being copied in fires its watch on every write,
+    /// and one look out at a time is plenty.
+    private var looking: Set<String> = []
+    private var lookAgain: Set<String> = []
+
+    /// Kind icons by extension, for items the queue hasn't answered for yet.
+    private var kindIcons: [String: NSImage] = [:]
+
+    init(
+        settings: AppSettings,
+        fileSystem: ShelfFileSystem = .live,
+        thumbnailer: ShelfThumbnailer = .quickLook,
+        scale: CGFloat = NotchMetrics.preferredScreen()?.backingScaleFactor ?? 2
+    ) {
         self.settings = settings
         self.fileSystem = fileSystem
+        self.thumbnailer = thumbnailer
+        self.thumbnailSize = CGSize(width: ShelfLayout.thumbnailSide, height: ShelfLayout.thumbnailSide)
+        self.scale = scale
         self.watcher = ShelfWatcher(queue: queue)
         pending = settings.shelfPaths
 
         watcher.onEvent = { [weak self] path in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self?.watchFired(path) }
+            }
+        }
+        watcher.onWrite = { [weak self] path in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.written(path) }
             }
         }
 
@@ -205,6 +267,7 @@ final class ShelfStore: ObservableObject {
             addedAt[item.id] = addCount
             watch(item)
         }
+        look(at: kept)
         save()
         return kept.count
     }
@@ -253,11 +316,20 @@ final class ShelfStore: ObservableObject {
         }
     }
 
+    /// Finder's icon for the item once the queue has read it, and the icon
+    /// for its kind until then. Never asks the disk.
     func icon(for item: ShelfItem) -> NSImage {
-        if let cached = icons[item.id] { return cached }
-        let icon = NSWorkspace.shared.icon(forFile: item.url.path)
-        icons[item.id] = icon
+        if let icon = previews[item.id]?.icon { return icon }
+        let ext = item.isFolder ? "/" : item.url.pathExtension.lowercased()
+        if let icon = kindIcons[ext] { return icon }
+        let icon = ShelfFileSystem.kindIcon(isFolder: item.isFolder, pathExtension: ext)
+        kindIcons[ext] = icon
         return icon
+    }
+
+    /// The item's thumbnail, once it has one.
+    func thumbnail(for item: ShelfItem) -> NSImage? {
+        previews[item.id]?.thumbnail
     }
 
     // MARK: - Private
@@ -275,21 +347,153 @@ final class ShelfStore: ObservableObject {
         let back = found.filter { item in wanted.contains(item.id) && !items.contains { $0.id == item.id } }
         items = back + items
         back.forEach(watch)
+        look(at: back)
         save()
     }
 
+    /// What's still there is looked at again too: a volume whose watches
+    /// don't fire (a server's, often) still gets its previews brought up to
+    /// date on every open.
     private func pruned(_ gone: Set<String>, asOf: Int) {
         isPruning = false
         remove(gone.filter { (addedAt[$0] ?? 0) <= asOf })
+        look(at: items)
         if pruneAgain { prune() }
     }
 
     /// A watch saw its item's path change, or couldn't be set up at all.
     /// The watcher has already re-armed on whatever is at the path now (a
-    /// safe-save swaps a new file in); the prune says whether it stays.
+    /// safe-save swaps a new file in); the prune says whether it stays, and
+    /// looks at whatever is there now.
     private func watchFired(_ path: String) {
-        icons[path] = nil
         prune()
+    }
+
+    /// A watch saw its file written in place: still there, maybe not what
+    /// its thumbnail shows.
+    private func written(_ path: String) {
+        guard let item = items.first(where: { $0.id == path }) else { return }
+        look(at: [item])
+    }
+
+    // MARK: - Previews
+
+    /// Has the queue read each item's stamp — and Finder's icon, where
+    /// there's none yet or the file has changed — and brings its preview up
+    /// to date when that lands. One look per item at a time.
+    private func look(at items: [ShelfItem]) {
+        var asks: [ShelfLookRequest] = []
+        for item in items {
+            guard looking.insert(item.id).inserted else {
+                lookAgain.insert(item.id)
+                continue
+            }
+            let preview = previews[item.id]
+            asks.append(ShelfLookRequest(url: item.url, isFolder: item.isFolder,
+                                         known: preview?.stamp, hasIcon: preview?.icon != nil))
+        }
+        guard !asks.isEmpty else { return }
+        let fileSystem = fileSystem
+        queue.async { [weak self] in
+            let found = asks.map { ask in
+                // A folder never has a thumbnail, so it has no stamp to keep.
+                let stamp = ask.isFolder ? nil : fileSystem.stamp(ask.url)
+                let wantsIcon = !ask.hasIcon || stamp != ask.known
+                return ShelfLook(path: ask.url.path, stamp: stamp, icon: wantsIcon ? fileSystem.icon(ask.url) : nil)
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.looked(found) }
+            }
+        }
+    }
+
+    private func looked(_ found: [ShelfLook]) {
+        var updated = previews
+        var again: [ShelfItem] = []
+        for look in found {
+            looking.remove(look.path)
+            let askedAgain = lookAgain.remove(look.path) != nil
+            // Taken off while the look was out.
+            guard let item = items.first(where: { $0.id == look.path }) else { continue }
+            if askedAgain { again.append(item) }
+
+            var preview = updated[look.path] ?? ShelfPreview()
+            if let icon = look.icon { preview.icon = icon }
+            preview.stamp = look.stamp
+            if let stamp = look.stamp, stamp.isLocal {
+                let key = ShelfPreviewKey(path: look.path, stamp: stamp)
+                if let cached = thumbnailCache[key] {
+                    cancelGenerating(look.path)
+                    preview.thumbnail = cached
+                } else if generating[look.path]?.key != key {
+                    // The thumbnail the item has, if any, stays until the new
+                    // one lands or turns out not to exist: a save shouldn't
+                    // blink the file to its icon and back.
+                    generate(item, key: key)
+                }
+            } else {
+                cancelGenerating(look.path)
+                preview.thumbnail = nil
+            }
+            updated[look.path] = preview
+        }
+        previews = updated
+        if !again.isEmpty { look(at: again) }
+    }
+
+    /// Starts the thumbnail for `key` on the queue, calling off any older one.
+    private func generate(_ item: ShelfItem, key: ShelfPreviewKey) {
+        cancelGenerating(item.id)
+        let job = ShelfPreviewJob(key: key)
+        generating[item.id] = job
+        let thumbnailer = thumbnailer, size = thumbnailSize, scale = scale, url = item.url
+        queue.async { [weak self] in
+            guard !job.isCancelled else { return }
+            job.cancel = thumbnailer.generate(url, size, scale) { image in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { self?.generated(image, by: job) }
+                }
+            }
+        }
+    }
+
+    private func cancelGenerating(_ path: String) {
+        guard let job = generating.removeValue(forKey: path) else { return }
+        queue.async {
+            job.isCancelled = true
+            job.cancel?()
+        }
+    }
+
+    /// A thumbnail landed — or nothing did, and the item keeps its icon.
+    /// Dropped if the item has moved on to a newer stamp, or left.
+    private func generated(_ image: CGImage?, by job: ShelfPreviewJob) {
+        let path = job.key.path
+        guard generating[path] === job else { return }
+        generating[path] = nil
+        guard let image else {
+            previews[path]?.thumbnail = nil
+            return
+        }
+        let thumbnail = NSImage(cgImage: image, size: NSSize(width: CGFloat(image.width) / scale,
+                                                             height: CGFloat(image.height) / scale))
+        remember(thumbnail, for: job.key)
+        previews[path]?.thumbnail = thumbnail
+    }
+
+    /// Keeps a thumbnail, holding the cache to twice the shelf's capacity:
+    /// past that, what's no longer on the shelf at that stamp goes first.
+    private func remember(_ thumbnail: NSImage, for key: ShelfPreviewKey) {
+        thumbnailCache[key] = thumbnail
+        let limit = Self.capacity * 2
+        guard thumbnailCache.count > limit else { return }
+        let current = Set(items.compactMap { item in
+            previews[item.id]?.stamp.map { ShelfPreviewKey(path: item.id, stamp: $0) }
+        }).union([key])
+        for stale in thumbnailCache.keys where !current.contains(stale) {
+            thumbnailCache[stale] = nil
+            if thumbnailCache.count <= limit { break }
+        }
     }
 
     private func save() {
@@ -297,12 +501,13 @@ final class ShelfStore: ObservableObject {
     }
 
     private func watch(_ item: ShelfItem) {
-        watcher.watch(item.id)
+        watcher.watch(item.id, writes: !item.isFolder)
     }
 
     private func unwatch(_ id: String) {
         watcher.unwatch(id)
-        icons[id] = nil
+        cancelGenerating(id)
+        previews[id] = nil
         addedAt[id] = nil
     }
 
@@ -328,13 +533,21 @@ private final class ShelfWatcher: @unchecked Sendable {
     /// opened to watch. Called on the queue; set once, before any watch.
     var onEvent: (@Sendable (String) -> Void)?
 
+    /// A watched file was written in place — still there, but maybe not
+    /// what its thumbnail shows. Called on the queue; set once, before any
+    /// watch.
+    var onWrite: (@Sendable (String) -> Void)?
+
     init(queue: DispatchQueue) {
         self.queue = queue
     }
 
-    func watch(_ path: String) {
+    /// `writes` watches the file's contents too. Not for a folder: its
+    /// "contents" are its entries, which change all day in a working folder
+    /// and change nothing the shelf shows.
+    func watch(_ path: String, writes: Bool) {
         queue.async {
-            if !self.arm(path) { self.onEvent?(path) }
+            if !self.arm(path, writes: writes) { self.onEvent?(path) }
         }
     }
 
@@ -346,18 +559,24 @@ private final class ShelfWatcher: @unchecked Sendable {
 
     /// Replaces any watch on `path` with one on whatever is there now.
     /// False when nothing could be opened there.
-    private func arm(_ path: String) -> Bool {
+    private func arm(_ path: String, writes: Bool) -> Bool {
         sources.removeValue(forKey: path)?.cancel()
         let fd = open(path, O_EVTONLY)
         guard fd >= 0 else { return false }
+        let moved: DispatchSource.FileSystemEvent = [.delete, .rename, .revoke]
         let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: fd, eventMask: [.delete, .rename, .revoke], queue: queue
+            fileDescriptor: fd, eventMask: writes ? moved.union([.write, .extend, .attrib]) : moved, queue: queue
         )
-        source.setEventHandler { [weak self] in
+        source.setEventHandler { [weak self, unowned source] in
             guard let self else { return }
+            // Written where it stands: the same file, so the same watch.
+            guard !source.data.isDisjoint(with: moved) else {
+                self.onWrite?(path)
+                return
+            }
             // A rename or delete that still leaves something at the path
             // keeps the item: watch that instead. Either way, ask again.
-            _ = self.arm(path)
+            _ = self.arm(path, writes: writes)
             self.onEvent?(path)
         }
         source.setCancelHandler { close(fd) }
