@@ -40,9 +40,6 @@ struct ShelfExpandedView: View {
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.5))
                         .lineLimit(1)
-                        // Clear of the waveform pinned at the panel's
-                        // top-right, as the track title is.
-                        .padding(.trailing, 36)
                     Spacer(minLength: 4)
                 }
                 itemGrid

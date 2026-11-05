@@ -48,11 +48,12 @@ struct ExpandedNotchView: View {
             // on every face instead of re-aligning to each face's text — it
             // stays put through a swipe, too. Not on Home, where it would sit
             // on a tile and the Music tile already says what's playing, nor on
-            // the drop face, whose targets run to the column's edge under it.
-            // Gated on a live track; non-interactive so it never swallows a
-            // seek or dismiss tap.
+            // the shelf or the drop face, whose items and targets run to the
+            // column's edge under it. Gated on a live track; non-interactive
+            // so it never swallows a seek or dismiss tap.
             .overlay(alignment: .topTrailing) {
-                if media.hasTrack, viewModel.showsWaveform, viewModel.expandedPlace != .home, dropPayload == nil {
+                if media.hasTrack, viewModel.showsWaveform, viewModel.expandedPlace != .home,
+                   viewModel.expandedPlace != .face(.shelf), dropPayload == nil {
                     LiveEqualizer(
                         source: viewModel.audioLevelSource,
                         palette: palette,

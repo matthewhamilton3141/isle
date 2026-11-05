@@ -207,7 +207,9 @@ struct HomeGridView: View {
     private var shelfGlance: TileGlance? {
         let tally = viewModel.shelf.tally
         guard tally.total > 0 else { return nil }
-        return .init(tally.itemsLine, tally.kindsLine)
+        // Shrinks rather than cut: with five tiles, "1 folder, 3 files" is
+        // a few points wider than a tile, and "3 fil…" says less than it.
+        return .init(tally.itemsLine, tally.kindsLine, shrinksToFit: true)
     }
 
     // MARK: - Agenda
@@ -241,11 +243,15 @@ struct TileGlance {
     var line2: String?
     /// Digits that change in place (a clock), so they don't jitter.
     var monospaced = false
+    /// The second line may shrink a little to fit rather than lose its end
+    /// — for a line whose last word is the point ("3 files").
+    var shrinksToFit = false
 
-    init(_ line1: String, _ line2: String?, monospaced: Bool = false) {
+    init(_ line1: String, _ line2: String?, monospaced: Bool = false, shrinksToFit: Bool = false) {
         self.line1 = line1
         self.line2 = line2
         self.monospaced = monospaced
+        self.shrinksToFit = shrinksToFit
     }
 }
 
@@ -287,6 +293,7 @@ struct HomeTile<Lead: View>: View {
                         .font(.system(size: 10.5))
                         .foregroundStyle(.white.opacity(0.65))
                         .lineLimit(1)
+                        .minimumScaleFactor(glance.shrinksToFit ? 0.8 : 1)
                         .truncationMode(.tail)
                 }
             }
