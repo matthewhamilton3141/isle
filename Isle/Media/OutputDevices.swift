@@ -22,10 +22,11 @@
 //  The default output's volume and mute live alongside, in `volume`, for
 //  the slider at the head of the device list.
 //
-//  Separate from the view model for the same reason the lyric clock is: a
-//  device coming or going redraws the switcher and nothing else. And it only
-//  listens while someone is looking — the music face attaches on appear and
-//  detaches on disappear, so a collapsed island holds no HAL listeners.
+//  Separate from the view model for the same reason the audio level source
+//  is: a device coming or going redraws the switcher and nothing else. And
+//  it only listens while someone is looking — the music face attaches on
+//  appear and detaches on disappear, so a collapsed island holds no HAL
+//  listeners.
 //
 
 import Foundation

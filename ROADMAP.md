@@ -1145,6 +1145,18 @@ M1 Mode archetype ─┬─> M2 Onboarding
 
 ---
 
+### M13 — Synced lyrics — built, then removed (2026-11-04)
+
+Built: the current line from LRCLIB, timed to the playhead, as a third row
+of the music face's text block, opt-in in Settings. Removed at the user's
+call the same day: they tried it and didn't want it. The music face is back
+to its design without lyrics; the setting is gone, and nothing is sent to
+LRCLIB. Lookups already made sit in `~/Library/Caches/<bundle id>/Lyrics`,
+left for the user to delete. The code is in `db371db`, `b22f5fb`, `fb55728`
+and `b1980fb` if it's ever wanted back.
+
+---
+
 ## Parked — pending research
 
 ### Scheduled Prompts

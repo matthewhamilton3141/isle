@@ -1,10 +1,10 @@
 //
 //  ExpandedNotchView.swift
 //
-//  The open panel: artwork, ticker text, the synced lyric line under it
-//  when the track has one, seekable scrubber, transport row, and the output
-//  switcher at the head of that row, whose device list stands in for the
-//  text column while it's open, the output's volume across its header.
+//  The open panel: artwork, ticker text, seekable scrubber, transport row,
+//  and the output switcher at the head of that row, whose device list
+//  stands in for the text column while it's open, the output's volume
+//  across its header.
 //  When Claude Code opened the notch rather than the pointer, its status
 //  card takes the leading position and music shares the row (spec 3.1).
 //
@@ -104,22 +104,18 @@ struct ExpandedNotchView: View {
                     // waveform pinned at the panel's top-right (see body).
                     trackLabels
                         .padding(.trailing, 36)
-                    if viewModel.showsLyrics {
-                        lyricRows
-                    } else {
-                        if viewModel.showScrubber {
-                            Spacer().frame(height: 6)
-                            scrubber(inline: false)
-                                // Nudged down without changing the layout gaps, so
-                                // the group stays centred. Safe against the transport
-                                // row because the time labels sit at the far edges
-                                // while the keys are centred — they don't collide.
-                                .offset(y: 3)
-                        }
-                        // Tight gap so the transport keys sit up close under the
-                        // playbar rather than floating below it.
-                        Spacer().frame(height: viewModel.showScrubber ? 2 : 8)
+                    if viewModel.showScrubber {
+                        Spacer().frame(height: 6)
+                        scrubber
+                            // Nudged down without changing the layout gaps, so
+                            // the group stays centred. Safe against the transport
+                            // row because the time labels sit at the far edges
+                            // while the keys are centred — they don't collide.
+                            .offset(y: 3)
                     }
+                    // Tight gap so the transport keys sit up close under the
+                    // playbar rather than floating below it.
+                    Spacer().frame(height: viewModel.showScrubber ? 2 : 8)
                     controls
                         // The output switcher, in the slack left of the
                         // centred keys and flush with the title's leading
@@ -136,11 +132,6 @@ struct ExpandedNotchView: View {
                     idlePlaceholder
                 }
             }
-            // The lyrics answer a second or so into a track; the column
-            // eases into its lyric layout rather than snapping to it. That is
-            // the only time it moves: from then to the track's end the line
-            // turns over in a row that's always there.
-            .animation(.easeInOut(duration: 0.3), value: viewModel.showsLyrics)
             // While the output list is up the column keeps its layout and
             // just steps aside, so closing the list puts everything back
             // exactly where it was.
@@ -169,16 +160,11 @@ struct ExpandedNotchView: View {
         // Centres the album+text pair between the panel edges.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .foregroundStyle(.white)
-        // The clock only runs while this face is on screen — no timer behind
-        // a collapsed island or another face. Likewise the outputs: HAL
-        // listeners only while this face is up. Leaving the face closes the
-        // list, so coming back finds the player.
-        .onAppear {
-            viewModel.lyricsClock.attach()
-            viewModel.outputDevices.attach()
-        }
+        // The outputs' HAL listeners only run while this face is on screen,
+        // not behind a collapsed island or another face. Leaving the face
+        // closes the list, so coming back finds the player.
+        .onAppear { viewModel.outputDevices.attach() }
         .onDisappear {
-            viewModel.lyricsClock.detach()
             viewModel.outputDevices.detach()
             showsOutputs = false
         }
@@ -248,33 +234,6 @@ struct ExpandedNotchView: View {
         }
     }
 
-    /// The lyric line and a compacted playbar, between the labels and the
-    /// transport, while the track has synced lyrics. The line is a third row
-    /// of the text block — under the artist, in the title's own leading
-    /// edge — and the playbar pays for it: its times move in beside the bar
-    /// rather than sitting under it, which gives the row back its height and
-    /// keeps the panel at 146.
-    ///
-    /// The row is held for the whole track, so an intro, a gap or the outro
-    /// leaves it empty rather than closing it up — nothing below it moves as
-    /// lines come and go, and an empty row reads as the text block's own air.
-    /// It sits below the waveform's band, so unlike the title it runs the
-    /// column's full width.
-    @ViewBuilder
-    private var lyricRows: some View {
-        Spacer().frame(height: 3)
-        LyricLineView(clock: viewModel.lyricsClock)
-            .frame(height: 16)
-            .allowsHitTesting(false)
-        if viewModel.showScrubber {
-            Spacer().frame(height: 3)
-            scrubber(inline: true)
-            Spacer().frame(height: 1)
-        } else {
-            Spacer().frame(height: 6)
-        }
-    }
-
     private var idlePlaceholder: some View {
         // Mirror the Claude tab's headline/detail block exactly — same font
         // sizes, weights, colours, and vertical placement (leading + trailing
@@ -310,10 +269,7 @@ struct ExpandedNotchView: View {
 
     // MARK: - Scrubber
 
-    /// The playbar, with its times under the bar's two ends — or, `inline`,
-    /// either side of it on the bar's own line, 12pt tall in all, which is
-    /// how the lyric line finds its room (see `lyricRows`).
-    private func scrubber(inline: Bool) -> some View {
+    private var scrubber: some View {
         // Ticks between the adapter's ~1s updates so the elapsed label and thumb
         // advance smoothly rather than stepping once a second. Capped at 30fps
         // like the rest of the app's timelines: the fill creeps across at a
@@ -322,63 +278,41 @@ struct ExpandedNotchView: View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !media.isPlaying)) { context in
             let progress = viewModel.displayProgress(at: context.date)
             let elapsed = progress * media.duration
-            let elapsedLabel = Text(TimeFormatter.string(from: elapsed))
-            let remainingLabel = Text("-" + TimeFormatter.string(from: max(0, media.duration - elapsed)))
 
-            if inline {
-                HStack(spacing: 8) {
-                    // Floors rather than fixed widths, so the bar doesn't
-                    // shift as the minutes tick over, but an hour-long track
-                    // still gets its whole time.
-                    elapsedLabel
-                        .frame(minWidth: 26, alignment: .leading)
-                    bar(progress: progress)
-                    remainingLabel
-                        .frame(minWidth: 30, alignment: .trailing)
+            VStack(spacing: 2) {
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(.white.opacity(0.22))
+
+                        // Fixed white rather than palette.accent: the accent is
+                        // derived from artwork and on a dark or low-contrast
+                        // cover the filled portion became hard to read against
+                        // the track behind it.
+                        Capsule()
+                            .fill(.white)
+                            .frame(width: max(0, proxy.size.width * progress))
+                    }
+                    // Visible track is 6pt; the hit area is the full
+                    // GeometryReader height so the grab target stays generous.
+                    .frame(height: 6)
+                    .frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .gesture(dragGesture(width: proxy.size.width))
                 }
-                .frame(height: 12)
+                .frame(height: 10)
+
+                HStack {
+                    Text(TimeFormatter.string(from: elapsed))
+                    Spacer()
+                    Text("-" + TimeFormatter.string(from: max(0, media.duration - elapsed)))
+                }
                 .font(.system(size: 9, weight: .medium).monospacedDigit())
                 .foregroundStyle(.white.opacity(0.55))
-            } else {
-                VStack(spacing: 2) {
-                    bar(progress: progress)
-                        .frame(height: 10)
-
-                    HStack {
-                        elapsedLabel
-                        Spacer()
-                        remainingLabel
-                    }
-                    .font(.system(size: 9, weight: .medium).monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.55))
-                }
             }
         }
         .opacity(viewModel.canSeek && media.duration > 0 ? 1 : 0.4)
         .disabled(!viewModel.canSeek || media.duration <= 0)
-    }
-
-    private func bar(progress: Double) -> some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(.white.opacity(0.22))
-
-                // Fixed white rather than palette.accent: the accent is
-                // derived from artwork and on a dark or low-contrast
-                // cover the filled portion became hard to read against
-                // the track behind it.
-                Capsule()
-                    .fill(.white)
-                    .frame(width: max(0, proxy.size.width * progress))
-            }
-            // Visible track is 6pt; the hit area is the full
-            // GeometryReader height so the grab target stays generous.
-            .frame(height: 6)
-            .frame(maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .gesture(dragGesture(width: proxy.size.width))
-        }
     }
 
     private func dragGesture(width: CGFloat) -> some Gesture {
@@ -458,48 +392,6 @@ struct ExpandedNotchView: View {
                 .animation(.easeInOut(duration: 0.15), value: active)
         }
         .buttonStyle(.plain)
-    }
-}
-
-// MARK: - Lyric line
-
-/// The line being sung. Observes the lyrics clock alone, so a line turning
-/// over redraws this text and nothing else in the notch.
-///
-/// One line, never wrapped and never scrolled: it's on screen for a few
-/// seconds, which is no time for a marquee to get anywhere. A long one
-/// tightens a little, then truncates. A gap in the song shows nothing.
-private struct LyricLineView: View {
-    @ObservedObject var clock: LyricsClock
-
-    var body: some View {
-        ZStack(alignment: .leading) {
-            if let line = clock.line, !line.text.isEmpty {
-                // Between the title and the artist in size and weight, and
-                // nearer the title in brightness: it's the live part of the
-                // text block, so it reads ahead of the artist, but it stays
-                // under the title rather than becoming a headline over it.
-                Text(line.text)
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.9))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-                    .truncationMode(.tail)
-                    // Keyed on the line, not the words, so a repeated line
-                    // still visibly turns over.
-                    .id(line.index)
-                    // Each line rises into place as the last one lifts away.
-                    .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .offset(y: 5)),
-                        removal: .opacity.combined(with: .offset(y: -5))
-                    ))
-            }
-        }
-        // Leading, on the title's edge; clipped so the rise in and out
-        // happens inside the row instead of over the labels and the bar.
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .clipped()
-        .animation(.easeInOut(duration: 0.25), value: clock.line)
     }
 }
 
