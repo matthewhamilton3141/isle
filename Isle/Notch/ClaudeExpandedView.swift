@@ -44,17 +44,22 @@ struct ClaudeExpandedView: View {
     }
 
     var body: some View {
-        let isQuestion = asking != nil
+        let listing = viewModel.sessionListShown
+        let isQuestion = asking != nil && !listing
         return ZStack(alignment: .topLeading) {
             // The question face has no glyph: its eyebrow already says it's a
-            // question, and the options want the face's whole width.
-            if !isQuestion {
+            // question, and the options want the face's whole width. Nor
+            // does the list, whose rows each carry their own.
+            if !isQuestion, !listing {
                 glyph
                     .transition(.opacity.combined(with: .scale(scale: 0.6, anchor: .topLeading)))
             }
 
             Group {
-                if let asking {
+                if listing {
+                    sessionListFace
+                        .transition(.opacity)
+                } else if let asking {
                     questionFace(asking.request, question: asking.question)
                         .transition(.opacity)
                 } else {
@@ -67,6 +72,7 @@ struct ClaudeExpandedView: View {
             .frame(maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .animation(.easeInOut(duration: 0.22), value: listing)
         .foregroundStyle(.white)
         // Click the alert panel to retract it (no-op unless an alert is live and
         // dismissing is enabled). contentShape so taps land on the whole card,
@@ -223,15 +229,37 @@ struct ClaudeExpandedView: View {
         }
     }
 
+    /// The session's project. On a session picked from the list it's the way
+    /// back up — a chevron where the folder was — so the face says it's
+    /// holding this session by choice, not by urgency.
     @ViewBuilder
     private var projectLabel: some View {
-        if let project = viewModel.claudeProject, !project.isEmpty {
+        if isPinned {
+            Button {
+                viewModel.showSessionList()
+            } label: {
+                Label(viewModel.claudeProject.flatMap { $0.isEmpty ? nil : $0 } ?? "Sessions",
+                      systemImage: "chevron.left")
+                    .foregroundStyle(.white.opacity(0.8))
+                    .truncationMode(.tail)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .layoutPriority(-1)
+            .help("Back to every session")
+            .accessibilityLabel("Back to every session")
+        } else if let project = viewModel.claudeProject, !project.isEmpty {
             Label(project, systemImage: "folder.fill")
                 .foregroundStyle(.white.opacity(0.8))
                 .truncationMode(.tail)
                 // The first thing to give way when the marks need the room.
                 .layoutPriority(-1)
         }
+    }
+
+    /// The face is holding a session the user picked from the list.
+    private var isPinned: Bool {
+        viewModel.pinnedSessionId != nil && viewModel.pinnedSessionId == viewModel.claudeSessionId
     }
 
     private var separator: some View {
@@ -244,16 +272,7 @@ struct ClaudeExpandedView: View {
     /// an "off" form.
     private func marks(compact: Bool) -> some View {
         HStack(spacing: 8) {
-            let others = viewModel.otherSessions
-            if others.needYou > 0 {
-                Text("+\(others.needYou) \(others.needYou == 1 ? "needs" : "need") you")
-                    .foregroundStyle(.white.opacity(0.8))
-                    .accessibilityLabel("\(others.needYou) other \(others.needYou == 1 ? "session needs" : "sessions need") you")
-            }
-            if others.working > 0 {
-                Text("+\(others.working) working")
-                    .accessibilityLabel("\(others.working) other \(others.working == 1 ? "session" : "sessions") working")
-            }
+            sessionMarks
             if viewModel.isKeepingAwake {
                 Label("Mac awake", systemImage: "cup.and.saucer.fill")
                     .labelStyle(EyebrowLabelStyle(iconOnly: compact))
@@ -263,6 +282,52 @@ struct ClaudeExpandedView: View {
         .fixedSize()
         .animation(.easeInOut(duration: 0.2), value: viewModel.otherSessions)
         .animation(.easeInOut(duration: 0.2), value: viewModel.isKeepingAwake)
+    }
+
+    /// The other live sessions, and the way to the list of them all
+    /// (Milestone 16). The counts are what they always were — busy or
+    /// blocked, from the registry's live sessions — and clicking them flips
+    /// the face to the list. With nothing busy elsewhere but another session
+    /// alive, a quiet count of the rest stands in, so the list is always
+    /// reachable when there's more than one session to list.
+    @ViewBuilder
+    private var sessionMarks: some View {
+        let others = viewModel.otherSessions
+        let quiet = viewModel.sessionList.count - 1 - others.needYou - others.working
+        if viewModel.sessionList.count > 1 {
+            Button {
+                viewModel.showSessionList()
+            } label: {
+                HStack(spacing: 8) {
+                    othersCounts(others)
+                    if others.isEmpty, quiet > 0 {
+                        Text("+\(quiet) more")
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .bold))
+                        .padding(.leading, -4)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Every session")
+            .accessibilityLabel("Every session, \(viewModel.sessionList.count) live")
+        } else {
+            othersCounts(others)
+        }
+    }
+
+    @ViewBuilder
+    private func othersCounts(_ others: ClaudeOtherSessions) -> some View {
+        if others.needYou > 0 {
+            Text("+\(others.needYou) \(others.needYou == 1 ? "needs" : "need") you")
+                .foregroundStyle(.white.opacity(0.8))
+                .accessibilityLabel("\(others.needYou) other \(others.needYou == 1 ? "session needs" : "sessions need") you")
+        }
+        if others.working > 0 {
+            Text("+\(others.working) working")
+                .accessibilityLabel("\(others.working) other \(others.working == 1 ? "session" : "sessions") working")
+        }
     }
 
     /// Live "… ago", ticking once a second.
@@ -275,6 +340,188 @@ struct ClaudeExpandedView: View {
             }
             .fixedSize()
         }
+    }
+
+    // MARK: - Session list (Milestone 16)
+
+    /// Every live session, one line each, most pressing first — selection's
+    /// own order. A row's click makes that session the face's; its Jump goes
+    /// to the session's terminal. The way back is the eyebrow's chevron.
+    ///
+    /// No glyph: each row has its own marker, and the rows want the face's
+    /// whole width. Four rows fit the standard panel; past that they scroll
+    /// (vertically — a sideways swipe is the way between faces), with the
+    /// count in the eyebrow and the last row fading at the foot to say so.
+    private var sessionListFace: some View {
+        let rows = viewModel.sessionList
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 5) {
+                Button {
+                    viewModel.closeSessionList()
+                } label: {
+                    Label("Sessions", systemImage: "chevron.left")
+                        .foregroundStyle(.white.opacity(0.8))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .fixedSize()
+                .accessibilityLabel("Back")
+                separator
+                Text("\(rows.count) live")
+                    .monospacedDigit()
+                Spacer(minLength: 6)
+                if viewModel.isKeepingAwake {
+                    Label("Mac awake", systemImage: "cup.and.saucer.fill")
+                        .accessibilityLabel("Keeping the Mac awake while Claude works")
+                }
+            }
+            .font(L.eyebrowFont)
+            .labelStyle(EyebrowLabelStyle())
+            .foregroundStyle(.white.opacity(0.5))
+            .lineLimit(1)
+            .frame(height: L.eyebrowHeight)
+
+            Spacer().frame(height: L.eyebrowGap)
+
+            GeometryReader { proxy in
+                let fits = L.sessionRowsHeight(rows.count) <= proxy.size.height + 0.5
+                Group {
+                    if fits {
+                        sessionRows(rows)
+                    } else {
+                        ScrollView(.vertical) {
+                            sessionRows(rows)
+                        }
+                        .scrollIndicators(.never)
+                        // The foot fades, so a row cut off there reads as
+                        // more below rather than as the end.
+                        .mask(
+                            VStack(spacing: 0) {
+                                Color.black
+                                LinearGradient(colors: [.black, .black.opacity(0)],
+                                               startPoint: .top, endPoint: .bottom)
+                                    .frame(height: 12)
+                            }
+                        )
+                    }
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+            }
+            .padding(.bottom, L.sessionListBottomInset)
+        }
+        // Clear of the waveform pinned at the panel's top-right: the eyebrow
+        // and the first row are level with it, and the rows keep one edge.
+        .padding(.trailing, L.waveformClearance)
+        .animation(.easeInOut(duration: 0.2), value: rows)
+    }
+
+    private func sessionRows(_ rows: [ClaudeSessionRow]) -> some View {
+        // Ticks twice a minute, for the "2m" at each row's end — nothing
+        // finer is shown.
+        // A row without a Jump holds its room when any row has one, so the
+        // times line up.
+        let holdsJump = rows.contains { viewModel.jumpTarget(for: $0.id) != nil }
+        return TimelineView(.periodic(from: .now, by: 30)) { context in
+            VStack(alignment: .leading, spacing: L.sessionRowGap) {
+                ForEach(rows) { row in
+                    sessionRow(row, now: context.date, holdsJump: holdsJump)
+                }
+            }
+        }
+    }
+
+    /// One session: marker, project, state in its marker's colour, what it's
+    /// doing or what Claude said, how long since it moved, and its Jump. The
+    /// session on the island is lit.
+    private func sessionRow(_ row: ClaudeSessionRow, now: Date, holdsJump: Bool) -> some View {
+        let onIsland = row.id == viewModel.claudeSessionId
+        let jump = viewModel.jumpTarget(for: row.id)
+        return HStack(spacing: 4) {
+            Button {
+                viewModel.pinSession(row.id)
+            } label: {
+                HStack(spacing: 6) {
+                    ClaudeStatusGlyphView(state: row.state, kind: row.markerKind, palette: palette)
+                        .frame(width: L.sessionGlyphSize, height: L.sessionGlyphSize)
+                    Text(row.project ?? "Session")
+                        .font(L.sessionProjectFont)
+                        .foregroundStyle(.white.opacity(0.92))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: 120, alignment: .leading)
+                        .fixedSize(horizontal: true, vertical: false)
+                    Text(row.stateTitle)
+                        .font(L.sessionStateFont)
+                        .foregroundStyle(stateColor(row.markerKind))
+                        .lineLimit(1)
+                        .fixedSize()
+                    Text(row.detail)
+                        .font(L.sessionDetailFont)
+                        .foregroundStyle(.white.opacity(0.55))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 4)
+                    if let updated = row.updatedAt {
+                        Text(Self.shortAge(from: updated, to: now))
+                            .font(L.sessionDetailFont)
+                            .monospacedDigit()
+                            .foregroundStyle(.white.opacity(0.4))
+                            .fixedSize()
+                    }
+                }
+                .padding(.leading, L.sessionRowPadding)
+                .padding(.trailing, holdsJump ? 0 : L.sessionRowPadding)
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel([row.project, row.stateTitle, row.detail].compactMap { $0 }.joined(separator: ", "))
+            .accessibilityAddTraits(onIsland ? [.isSelected] : [])
+
+            if let jump {
+                Button {
+                    viewModel.jumpToSession(row.id)
+                } label: {
+                    Image(systemName: "arrow.up.forward.app")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .frame(width: L.sessionJumpWidth, height: 16)
+                        .background(Capsule().fill(.white.opacity(0.12)))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .padding(.trailing, 2)
+                .help("Show this session in \(jump)")
+                .accessibilityLabel("Show \(row.project ?? "this session") in \(jump)")
+            } else if holdsJump {
+                Color.clear
+                    .frame(width: L.sessionJumpWidth)
+                    .padding(.trailing, 2)
+            }
+        }
+        .frame(height: L.sessionRowHeight)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(.white.opacity(onIsland ? 0.1 : 0))
+        )
+    }
+
+    /// A state's word in its marker's colour: the marker's own hue where it
+    /// has one, the palette the marker draws from where it doesn't.
+    private func stateColor(_ kind: MarkerKind) -> Color {
+        let design = MarkerStore.shared.design(for: kind)
+        return design.colorMode == .fixed ? Color(hex: design.fixedColorHex) : palette.primary
+    }
+
+    /// "now", "4m", "2h": how long since the session's hook last wrote.
+    private static func shortAge(from date: Date, to now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(date)))
+        if seconds < 60 { return "now" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "\(minutes)m" }
+        let hours = minutes / 60
+        if hours < 24 { return "\(hours)h" }
+        return "\(hours / 24)d"
     }
 
     // MARK: - Approval

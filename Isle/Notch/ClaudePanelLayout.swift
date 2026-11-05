@@ -122,6 +122,33 @@ enum ClaudePanelLayout {
     /// most, in the room the status face has to spare above its action row.
     static let saidLines = 2
 
+    // MARK: - Session list (Milestone 16)
+
+    /// One line a session: its marker, project, state, what it's doing, how
+    /// long since it moved, and its Jump. Four fit the standard panel under
+    /// the list's eyebrow, with a 32pt housing; more scroll.
+    static let sessionRowHeight: CGFloat = 20
+    static let sessionRowGap: CGFloat = 1
+    static let sessionGlyphSize: CGFloat = 12
+    static let sessionRowPadding: CGFloat = 6
+    static let sessionTextSize: CGFloat = 11.5
+    /// Under the last row. Less than the action row's `bottomInset`: there's
+    /// no pill here to sit clear of the panel's rounded foot, and the two
+    /// points are what seat the fourth row.
+    static let sessionListBottomInset: CGFloat = 2
+    /// The Jump chip at a row's end, and the room held for it on a row
+    /// without one, so the times stay in one column.
+    static let sessionJumpWidth: CGFloat = 24
+
+    static var sessionProjectFont: Font { .system(size: sessionTextSize, weight: .semibold) }
+    static var sessionStateFont: Font { .system(size: sessionTextSize, weight: .semibold) }
+    static var sessionDetailFont: Font { .system(size: sessionTextSize, weight: .regular) }
+
+    /// The rows' height, for `count` of them.
+    static func sessionRowsHeight(_ count: Int) -> CGFloat {
+        CGFloat(count) * sessionRowHeight + CGFloat(max(0, count - 1)) * sessionRowGap
+    }
+
     // MARK: - Options
 
     static let optionGap: CGFloat = 3
