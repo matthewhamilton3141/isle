@@ -138,7 +138,14 @@ struct HomeGridView: View {
         let project = vm.claudeProject.flatMap { $0.isEmpty ? nil : $0 }
         // Another session waiting is worth more than this one's project.
         let others = vm.otherSessions.needYou
-        let othersLine = others == 0 ? nil
+        // With more than one live session, how many there are and how many
+        // of them need you says more than any one session's detail
+        // (Milestone 16) — the face has the list.
+        let sessions = vm.sessionList
+        let needYou = sessions.filter { $0.state.isAttention }.count
+        let othersLine = sessions.count > 1
+            ? "\(sessions.count) sessions" + (needYou == 0 ? "" : " · \(needYou) \(needYou == 1 ? "needs" : "need") you")
+            : others == 0 ? nil
             : others == 1 ? "Another needs you" : "\(others) others need you"
 
         switch vm.claudeState {

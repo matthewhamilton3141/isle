@@ -44,6 +44,19 @@ struct ClaudePanelFixture: Identifiable {
     /// The record's `last_message` (Milestone 15): the start of Claude's
     /// final message, as the helper stores it.
     var lastMessage: String? = nil
+    /// Every live session (Milestone 16), the island's own among them under
+    /// `preview-session`, and the requests their hooks are blocked on.
+    var sessions: [ClaudeStatus] = []
+    var sessionRequests: [ClaudeRequest] = []
+    /// The face is showing the list.
+    var listShown = false
+    /// The island's session was picked from the list.
+    var pinned = false
+    /// The island's session id, when it isn't `preview-session` or the
+    /// request's.
+    var sessionId: String? = nil
+    /// Where each listed session is, by session id, for the rows' Jump.
+    var sessionHosts: [String: ClaudeSessionHost] = [:]
     /// Drawn on the home grid (in `.both`) rather than in the face.
     var home = false
     /// A toast pinned on the collapsed island; the render harness draws a
@@ -352,6 +365,107 @@ extension ClaudePanelFixture {
                   request: approval("Bash", "npm run lint -- --fix")),
             .init(name: "both_question_4", mode: .both, state: .needsQuestion, request: question([fourOptions])),
         ] + approvalKinds + descriptionModes + worstCases + liveExtras + jumpAndReply + doneSays + loneJump
+            + sessionLists
+    }
+
+    // MARK: Every session at once (Milestone 16)
+
+    static func session(_ id: String, _ project: String, _ state: ClaudeCodeState, ago: TimeInterval,
+                        action: String? = nil, target: String? = nil, errorType: String? = nil,
+                        resetAt: Date? = nil, said: String? = nil, requestId: String? = nil) -> ClaudeStatus {
+        ClaudeStatus(state: state, project: project, sessionId: id, action: action, target: target,
+                     errorType: errorType, resetAt: resetAt, updatedAt: Date().addingTimeInterval(-ago),
+                     requestId: requestId, lastMessage: said)
+    }
+
+    /// The island's own session, working.
+    static let ownWorking = session("preview-session", "isle", .working, ago: 12,
+                                    action: "Edit", target: "/Users/matthew/Documents/isle/Isle/Notch/ClaudeExpandedView.swift")
+    static let websiteApproval = ClaudeRequest(
+        id: "website-1762300000-1", kind: .approval, sessionId: "website", toolName: "Bash",
+        subject: "npm run build -- --prod", questions: [])
+    static let scratchQuestion = ClaudeRequest(
+        id: "scratch-1762300000-2", kind: .question, sessionId: "scratch", toolName: "AskUserQuestion",
+        subject: nil, questions: [threeOptions])
+    static let website = session("website", "isle-website", .needsApproval, ago: 40,
+                                 action: "Bash", target: "npm", requestId: "website-1762300000-1")
+    static let lyrics = session("lyrics", "lyrics-api", .failed, ago: 190, errorType: "overloaded")
+    static let dotfiles = session("dotfiles", "dotfiles", .waitingInput, ago: 380,
+                                  said: "I've moved the prompt into `~/.config/zsh/prompt.zsh` and sourced it from `.zshrc`. Want me to do the same for the aliases?")
+    static let bench = session("bench", "notch-bench", .done, ago: 540, said: saidShort)
+    static let paletteLab = session("palette", "palette-lab", .working, ago: 70)
+    static let longName = session("long", "an-extremely-long-project-directory-name", .idle, ago: 7300, said: saidLong)
+    static let scratch = session("scratch", "scratch", .needsQuestion, ago: 20, requestId: "scratch-1762300000-2")
+
+    static let seven = [ownWorking, website, lyrics, dotfiles, bench, paletteLab, longName]
+    static let sevenRequests = [websiteApproval]
+
+    static var sessionLists: [ClaudePanelFixture] {
+        let ghostty = host("Ghostty", "com.mitchellh.ghostty")
+        let hosts: [String: ClaudeSessionHost] = [
+            "preview-session": terminalHost, "website": iTermHost, "dotfiles": ghostty,
+            "bench": terminalHost, "long": host("VS Code", "com.microsoft.VSCode"),
+        ]
+        return [
+            // The way in, on the session's own face.
+            .init(name: "sl_entry_busy", state: .working, action: "Edit",
+                  target: "/Users/matthew/Documents/isle/Isle/Notch/ClaudeExpandedView.swift",
+                  others: .init(working: 1, needYou: 1), host: terminalHost,
+                  sessions: [ownWorking, website, paletteLab], sessionRequests: [websiteApproval]),
+            .init(name: "sl_entry_quiet", state: .done, others: .init(), host: terminalHost,
+                  lastMessage: saidShort, sessions: [session("preview-session", "isle", .done, ago: 8, said: saidShort), bench]),
+            .init(name: "sl_entry_crowded", state: .done, keepAwake: true, others: .init(working: 1, needYou: 1),
+                  host: ghostty, lastMessage: saidLong,
+                  sessions: [session("preview-session", "isle", .done, ago: 8, said: saidLong), website, paletteLab],
+                  sessionRequests: [websiteApproval]),
+            .init(name: "sl_entry_approval", state: .needsApproval, action: "Bash", target: "npm",
+                  request: approval(stdin: bashPrefixStdin), others: .init(working: 2),
+                  sessions: [session("preview-session", "isle", .needsApproval, ago: 5, action: "Bash", target: "npm"),
+                             paletteLab, session("w2", "isle-website", .working, ago: 30)]),
+            // The list.
+            .init(name: "sl_list_2", state: .working, sessions: [ownWorking, bench], listShown: true,
+                  sessionHosts: hosts),
+            .init(name: "sl_list_4", state: .working, sessions: [ownWorking, website, dotfiles, scratch],
+                  sessionRequests: [websiteApproval, scratchQuestion], listShown: true, sessionHosts: hosts),
+            .init(name: "sl_list_7", state: .working, keepAwake: true, sessions: seven, sessionRequests: sevenRequests,
+                  listShown: true, sessionHosts: hosts),
+            .init(name: "sl_list_7_nohosts", state: .working, sessions: seven, sessionRequests: sevenRequests,
+                  listShown: true),
+            // A session picked from the list holds the face.
+            .init(name: "sl_pinned_done", state: .done, project: "notch-bench", others: .init(working: 2, needYou: 1),
+                  host: terminalHost, lastMessage: saidShort, sessions: seven, sessionRequests: sevenRequests,
+                  pinned: true, sessionId: "bench"),
+            .init(name: "sl_pinned_waiting_ghostty", state: .waitingInput, project: "dotfiles",
+                  others: .init(working: 2, needYou: 1), host: ghostty,
+                  lastMessage: dotfiles.lastMessage, sessions: seven, sessionRequests: sevenRequests, pinned: true,
+                  sessionId: "dotfiles"),
+            // Pinned on a working session; then an approval arrives in
+            // another one, which takes the face (the pin is gone).
+            .init(name: "sl_override_1_pinned", state: .working, project: "palette-lab", host: terminalHost,
+                  sessions: [ownWorking, paletteLab, bench], pinned: true, sessionId: "palette"),
+            .init(name: "sl_override_2_arrived", state: .needsApproval, project: "isle-website", action: "Bash",
+                  target: "npm", request: websiteApproval, others: .init(working: 2), host: iTermHost,
+                  sessions: [ownWorking, paletteLab, bench, website], sessionRequests: [websiteApproval]),
+            // Both mode: the waveform at the top-right.
+            .init(name: "sl_both_list_7", mode: .both, state: .working, sessions: seven,
+                  sessionRequests: sevenRequests, listShown: true, sessionHosts: hosts),
+            .init(name: "sl_both_list_2", mode: .both, state: .working, sessions: [ownWorking, bench],
+                  listShown: true, sessionHosts: hosts),
+            .init(name: "sl_both_entry", mode: .both, state: .working, action: "Bash", target: "xcodebuild",
+                  others: .init(working: 1, needYou: 1), host: terminalHost,
+                  sessions: [ownWorking, website, paletteLab], sessionRequests: [websiteApproval]),
+            .init(name: "sl_both_pinned", mode: .both, state: .done, project: "notch-bench",
+                  others: .init(working: 2, needYou: 1), host: terminalHost, lastMessage: saidShort,
+                  sessions: seven, sessionRequests: sevenRequests, pinned: true, sessionId: "bench"),
+            // The home tile.
+            .init(name: "sl_home_3_needyou", mode: .both, state: .working, action: "Edit", target: "NotchMetrics.swift",
+                  others: .init(working: 1, needYou: 1), sessions: [ownWorking, website, paletteLab],
+                  sessionRequests: [websiteApproval], home: true),
+            .init(name: "sl_home_2_quiet", mode: .both, state: .done, lastMessage: saidShort,
+                  sessions: [session("preview-session", "isle", .done, ago: 8, said: saidShort), bench], home: true),
+            .init(name: "sl_home_1_session", mode: .both, state: .done, lastMessage: saidShort,
+                  sessions: [session("preview-session", "isle", .done, ago: 8, said: saidShort)], home: true),
+        ]
     }
 
     // MARK: Done says what happened (Milestone 15)
