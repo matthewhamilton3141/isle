@@ -146,6 +146,12 @@ final class NotchViewModel: ObservableObject {
     @Published private(set) var questionIndex = 0
     @Published private(set) var questionPicks: [Set<String>] = []
 
+    /// "Always…" has been tapped on an approval that carries Claude Code's
+    /// suggestions: the face shows exactly what accepting them would save,
+    /// and only a second tap sends it. Held here, like the question step, so
+    /// every island shows the same face.
+    @Published private(set) var isReviewingRemember = false
+
     /// Whether `run/answering` is currently down, so it's only touched on a
     /// change.
     private var answeringMarkerWritten = false
@@ -1152,6 +1158,7 @@ final class NotchViewModel: ObservableObject {
             claudeRequestId = nil
             pendingRequest = nil
             answeredRequestId = nil
+            isReviewingRemember = false
             lastAppliedStatus = nil
             doneRevertTask?.cancel()
             doneRevertTask = nil
@@ -1678,6 +1685,7 @@ final class NotchViewModel: ObservableObject {
             questionIndex = 0
             questionPicks = Array(repeating: [], count: match?.questions.count ?? 0)
             answeredRequestId = nil
+            isReviewingRemember = false
         }
         withAnimation(.easeInOut(duration: 0.25)) {
             pendingRequest = match
@@ -1702,6 +1710,28 @@ final class NotchViewModel: ObservableObject {
     func decide(allow: Bool) {
         guard let request = pendingRequest, request.kind == .approval, !isAnsweringRequest else { return }
         send(allow ? .allow : .deny, to: request)
+    }
+
+    /// "Always…": puts what would be saved on the face, for a second tap to
+    /// confirm. Saving a rule outlives this one call, so it is never one tap.
+    func reviewRemember() {
+        guard let request = pendingRequest, request.kind == .approval, request.remember != nil,
+              !isAnsweringRequest else { return }
+        withAnimation(.easeInOut(duration: 0.2)) { isReviewingRemember = true }
+    }
+
+    /// Back from the review to the plain decision.
+    func cancelRemember() {
+        guard isReviewingRemember, !isAnsweringRequest else { return }
+        withAnimation(.easeInOut(duration: 0.2)) { isReviewingRemember = false }
+    }
+
+    /// The confirm on the review: allow this call and accept the suggestions
+    /// as Claude Code offered them.
+    func allowRemembering() {
+        guard let request = pendingRequest, request.kind == .approval, request.remember != nil,
+              isReviewingRemember, !isAnsweringRequest else { return }
+        send(.allowRemembering, to: request)
     }
 
     /// The question currently on screen, when a question is pending.
@@ -2497,6 +2527,7 @@ extension NotchViewModel {
         claudeRequestId = fixture.request?.id
         pendingRequest = fixture.request
         questionIndex = fixture.questionIndex
+        isReviewingRemember = fixture.reviewingRemember
         questionPicks = fixture.picks.isEmpty
             ? Array(repeating: [], count: fixture.request?.questions.count ?? 0)
             : fixture.picks

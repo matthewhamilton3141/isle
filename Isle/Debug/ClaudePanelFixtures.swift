@@ -28,6 +28,7 @@ struct ClaudePanelFixture: Identifiable {
     var workingWord: String? = "Percolating"
     var request: ClaudeRequest? = nil
     var questionIndex = 0
+    var reviewingRemember = false
     var picks: [Set<String>] = []
     var descriptions: OptionDescriptions = .default
     var keepAwake = false
@@ -55,6 +56,14 @@ extension ClaudePanelFixture {
             subject: subject,
             questions: []
         )
+    }
+
+    /// An approval decoded by the app's own decoder from a hook's stdin —
+    /// the payloads below are ones Claude Code 2.1.318 sent (scratch paths
+    /// swapped for plausible ones), so the face is checked against what
+    /// actually arrives rather than against a hand-built request.
+    static func approval(stdin: String) -> ClaudeRequest {
+        ClaudeRequestWatcher.decode(stdin: Data(stdin.utf8), id: "preview-session-1762300000-4242")!
     }
 
     static func question(_ questions: [ClaudeQuestion]) -> ClaudeRequest {
@@ -149,6 +158,153 @@ extension ClaudePanelFixture {
         multiSelect: false
     )
 
+    // MARK: Approval payloads
+
+    /// Wraps a tool call in the PermissionRequest envelope.
+    private static func permissionRequest(_ tool: String, input: String, suggestions: String = "[]",
+                                          extra: String = "") -> String {
+        #"{"session_id":"preview-session","cwd":"/Users/matthew/Documents/isle","hook_event_name":"PermissionRequest","permission_mode":"default","tool_name":""#
+            + tool + #"","tool_input":"# + input + #","permission_suggestions":"# + suggestions + extra + "}"
+    }
+
+    static let bashShortStdin = permissionRequest("Bash",
+        input: #"{"command":"python3 -c 'print(42)'","description":"Print 42 using python3"}"#,
+        suggestions: #"[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"python3 -c 'print(42)'"}],"behavior":"allow","destination":"localSettings"}]"#)
+
+    static let bashPrefixStdin = permissionRequest("Bash",
+        input: #"{"command":"npm run build -- --prod","description":"Run npm build with prod flag"}"#,
+        suggestions: #"[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"npm run *"}],"behavior":"allow","destination":"localSettings"}]"#)
+
+    static let bashQuotesStdin = permissionRequest("Bash",
+        input: #"{"command":"echo \"it's a \\\"quoted\\\" value\" > made-quotes.txt","description":"Write quoted value"}"#,
+        suggestions: #"[{"type":"addDirectories","directories":["/Users/matthew/Documents/isle"],"destination":"session"}]"#)
+
+    static let bashMultilineStdin = permissionRequest("Bash",
+        input: #"{"command":"cat > made-multi.txt <<'EOF'\nfirst line\nsecond line with \"quotes\"\nEOF\nwc -l made-multi.txt","description":"Write two-line file and count its lines"}"#,
+        suggestions: #"[{"type":"addDirectories","directories":["/Users/matthew/Documents/isle"],"destination":"session"}]"#)
+
+    /// A Bash call whose suggestion is a *Read* rule — the label has to come
+    /// from the suggestion, not the tool.
+    static let bashReadRuleStdin = permissionRequest("Bash",
+        input: #"{"command":"find /etc -maxdepth 1 -name '*.conf' 2>/dev/null | sort","description":"List top-level .conf files in /etc"}"#,
+        suggestions: #"[{"type":"addRules","rules":[{"toolName":"Read","ruleContent":"//private/etc/**"}],"behavior":"allow","destination":"session"}]"#)
+
+    /// From inside a subagent: no suggestions at all.
+    static let subagentBashStdin = permissionRequest("Bash",
+        input: #"{"command":"echo \"TOTAL_FILES: $(find . -type f | wc -l)\" && echo \"TOTAL_DIRS: $(find . -mindepth 1 -type d | wc -l)\"","description":"Count files and directories"}"#,
+        extra: #","agent_id":"a81a74a2ca45ef80f","agent_type":"general-purpose""#)
+
+    static let editStdin = permissionRequest("Edit",
+        input: #"{"file_path":"/Users/matthew/Documents/isle/Isle/Notch/NotchMetrics.swift","old_string":"    static let expandedSize = CGSize(width: 520, height: 146)","new_string":"    static let expandedSize = CGSize(width: 520, height: 152)","replace_all":false}"#,
+        suggestions: #"[{"type":"setMode","mode":"acceptEdits","destination":"session"}]"#)
+
+    static let editMultilineStdin = permissionRequest("Edit",
+        input: #"{"file_path":"/Users/matthew/Documents/isle/Isle/Claude/ClaudeRequestWatcher.swift","old_string":"        case .deny:\n            guard request.kind == .approval else { return nil }","new_string":"        case .deny:\n            // Claude hears this as the tool's result.\n            guard request.kind == .approval else { return nil }\n            log(\"deny\")","replace_all":false}"#,
+        suggestions: #"[{"type":"setMode","mode":"acceptEdits","destination":"session"}]"#)
+
+    static let writeStdin = permissionRequest("Write",
+        input: #"{"file_path":"/Users/matthew/Documents/isle/integration/claude-code-hooks/README.md","content":"alpha\nbeta\ngamma\n"}"#,
+        suggestions: #"[{"type":"setMode","mode":"acceptEdits","destination":"session"}]"#)
+
+    static let notebookStdin = permissionRequest("NotebookEdit",
+        input: #"{"notebook_path":"/Users/matthew/Documents/analysis/palette-extraction.ipynb","cell_id":"c1","new_source":"print('bye')","edit_mode":"replace"}"#,
+        suggestions: #"[{"type":"setMode","mode":"acceptEdits","destination":"session"}]"#)
+
+    static let webFetchStdin = permissionRequest("WebFetch",
+        input: #"{"url":"https://developer.apple.com/documentation/swiftui/imagerenderer?language=swift","prompt":"Report the page title, the main topics, and any key facts."}"#,
+        suggestions: #"[{"type":"addRules","destination":"localSettings","rules":[{"toolName":"WebFetch","ruleContent":"domain:developer.apple.com"}],"behavior":"allow"}]"#,
+        extra: #","agent_id":"a62257eb7251b2000","agent_type":"web-fetch""#)
+
+    static let webSearchStdin = permissionRequest("WebSearch",
+        input: #"{"query":"swift ImageRenderer scale","mode":"standard"}"#,
+        suggestions: #"[{"type":"addRules","rules":[{"toolName":"WebSearch"}],"behavior":"allow","destination":"localSettings"}]"#)
+
+    static let mcpStdin = permissionRequest("mcp__acme__deploy_service",
+        input: #"{"environment":"staging","service":"api-gateway"}"#,
+        suggestions: #"[{"type":"addRules","rules":[{"toolName":"mcp__acme__deploy_service"}],"behavior":"allow","destination":"localSettings"}]"#,
+        extra: #","mcp_server":{"name":"acme","source":"dynamic"}"#)
+
+    static let mcpIssueStdin = permissionRequest("mcp__acme__create_issue",
+        input: #"{"title":"Crash when the notch opens on an external display","body":"Steps:\n1. Plug in a monitor\n2. Hover the notch","labels":["bug","notch"]}"#,
+        suggestions: #"[{"type":"addRules","rules":[{"toolName":"mcp__acme__create_issue"}],"behavior":"allow","destination":"localSettings"}]"#,
+        extra: #","mcp_server":{"name":"acme","source":"dynamic"}"#)
+
+    static let readOutsideStdin = permissionRequest("Read",
+        input: #"{"file_path":"/etc/hosts"}"#,
+        suggestions: #"[{"type":"addRules","rules":[{"toolName":"Read","ruleContent":"//etc/**"}],"behavior":"allow","destination":"session"},{"type":"addRules","rules":[{"toolName":"Read","ruleContent":"//private/etc/**"}],"behavior":"allow","destination":"session"}]"#)
+
+    static let planStdin = ##"{"session_id":"preview-session","cwd":"/Users/matthew/Documents/isle","hook_event_name":"PermissionRequest","permission_mode":"plan","tool_name":"ExitPlanMode","tool_input":{"plan":"# Plan: add made-plan.txt\n\n## Context\nAdd a file `made-plan.txt` containing the word \"hi\" to the project root.\n\n## Steps\n1. Create `made-plan.txt` in the working directory with the Write tool.\n2. Set its contents to exactly `hi`.\n3. Verify by reading the file back and confirming it contains `hi`.\n","planFilePath":"/Users/matthew/.claude/plans/plan-how-to-add-serialized-honey.md"}}"##
+
+    /// One approval per tool kind that raised a prompt in 2.1.318.
+    static var approvalKinds: [ClaudePanelFixture] {
+        [
+            .init(name: "approval_bash_short", state: .needsApproval, action: "Bash", target: "python3",
+                  request: approval(stdin: bashShortStdin)),
+            .init(name: "approval_bash_prefix", state: .needsApproval, action: "Bash", target: "npm",
+                  request: approval(stdin: bashPrefixStdin)),
+            .init(name: "approval_bash_quotes", state: .needsApproval, action: "Bash", target: "echo",
+                  request: approval(stdin: bashQuotesStdin)),
+            .init(name: "approval_bash_multiline", state: .needsApproval, action: "Bash", target: "cat",
+                  request: approval(stdin: bashMultilineStdin)),
+            .init(name: "approval_bash_readrule", state: .needsApproval, action: "Bash", target: "find",
+                  request: approval(stdin: bashReadRuleStdin)),
+            .init(name: "approval_bash_subagent_nosugg", state: .needsApproval, action: "Bash", target: "echo",
+                  request: approval(stdin: subagentBashStdin)),
+            .init(name: "approval_edit_real", state: .needsApproval, action: "Edit", target: "NotchMetrics.swift",
+                  request: approval(stdin: editStdin)),
+            .init(name: "approval_edit_multiline", state: .needsApproval, action: "Edit", target: "ClaudeRequestWatcher.swift",
+                  request: approval(stdin: editMultilineStdin)),
+            .init(name: "approval_write", state: .needsApproval, action: "Write", target: "README.md",
+                  request: approval(stdin: writeStdin)),
+            .init(name: "approval_notebook", state: .needsApproval, action: "NotebookEdit", target: "palette-extraction.ipynb",
+                  request: approval(stdin: notebookStdin)),
+            .init(name: "approval_webfetch", state: .needsApproval, action: "WebFetch", target: "https://developer.apple.com",
+                  request: approval(stdin: webFetchStdin)),
+            .init(name: "approval_websearch", state: .needsApproval, action: "WebSearch", target: "swift ImageRenderer scale",
+                  request: approval(stdin: webSearchStdin)),
+            .init(name: "approval_mcp", state: .needsApproval, action: "mcp__acme__deploy_service",
+                  request: approval(stdin: mcpStdin)),
+            .init(name: "approval_mcp_issue", state: .needsApproval, action: "mcp__acme__create_issue",
+                  request: approval(stdin: mcpIssueStdin)),
+            .init(name: "approval_read_outside", state: .needsApproval, action: "Read", target: "hosts",
+                  request: approval(stdin: readOutsideStdin)),
+            .init(name: "approval_plan", state: .needsApproval, action: "ExitPlanMode",
+                  request: approval(stdin: planStdin)),
+            .init(name: "both_approval_prefix", mode: .both, state: .needsApproval, action: "Bash", target: "npm",
+                  request: approval(stdin: bashPrefixStdin)),
+            .init(name: "both_approval_mcp", mode: .both, state: .needsApproval, action: "mcp__acme__deploy_service",
+                  request: approval(stdin: mcpStdin)),
+            .init(name: "both_approval_plan", mode: .both, state: .needsApproval, action: "ExitPlanMode",
+                  request: approval(stdin: planStdin)),
+            .init(name: "others_approval_edit", state: .needsApproval, action: "Edit", target: "NotchMetrics.swift",
+                  request: approval(stdin: editStdin), keepAwake: true, others: .init(working: 1, needYou: 1)),
+            .init(name: "approval_bash_touch", state: .needsApproval, action: "Bash", target: "touch",
+                  request: approval(stdin: bashTouchStdin)),
+        ] + rememberReviews
+    }
+
+    /// `touch` in the project: Claude Code offers the directory *and*
+    /// acceptEdits together (M7 finding 9), as one terminal option.
+    static let bashTouchStdin = permissionRequest("Bash",
+        input: #"{"command":"touch made-1.txt","description":"Create made-1.txt"}"#,
+        suggestions: #"[{"type":"addDirectories","directories":["/Users/matthew/Documents/isle"],"destination":"session"},{"type":"setMode","mode":"acceptEdits","destination":"session"}]"#)
+
+    /// The second step of "Always…", for each shape of suggestion.
+    static var rememberReviews: [ClaudePanelFixture] {
+        [
+            ("review_bash_short", bashShortStdin), ("review_bash_prefix", bashPrefixStdin),
+            ("review_bash_touch", bashTouchStdin), ("review_bash_readrule", bashReadRuleStdin),
+            ("review_edit", editStdin), ("review_webfetch", webFetchStdin), ("review_websearch", webSearchStdin),
+            ("review_mcp", mcpStdin), ("review_read_outside", readOutsideStdin),
+        ].map { name, stdin in
+            ClaudePanelFixture(name: name, state: .needsApproval, request: approval(stdin: stdin),
+                               reviewingRemember: true)
+        } + [
+            .init(name: "both_review_bash_prefix", mode: .both, state: .needsApproval,
+                  request: approval(stdin: bashPrefixStdin), reviewingRemember: true),
+        ]
+    }
+
     // MARK: The set
 
     static var all: [ClaudePanelFixture] {
@@ -179,7 +335,7 @@ extension ClaudePanelFixture {
             .init(name: "both_approval", mode: .both, state: .needsApproval, action: "Bash", target: "npm",
                   request: approval("Bash", "npm run lint -- --fix")),
             .init(name: "both_question_4", mode: .both, state: .needsQuestion, request: question([fourOptions])),
-        ] + descriptionModes + worstCases + liveExtras
+        ] + approvalKinds + descriptionModes + worstCases + liveExtras
     }
 
     /// The most `AskUserQuestion` sends at once (four options a question,

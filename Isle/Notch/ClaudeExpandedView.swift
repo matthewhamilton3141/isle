@@ -250,32 +250,107 @@ struct ClaudeExpandedView: View {
     /// authorises. Monospaced, two lines, cut from the middle so both the
     /// program and the end of the command survive. A fixed two-line box, so
     /// the buttons below never move with the command's length.
+    ///
+    /// An edit gives its second line to what it changes (`note`), counted from
+    /// the input; a plan is read from the top, so it's cut at the end. While
+    /// "Always…" is being reviewed the box holds what would be saved instead.
     private func approvalCommand(_ request: ClaudeRequest) -> some View {
+        Group {
+            if viewModel.isReviewingRemember, let remember = request.remember {
+                rememberReview(remember)
+            } else if let note = request.note {
+                VStack(alignment: .leading, spacing: 0) {
+                    commandText(request)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(note)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            } else {
+                commandText(request)
+                    .lineLimit(L.commandLines)
+                    .truncationMode(request.isPlan ? .tail : .middle)
+            }
+        }
+        .font(L.commandFont)
+        .foregroundStyle(.white.opacity(0.72))
+        .frame(height: CGFloat(L.commandLines) * L.commandLine, alignment: .topLeading)
+        // Its second line runs level with the corner toggle in Both mode.
+        .padding(.trailing, switcherClearance)
+    }
+
+    /// The tool, in the brighter weight, and its exact subject. A plan is
+    /// just its text: "Plan ready" above has already said what it is.
+    private func commandText(_ request: ClaudeRequest) -> Text {
         let subject = (request.subject ?? "")
             // A heredoc or a multi-line script would otherwise spend both lines
             // on its first line break.
             .replacingOccurrences(of: "\n", with: " ↵ ")
-        return (Text(request.toolName).fontWeight(.semibold).foregroundStyle(.white.opacity(0.9))
-                + Text(subject.isEmpty ? "" : "  " + subject))
-            .font(L.commandFont)
-            .foregroundStyle(.white.opacity(0.72))
-            .lineLimit(L.commandLines)
-            .truncationMode(.middle)
-            .frame(height: CGFloat(L.commandLines) * L.commandLine, alignment: .topLeading)
-            // Its second line runs level with the corner toggle in Both mode.
-            .padding(.trailing, switcherClearance)
+        if request.isPlan { return Text(subject) }
+        return Text(request.displayTool).fontWeight(.semibold).foregroundStyle(.white.opacity(0.9))
+            + Text(subject.isEmpty ? "" : "  " + subject)
     }
 
+    /// What "Always…" would save, in Claude Code's own terms — the rule as it
+    /// lands in the allow list, the mode by its name — and where it's kept.
+    /// Two changes (a directory and a mode, say) take a line each, so
+    /// neither is cut to fit beside the other; the scope rides on the last.
+    private func rememberReview(_ remember: ClaudeRequest.Remember) -> some View {
+        let changes = remember.changes
+        let first = changes.count > 1 ? changes.dropLast().joined(separator: " · ") : changes.first ?? ""
+        let last = changes.count > 1 ? changes.last : nil
+        return VStack(alignment: .leading, spacing: 0) {
+            Text(first)
+                .fontWeight(.semibold)
+                .foregroundStyle(.white.opacity(0.9))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Group {
+                if let last {
+                    Text(last).fontWeight(.semibold).foregroundStyle(.white.opacity(0.9))
+                        + Text(" · " + remember.scope)
+                } else {
+                    Text(remember.scope)
+                }
+            }
+            .lineLimit(1)
+            .truncationMode(.middle)
+        }
+    }
+
+    /// Approve / Deny / Terminal, and "Always…" between Approve and Deny when
+    /// Claude Code offered a way to stop asking — Terminal then gives up its
+    /// word to its icon, so the row still clears the corner toggle. On the
+    /// review, just the confirm and the way back.
     private var approvalActions: some View {
-        HStack(spacing: 8) {
-            pill("Approve", systemImage: "checkmark", fill: .green.opacity(0.85)) {
-                viewModel.decide(allow: true)
-            }
-            pill("Deny", systemImage: "xmark", fill: .red.opacity(0.85)) {
-                viewModel.decide(allow: false)
-            }
-            pill("Terminal", systemImage: "terminal", fill: .white.opacity(0.14)) {
-                answerInTerminal()
+        let offersRemember = approval?.remember != nil
+        // Four pills beside the corner toggle: words without their symbols, so
+        // none of them is cut to "Ap…".
+        let compact = offersRemember && viewModel.showsTabToggle
+        return HStack(spacing: 8) {
+            if offersRemember, viewModel.isReviewingRemember {
+                pill("Confirm", systemImage: "checkmark", fill: .green.opacity(0.85)) {
+                    viewModel.allowRemembering()
+                }
+                pill("Back", systemImage: "chevron.left", fill: .white.opacity(0.14)) {
+                    viewModel.cancelRemember()
+                }
+            } else {
+                pill("Approve", systemImage: "checkmark", fill: .green.opacity(0.85), compact: compact) {
+                    viewModel.decide(allow: true)
+                }
+                if offersRemember {
+                    pill("Always…", systemImage: "infinity", fill: .green.opacity(0.3), compact: compact) {
+                        viewModel.reviewRemember()
+                    }
+                }
+                pill("Deny", systemImage: "xmark", fill: .red.opacity(0.85), compact: compact) {
+                    viewModel.decide(allow: false)
+                }
+                pill("Terminal", systemImage: "terminal", fill: .white.opacity(0.14), iconOnly: offersRemember, compact: compact) {
+                    answerInTerminal()
+                }
             }
             Spacer(minLength: 0)
         }
@@ -497,19 +572,24 @@ struct ClaudeExpandedView: View {
         _ title: String,
         systemImage: String,
         fill: Color,
+        iconOnly: Bool = false,
+        compact: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
+                .labelStyle(PillLabelStyle(iconOnly: iconOnly, titleOnly: compact))
                 .font(L.pillFont)
                 .foregroundStyle(.white)
                 .lineLimit(1)
-                .padding(.horizontal, 12)
+                .padding(.horizontal, compact ? 10 : 12)
                 .frame(maxHeight: .infinity)
                 .background(Capsule().fill(fill))
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .help(iconOnly ? title : "")
+        .accessibilityLabel(title)
     }
 
     /// Hands the prompt back to the terminal now, and — since that is where
@@ -531,7 +611,10 @@ struct ClaudeExpandedView: View {
         case .disconnected: return "No active session"
         case .idle: return "Ready"
         case .working: return viewModel.workingWord + "…"   // rotating gerund
-        case .needsApproval: return "Needs your approval"
+        case .needsApproval:
+            if viewModel.isReviewingRemember, approval?.remember != nil { return "Don't ask again?" }
+            // ExitPlanMode's prompt is the plan itself, not a tool call.
+            return approval?.isPlan == true ? "Plan ready" : "Needs your approval"
         case .needsQuestion: return "Has a question"
         case .waitingInput: return "Waiting for you"
         case .done: return "Done"
@@ -579,6 +662,25 @@ struct ClaudeExpandedView: View {
         let minutes = seconds / 60
         if minutes < 60 { return "\(minutes)m ago" }
         return "\(minutes / 60)h ago"
+    }
+}
+
+/// A pill's label: the symbol and the word, or, when the row is short of
+/// room, the symbol alone (the word stays its tooltip and accessibility
+/// label) or the word alone — the pill's colour already says which it is.
+private struct PillLabelStyle: LabelStyle {
+    var iconOnly = false
+    var titleOnly = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        if iconOnly {
+            configuration.icon
+        } else if titleOnly {
+            configuration.title
+        } else {
+            Label(configuration)
+                .labelStyle(.titleAndIcon)
+        }
     }
 }
 
