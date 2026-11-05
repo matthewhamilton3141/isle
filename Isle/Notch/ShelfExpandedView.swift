@@ -46,6 +46,11 @@ struct ShelfExpandedView: View {
                 Spacer(minLength: 6)
                 actions
             }
+            // The column runs under the camera cutout, whose hardware edge
+            // sits a point below the band the safe area reports, so the top
+            // row keeps a few points clear of it. Text alone has that room in
+            // its own leading; the icons of a full shelf don't.
+            .padding(.top, 4)
             .frame(minWidth: 340, maxWidth: 340, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
