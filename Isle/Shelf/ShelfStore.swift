@@ -567,8 +567,8 @@ private final class ShelfWatcher: @unchecked Sendable {
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fd, eventMask: writes ? moved.union([.write, .extend, .attrib]) : moved, queue: queue
         )
-        source.setEventHandler { [weak self, unowned source] in
-            guard let self else { return }
+        source.setEventHandler { [weak self, weak source] in
+            guard let self, let source else { return }
             // Written where it stands: the same file, so the same watch.
             guard !source.data.isDisjoint(with: moved) else {
                 self.onWrite?(path)
