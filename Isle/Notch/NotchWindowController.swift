@@ -66,6 +66,7 @@ final class NotchWindowController {
 
     private var screenObserver: (any NSObjectProtocol)?
     private var pointerMonitor: Any?
+    private var localPointerMonitor: Any?
     private var cancellables = Set<AnyCancellable>()
 
     /// A sync arrived while an island was open and was deferred — see
@@ -104,6 +105,9 @@ final class NotchWindowController {
         if let pointerMonitor {
             NSEvent.removeMonitor(pointerMonitor)
         }
+        if let localPointerMonitor {
+            NSEvent.removeMonitor(localPointerMonitor)
+        }
     }
 
     // MARK: - Lifecycle
@@ -136,6 +140,10 @@ final class NotchWindowController {
         if let pointerMonitor {
             NSEvent.removeMonitor(pointerMonitor)
             self.pointerMonitor = nil
+        }
+        if let localPointerMonitor {
+            NSEvent.removeMonitor(localPointerMonitor)
+            self.localPointerMonitor = nil
         }
         cancelSweepRecheck()
         viewModel.stop()
@@ -311,6 +319,13 @@ final class NotchWindowController {
     /// One monitor covers every island: the pointer is only ever in one place,
     /// so each move is routed to the island whose screen it is on and every
     /// other island is told to collapse.
+    ///
+    /// A global monitor sees only events sent to *other* apps, so it goes
+    /// blind exactly when Isle is where the moves are sent: while the AirDrop
+    /// sheet has Isle active, or while a panel is key for a reply. A local
+    /// monitor on `mouseMoved` sees those, and they take the same path. An
+    /// event goes to one app or the other, never both, so the two don't
+    /// overlap; `handlePointerMove` drops a repeat all the same.
     private func observePointer() {
         guard pointerMonitor == nil else { return }
         pointerMonitor = NSEvent.addGlobalMonitorForEvents(
@@ -329,6 +344,16 @@ final class NotchWindowController {
                 }
             }
         }
+        // Moves only. Isle's own presses and drags — an item dragged off the
+        // shelf — are no file drag *to* the island, and stay unseen as before.
+        localPointerMonitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.fileDrag.handle(event)
+                self.handlePointerMove(event)
+            }
+            return event
+        }
     }
 
     /// The whole hover rule, in one place.
@@ -340,6 +365,11 @@ final class NotchWindowController {
     /// points doesn't shut it. The gap between the two is the hysteresis: easy
     /// to commit to, hard to lose by accident.
     private func handlePointerMove(_ event: NSEvent) {
+        // A move already handled, or one older than it: no news. Matters
+        // only for the sweep reading below, which would take a repeat for a
+        // pause — and a pause for an arrival.
+        guard event.timestamp > lastPointerTimestamp else { return }
+
         // A move with no button held: whatever drag there was is over. The
         // window's own drag callbacks end the drop face on the way out; this
         // is the backstop for one that never got them.
