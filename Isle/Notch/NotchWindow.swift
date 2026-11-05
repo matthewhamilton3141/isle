@@ -59,4 +59,22 @@ final class NotchWindow: NSPanel {
     // out of the frontmost app, so key and main status are both refused.
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+
+    /// Offered every scroll event before the views under the pointer see it.
+    /// Returns true to keep it from them.
+    ///
+    /// Scroll events need no key status: the window server sends them to the
+    /// window under the pointer, key or not, which is how the Agenda list
+    /// already scrolls in a panel that never takes focus. They arrive here
+    /// first, on their way to that list, so this is where a horizontal swipe
+    /// between faces is told from a vertical scroll and taken out before the
+    /// list sees it.
+    var scrollInterceptor: (@MainActor (NSEvent) -> Bool)?
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .scrollWheel, let scrollInterceptor, scrollInterceptor(event) {
+            return
+        }
+        super.sendEvent(event)
+    }
 }

@@ -190,6 +190,10 @@ final class NotchWindowController {
         presentation.metrics = metrics
 
         let window = NotchWindow(contentRect: metrics.maximumFrame)
+        // A two-finger swipe across an open face moves between faces.
+        window.scrollInterceptor = { [weak presentation] event in
+            presentation?.handleScroll(event) ?? false
+        }
         let hosting = NotchHostingView(
             rootView: NotchRootView(viewModel: viewModel, island: presentation) { [weak self] rect in
                 self?.updateActiveRect(rect, on: id)

@@ -30,13 +30,14 @@ struct ExpandedNotchView: View {
         content
             // A clean cross-dissolve: nothing moves, the old place just fades
             // out as the new one fades in, in place — Home to a face, a face
-            // to Home, a face to another, and the interrupt-driven switch to
-            // Claude, which doesn't go through a tile.
+            // to Home, and the interrupt-driven switch to Claude, which
+            // doesn't go through a tile. A swipe lands without it: its faces
+            // are already where they belong (see `FacePager.settle`).
             .animation(.easeInOut(duration: 0.28), value: viewModel.expandedPlace)
             // The waveform is pinned to ONE fixed spot in the panel and drawn
             // outside the face switch, so it holds the exact same real position
-            // on every face instead of re-aligning to each face's text —
-            // switching faces doesn't make it hop. Not on Home, where it would sit
+            // on every face instead of re-aligning to each face's text — it
+            // stays put through a swipe, too. Not on Home, where it would sit
             // on a tile and the Music tile already says what's playing. Gated
             // on a live track; non-interactive so it never swallows a seek or
             // dismiss tap.
@@ -63,8 +64,10 @@ struct ExpandedNotchView: View {
             HomeGridView(viewModel: viewModel, palette: palette)
                 .transition(.opacity)
         case .face(let tab):
-            face(tab)
-                .transition(.opacity)
+            FaceCarousel(pager: island.pager, face: tab) { face in
+                self.face(face)
+            }
+            .transition(.opacity)
         }
     }
 
@@ -402,6 +405,59 @@ struct ExpandedNotchView: View {
                 .animation(.easeInOut(duration: 0.15), value: active)
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Swipe between faces
+
+/// The face on screen, and while a swipe is moving it, the neighbour coming
+/// in beside it — both following the fingers by an offset (see `FacePager`).
+/// At rest it's the one face, at its home.
+///
+/// Each face is keyed by which face it is, not by its slot. When a swipe
+/// lands, the face that slid in becomes the face and the one it pushed out
+/// becomes the neighbour; keyed by slot, both would be torn down and rebuilt
+/// at that instant — the marker's loop, the marquee and the output listeners
+/// all restarting under a face that never visibly moved. A tile click, which
+/// does change the face, still gets its insert and remove, and so the
+/// cross-fade.
+private struct FaceCarousel<Face: View>: View {
+    @ObservedObject var pager: FacePager
+    var face: IsleTab
+    @ViewBuilder var content: (IsleTab) -> Face
+
+    private struct Slot: Identifiable {
+        var tab: IsleTab
+        var x: CGFloat
+        var id: IsleTab { tab }
+    }
+
+    private var slots: [Slot] {
+        // A pager left on another face (an interrupt took the panel
+        // mid-swipe) doesn't move this one.
+        guard pager.current == face else { return [Slot(tab: face, x: 0)] }
+        var slots = [Slot(tab: face, x: pager.offset)]
+        if let neighbor = pager.neighbor, neighbor.tab != face {
+            slots.append(Slot(tab: neighbor.tab, x: pager.offset + CGFloat(neighbor.side) * pager.page))
+        }
+        return slots
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .topLeading) {
+                ForEach(slots) { slot in
+                    content(slot.tab)
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .offset(x: slot.x)
+                        .transition(.opacity)
+                }
+            }
+        }
+        // Closing the panel ends any swipe with it. A gesture's end phase
+        // can't arrive for a panel that isn't there, and the next open
+        // mustn't find a face parked half-way.
+        .onDisappear { pager.reset() }
     }
 }
 

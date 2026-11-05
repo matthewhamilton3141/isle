@@ -55,8 +55,22 @@ final class IslandPresentation: ObservableObject {
     /// island: islands come and go with displays, it does not.
     private unowned let content: NotchViewModel
 
+    /// This island's swipe between faces. Per island because a gesture
+    /// happens on one screen; the face it lands on is the shared choice.
+    let pager = FacePager()
+
     init(content: NotchViewModel) {
         self.content = content
+    }
+
+    /// A scroll event reached this island's window — which happens only with
+    /// the pointer over the drawn notch, since everywhere else the window is
+    /// transparent to the mouse. Returns whether it was a face swipe, which
+    /// the views underneath shouldn't also see. A collapsed island pages
+    /// nothing.
+    func handleScroll(_ event: NSEvent) -> Bool {
+        guard state.isExpanded else { return false }
+        return pager.handle(event, content: content)
     }
 
     /// This island's visual state: its own hover crossed with the shared
