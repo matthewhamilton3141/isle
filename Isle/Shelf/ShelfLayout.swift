@@ -50,8 +50,8 @@ enum ShelfLayout {
     static let cutoutClearance: CGFloat = 4
 
     /// The line over a single row.
-    static let headlineHeight: CGFloat = 15
-    static let headlineGap: CGFloat = 4
+    static let headlineHeight: CGFloat = 14
+    static let headlineGap: CGFloat = 3
 
     /// The buttons, and the count level with them: one height, one baseline.
     static let barHeight: CGFloat = 24
@@ -69,14 +69,16 @@ enum ShelfLayout {
         /// Between the thumbnail and the name.
         var spacing: CGFloat
         var nameSize: CGFloat
-        /// Two lines of the name, whether it takes them or not.
+        /// Two lines of the name, whether it takes them or not: exactly two
+        /// lines as SwiftUI sets them (11pt a line at 9pt, 13 at 10). Any
+        /// less and a long name quietly gives up its second line.
         var nameHeight: CGFloat
 
         var height: CGFloat { padding + side + spacing + nameHeight + padding }
     }
 
     /// One row: room for the file to be seen.
-    static let large = Cell(side: 56, padding: 3, spacing: 3, nameSize: 10, nameHeight: 24)
+    static let large = Cell(side: 56, padding: 3, spacing: 3, nameSize: 10, nameHeight: 26)
 
     /// Two rows.
     static let small = Cell(side: 44, padding: 2, spacing: 2, nameSize: 9, nameHeight: 22)

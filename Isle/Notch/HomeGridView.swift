@@ -205,15 +205,15 @@ struct HomeGridView: View {
 
     // MARK: - Shelf
 
-    /// The latest thing kept: its thumbnail, as the face shows it, or its
-    /// icon while it has none. The tile is only on the grid while the shelf
-    /// holds something, so there's always one.
+    /// The latest thing kept: its thumbnail, filling the lead as the album
+    /// does on Music's tile, or its icon while it has none. The tile is only
+    /// on the grid while the shelf holds something, so there's always one.
     @ViewBuilder
     private var shelfLead: some View {
         if let item = viewModel.shelf.items.last {
             ShelfPreviewImage(icon: viewModel.shelf.icon(for: item),
                               thumbnail: viewModel.shelf.thumbnail(for: item),
-                              side: homeTileLead, corner: 3)
+                              side: homeTileLead, corner: 5, fills: true)
         } else {
             FaceIcon(tab: .shelf, size: 18)
         }

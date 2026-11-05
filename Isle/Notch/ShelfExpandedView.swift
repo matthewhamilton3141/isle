@@ -60,10 +60,7 @@ struct ShelfExpandedView: View {
                         .padding(.bottom, ShelfLayout.headlineGap)
                 }
                 itemGrid
-                // The least gap is under `ShelfLayout.barGap`: on a Mac with
-                // a deeper housing than this one the cap leaves a few points
-                // less room, and the gap gives them up first.
-                Spacer(minLength: 2)
+                Spacer(minLength: 0)
                 actions
             }
             // The column runs under the camera cutout, whose hardware edge
@@ -74,7 +71,13 @@ struct ShelfExpandedView: View {
             .frame(width: ShelfLayout.columnWidth, alignment: .topLeading)
             .frame(maxHeight: .infinity, alignment: .top)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Laid out at the rows' own height and pinned to the top, whatever
+        // the panel's height is at the moment: mid-swipe from a shorter face
+        // the panel only grows once this one lands, and until then the bottom
+        // is cut off by the panel's edge rather than the whole face being
+        // centred, which would push the top row up under the camera.
+        .frame(height: ShelfLayout.contentHeight(rows: rows), alignment: .top)
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
         .foregroundStyle(.white)
         // A selection whose item left the shelf (dragged off into the Trash,
         // removed) is no selection.
@@ -221,7 +224,7 @@ private struct ShelfCount: View {
             Text("\(shelf.items.count)")
                 .font(.system(size: 18, weight: .bold).monospacedDigit())
                 .contentTransition(.numericText())
-            Text(shelf.isFull ? "full" : shelf.items.count == 1 ? "item" : "items")
+            Text(shelf.isFull ? "· full" : shelf.items.count == 1 ? "item" : "items")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.6))
         }
@@ -278,6 +281,9 @@ struct ShelfPreviewImage: View {
     var thumbnail: NSImage?
     var side: CGFloat
     var corner: CGFloat
+    /// The thumbnail fills the square, cropped, as the album does on its
+    /// tile. For a lead too small to show a page's whole shape usefully.
+    var fills = false
 
     var body: some View {
         ZStack {
@@ -285,7 +291,8 @@ struct ShelfPreviewImage: View {
                 Image(nsImage: thumbnail)
                     .resizable()
                     .interpolation(.high)
-                    .aspectRatio(contentMode: .fit)
+                    .aspectRatio(contentMode: fills ? .fill : .fit)
+                    .frame(width: fills ? side : nil, height: fills ? side : nil, alignment: .top)
                     .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: corner, style: .continuous)
