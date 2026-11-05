@@ -202,7 +202,22 @@ final class ClaudeRequestWatcher {
     private func request(id: String) -> ClaudeRequest? {
         let url = directoryURL.appendingPathComponent("\(id).json")
         guard let data = try? Data(contentsOf: url),
-              let stdin = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let request = Self.decode(stdin: data, id: id)
+        else { return nil }
+        guard Self.isAlive(request) else {
+            // Its hook was killed outright and its trap never ran: nothing will
+            // ever answer this or clean it up, so do it here.
+            try? FileManager.default.removeItem(at: url)
+            return nil
+        }
+        return request
+    }
+
+    /// The request a hook's stdin describes, or nil for anything the notch
+    /// can't offer buttons for. Pure — no file, no liveness — so the debug
+    /// fixtures decode the very payloads Claude Code sent.
+    nonisolated static func decode(stdin data: Data, id: String) -> ClaudeRequest? {
+        guard let stdin = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let toolName = stdin["tool_name"] as? String
         else { return nil }
 
@@ -225,7 +240,7 @@ final class ClaudeRequestWatcher {
             return nil
         }
 
-        let request = ClaudeRequest(
+        return ClaudeRequest(
             id: id,
             kind: kind,
             sessionId: sessionId,
@@ -233,13 +248,6 @@ final class ClaudeRequestWatcher {
             subject: kind == .approval ? Self.subject(of: input) : nil,
             questions: questions
         )
-        guard Self.isAlive(request) else {
-            // Its hook was killed outright and its trap never ran: nothing will
-            // ever answer this or clean it up, so do it here.
-            try? FileManager.default.removeItem(at: url)
-            return nil
-        }
-        return request
     }
 
     private static func isAlive(_ request: ClaudeRequest) -> Bool {
@@ -252,7 +260,7 @@ final class ClaudeRequestWatcher {
     /// The tool input's subject, in the order a person would want to read
     /// it. Unknown tools fall back to the whole input, compact — something
     /// exact always beats something friendly when the click authorises it.
-    private static func subject(of input: [String: Any]) -> String? {
+    nonisolated private static func subject(of input: [String: Any]) -> String? {
         for key in ["command", "file_path", "notebook_path", "url", "query", "pattern", "path", "description", "prompt"] {
             if let value = input[key] as? String, !value.isEmpty { return value }
         }
@@ -265,7 +273,7 @@ final class ClaudeRequestWatcher {
         return String(data: data, encoding: .utf8)
     }
 
-    private static func questions(from input: [String: Any]) -> [ClaudeQuestion] {
+    nonisolated private static func questions(from input: [String: Any]) -> [ClaudeQuestion] {
         guard let raw = input["questions"] as? [[String: Any]] else { return [] }
         return raw.compactMap { q in
             guard let text = q["question"] as? String else { return nil }
