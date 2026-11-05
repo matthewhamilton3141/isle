@@ -103,8 +103,9 @@ enum HookInstaller {
     /// entry (matched to AskUserQuestion) runs `ask-question`, and both blocking
     /// entries carry their own `timeout`. v10: a Stop writes `last_message`,
     /// the start of Claude's final message as Claude Code escaped it, for the
-    /// Done face; and the project name is escaped, so a quote in a folder name
-    /// can no longer make the whole record unreadable.)
+    /// Done face, and the idle "waiting for your input" nudge keeps it; and
+    /// the project name is escaped, so a quote in a folder name can no longer
+    /// make the whole record unreadable.)
     private static let currentVersion = 10
     private static let versionKey = "HookInstaller.installedVersion"
 
@@ -620,6 +621,17 @@ enum HookInstaller {
         *waiting*) STATE="waiting_input" ;;
         *)         STATE="needs_question" ;;
       esac
+      # The idle nudge comes a minute after a Stop, about the same finished turn:
+      # keep what Claude said, copied from the record verbatim (it is already
+      # escaped and checked), so the face doesn't lose it to the nudge. A new
+      # prompt writes `working`, which drops it.
+      if [ "$STATE" = "waiting_input" ] && [ -f "$sf" ]; then
+        LAST_EXCERPT="$(LC_ALL=C grep -oE '"last_message": "([^"\\]|\\.)*"' "$sf" 2>/dev/null \
+          | head -1 | LC_ALL=C sed -E 's/^"last_message": "//; s/"$//' || true)"
+        if ! printf '%s' "$LAST_EXCERPT" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+          LAST_EXCERPT=""
+        fi
+      fi
     fi
 
     # A PreToolUse for AskUserQuestion belongs to `ask-question`, which Claude Code
