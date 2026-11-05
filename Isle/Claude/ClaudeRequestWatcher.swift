@@ -52,6 +52,36 @@ struct ClaudeRequest: Equatable, Identifiable {
     /// For a question, what was asked, one entry per question.
     let questions: [ClaudeQuestion]
 
+    /// What the face names the call by, when the raw tool name reads badly:
+    /// an MCP tool's server and tool ("acme › deploy_service"), or "Plan"
+    /// for leaving plan mode. Nil means the tool name as is.
+    var toolLabel: String? = nil
+    /// One more exact fact about the call that the subject doesn't carry —
+    /// an edit's line counts, a notebook cell — read off the input, never
+    /// inferred.
+    var note: String? = nil
+    /// The terminal dialog's "Yes, and don't ask again…": what accepting
+    /// Claude Code's own `permission_suggestions` would save, and where. Nil
+    /// when the request carries none, or any Isle can't spell out exactly —
+    /// the notch offers only what it can name.
+    var remember: Remember? = nil
+
+    /// The suggestions, put into words. Only ever a description: the reply
+    /// echoes the suggestions verbatim from the request file.
+    struct Remember: Equatable {
+        /// What stops being asked, one phrase per kind of change
+        /// ("Allow Bash(npm run *)", "Switch to acceptEdits mode").
+        let changes: [String]
+        /// Where it's kept: "this session", or the project or user settings file.
+        let scope: String
+    }
+
+    /// The tool as the face titles it.
+    var displayTool: String { toolLabel ?? toolName }
+
+    /// Leaving plan mode: the subject is the plan, read from the top.
+    var isPlan: Bool { toolName == "ExitPlanMode" }
+
     /// The pid of the blocked hook, from the tail of the id. A hook killed
     /// with SIGKILL never runs its cleanup trap, so its request file outlives
     /// it; this is how such a file is told from a live one.
@@ -240,13 +270,21 @@ final class ClaudeRequestWatcher {
             return nil
         }
 
+        guard kind == .approval else {
+            return ClaudeRequest(id: id, kind: kind, sessionId: sessionId, toolName: toolName,
+                                 subject: nil, questions: questions)
+        }
+        let cwd = stdin["cwd"] as? String
         return ClaudeRequest(
             id: id,
             kind: kind,
             sessionId: sessionId,
             toolName: toolName,
-            subject: kind == .approval ? Self.subject(of: input) : nil,
-            questions: questions
+            subject: Self.subject(of: input, tool: toolName, cwd: cwd),
+            questions: [],
+            toolLabel: Self.toolLabel(toolName, server: (stdin["mcp_server"] as? [String: Any])?["name"] as? String),
+            note: Self.note(of: input, tool: toolName),
+            remember: Self.remember(stdin["permission_suggestions"], cwd: cwd)
         )
     }
 
@@ -260,17 +298,163 @@ final class ClaudeRequestWatcher {
     /// The tool input's subject, in the order a person would want to read
     /// it. Unknown tools fall back to the whole input, compact — something
     /// exact always beats something friendly when the click authorises it.
-    nonisolated private static func subject(of input: [String: Any]) -> String? {
-        for key in ["command", "file_path", "notebook_path", "url", "query", "pattern", "path", "description", "prompt"] {
+    nonisolated private static func subject(of input: [String: Any], tool: String, cwd: String?) -> String? {
+        if tool == "ExitPlanMode", let plan = input["plan"] as? String {
+            return planOutline(plan)
+        }
+        // An MCP tool's input is its own schema: every argument, by name.
+        if tool.hasPrefix("mcp__") {
+            return arguments(input)
+        }
+        for key in ["file_path", "notebook_path"] {
+            if let path = input[key] as? String, !path.isEmpty { return displayPath(path, cwd: cwd) }
+        }
+        for key in ["command", "url", "query", "pattern", "path", "description", "prompt"] {
             if let value = input[key] as? String, !value.isEmpty { return value }
         }
-        guard !input.isEmpty,
-              let data = try? JSONSerialization.data(
-                withJSONObject: input,
-                options: [.sortedKeys, .withoutEscapingSlashes]
-              )
+        return arguments(input)
+    }
+
+    /// `key: value` for each argument, keys sorted, values as compact JSON —
+    /// a string keeps its quotes and a newline shows as `\n`, so nothing is
+    /// lost or reflowed on the way to the screen.
+    nonisolated private static func arguments(_ input: [String: Any]) -> String? {
+        guard !input.isEmpty else { return nil }
+        return input.keys.sorted().map { key in
+            let value = (try? JSONSerialization.data(
+                withJSONObject: input[key]!,
+                options: [.sortedKeys, .withoutEscapingSlashes, .fragmentsAllowed]
+            )).flatMap { String(data: $0, encoding: .utf8) } ?? "?"
+            return "\(key): \(value)"
+        }.joined(separator: ", ")
+    }
+
+    /// A path inside the session's directory, relative to it (the eyebrow
+    /// already names the project); anywhere else, whole, with the home
+    /// directory as `~` — so a path outside the project reads as one.
+    nonisolated static func displayPath(_ path: String, cwd: String?) -> String {
+        if let cwd, !cwd.isEmpty {
+            let base = cwd.hasSuffix("/") ? cwd : cwd + "/"
+            if path.hasPrefix(base), path.count > base.count { return String(path.dropFirst(base.count)) }
+        }
+        let home = NSHomeDirectory()
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
+        return path
+    }
+
+    /// The plan's text line by line, blank lines and the Markdown heading
+    /// marks dropped — the words are the plan's own.
+    nonisolated private static func planOutline(_ plan: String) -> String {
+        plan.split(separator: "\n")
+            .map { line -> String in
+                var text = line.trimmingCharacters(in: .whitespaces)
+                while text.hasPrefix("#") { text.removeFirst() }
+                return text.trimmingCharacters(in: .whitespaces)
+            }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+    }
+
+    /// "server › tool" for an MCP tool (`mcp__<server>__<tool>`), with the
+    /// server as Claude Code names it in the request when it does; "Plan"
+    /// for ExitPlanMode.
+    nonisolated private static func toolLabel(_ tool: String, server: String?) -> String? {
+        if tool == "ExitPlanMode" { return "Plan" }
+        guard tool.hasPrefix("mcp__") else { return nil }
+        let rest = tool.dropFirst("mcp__".count)
+        guard let split = rest.range(of: "__"), split.lowerBound > rest.startIndex,
+              split.upperBound < rest.endIndex
         else { return nil }
-        return String(data: data, encoding: .utf8)
+        let name = server.flatMap { $0.isEmpty ? nil : $0 } ?? String(rest[..<split.lowerBound])
+        return "\(name) › \(rest[split.upperBound...])"
+    }
+
+    /// The second line of an edit: how much it changes, counted from the
+    /// input itself.
+    nonisolated private static func note(of input: [String: Any], tool: String) -> String? {
+        func lines(_ text: String) -> Int {
+            guard !text.isEmpty else { return 0 }
+            let count = text.components(separatedBy: "\n").count
+            return text.hasSuffix("\n") ? count - 1 : count
+        }
+        func plural(_ n: Int, _ word: String) -> String { "\(n) \(word)\(n == 1 ? "" : "s")" }
+
+        switch tool {
+        case "Edit":
+            guard let old = input["old_string"] as? String, let new = input["new_string"] as? String else { return nil }
+            let counts = "−\(lines(old)) +\(lines(new)) lines"
+            return (input["replace_all"] as? Bool ?? false) ? counts + " · every occurrence" : counts
+        case "MultiEdit":
+            guard let edits = input["edits"] as? [Any] else { return nil }
+            return plural(edits.count, "edit")
+        case "Write":
+            guard let content = input["content"] as? String else { return nil }
+            return content.isEmpty ? "empty file" : plural(lines(content), "line")
+        case "NotebookEdit":
+            let mode = input["edit_mode"] as? String ?? "replace"
+            guard let cell = input["cell_id"] as? String, !cell.isEmpty else { return mode }
+            return "\(mode) · cell \(cell)"
+        default:
+            return nil
+        }
+    }
+
+    /// Claude Code's `permission_suggestions`, put into words. All or
+    /// nothing: one suggestion of a kind this can't name exactly (a rule
+    /// removal, a deny rule, an unknown destination) and nothing is offered,
+    /// since accepting would save something the notch never showed.
+    nonisolated private static func remember(_ raw: Any?, cwd: String?) -> ClaudeRequest.Remember? {
+        guard let all = raw as? [Any], !all.isEmpty else { return nil }
+        let suggestions = all.compactMap { $0 as? [String: Any] }
+        guard suggestions.count == all.count else { return nil }
+
+        var rules: [String] = []
+        var others: [String] = []
+        var scopes: [String] = []
+        for suggestion in suggestions {
+            guard let type = suggestion["type"] as? String,
+                  let destination = suggestion["destination"] as? String,
+                  let scope = scopeLabel(destination)
+            else { return nil }
+            switch type {
+            case "addRules":
+                guard suggestion["behavior"] as? String == "allow",
+                      let list = suggestion["rules"] as? [[String: Any]], !list.isEmpty
+                else { return nil }
+                for rule in list {
+                    guard let tool = rule["toolName"] as? String, !tool.isEmpty else { return nil }
+                    // Exactly as it lands in the settings' allow list.
+                    if let content = rule["ruleContent"] as? String {
+                        rules.append("\(tool)(\(content))")
+                    } else {
+                        rules.append(tool)
+                    }
+                }
+            case "setMode":
+                guard let mode = suggestion["mode"] as? String, !mode.isEmpty else { return nil }
+                others.append("Switch to \(mode) mode")
+            case "addDirectories":
+                guard let directories = suggestion["directories"] as? [String], !directories.isEmpty else { return nil }
+                others.append("Allow access to " + directories.map { displayPath($0, cwd: nil) }.joined(separator: ", "))
+            default:
+                return nil
+            }
+            if !scopes.contains(scope) { scopes.append(scope) }
+        }
+        let changes = (rules.isEmpty ? [] : ["Allow " + rules.joined(separator: ", ")]) + others
+        return ClaudeRequest.Remember(changes: changes, scope: scopes.joined(separator: "; "))
+    }
+
+    /// Where Claude Code keeps an accepted suggestion, by its `destination`.
+    nonisolated private static func scopeLabel(_ destination: String) -> String? {
+        switch destination {
+        case "session", "cliArg": return "this session"
+        case "localSettings": return "this project · .claude/settings.local.json"
+        case "projectSettings": return "this project · .claude/settings.json"
+        case "userSettings": return "every project · ~/.claude/settings.json"
+        default: return nil
+        }
     }
 
     nonisolated private static func questions(from input: [String: Any]) -> [ClaudeQuestion] {
@@ -296,6 +480,9 @@ final class ClaudeRequestWatcher {
     /// What the notch can say back to a blocked hook.
     enum Reply {
         case allow
+        /// Allow, and accept Claude Code's own suggestions so the same call
+        /// stops asking — the dialog's "Yes, and don't ask again…".
+        case allowRemembering
         case deny
         /// Labels keyed by question text; a multi-select's labels are joined
         /// with ", " by the caller.
@@ -339,17 +526,53 @@ final class ClaudeRequestWatcher {
         switch reply {
         case .allow:
             guard request.kind == .approval else { return nil }
+            // ExitPlanMode is a tool Claude Code answers on its own card, and
+            // 2.1.318 ignores a bare allow for it — the plan dialog just stays
+            // up. Handing its input back, verbatim, is what it takes as the
+            // user's say-so (as `answers` are for a question); the session
+            // then leaves plan mode for the default mode, the dialog's
+            // "Yes, manually approve edits".
+            if request.isPlan {
+                guard let data = try? Data(contentsOf: requestURL),
+                      let stdin = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let input = stdin["tool_input"] as? [String: Any]
+                else { return nil }
+                return ["hookSpecificOutput": [
+                    "hookEventName": "PermissionRequest",
+                    "decision": ["behavior": "allow", "updatedInput": input],
+                ]]
+            }
             return ["hookSpecificOutput": [
                 "hookEventName": "PermissionRequest",
                 "decision": ["behavior": "allow"],
             ]]
+        case .allowRemembering:
+            // `updatedPermissions` is the request's `permission_suggestions`
+            // verbatim, re-read from the file — never rebuilt from the decoded
+            // description, so what's saved is exactly what Claude Code
+            // offered. Only for a request the face could put into words.
+            guard request.kind == .approval, request.remember != nil,
+                  let data = try? Data(contentsOf: requestURL),
+                  let stdin = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let suggestions = stdin["permission_suggestions"] as? [Any], !suggestions.isEmpty
+            else { return nil }
+            return ["hookSpecificOutput": [
+                "hookEventName": "PermissionRequest",
+                "decision": ["behavior": "allow", "updatedPermissions": suggestions],
+            ]]
         case .deny:
             guard request.kind == .approval else { return nil }
             // No `interrupt`: Claude hears the denial and can try another way,
-            // as after a "No" in the terminal.
+            // as after a "No" in the terminal. The message is all Claude is
+            // told (it arrives as the tool's error), so it says who decided
+            // — the old bare "Denied from the Isle notch" left the model
+            // guessing what an Isle notch was.
+            let message = request.isPlan
+                ? "The user rejected this plan from the Isle notch."
+                : "The user denied this tool call from the Isle notch."
             return ["hookSpecificOutput": [
                 "hookEventName": "PermissionRequest",
-                "decision": ["behavior": "deny", "message": "Denied from the Isle notch"],
+                "decision": ["behavior": "deny", "message": message],
             ]]
         case .answers(let answers):
             // `updatedInput` replaces the tool's input wholesale, so it starts

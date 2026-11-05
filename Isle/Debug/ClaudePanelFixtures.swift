@@ -28,6 +28,7 @@ struct ClaudePanelFixture: Identifiable {
     var workingWord: String? = "Percolating"
     var request: ClaudeRequest? = nil
     var questionIndex = 0
+    var reviewingRemember = false
     var picks: [Set<String>] = []
     var descriptions: OptionDescriptions = .default
     var keepAwake = false
@@ -162,7 +163,7 @@ extension ClaudePanelFixture {
     /// Wraps a tool call in the PermissionRequest envelope.
     private static func permissionRequest(_ tool: String, input: String, suggestions: String = "[]",
                                           extra: String = "") -> String {
-        #"{"session_id":"preview-session","hook_event_name":"PermissionRequest","permission_mode":"default","tool_name":""#
+        #"{"session_id":"preview-session","cwd":"/Users/matthew/Documents/isle","hook_event_name":"PermissionRequest","permission_mode":"default","tool_name":""#
             + tool + #"","tool_input":"# + input + #","permission_suggestions":"# + suggestions + extra + "}"
     }
 
@@ -232,7 +233,7 @@ extension ClaudePanelFixture {
         input: #"{"file_path":"/etc/hosts"}"#,
         suggestions: #"[{"type":"addRules","rules":[{"toolName":"Read","ruleContent":"//etc/**"}],"behavior":"allow","destination":"session"},{"type":"addRules","rules":[{"toolName":"Read","ruleContent":"//private/etc/**"}],"behavior":"allow","destination":"session"}]"#)
 
-    static let planStdin = ##"{"session_id":"preview-session","hook_event_name":"PermissionRequest","permission_mode":"plan","tool_name":"ExitPlanMode","tool_input":{"plan":"# Plan: add made-plan.txt\n\n## Context\nAdd a file `made-plan.txt` containing the word \"hi\" to the project root.\n\n## Steps\n1. Create `made-plan.txt` in the working directory with the Write tool.\n2. Set its contents to exactly `hi`.\n3. Verify by reading the file back and confirming it contains `hi`.\n","planFilePath":"/Users/matthew/.claude/plans/plan-how-to-add-serialized-honey.md"}}"##
+    static let planStdin = ##"{"session_id":"preview-session","cwd":"/Users/matthew/Documents/isle","hook_event_name":"PermissionRequest","permission_mode":"plan","tool_name":"ExitPlanMode","tool_input":{"plan":"# Plan: add made-plan.txt\n\n## Context\nAdd a file `made-plan.txt` containing the word \"hi\" to the project root.\n\n## Steps\n1. Create `made-plan.txt` in the working directory with the Write tool.\n2. Set its contents to exactly `hi`.\n3. Verify by reading the file back and confirming it contains `hi`.\n","planFilePath":"/Users/matthew/.claude/plans/plan-how-to-add-serialized-honey.md"}}"##
 
     /// One approval per tool kind that raised a prompt in 2.1.318.
     static var approvalKinds: [ClaudePanelFixture] {
@@ -277,6 +278,30 @@ extension ClaudePanelFixture {
                   request: approval(stdin: planStdin)),
             .init(name: "others_approval_edit", state: .needsApproval, action: "Edit", target: "NotchMetrics.swift",
                   request: approval(stdin: editStdin), keepAwake: true, others: .init(working: 1, needYou: 1)),
+            .init(name: "approval_bash_touch", state: .needsApproval, action: "Bash", target: "touch",
+                  request: approval(stdin: bashTouchStdin)),
+        ] + rememberReviews
+    }
+
+    /// `touch` in the project: Claude Code offers the directory *and*
+    /// acceptEdits together (M7 finding 9), as one terminal option.
+    static let bashTouchStdin = permissionRequest("Bash",
+        input: #"{"command":"touch made-1.txt","description":"Create made-1.txt"}"#,
+        suggestions: #"[{"type":"addDirectories","directories":["/Users/matthew/Documents/isle"],"destination":"session"},{"type":"setMode","mode":"acceptEdits","destination":"session"}]"#)
+
+    /// The second step of "Always…", for each shape of suggestion.
+    static var rememberReviews: [ClaudePanelFixture] {
+        [
+            ("review_bash_short", bashShortStdin), ("review_bash_prefix", bashPrefixStdin),
+            ("review_bash_touch", bashTouchStdin), ("review_bash_readrule", bashReadRuleStdin),
+            ("review_edit", editStdin), ("review_webfetch", webFetchStdin), ("review_websearch", webSearchStdin),
+            ("review_mcp", mcpStdin), ("review_read_outside", readOutsideStdin),
+        ].map { name, stdin in
+            ClaudePanelFixture(name: name, state: .needsApproval, request: approval(stdin: stdin),
+                               reviewingRemember: true)
+        } + [
+            .init(name: "both_review_bash_prefix", mode: .both, state: .needsApproval,
+                  request: approval(stdin: bashPrefixStdin), reviewingRemember: true),
         ]
     }
 
