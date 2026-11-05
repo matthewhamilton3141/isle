@@ -56,8 +56,14 @@ final class NotchWindow: NSPanel {
     }
 
     // Isle's controls are hover/click driven and it should never pull focus
-    // out of the frontmost app, so key and main status are both refused.
-    override var canBecomeKey: Bool { false }
+    // out of the frontmost app, so key status is refused — except while a
+    // field on the Claude face is taking a reply. Then, and only then, the
+    // panel can become key; `.nonactivatingPanel` means it does so without
+    // activating Isle, so the frontmost app stays frontmost and gets its keys
+    // back the moment composing ends (see NotchWindowController). Main status
+    // is never wanted.
+    var allowsKey = false
+    override var canBecomeKey: Bool { allowsKey }
     override var canBecomeMain: Bool { false }
 
     /// Offered every scroll event before the views under the pointer see it.

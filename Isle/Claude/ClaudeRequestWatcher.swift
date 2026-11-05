@@ -484,6 +484,9 @@ final class ClaudeRequestWatcher {
         /// stops asking — the dialog's "Yes, and don't ask again…".
         case allowRemembering
         case deny
+        /// Deny, and tell Claude why — the terminal's "No, and tell Claude
+        /// what to do differently".
+        case denySaying(String)
         /// Labels keyed by question text; a multi-select's labels are joined
         /// with ", " by the caller.
         case answers([String: String])
@@ -570,6 +573,18 @@ final class ClaudeRequestWatcher {
             let message = request.isPlan
                 ? "The user rejected this plan from the Isle notch."
                 : "The user denied this tool call from the Isle notch."
+            return ["hookSpecificOutput": [
+                "hookEventName": "PermissionRequest",
+                "decision": ["behavior": "deny", "message": message],
+            ]]
+        case .denySaying(let words):
+            guard request.kind == .approval else { return nil }
+            // Same slot, the user's words after the attribution. Verified on
+            // 2.1.318: shown as the tool's error, and Claude acted on it
+            // ("name it made-alt.txt instead" → a Write to made-alt.txt).
+            let message = (request.isPlan
+                ? "The user rejected this plan from the Isle notch and said: "
+                : "The user denied this tool call from the Isle notch and said: ") + words
             return ["hookSpecificOutput": [
                 "hookEventName": "PermissionRequest",
                 "decision": ["behavior": "deny", "message": message],

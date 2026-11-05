@@ -25,15 +25,16 @@
 	  Required to send Apple Events. Spotify ignores MediaRemote's
 	  shuffle/repeat commands, so those two controls are routed to it
 	  over AppleScript instead (see MediaRemoteCommands), and Music is
-	  read and driven the same way. "Start Claude here" opens a Terminal
-	  window in the dropped folder with `do script` (see ClaudeLauncher),
-	  which asks for Automation of Terminal the first time. The prompt
-	  names the app being controlled and shows this one string for all
-	  of them, so it covers each. Without this key the automation request
-	  is denied silently on current macOS.
+	  read and driven the same way. Terminal and iTerm2 are scripted too:
+	  "Start Claude here" opens a Terminal window in the dropped folder
+	  (see ClaudeLauncher), and a Claude Code session's tab is brought
+	  forward, or a reply typed into it, by tty (see TerminalBridge). The
+	  prompt names the app being controlled and shows this one string for
+	  all of them, so it covers each. Without this key the automation
+	  request is denied silently on current macOS.
 	-->
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Isle controls Spotify and Music from the notch, and opens a Terminal window to start Claude in a folder you drop on it.</string>
+	<string>Isle controls Spotify and Music from the notch, opens Terminal to start Claude in a folder you drop on it, and shows or replies to a Claude Code session in its terminal.</string>
 	<!--
 	  Required to observe Bluetooth devices. BluetoothBatteryMonitor registers
 	  for IOBluetooth connect notifications, which counts as a Bluetooth access
