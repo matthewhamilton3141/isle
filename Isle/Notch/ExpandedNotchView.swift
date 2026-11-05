@@ -37,7 +37,8 @@ struct ExpandedNotchView: View {
             // The waveform is pinned to ONE fixed spot in the panel and drawn
             // outside the face switch, so it holds the exact same real position
             // on every face instead of re-aligning to each face's text — it
-            // stays put through a swipe, too. Not on Home, where it would sit
+            // stays put through a swipe, fading while the faces cross under
+            // it and back once they land. Not on Home, where it would sit
             // on a tile and the Music tile already says what's playing. Gated
             // on a live track; non-interactive so it never swallows a seek or
             // dismiss tap.
@@ -53,6 +54,7 @@ struct ExpandedNotchView: View {
                     .padding(.top, 10)
                     .padding(.trailing, 4)
                     .allowsHitTesting(false)
+                    .modifier(SwipeFade(pager: island.pager))
                 }
             }
     }
@@ -421,6 +423,9 @@ struct ExpandedNotchView: View {
 /// all restarting under a face that never visibly moved. A tile click, which
 /// does change the face, still gets its insert and remove, and so the
 /// cross-fade.
+/// How much of a swipe's travel a face actually moves (see `FaceCarousel`).
+private let faceSwipeDrift: CGFloat = 0.1
+
 private struct FaceCarousel<Face: View>: View {
     @ObservedObject var pager: FacePager
     var face: IsleTab
@@ -447,9 +452,20 @@ private struct FaceCarousel<Face: View>: View {
         GeometryReader { proxy in
             ZStack(alignment: .topLeading) {
                 ForEach(slots) { slot in
+                    let progress = min(1, abs(slot.x) / pager.page)
                     content(slot.tab)
                         .frame(width: proxy.size.width, height: proxy.size.height)
-                        .offset(x: slot.x)
+                        // A short drift and a cross-fade, not a full page of
+                        // travel: a face sliding the panel's width would run
+                        // its raised artwork under the camera housing and its
+                        // text under the waveform. Drifting a tenth of the
+                        // distance keeps everything clear of both while the
+                        // fingers still visibly carry it.
+                        .offset(x: slot.x * faceSwipeDrift)
+                        // Sequential, not overlapping: the leaving face is
+                        // gone by half-way and the arriving one builds from
+                        // there, so the two never show through each other.
+                        .opacity(max(0, 1 - 2 * progress))
                         .transition(.opacity)
                 }
             }
@@ -502,9 +518,8 @@ private struct OutputButton: View {
 /// The tick moves when the HAL reports the new default, not on the tap — a
 /// switch that doesn't take leaves the tick on the device still playing.
 ///
-/// The current output's volume shares the header line, across from the back
-/// control and ending on the ticks' edge, so the rows keep all the height
-/// they had.
+/// The current output's volume sits at the foot of the list, under the rows
+/// and ending on the ticks' edge, clear of the camera housing above.
 private struct OutputList: View {
     @ObservedObject var devices: OutputDevices
     var close: () -> Void
@@ -525,12 +540,11 @@ private struct OutputList: View {
                 }
                 .buttonStyle(.plain)
 
-                Spacer(minLength: 20)
-
-                OutputVolumeSlider(volume: devices.volume)
+                Spacer(minLength: 0)
             }
 
-            // Four rows fit; a fifth scrolls rather than growing the panel.
+            // Three rows fit above the volume; more scroll rather than
+            // growing the panel.
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(devices.devices) { device in
@@ -539,6 +553,12 @@ private struct OutputList: View {
                 }
             }
             .scrollIndicators(.never)
+
+            // At the foot, not on the header line: the header sits just under
+            // the housing band, and a slider there runs beneath the camera
+            // cutout, where the hardware hides it.
+            OutputVolumeSlider(volume: devices.volume)
+                .padding(.bottom, 2)
         }
         // Clear of the waveform pinned at the panel's top-right, the same
         // inset the title keeps.
@@ -589,7 +609,7 @@ private struct OutputList: View {
 ///
 /// Drawn only when the device has a volume Isle can read. One it can read
 /// but not set is shown greyed and inert; one it can't read leaves the space
-/// empty, at the same size, so nothing in the header moves.
+/// empty, at the same size, so nothing in the list moves.
 private struct OutputVolumeSlider: View {
     @ObservedObject var volume: OutputVolume
 
@@ -603,7 +623,8 @@ private struct OutputVolumeSlider: View {
                 .transition(.opacity)
             }
         }
-        .frame(width: 150, height: 16)
+        // The list's width, ending on the ticks' edge like the rows.
+        .frame(maxWidth: .infinity, minHeight: 16, maxHeight: 16)
         .animation(.easeInOut(duration: 0.15), value: volume.state == nil)
     }
 
@@ -673,3 +694,15 @@ private struct OutputVolumeSlider: View {
     }
 }
 
+
+/// Fades a fixed element out while faces cross under it during a swipe, and
+/// back in as they land. Observes the pager alone, so a gesture redraws the
+/// element and nothing around it.
+private struct SwipeFade: ViewModifier {
+    @ObservedObject var pager: FacePager
+
+    func body(content: Content) -> some View {
+        let progress = pager.current == nil ? 0 : min(1, abs(pager.offset) / pager.page)
+        content.opacity(1 - min(1, progress * 3))
+    }
+}
