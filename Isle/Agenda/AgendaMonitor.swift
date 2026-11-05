@@ -2,9 +2,15 @@
 //  AgendaMonitor.swift
 //
 //  Calendar events and reminders, read from EventKit, for two consumers:
-//  the agenda face of the expanded panel, which lists what's left of today,
-//  and the collapsed island, which borrows a moment for an event a few
-//  minutes before it starts and a reminder as it comes due.
+//  the agenda face of the expanded panel, which lists what's left of today
+//  and steps through the days around it, and the collapsed island, which
+//  borrows a moment for an event a few minutes before it starts and a
+//  reminder as it comes due.
+//
+//  And written, only ever on a click: a reminder ticked off (or back on, to
+//  undo), and an event or reminder the user typed, read back to them and
+//  confirmed. Both go through the same full access the reading already
+//  holds; nothing here writes on its own account.
 //
 //  Scheduled, not polled. One fetch pulls everything inside the horizon, a
 //  single timer is armed for the earliest thing that changes what's shown —
@@ -49,6 +55,34 @@ struct AgendaItem: Identifiable, Equatable {
     let end: Date?
     let isAllDay: Bool
     let color: Color
+    /// The reminder's EventKit identifier, for ticking it off. Nil for events.
+    var reminderID: String? = nil
+    /// A repeating reminder. Ticking one moves it on to its next date, which
+    /// unticking doesn't undo — so it gets no Undo.
+    var recurs = false
+    /// The event's call link, when `MeetingLink` found exactly one.
+    var joinURL: URL? = nil
+}
+
+/// Everything in the days the agenda can be stepped through — the week
+/// before this one to a few weeks ahead — filed by the start of each day.
+/// Events are filed under every day they touch, ended or not; reminders under
+/// the day they're due, an overdue one under today, as Reminders lists it.
+struct AgendaDays: Equatable {
+    var interval: DateInterval?
+    var byDay: [Date: [AgendaItem]] = [:]
+
+    static let empty = AgendaDays()
+
+    func items(on day: Date, calendar: Calendar = .current) -> [AgendaItem] {
+        byDay[calendar.startOfDay(for: day)] ?? []
+    }
+
+    /// Whether `day` falls inside what was fetched, so a day outside it can
+    /// say "not loaded" rather than "nothing on".
+    func covers(_ day: Date) -> Bool {
+        interval?.contains(day) ?? false
+    }
 }
 
 @MainActor
@@ -60,6 +94,11 @@ final class AgendaMonitor {
     /// What's left of today, sorted, every time it changes — a fetch, an event
     /// ending, the switches turning off (an empty list).
     var onAgendaChanged: (([AgendaItem]) -> Void)?
+
+    /// The days around this one, every time a fetch lands — for the week
+    /// strip, the timeline and another day's list. Published from the same
+    /// fetch as the list above, so the two never disagree about today.
+    var onDaysChanged: ((AgendaDays) -> Void)?
 
     /// What EventKit will let Isle read. Static because `SettingsView` and
     /// the agenda panel ask the same question to explain a switch that is on
@@ -105,6 +144,9 @@ final class AgendaMonitor {
     private var pendingReminders: [Pending] = []
     private var listedEvents: [AgendaItem] = []
     private var listedReminders: [AgendaItem] = []
+    private var dayEvents: [AgendaItem] = []
+    private var dayReminders: [AgendaItem] = []
+    private var dayInterval: DateInterval?
 
     /// Keys already announced, so a reload — every store change is one —
     /// can't re-arm something that has fired. Kept across stop/start too:
@@ -126,8 +168,10 @@ final class AgendaMonitor {
     /// the EKReminder objects never have to cross to it.
     private struct Candidate {
         let key: String
+        let identifier: String
         let due: Date
         let hasTime: Bool
+        let recurs: Bool
         let title: String
         let color: Color
     }
@@ -192,8 +236,12 @@ final class AgendaMonitor {
         pendingReminders.removeAll()
         listedEvents.removeAll()
         listedReminders.removeAll()
+        dayEvents.removeAll()
+        dayReminders.removeAll()
+        dayInterval = nil
         generation += 1
         onAgendaChanged?([])
+        onDaysChanged?(.empty)
     }
 
     private func startObserving() {
@@ -229,6 +277,106 @@ final class AgendaMonitor {
         }
     }
 
+    // MARK: - Writing
+
+    /// Where a quick-add of one kind would go: the default calendar or list,
+    /// by name and colour, for the preview to say before anything is saved.
+    struct Destination: Equatable {
+        let title: String
+        let color: Color
+    }
+
+    enum WriteError: Error, Equatable {
+        case noAccess(EKEntityType)
+        case noCalendar
+        case failed
+
+        var message: String {
+            switch self {
+            case .noAccess(.event): return "Calendar access is off — allow Isle in System Settings"
+            case .noAccess: return "Reminders access is off — allow Isle in System Settings"
+            case .noCalendar: return "There's no calendar to add it to"
+            case .failed: return "Couldn't save it — try again in Calendar"
+            }
+        }
+    }
+
+    /// The default calendar for a new event, or list for a new reminder, as
+    /// macOS has it set. Nil without access to that kind — EventKit can't
+    /// say — or without a default that can be written to.
+    func destination(for kind: QuickAddDraft.Kind) -> Destination? {
+        let type: EKEntityType = kind == .event ? .event : .reminder
+        guard Access.to(type) == .granted else { return nil }
+        let calendar = kind == .event ? store.defaultCalendarForNewEvents : store.defaultCalendarForNewReminders()
+        guard let calendar, calendar.allowsContentModifications else { return nil }
+        return Destination(title: calendar.title, color: IslandToast.legible(calendar.cgColor))
+    }
+
+    /// Saves a draft the user has confirmed. The only place a quick-add is
+    /// written. Asks for access to that kind first if it has never been asked
+    /// — the one moment a write feature prompts, since it's the first time
+    /// the user has asked Isle to write — and goes no further if the answer
+    /// is no.
+    func add(_ draft: QuickAddDraft) async throws {
+        let type: EKEntityType = draft.kind == .event ? .event : .reminder
+        await requestAccess(to: type)
+        guard Access.to(type) == .granted else { throw WriteError.noAccess(type) }
+
+        do {
+            switch draft.kind {
+            case .event:
+                guard let calendar = store.defaultCalendarForNewEvents, calendar.allowsContentModifications,
+                      let start = draft.date else { throw WriteError.noCalendar }
+                let event = EKEvent(eventStore: store)
+                event.calendar = calendar
+                event.title = draft.title
+                event.startDate = start
+                event.endDate = start.addingTimeInterval(max(draft.duration, 60))
+                try store.save(event, span: .thisEvent, commit: true)
+            case .reminder:
+                guard let calendar = store.defaultCalendarForNewReminders(),
+                      calendar.allowsContentModifications else { throw WriteError.noCalendar }
+                let reminder = EKReminder(eventStore: store)
+                reminder.calendar = calendar
+                reminder.title = draft.title
+                if let date = draft.date {
+                    let units: Set<Calendar.Component> = draft.hasTime
+                        ? [.year, .month, .day, .hour, .minute]
+                        : [.year, .month, .day]
+                    reminder.dueDateComponents = Calendar.current.dateComponents(units, from: date)
+                    // A reminder with a time alerts at it, as one made in
+                    // Reminders does; without an alarm EventKit saves it
+                    // silent.
+                    if draft.hasTime { reminder.addAlarm(EKAlarm(absoluteDate: date)) }
+                }
+                try store.save(reminder, commit: true)
+            }
+        } catch let error as WriteError {
+            throw error
+        } catch {
+            NSLog("Isle: couldn't save a quick-add — \(error.localizedDescription)")
+            throw WriteError.failed
+        }
+    }
+
+    /// Ticks a reminder off, or back on for an undo. True when EventKit
+    /// saved it; the store's own change notification then re-fetches, which
+    /// is what takes it off the list (or puts it back).
+    func setReminder(_ identifier: String, completed: Bool) -> Bool {
+        guard Access.to(.reminder) == .granted,
+              let reminder = store.calendarItem(withIdentifier: identifier) as? EKReminder,
+              reminder.calendar?.allowsContentModifications ?? false
+        else { return false }
+        reminder.isCompleted = completed
+        do {
+            try store.save(reminder, commit: true)
+            return true
+        } catch {
+            NSLog("Isle: couldn't \(completed ? "complete" : "reopen") a reminder — \(error.localizedDescription)")
+            return false
+        }
+    }
+
     // MARK: - Fetching
 
     /// Runs `reload` once the current burst of store changes has gone quiet.
@@ -245,10 +393,11 @@ final class AgendaMonitor {
         }
     }
 
-    /// Re-reads everything inside the horizon and re-arms the timer. Events
-    /// are synchronous; reminders come back on a completion, so the two are
-    /// kept apart and the reminders side is only replaced when its fetch
-    /// lands — a tick in between still sees the previous set.
+    /// Re-reads everything inside the horizon and the days around this one,
+    /// and re-arms the timer. Events are synchronous; reminders come back on
+    /// a completion, so the two are kept apart and the reminders side is only
+    /// replaced when its fetch lands — a tick in between still sees the
+    /// previous set.
     private func reload() {
         guard isRunning else { return }
         generation += 1
@@ -256,50 +405,71 @@ final class AgendaMonitor {
 
         let now = Date()
         let end = now.addingTimeInterval(Self.horizon)
+        let days = Self.dayInterval(around: now)
+        dayInterval = days
         reloadDeadline = now.addingTimeInterval(Self.refetchInterval)
         pruneFired(before: now.addingTimeInterval(-Self.horizon))
 
         if watchesEvents, Access.to(.event) == .granted {
-            (pendingEvents, listedEvents) = upcomingEvents(from: now, to: end)
+            (pendingEvents, listedEvents, dayEvents) = events(from: now, to: end, days: days)
         } else {
             pendingEvents = []
             listedEvents = []
+            dayEvents = []
         }
 
         guard watchesReminders, Access.to(.reminder) == .granted else {
             pendingReminders = []
             listedReminders = []
+            dayReminders = []
             publish()
             return
         }
         publish()
 
         // No lower bound: an overdue reminder is still due, and the Reminders
-        // app lists it under Today for the same reason.
+        // app lists it under Today for the same reason. The upper bound is
+        // the later of the toast horizon and the last day the agenda can be
+        // stepped to.
         let predicate = store.predicateForIncompleteReminders(
-            withDueDateStarting: nil, ending: end, calendars: nil
+            withDueDateStarting: nil, ending: max(end, days.end), calendars: nil
         )
         store.fetchReminders(matching: predicate) { [weak self] reminders in
             let candidates = Self.candidates(from: reminders ?? [])
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self, gen == self.generation else { return }
-                    self.install(candidates, now: Date())
+                    self.install(candidates, now: Date(), days: days)
                     self.publish()
                 }
             }
         }
     }
 
-    /// Splits a reminder fetch into the two lists: those with a due time and
-    /// a moment still ahead become toasts; everything due by the end of today
-    /// is listed.
-    private func install(_ candidates: [Candidate], now: Date) {
+    /// The days the agenda can be stepped through: from the start of last
+    /// week to five weeks on from the start of this one, in the user's own
+    /// weeks (`Calendar.current.firstWeekday`). Enough for the week strip to
+    /// look back one week and ahead four without another fetch.
+    nonisolated static func dayInterval(around now: Date, calendar: Calendar = .current) -> DateInterval {
+        let thisWeek = calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? calendar.startOfDay(for: now)
+        let start = calendar.date(byAdding: .day, value: -7, to: thisWeek) ?? thisWeek
+        let end = calendar.date(byAdding: .day, value: 35, to: thisWeek) ?? thisWeek
+        return DateInterval(start: start, end: end)
+    }
+
+    /// Splits a reminder fetch three ways: those with a due time and a moment
+    /// still ahead become toasts; everything due by the end of today is
+    /// listed; and every one is filed under its day — an overdue one under
+    /// today.
+    private func install(_ candidates: [Candidate], now: Date, days: DateInterval) {
         let earliest = now.addingTimeInterval(-Self.grace)
+        let horizon = now.addingTimeInterval(Self.horizon)
         let endOfToday = Self.endOfToday(now)
+        let startOfToday = Calendar.current.startOfDay(for: now)
 
         pendingReminders = candidates.compactMap { candidate -> Pending? in
-            guard candidate.hasTime, candidate.due >= earliest, !fired.contains(candidate.key) else { return nil }
+            guard candidate.hasTime, candidate.due >= earliest, candidate.due <= horizon,
+                  !fired.contains(candidate.key) else { return nil }
             return Pending(
                 key: candidate.key,
                 fireDate: candidate.due,
@@ -307,21 +477,27 @@ final class AgendaMonitor {
             )
         }
 
-        listedReminders = candidates.compactMap { candidate -> AgendaItem? in
-            guard candidate.due < endOfToday else { return nil }
-            return AgendaItem(
+        let items = candidates.map { candidate in
+            AgendaItem(
                 id: candidate.key,
                 kind: .reminder,
                 title: IslandToast.untitled(candidate.title, fallback: "Reminder"),
                 date: candidate.due,
                 end: nil,
                 isAllDay: !candidate.hasTime,
-                color: candidate.color
+                color: candidate.color,
+                reminderID: candidate.identifier,
+                recurs: candidate.recurs
             )
         }
+        listedReminders = items.filter { $0.date < endOfToday }
+        dayReminders = items.filter { $0.date < days.end && ($0.date >= days.start || $0.date < startOfToday) }
     }
 
-    private func upcomingEvents(from now: Date, to end: Date) -> (pending: [Pending], listed: [AgendaItem]) {
+    /// One read of the calendar for all three uses: the toasts inside the
+    /// horizon, what's left of today, and every event in the agenda's days.
+    private func events(from now: Date, to end: Date, days: DateInterval)
+        -> (pending: [Pending], listed: [AgendaItem], days: [AgendaItem]) {
         let lead = TimeInterval(leadMinutes * 60)
         let earliest = now.addingTimeInterval(-Self.grace)
         let endOfToday = Self.endOfToday(now)
@@ -329,13 +505,15 @@ final class AgendaMonitor {
         // that started an hour ago is returned too — it's still on for the
         // list, and the fire-date check drops it from the toasts. The range
         // is stretched by the lead time so an event just past the horizon
-        // whose toast falls inside it is seen.
+        // whose toast falls inside it is seen, and covers the agenda's days.
+        let toastEnd = end.addingTimeInterval(lead)
         let predicate = store.predicateForEvents(
-            withStart: earliest, end: end.addingTimeInterval(lead), calendars: nil
+            withStart: min(earliest, days.start), end: max(toastEnd, days.end), calendars: nil
         )
 
         var pending: [Pending] = []
         var listed: [AgendaItem] = []
+        var filed: [AgendaItem] = []
         for event in store.events(matching: predicate) {
             guard event.status != .canceled,
                   !Self.isDeclined(event),
@@ -349,28 +527,30 @@ final class AgendaMonitor {
             let key = "event:\(event.calendarItemIdentifier)@\(Int(start.timeIntervalSince1970))"
             let color = IslandToast.legible(event.calendar?.cgColor)
             let title = event.title ?? ""
+            let join = event.isAllDay ? nil : MeetingLink.find(url: event.url, location: event.location, notes: event.notes)
+            let item = AgendaItem(
+                id: key,
+                kind: .event,
+                title: IslandToast.untitled(title, fallback: "Event"),
+                date: start,
+                end: finish,
+                isAllDay: event.isAllDay,
+                color: color,
+                joinURL: join
+            )
 
-            if finish > now, start < endOfToday {
-                listed.append(AgendaItem(
-                    id: key,
-                    kind: .event,
-                    title: IslandToast.untitled(title, fallback: "Event"),
-                    date: start,
-                    end: finish,
-                    isAllDay: event.isAllDay,
-                    color: color
-                ))
-            }
+            if finish > now, start < endOfToday { listed.append(item) }
+            if start < days.end, finish > days.start { filed.append(item) }
 
             let fire = start.addingTimeInterval(-lead)
-            guard !event.isAllDay, fire >= earliest, !fired.contains(key) else { continue }
+            guard !event.isAllDay, fire >= earliest, fire <= toastEnd, !fired.contains(key) else { continue }
             pending.append(Pending(
                 key: key,
                 fireDate: fire,
-                toast: .event(key: key, title: title, minutesBefore: leadMinutes, tint: color)
+                toast: .event(key: key, title: title, minutesBefore: leadMinutes, tint: color, isCall: join != nil)
             ))
         }
-        return (pending, listed)
+        return (pending, listed, filed)
     }
 
     /// An invitation the user has declined is still on the calendar, greyed
@@ -391,8 +571,10 @@ final class AgendaMonitor {
             let key = "reminder:\(reminder.calendarItemIdentifier)@\(Int(due.timeIntervalSince1970))"
             return Candidate(
                 key: key,
+                identifier: reminder.calendarItemIdentifier,
                 due: due,
                 hasTime: components.hour != nil,
+                recurs: reminder.hasRecurrenceRules,
                 title: reminder.title ?? "",
                 color: IslandToast.legible(reminder.calendar?.cgColor)
             )
@@ -413,13 +595,41 @@ final class AgendaMonitor {
     private func publish() {
         let now = Date()
         listedEvents.removeAll { ($0.end ?? .distantFuture) <= now }
-        let items = (listedEvents + listedReminders).sorted { a, b in
-            if a.date != b.date { return a.date < b.date }
-            if a.kind != b.kind { return a.kind == .reminder }
-            return a.title < b.title
-        }
+        let items = (listedEvents + listedReminders).sorted(by: Self.inOrder)
         onAgendaChanged?(items)
+        onDaysChanged?(fileDays(now: now))
         schedule()
+    }
+
+    private static func inOrder(_ a: AgendaItem, _ b: AgendaItem) -> Bool {
+        if a.date != b.date { return a.date < b.date }
+        if a.kind != b.kind { return a.kind == .reminder }
+        return a.title < b.title
+    }
+
+    /// Files every event under each day it touches and every reminder under
+    /// the day it's due, overdue ones under today.
+    private func fileDays(now: Date) -> AgendaDays {
+        guard let interval = dayInterval else { return .empty }
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: now)
+        var byDay: [Date: [AgendaItem]] = [:]
+
+        for event in dayEvents {
+            var day = max(calendar.startOfDay(for: event.date), interval.start)
+            let finish = event.end ?? event.date
+            repeat {
+                byDay[day, default: []].append(event)
+                guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
+                day = next
+            } while day < finish && day < interval.end
+        }
+        for reminder in dayReminders {
+            let day = max(calendar.startOfDay(for: reminder.date), today)
+            byDay[day, default: []].append(reminder)
+        }
+        for day in byDay.keys { byDay[day]?.sort(by: Self.inOrder) }
+        return AgendaDays(interval: interval, byDay: byDay)
     }
 
     // MARK: - Timing

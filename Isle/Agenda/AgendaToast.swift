@@ -20,11 +20,15 @@ extension IslandToast {
     /// An event starting in `minutesBefore` minutes — or starting now, when
     /// the lead time is zero. `key` identifies the *occurrence*, so a
     /// recurring meeting coalesces with itself today but not with tomorrow's.
-    static func event(key: String, title: String, minutesBefore: Int, tint: Color) -> IslandToast {
+    ///
+    /// A call — an event `MeetingLink` found a link in — wears the video
+    /// glyph instead of the calendar, so the island says there's something
+    /// to join; the Join itself is on the agenda face and its home tile.
+    static func event(key: String, title: String, minutesBefore: Int, tint: Color, isCall: Bool = false) -> IslandToast {
         let suffix = minutesBefore > 0 ? " · in \(minutesBefore) min" : " · now"
         return IslandToast(
             kind: .event(key: key),
-            glyph: .symbol("calendar"),
+            glyph: .symbol(isCall ? "video.fill" : "calendar"),
             text: name(untitled(title, fallback: "Event"), beside: suffix),
             tint: tint,
             gate: .calendar

@@ -43,8 +43,9 @@ struct ClaudeOtherSessions: Equatable {
     var isEmpty: Bool { working == 0 && needYou == 0 }
 }
 
-/// The text fields on the Claude face. Each one makes the panel key while
-/// it's in use — see `NotchViewModel.composing`.
+/// The text fields in the panel — the Claude face's three and the agenda's
+/// quick add. Each one makes the panel key while it's in use — see
+/// `NotchViewModel.composing`.
 enum ComposeKind: Equatable {
     /// A reply to a session at its prompt, typed into its terminal.
     case reply
@@ -52,6 +53,8 @@ enum ComposeKind: Equatable {
     case answer
     /// "No, and tell Claude what to do differently": a denial with a reason.
     case denial
+    /// "Add event or reminder…" on the agenda face.
+    case quickAdd
 }
 
 /// What became of a reply, in the order it can happen. Nothing here is
@@ -304,7 +307,7 @@ final class NotchViewModel: ObservableObject {
     private let keepAwake = ClaudeKeepAwake()
     private let power = PowerMonitor()
     private let bluetoothBattery = BluetoothBatteryMonitor()
-    private let agenda = AgendaMonitor()
+    private let agenda: AgendaMonitor
     private var cancellables = Set<AnyCancellable>()
 
     /// The Pomodoro clock. Always constructed (it's cheap and idle until
@@ -315,6 +318,11 @@ final class NotchViewModel: ObservableObject {
     /// Files and folders kept within reach. Offered as a face only while it
     /// holds something — see `availableTabs`.
     let shelf: ShelfStore
+
+    /// The agenda face's days, ticks and quick-add. Observed by the face
+    /// itself rather than forwarded through this model: none of it changes
+    /// anything outside that face.
+    let agendaModel: AgendaModel
 
     /// A drag carrying files is in flight somewhere on screen, as
     /// `FileDragWatch` reads it off the global mouse events and the drag
@@ -853,6 +861,9 @@ final class NotchViewModel: ObservableObject {
         self.isHome = resolvedSettings.lastOnHome
         self.pomodoro = PomodoroTimer(settings: resolvedSettings)
         self.shelf = ShelfStore(settings: resolvedSettings)
+        let agenda = AgendaMonitor()
+        self.agenda = agenda
+        self.agendaModel = AgendaModel(monitor: agenda)
 
         // The timer publishes on its own object; the island reads it through
         // this model, so forward its changes (they're at most once a second
@@ -1023,6 +1034,16 @@ final class NotchViewModel: ObservableObject {
         agenda.onAgendaChanged = { [weak self] items in
             guard let self, self.agendaItems != items else { return }
             self.agendaItems = items
+            self.agendaModel.listChanged(items)
+        }
+
+        agenda.onDaysChanged = { [weak self] days in
+            self?.agendaModel.update(days: days)
+        }
+
+        agendaModel.onAdded = { [weak self] in
+            guard self?.composing == .quickAdd else { return }
+            self?.endCompose()
         }
 
         // The tap only earns its keep while something is playing. Paused, the
@@ -2018,6 +2039,8 @@ final class NotchViewModel: ObservableObject {
             guard pendingRequest?.kind == .question, !isAnsweringRequest else { return }
         case .denial:
             guard pendingRequest?.kind == .approval, !isAnsweringRequest, !isReviewingRemember else { return }
+        case .quickAdd:
+            guard showsAgenda else { return }
         }
         guard composing != kind else { return }
         composing = kind
@@ -2036,6 +2059,9 @@ final class NotchViewModel: ObservableObject {
         case .reply: sendReply()
         case .answer: answerWithTypedText()
         case .denial: denyWithMessage()
+        // The first Return previews, a second adds — and an add that lands
+        // ends composing (see `agendaModel.onAdded`).
+        case .quickAdd: agendaModel.submit()
         case nil: break
         }
     }
@@ -2222,6 +2248,11 @@ final class NotchViewModel: ObservableObject {
     var agendaShowsEvents: Bool { settings.showCalendarEvents }
     var agendaShowsReminders: Bool { settings.showReminders }
 
+    /// How long before a call its Join comes forward on the agenda face and
+    /// the home tile: the island's own lead, so the toast and the button
+    /// arrive together, and never less than ten minutes.
+    var agendaJoinLead: TimeInterval { TimeInterval(max(10, settings.eventLeadMinutes) * 60) }
+
     /// The Pomodoro timer is offered — the Settings toggle is on.
     var pomodoroAvailable: Bool { settings.pomodoroEnabled }
 
@@ -2291,10 +2322,24 @@ final class NotchViewModel: ObservableObject {
         return face != .claude && claudeNeedsYou
     }
 
-    /// The height the question face wants, while it is the face on screen —
-    /// the one case where the panel grows past `expandedSize` (see
-    /// `NotchMetrics.questionPanelHeight`). Nil for every other face, which
-    /// all keep the standard height. The tallest question of a multi-question
+    /// The content height the face on screen wants, when it wants more than
+    /// the standard panel — the one place a face's height is decided. The
+    /// panel grows to it, up to `NotchMetrics.panelMaxHeight`; `room` is the
+    /// most content that cap holds, for a face that can fit itself to it.
+    /// Nil keeps `expandedSize`, which Home and every other face do. A new
+    /// face that grows is one more case here and nothing else: the window is
+    /// already sized for the cap.
+    func faceContentHeight(room: CGFloat) -> CGFloat? {
+        switch expandedPlace {
+        case .face(.claude): return questionContentHeight(room: room)
+        case .face(.agenda): return min(room, AgendaLayout.contentHeight)
+        case .home, .face: return nil
+        }
+    }
+
+    /// The height the question face wants, while it is the face on screen
+    /// (see `faceContentHeight`). Nil without a live question, when the
+    /// face keeps the standard height. The tallest question of a multi-question
     /// ask sizes it, so stepping through them doesn't bob the panel. Depends
     /// on the description setting (row heights); the rows have the face's
     /// full width, with nothing in the panel's corner to clear.
