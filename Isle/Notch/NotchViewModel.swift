@@ -43,6 +43,30 @@ struct ClaudeOtherSessions: Equatable {
     var isEmpty: Bool { working == 0 && needYou == 0 }
 }
 
+/// The text fields on the Claude face. Each one makes the panel key while
+/// it's in use — see `NotchViewModel.composing`.
+enum ComposeKind: Equatable {
+    /// A reply to a session at its prompt, typed into its terminal.
+    case reply
+    /// "Type something": a free-text answer to the question on screen.
+    case answer
+    /// "No, and tell Claude what to do differently": a denial with a reason.
+    case denial
+}
+
+/// What became of a reply, in the order it can happen. Nothing here is
+/// claimed early: `sent` waits for the transcript to show the text as the
+/// user's own turn.
+enum ReplyDelivery: Equatable {
+    case none
+    /// Typed into the terminal; not yet seen in the transcript.
+    case sending(String)
+    /// The transcript holds it as a turn the user typed.
+    case sent(String)
+    /// It didn't get there. `text` is kept in the field; `reason` says why.
+    case failed(text: String, reason: String)
+}
+
 /// Everything the island *shows*, shared by every island on every screen.
 ///
 /// Hover and per-screen geometry are not here — they belong to one island and
@@ -155,6 +179,43 @@ final class NotchViewModel: ObservableObject {
     /// Whether `run/answering` is currently down, so it's only touched on a
     /// change.
     private var answeringMarkerWritten = false
+
+    /// Free text typed for the current question ("Type something"), by
+    /// question index. An entry replaces the picks for its question.
+    @Published private(set) var questionTyped: [Int: String] = [:]
+
+    // MARK: Jump and reply (Milestone 11)
+
+    /// Where the island's session is on screen, from its CLI's process tree
+    /// (see `ClaudeSessionHost`). Nil until resolved, and whenever the chain
+    /// doesn't end at an app — the Jump pill and the Reply field are drawn
+    /// only from this, so neither ever appears on a guess.
+    @Published private(set) var sessionHost: ClaudeSessionHost?
+
+    /// The CLI pid `sessionHost` was resolved for, so a re-selection of the
+    /// same session doesn't walk the tree again.
+    private var sessionHostPID: pid_t?
+
+    /// Which text field is taking keys, if any. The window controller makes
+    /// the panel key exactly while this is set, and hands focus back the
+    /// moment it clears — see `NotchWindowController.observeComposing`.
+    @Published private(set) var composing: ComposeKind?
+
+    /// Reply drafts by session id, so text typed for one session never goes
+    /// to another when the island moves on — it waits for its own session.
+    @Published private var replyDrafts: [String: String] = [:]
+
+    /// Text for the pending request ("Type something", "No, and tell
+    /// Claude…"). Cleared when the request changes: its question is gone.
+    @Published var answerDraft = ""
+    @Published var denialDraft = ""
+
+    /// What happened to the last reply, as far as Isle can vouch for it.
+    @Published private(set) var replyDelivery: ReplyDelivery = .none
+
+    /// Watches the transcript for a sent reply to land. Cancelled by a newer
+    /// send or a session change.
+    private var deliveryTask: Task<Void, Never>?
 
     /// The face the user last went into. Backed by AppSettings so it survives
     /// relaunch. Display may override this during an interrupt — see
@@ -909,6 +970,8 @@ final class NotchViewModel: ObservableObject {
             // ever arrive. Re-running selection here is what retires it.
             self.applyClaudeStatus(self.selectStatus(from: self.claudeStatuses))
             self.updateKeepAwake()
+            // The island's session may only now have a pid to resolve.
+            self.updateSessionHost()
         }
 
         power.onEvent = { [weak self] toast in
@@ -1159,6 +1222,13 @@ final class NotchViewModel: ObservableObject {
             pendingRequest = nil
             answeredRequestId = nil
             isReviewingRemember = false
+            questionTyped = [:]
+            composing = nil
+            sessionHost = nil
+            sessionHostPID = nil
+            deliveryTask?.cancel()
+            deliveryTask = nil
+            replyDelivery = .none
             lastAppliedStatus = nil
             doneRevertTask?.cancel()
             doneRevertTask = nil
@@ -1257,6 +1327,15 @@ final class NotchViewModel: ObservableObject {
             claudeState = status.state
         }
         claudeProject = status.project
+        if claudeSessionId != status.sessionId {
+            // Another session took the island: whatever was being typed or
+            // confirmed was for the one before. Its draft stays filed under
+            // its own id.
+            composing = nil
+            deliveryTask?.cancel()
+            deliveryTask = nil
+            replyDelivery = .none
+        }
         claudeSessionId = status.sessionId
         claudeAction = status.action
         claudeTarget = status.target
@@ -1269,6 +1348,8 @@ final class NotchViewModel: ObservableObject {
         // The island may have moved to another session; the count leaves out
         // whichever one it now shows.
         updateOtherSessions()
+        updateSessionHost()
+        settleReplyState(for: status.state)
 
         // Rotate the "thinking" word only while actually working.
         if status.state == .working {
@@ -1684,8 +1765,14 @@ final class NotchViewModel: ObservableObject {
             // and re-arm the buttons.
             questionIndex = 0
             questionPicks = Array(repeating: [], count: match?.questions.count ?? 0)
+            questionTyped = [:]
             answeredRequestId = nil
             isReviewingRemember = false
+            // Text typed for the request before belongs to a question or a
+            // call that has already gone, one way or another.
+            answerDraft = ""
+            denialDraft = ""
+            if composing == .answer || composing == .denial { composing = nil }
         }
         withAnimation(.easeInOut(duration: 0.25)) {
             pendingRequest = match
@@ -1747,6 +1834,8 @@ final class NotchViewModel: ObservableObject {
     func pickOption(_ label: String) {
         guard let question = currentQuestion, !isAnsweringRequest,
               questionPicks.indices.contains(questionIndex) else { return }
+        // A tap on an option takes the place of anything typed for it.
+        questionTyped[questionIndex] = nil
         if question.multiSelect {
             if questionPicks[questionIndex].contains(label) {
                 questionPicks[questionIndex].remove(label)
@@ -1764,7 +1853,7 @@ final class NotchViewModel: ObservableObject {
     func advanceQuestion() {
         guard let request = pendingRequest, request.kind == .question, !isAnsweringRequest,
               questionPicks.indices.contains(questionIndex),
-              !questionPicks[questionIndex].isEmpty
+              !questionPicks[questionIndex].isEmpty || questionTyped[questionIndex] != nil
         else { return }
 
         if questionIndex + 1 < request.questions.count {
@@ -1774,8 +1863,16 @@ final class NotchViewModel: ObservableObject {
 
         // Keyed by the question text, as Claude Code expects. A multi-select's
         // labels go in the order the options were offered, comma-joined.
+        // Typed text goes in as it was written: Claude Code takes any string
+        // here, and shows it as the answer just as the terminal's "Type
+        // something" row would (verified on 2.1.318 — "Which fruit? → Mango,
+        // and make it a smoothie").
         var answers: [String: String] = [:]
         for (index, question) in request.questions.enumerated() {
+            if let typed = questionTyped[index] {
+                answers[question.question] = typed
+                continue
+            }
             let picked = questionPicks[index]
             answers[question.question] = question.options
                 .map(\.label)
@@ -1809,6 +1906,284 @@ final class NotchViewModel: ObservableObject {
             requestWatcher.refresh()
             return
         }
+    }
+
+    // MARK: - Jump and reply (Milestone 11)
+
+    /// The island's session as the registry last reported it.
+    private var selectedSession: ClaudeSession? {
+        guard let id = claudeSessionId else { return nil }
+        return claudeSessions.first { $0.sessionId == id }
+    }
+
+    /// Re-resolves `sessionHost` when the island's session, or its pid,
+    /// changes. Off the main thread: tmux in the chain means asking tmux.
+    private func updateSessionHost() {
+        let pid = selectedSession?.pid
+        guard pid != sessionHostPID else { return }
+        sessionHostPID = pid
+        // Never show the last session's host for this one, even briefly.
+        sessionHost = nil
+        guard let pid else { return }
+        Task.detached(priority: .utility) { [weak self] in
+            let host = ClaudeHostResolver.resolve(cliPID: pid)
+            await self?.receiveHost(host, for: pid)
+        }
+    }
+
+    /// A resolution landing, for whichever session was asked about: kept
+    /// only if that session is still the island's.
+    private func receiveHost(_ host: ClaudeSessionHost?, for pid: pid_t) {
+        guard sessionHostPID == pid else { return }
+        sessionHost = host
+    }
+
+    /// What the Jump pill says — the hosting app's own name — or nil when
+    /// there's nowhere resolved to jump to.
+    var jumpTarget: String? {
+        guard claudeState != .disconnected else { return nil }
+        return sessionHost?.app?.name
+    }
+
+    /// Brings the session's tab (or its app) to the front. Resolved again
+    /// at the click, since tabs move between windows and a tmux client can
+    /// re-attach elsewhere; a session that no longer resolves goes nowhere.
+    func jumpToSession() {
+        guard let pid = selectedSession?.pid, sessionHost?.app != nil else { return }
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let host = ClaudeHostResolver.resolve(cliPID: pid)
+            await self?.receiveHost(host, for: pid)
+            guard let host, host.app != nil else { return }
+            _ = await TerminalBridge.jump(to: host)
+        }
+    }
+
+    /// Whether the face offers "Reply to Claude…": the session sits at its
+    /// prompt as far as the island knows, and its terminal is one Isle can
+    /// type into without focusing it. The stricter checks run at Send.
+    var canReply: Bool {
+        settings.answerFromNotch && pendingRequest == nil
+            && sessionHost?.typingRoute != nil && Self.isAtPrompt(claudeState)
+    }
+
+    /// States in which Claude Code is waiting for the next prompt.
+    private static func isAtPrompt(_ state: ClaudeCodeState) -> Bool {
+        switch state {
+        case .done, .waitingInput, .idle, .failed: return true
+        default: return false
+        }
+    }
+
+    /// The reply being written for the island's session.
+    var replyDraft: String {
+        get { claudeSessionId.flatMap { replyDrafts[$0] } ?? "" }
+        set {
+            guard let id = claudeSessionId else { return }
+            replyDrafts[id] = newValue.isEmpty ? nil : newValue
+        }
+    }
+
+    /// Starts taking keys for one of the face's fields. The panel becomes key
+    /// (without activating Isle) in response; see `NotchWindowController`.
+    func beginCompose(_ kind: ComposeKind) {
+        switch kind {
+        case .reply:
+            guard canReply else { return }
+        case .answer:
+            guard pendingRequest?.kind == .question, !isAnsweringRequest else { return }
+        case .denial:
+            guard pendingRequest?.kind == .approval, !isAnsweringRequest, !isReviewingRemember else { return }
+        }
+        guard composing != kind else { return }
+        composing = kind
+    }
+
+    /// Esc, or focus going elsewhere: stop taking keys. What was typed is
+    /// kept, and is there when the field is opened again.
+    func endCompose() {
+        guard composing != nil else { return }
+        composing = nil
+    }
+
+    /// Return, or the Send button.
+    func sendCompose() {
+        switch composing {
+        case .reply: sendReply()
+        case .answer: answerWithTypedText()
+        case .denial: denyWithMessage()
+        case nil: break
+        }
+    }
+
+    /// "Type something": the typed text answers the question on screen, then
+    /// the ask moves on — to the next question, or, on the last, sends.
+    private func answerWithTypedText() {
+        let text = answerDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, currentQuestion != nil, !isAnsweringRequest,
+              questionPicks.indices.contains(questionIndex) else { return }
+        composing = nil
+        questionTyped[questionIndex] = text
+        questionPicks[questionIndex] = []
+        answerDraft = ""
+        advanceQuestion()
+    }
+
+    /// "No, and tell Claude what to do differently": a denial whose message
+    /// carries the user's words. The message is what Claude reads as the
+    /// tool's result, the same slot the terminal's own option fills.
+    private func denyWithMessage() {
+        let text = denialDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, let request = pendingRequest, request.kind == .approval,
+              !isAnsweringRequest else { return }
+        composing = nil
+        send(.denySaying(text), to: request)
+    }
+
+    /// Types the draft into the session's terminal as the user's next prompt.
+    ///
+    /// Every check that decides whether keys would land in Claude's prompt
+    /// runs here, at the click, against fresh state: the CLI must report
+    /// itself idle (not mid-turn, not showing a dialog, where a typed Return
+    /// would answer it), and its process group must own the tab's terminal
+    /// (so it isn't a shell after Claude exited, where the text would run as
+    /// a command). Then it's typed, and only the transcript can say it
+    /// arrived — see `confirmDelivery`.
+    private func sendReply() {
+        let text = Self.oneLine(replyDraft)
+        guard !text.isEmpty, let session = selectedSession else { return }
+        if case .sending = replyDelivery { return }
+        composing = nil
+        deliveryTask?.cancel()
+
+        let sessionId = session.sessionId
+        sessionRegistry.refresh()
+        guard let fresh = claudeSessions.first(where: { $0.sessionId == sessionId }),
+              fresh.status == .idle
+        else {
+            replyDelivery = .failed(text: text, reason: "Claude isn't at its prompt right now")
+            return
+        }
+
+        replyDelivery = .sending(text)
+        let pid = fresh.pid
+        let sentAt = Date()
+        deliveryTask = Task { [weak self] in
+            let typed = await Task.detached(priority: .userInitiated) { () -> (Result<Void, TerminalBridge.Failure>, String)? in
+                guard let host = ClaudeHostResolver.resolve(cliPID: pid),
+                      let route = host.typingRoute,
+                      ProcessSnapshot(pid: pid)?.ownsTerminal == true
+                else { return nil }
+                return (await TerminalBridge.type(text, via: route), host.app?.name ?? "the terminal")
+            }.value
+            guard let self, !Task.isCancelled else { return }
+
+            guard let (result, app) = typed else {
+                self.replyDelivery = .failed(text: text, reason: "Something else is in front in Claude's tab")
+                return
+            }
+            if case .failure(let failure) = result {
+                self.replyDelivery = .failed(text: text, reason: Self.reason(for: failure, app: app))
+                return
+            }
+            // In the terminal now: the field lets go of it, so a second Send
+            // can't type it twice.
+            if Self.oneLine(self.replyDraft(for: sessionId)) == text {
+                self.replyDrafts[sessionId] = nil
+            }
+            await self.confirmDelivery(text, session: fresh, since: sentAt, app: app)
+        }
+    }
+
+    private func replyDraft(for sessionId: String) -> String { replyDrafts[sessionId] ?? "" }
+
+    /// Waits for the transcript to show `text` as a turn the user typed —
+    /// `origin.kind == "human"`, the same entry a prompt typed at the keyboard
+    /// makes. A few seconds is plenty: Claude Code writes the turn the moment
+    /// Return submits it. Not seeing it isn't proof it went nowhere — it may
+    /// be sitting in the prompt — so the text comes back to the field and the
+    /// reason says to look before sending again.
+    private func confirmDelivery(_ text: String, session: ClaudeSession, since: Date, app: String) async {
+        for _ in 0..<16 {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            if Self.transcriptHasHumanTurn(text, session: session, since: since) {
+                replyDelivery = .sent(text)
+                return
+            }
+        }
+        guard !Task.isCancelled else { return }
+        if replyDraft(for: session.sessionId).isEmpty { replyDrafts[session.sessionId] = text }
+        replyDelivery = .failed(text: text, reason: "Typed into \(app), but Claude didn't take it — check its prompt")
+    }
+
+    /// Keeps the reply's outcome honest as the session moves on.
+    private func settleReplyState(for state: ClaudeCodeState) {
+        if composing == .reply, !canReply { composing = nil }
+        switch replyDelivery {
+        case .sent:
+            // Shown for the turn it started; gone when that turn ends.
+            if state != .working && state != .compacting { replyDelivery = .none }
+        case .failed:
+            // The user carried on in the terminal.
+            if state == .working { replyDelivery = .none }
+        default:
+            break
+        }
+    }
+
+    private static func reason(for failure: TerminalBridge.Failure, app: String) -> String {
+        switch failure {
+        case .notPermitted(let name): return "Allow Isle to control \(name) in Privacy › Automation"
+        case .tabMissing: return "Couldn't find Claude's tab in \(app)"
+        case .appGone: return "\(app) isn't running"
+        case .failed: return "\(app) didn't take the text"
+        }
+    }
+
+    /// One line: a Return inside the text would submit the half before it.
+    private static func oneLine(_ text: String) -> String {
+        text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    /// Whether the session's transcript, since `since`, has a user turn typed
+    /// by a person that ends with `text`. "Ends with": anything the user had
+    /// already typed in the prompt is sent along with it, and that still
+    /// delivered the reply.
+    private static func transcriptHasHumanTurn(_ text: String, session: ClaudeSession, since: Date) -> Bool {
+        let slug = session.cwd.replacingOccurrences(of: "/", with: "-")
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects/\(slug)/\(session.sessionId).jsonl")
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard let end = try? handle.seekToEnd() else { return false }
+        let window: UInt64 = 64 * 1024
+        try? handle.seek(toOffset: end > window ? end - window : 0)
+        guard let data = try? handle.readToEnd(), let tail = String(data: data, encoding: .utf8) else { return false }
+
+        for line in tail.split(separator: "\n").reversed() {
+            guard let lineData = line.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  object["type"] as? String == "user",
+                  let stamp = object["timestamp"] as? String,
+                  let at = transcriptDate(stamp)
+            else { continue }
+            guard at >= since.addingTimeInterval(-1) else { return false }
+            if let origin = object["origin"] as? [String: Any], origin["kind"] as? String != "human" { continue }
+            guard let message = object["message"] as? [String: Any] else { continue }
+            let content: String
+            if let string = message["content"] as? String {
+                content = string
+            } else if let blocks = message["content"] as? [[String: Any]] {
+                content = blocks.compactMap { $0["text"] as? String }.joined(separator: "\n")
+            } else {
+                continue
+            }
+            if oneLine(content).hasSuffix(text) { return true }
+        }
+        return false
     }
 
     /// Whether the agenda face is on at all — either switch is enough. The
@@ -2535,6 +2910,14 @@ extension NotchViewModel {
         // The published mirrors only — no assertion is taken for a preview.
         isKeepingAwake = fixture.keepAwake
         otherSessions = fixture.others
+        sessionHost = fixture.host
+        composing = fixture.composing
+        replyDelivery = fixture.delivery
+        // In the face, not on the home grid, whatever the suite last had.
+        isHome = false
+        if let id = claudeSessionId { replyDrafts[id] = fixture.replyDraft.isEmpty ? nil : fixture.replyDraft }
+        answerDraft = fixture.answerDraft
+        denialDraft = fixture.denialDraft
         activeTab = .claude
     }
 }

@@ -72,7 +72,13 @@ struct ClaudeExpandedView: View {
         // dismissing is enabled). contentShape so taps land on the whole card,
         // not just the glyph and text.
         .contentShape(Rectangle())
-        .onTapGesture { island.dismissAlert() }
+        .onTapGesture {
+            if viewModel.composing != nil {
+                viewModel.endCompose()
+            } else {
+                island.dismissAlert()
+            }
+        }
     }
 
     /// Occupies the album cover's exact footprint (size + raise), so the
@@ -95,10 +101,14 @@ struct ClaudeExpandedView: View {
     /// decision taking the body and the action row.
     private var statusFace: some View {
         VStack(alignment: .leading, spacing: 0) {
-            eyebrow {
+            eyebrow(hint: viewModel.composing == .reply ? "esc to cancel" : nil) {
                 projectLabel
+                if viewModel.composing == .reply {
+                    if viewModel.claudeProject?.isEmpty == false { separator }
+                    Text("Replying").foregroundStyle(.white.opacity(0.8))
+                }
             } extra: {
-                if viewModel.claudeUpdatedAt != nil, state != .disconnected {
+                if viewModel.claudeUpdatedAt != nil, state != .disconnected, viewModel.composing != .reply {
                     if viewModel.claudeProject?.isEmpty == false { separator }
                     elapsed
                 }
@@ -120,6 +130,15 @@ struct ClaudeExpandedView: View {
 
             if let approval {
                 approvalCommand(approval)
+            } else if case .failed(_, let reason) = viewModel.replyDelivery {
+                Label(reason, systemImage: "exclamationmark.triangle.fill")
+                    .labelStyle(EyebrowLabelStyle())
+                    .font(L.detailFont)
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .truncationMode(.tail)
+                    .frame(height: L.detailLine, alignment: .leading)
             } else {
                 Text(detail)
                     .font(L.detailFont)
@@ -140,12 +159,7 @@ struct ClaudeExpandedView: View {
                 if approval != nil {
                     approvalActions
                 } else {
-                    // Held empty, at the height every face gives it, so the
-                    // rows above sit where they do on an approval. Reserved:
-                    // jump to the session on the leading side (Milestone 11),
-                    // the plan usage row on the trailing side (Milestone 12).
-                    // Neither is drawn until there's real data behind it.
-                    Spacer(minLength: 0)
+                    statusActions
                 }
             }
         }
@@ -161,15 +175,16 @@ struct ClaudeExpandedView: View {
     /// `extra` first (the elapsed time), then the keep-awake mark's word,
     /// leaving its cup; the project is cut short only after both.
     private func eyebrow<Leading: View, Extra: View>(
+        hint: String? = nil,
         @ViewBuilder leading: () -> Leading,
         @ViewBuilder extra: () -> Extra = { EmptyView() }
     ) -> some View {
         let leading = leading()
         let extra = extra()
         return ViewThatFits(in: .horizontal) {
-            eyebrowRow(compactMarks: false) { leading; extra }
-            eyebrowRow(compactMarks: false) { leading }
-            eyebrowRow(compactMarks: true) { leading }
+            eyebrowRow(compactMarks: false, hint: hint) { leading; extra }
+            eyebrowRow(compactMarks: false, hint: hint) { leading }
+            eyebrowRow(compactMarks: true, hint: hint) { leading }
         }
         .font(L.eyebrowFont)
         .labelStyle(EyebrowLabelStyle())
@@ -180,11 +195,14 @@ struct ClaudeExpandedView: View {
         .padding(.trailing, L.waveformClearance)
     }
 
-    private func eyebrowRow<Leading: View>(compactMarks: Bool,
+    private func eyebrowRow<Leading: View>(compactMarks: Bool, hint: String? = nil,
                                            @ViewBuilder leading: () -> Leading) -> some View {
         HStack(spacing: 5) {
             leading()
             Spacer(minLength: 6)
+            if let hint {
+                Text(hint).fixedSize()
+            }
             marks(compact: compactMarks)
         }
     }
@@ -320,9 +338,31 @@ struct ClaudeExpandedView: View {
 
     /// Approve / Deny / Terminal, and "Always…" between Approve and Deny when
     /// Claude Code offered a way to stop asking — Terminal then gives up its
-    /// word to its icon, so four pills fit the column. On the review, just
-    /// the confirm and the way back.
+    /// word to its icon, and the three decisions their symbols to their
+    /// words, so five pills fit the column. Beside Deny, the terminal's "No,
+    /// and tell Claude…" as a symbol, which opens a field in the row. On the
+    /// review, just the confirm and the way back.
+    @ViewBuilder
     private var approvalActions: some View {
+        if viewModel.composing == .denial {
+            ComposeField(
+                text: $viewModel.denialDraft,
+                prompt: approval?.isPlan == true
+                    ? "No, and tell Claude what to change…"
+                    : "No, and tell Claude what to do instead…",
+                sendTitle: "Deny",
+                sendFill: .red.opacity(0.85),
+                sendForeground: .white,
+                onSend: { viewModel.sendCompose() },
+                onCancel: { viewModel.endCompose() }
+            )
+            .disabled(viewModel.isAnsweringRequest)
+        } else {
+            decisionPills
+        }
+    }
+
+    private var decisionPills: some View {
         let offersRemember = approval?.remember != nil
         return HStack(spacing: 8) {
             if offersRemember, viewModel.isReviewingRemember {
@@ -333,16 +373,22 @@ struct ClaudeExpandedView: View {
                     viewModel.cancelRemember()
                 }
             } else {
-                pill("Approve", systemImage: "checkmark", fill: .green.opacity(0.85)) {
+                pill("Approve", systemImage: "checkmark", fill: .green.opacity(0.85), compact: offersRemember) {
                     viewModel.decide(allow: true)
                 }
                 if offersRemember {
-                    pill("Always…", systemImage: "infinity", fill: .green.opacity(0.3)) {
+                    pill("Always…", systemImage: "infinity", fill: .green.opacity(0.3), compact: true) {
                         viewModel.reviewRemember()
                     }
                 }
-                pill("Deny", systemImage: "xmark", fill: .red.opacity(0.85)) {
+                pill("Deny", systemImage: "xmark", fill: .red.opacity(0.85), compact: offersRemember) {
                     viewModel.decide(allow: false)
+                }
+                // The terminal's "No, and tell Claude what to do differently":
+                // a denial with words. Its symbol only — the row is full —
+                // with the words as its tooltip.
+                pill("No, and tell Claude…", systemImage: "text.bubble", fill: .red.opacity(0.3), iconOnly: true) {
+                    viewModel.beginCompose(.denial)
                 }
                 pill("Terminal", systemImage: "terminal", fill: .white.opacity(0.14), iconOnly: offersRemember) {
                     answerInTerminal()
@@ -352,6 +398,96 @@ struct ClaudeExpandedView: View {
         }
         .disabled(viewModel.isAnsweringRequest)
         .opacity(viewModel.isAnsweringRequest ? 0.5 : 1)
+    }
+
+    // MARK: - Jump and reply
+
+    /// The status face's row (Milestone 11): the session's terminal by name,
+    /// and a reply field taking the rest of the row. Each is drawn only when
+    /// it can reach the session — Jump when the host app is resolved, Reply
+    /// when its terminal can be typed into — and the row is otherwise held
+    /// empty at its usual height, so nothing above it moves.
+    @ViewBuilder
+    private var statusActions: some View {
+        if viewModel.composing == .reply {
+            ComposeField(
+                text: $viewModel.replyDraft,
+                prompt: "Reply to Claude…",
+                sendTitle: "Send",
+                sendFill: .white,
+                sendForeground: .black,
+                onSend: { viewModel.sendCompose() },
+                onCancel: { viewModel.endCompose() }
+            )
+        } else {
+            if let target = viewModel.jumpTarget {
+                pill(target, systemImage: "arrow.up.forward.app", fill: .white.opacity(0.14)) {
+                    viewModel.jumpToSession()
+                }
+                .help("Show this session in \(target)")
+            }
+            switch viewModel.replyDelivery {
+            case .sending:
+                deliveryNote("Sending…", systemImage: "arrow.up.circle", tint: .white.opacity(0.6))
+            case .sent(let text):
+                deliveryNote("Sent", detail: text, systemImage: "checkmark.circle.fill", tint: .green)
+            default:
+                if viewModel.canReply {
+                    replyPrompt
+                } else {
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+    }
+
+    /// "Reply to Claude…" at rest: a button shaped like the field it opens
+    /// into. A draft kept from before shows in place of the prompt.
+    private var replyPrompt: some View {
+        let draft = viewModel.replyDraft
+        return Button {
+            viewModel.beginCompose(.reply)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrowshape.turn.up.left.fill")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.55))
+                Text(draft.isEmpty ? "Reply to Claude…" : draft)
+                    .foregroundStyle(.white.opacity(draft.isEmpty ? 0.55 : 0.9))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
+            }
+            .font(L.pillFont)
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Capsule().fill(.white.opacity(0.06)))
+            .overlay(Capsule().inset(by: 0.5).stroke(.white.opacity(0.22), lineWidth: 1))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(draft.isEmpty ? "Reply to Claude" : "Reply to Claude: \(draft)")
+    }
+
+    /// What became of the reply, in the row it was sent from.
+    private func deliveryNote(_ title: String, detail: String? = nil, systemImage: String, tint: Color) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(tint)
+            Text(title)
+                .foregroundStyle(.white.opacity(0.85))
+                .fixedSize()
+            if let detail {
+                Text(detail)
+                    .foregroundStyle(.white.opacity(0.5))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            Spacer(minLength: 0)
+        }
+        .font(L.pillFont)
+        .padding(.leading, 4)
     }
 
     // MARK: - Question
@@ -426,8 +562,37 @@ struct ClaudeExpandedView: View {
                 Spacer(minLength: L.actionGap)
 
                 actionRow {
+                    if viewModel.composing == .answer {
+                        ComposeField(
+                            text: $viewModel.answerDraft,
+                            prompt: "Type your answer…",
+                            sendTitle: isLast ? "Send" : "Next",
+                            sendFill: .white,
+                            sendForeground: .black,
+                            onSend: { viewModel.sendCompose() },
+                            onCancel: { viewModel.endCompose() }
+                        )
+                    } else {
+                        questionActions(question, isLast: isLast, picks: picks, fit: fit)
+                    }
+                }
+            }
+        }
+        .disabled(viewModel.isAnsweringRequest)
+        .opacity(viewModel.isAnsweringRequest ? 0.5 : 1)
+        .animation(.easeInOut(duration: 0.2), value: index)
+    }
+
+    /// The question's own row: the way to the terminal, the terminal's "Type
+    /// something" as a field here, and Next / Done for a multi-select.
+    @ViewBuilder
+    private func questionActions(_ question: ClaudeQuestion, isLast: Bool, picks: Set<String>,
+                                 fit: L.OptionsFit) -> some View {
                     pill("Answer in terminal", systemImage: "terminal", fill: .white.opacity(0.14)) {
                         answerInTerminal()
+                    }
+                    pill("Type something", systemImage: "character.cursor.ibeam", fill: .white.opacity(0.14)) {
+                        viewModel.beginCompose(.answer)
                     }
                     if fit.scrolls {
                         Label("\(question.options.count) options", systemImage: "arrow.up.and.down")
@@ -445,12 +610,6 @@ struct ClaudeExpandedView: View {
                         }
                         .disabled(picks.isEmpty)
                     }
-                }
-            }
-        }
-        .disabled(viewModel.isAnsweringRequest)
-        .opacity(viewModel.isAnsweringRequest ? 0.5 : 1)
-        .animation(.easeInOut(duration: 0.2), value: index)
     }
 
     /// "‹ 2 of 3": where in a multi-part ask this is, and the way back.
@@ -589,9 +748,11 @@ struct ClaudeExpandedView: View {
     }
 
     /// Hands the prompt back to the terminal now, and — since that is where
-    /// the user has said they'll answer — retracts the panel if they allow it.
+    /// the user has said they'll answer — retracts the panel if they allow it
+    /// and, when the session's tab is resolved, takes them to it.
     private func answerInTerminal() {
         viewModel.deferToTerminal()
+        viewModel.jumpToSession()
         island.dismissAlert()
     }
 
@@ -693,6 +854,71 @@ private struct EyebrowLabelStyle: LabelStyle {
             if !iconOnly {
                 configuration.title
             }
+        }
+    }
+}
+
+/// The face's text field, in the action row it replaces: the text, and the
+/// button that sends it. Return sends and Esc cancels, both handled here so
+/// every field behaves the same. Takes focus as it appears — the panel has
+/// just become key for it (see `NotchViewModel.composing`).
+///
+/// One line: Claude Code submits a prompt on Return, so a reply can't carry
+/// one, and a question's answer or a denial's reason reads as one anyway.
+private struct ComposeField: View {
+    @Binding var text: String
+    let prompt: String
+    let sendTitle: String
+    let sendFill: Color
+    let sendForeground: Color
+    let onSend: () -> Void
+    let onCancel: () -> Void
+
+    @FocusState private var focused: Bool
+
+    private var isEmpty: Bool {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            TextField(text: $text, prompt: Text(prompt).foregroundStyle(.white.opacity(0.4))) {
+                Text(prompt)
+            }
+            .textFieldStyle(.plain)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(.white)
+            .focused($focused)
+            .onSubmit { if !isEmpty { onSend() } }
+            .onExitCommand(perform: onCancel)
+
+            Button(action: onSend) {
+                HStack(spacing: 4) {
+                    Text(sendTitle)
+                    Image(systemName: "return")
+                        .font(.system(size: 9.5, weight: .bold))
+                }
+                .font(ClaudePanelLayout.pillFont)
+                .foregroundStyle(sendForeground)
+                .padding(.horizontal, 9)
+                .frame(maxHeight: .infinity)
+                .background(Capsule().fill(sendFill))
+                .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(isEmpty)
+            .opacity(isEmpty ? 0.5 : 1)
+            .padding(.vertical, 2)
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 2)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Capsule().fill(.white.opacity(0.08)))
+        .overlay(Capsule().inset(by: 0.5).stroke(.white.opacity(0.4), lineWidth: 1))
+        .onAppear {
+            // After the panel has been made key, which the window controller
+            // does on the same turn of the run loop that put this on screen.
+            DispatchQueue.main.async { focused = true }
         }
     }
 }

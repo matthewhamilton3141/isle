@@ -88,6 +88,7 @@ final class NotchWindowController {
     init() {
         observeScreenChanges()
         observeDisplayScope()
+        observeComposing()
     }
 
     deinit {
@@ -118,6 +119,8 @@ final class NotchWindowController {
 
     func hide() {
         isRunning = false
+        viewModel.endCompose()
+        giveKeysBack()
         for island in islands.values {
             island.presentation.setHovering(false)
             island.window.orderOut(nil)
@@ -330,8 +333,10 @@ final class NotchWindowController {
         }
 
         // The pointer is on one screen, so nothing on any other screen can
-        // still be hovered. This is what closes the island you just left.
-        for other in islands.values where other !== active {
+        // still be hovered. This is what closes the island you just left —
+        // unless a reply is being typed in it, which holds it open wherever
+        // the pointer goes.
+        for other in islands.values where other !== active && other !== keyIsland {
             other.presentation.setHovering(false)
         }
 
@@ -340,8 +345,10 @@ final class NotchWindowController {
         guard !active.presentation.isHovering else {
             // Open: only a real departure closes it. SwiftUI's `.onHover` sees
             // the drawn rect and nothing more, which is why closing is owned
-            // here — it's the only place that knows about the pad.
-            if !zones.stayOpen.contains(pointer) {
+            // here — it's the only place that knows about the pad. A field
+            // taking keys holds it: moving the pointer off to read the
+            // terminal mustn't throw away what's being written.
+            if !zones.stayOpen.contains(pointer), active !== keyIsland {
                 cancelSweepRecheck()
                 active.presentation.setHovering(false)
                 runDeferredSync()
@@ -380,7 +387,7 @@ final class NotchWindowController {
     }
 
     private func collapseAll() {
-        for island in islands.values {
+        for island in islands.values where island !== keyIsland {
             island.presentation.setHovering(false)
         }
         cancelSweepRecheck()
@@ -502,6 +509,93 @@ final class NotchWindowController {
             width: rect.width,
             height: rect.height
         )
+    }
+
+    // MARK: - Composing
+
+    /// The island whose panel is key while a field on its Claude face takes
+    /// a reply. Nil the rest of the time, which is nearly always.
+    private var keyIsland: Island?
+
+    /// The app that was frontmost when composing began. Isle never activates,
+    /// so this is still the active app throughout; it only lost its keys.
+    private var focusReturnApp: NSRunningApplication?
+
+    private var resignKeyObserver: (any NSObjectProtocol)?
+
+    /// Makes a panel key exactly while `composing` is set, and never longer.
+    private func observeComposing() {
+        viewModel.$composing
+            .map { $0 != nil }
+            .removeDuplicates()
+            // `@Published` fires before the new value is stored; act once it
+            // has, so the view's own focus change lands on a key window.
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] composing in
+                if composing { self?.takeKeys() } else { self?.giveKeysBack() }
+            }
+            .store(in: &cancellables)
+    }
+
+    /// The panel becomes key without activating Isle — `.nonactivatingPanel`
+    /// is what allows it — so the terminal stays the active app, and the
+    /// text field gets the keyboard.
+    private func takeKeys() {
+        guard keyIsland == nil,
+              let island = islands.values.first(where: { $0.presentation.isHovering })
+                ?? islands.values.first(where: { $0.presentation.state.isExpanded })
+        else {
+            // Nowhere on screen to type into: don't leave the field claiming keys.
+            viewModel.endCompose()
+            return
+        }
+        focusReturnApp = NSWorkspace.shared.frontmostApplication
+        keyIsland = island
+        island.window.allowsKey = true
+        island.window.makeKey()
+        // A click in another app takes the keys back; composing ends with it,
+        // and the text stays in the field.
+        resignKeyObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: island.window,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.viewModel.endCompose() }
+        }
+    }
+
+    /// Hands the keyboard back to the app that had it. The panel stops being
+    /// able to take key first, so nothing can make it key again in between.
+    private func giveKeysBack() {
+        guard let island = keyIsland else { return }
+        keyIsland = nil
+        if let resignKeyObserver {
+            NotificationCenter.default.removeObserver(resignKeyObserver)
+        }
+        resignKeyObserver = nil
+        island.window.allowsKey = false
+        let returnTo = focusReturnApp
+        focusReturnApp = nil
+        // The pointer may have left while the keys held the panel open.
+        if let zones = hoverZones(for: island), !zones.stayOpen.contains(NSEvent.mouseLocation) {
+            island.presentation.setHovering(false)
+        }
+        guard island.window.isKeyWindow else { return }
+
+        island.window.makeFirstResponder(nil)
+        // The app is already active — Isle never took that from it — so
+        // activating it only asks it to take its key window back.
+        if let returnTo, !returnTo.isTerminated {
+            returnTo.activate()
+        }
+        // If the window server still routes keys here, take the panel off
+        // screen and straight back: a window that isn't on screen can't be
+        // key, and one ordered back without `makeKey` doesn't become key.
+        DispatchQueue.main.async {
+            guard island.window.isKeyWindow else { return }
+            island.window.orderOut(nil)
+            island.window.orderFrontRegardless()
+        }
     }
 
     // MARK: - Screen and settings changes
