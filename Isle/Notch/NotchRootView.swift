@@ -57,14 +57,17 @@ struct NotchRootView: View {
         return CGSize(width: metrics.windowSize(for: state).width, height: expandedHeight)
     }
 
-    /// The open panel's height: the standard 146, except while a question is
-    /// live on the Claude face, when it grows to seat the options (capped —
-    /// see `NotchMetrics.questionPanelHeight`). Only ever read for an expanded
-    /// state.
+    /// The open panel's height: the standard 146, unless the face on screen
+    /// asks for more — a live question seating its options, the agenda its
+    /// day — when it grows to that, capped (see `NotchMetrics.panelHeight`).
+    /// Only ever read for an expanded state.
     private var expandedHeight: CGFloat {
-        let room = NotchMetrics.questionContentRoom(bandHeight: notchBandHeight)
-        guard let content = viewModel.questionContentHeight(room: room) else { return NotchMetrics.expandedSize.height }
-        return NotchMetrics.questionPanelHeight(contentHeight: content, bandHeight: notchBandHeight)
+        // The drop face stands in for whatever face was open, at the
+        // standard height, and goes again with the drag.
+        if island.isDropTarget, viewModel.acceptsDrops { return NotchMetrics.expandedSize.height }
+        let room = NotchMetrics.contentRoom(bandHeight: notchBandHeight)
+        guard let content = viewModel.faceContentHeight(room: room) else { return NotchMetrics.expandedSize.height }
+        return NotchMetrics.panelHeight(contentHeight: content, bandHeight: notchBandHeight)
     }
 
     /// The collapsed sides are asymmetric (Claude's side is usually wider), so
@@ -115,9 +118,10 @@ struct NotchRootView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .animation(state.isExpanded ? .notchOpen : .notchClose, value: state)
-        // A question arriving while the panel is already open (or leaving it)
-        // changes the height without changing the state; give that its own
-        // spring rather than a jump. The same curves, by direction.
+        // A question arriving while the panel is already open (or leaving it),
+        // or a move to or from a taller face, changes the height without
+        // changing the state; give that its own spring rather than a jump.
+        // The same curves, by direction.
         .animation(expandedHeight > NotchMetrics.expandedSize.height ? .notchOpen : .notchClose,
                    value: expandedHeight)
         .onChange(of: state) { previous, current in
