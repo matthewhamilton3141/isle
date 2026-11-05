@@ -37,6 +37,7 @@ ordered so nothing downstream is blocked. Milestones list **Goal**, **Scope**,
 | Mode selection (Music / Claude / Both) | Model + gating done (M1); picker shipped in Settings and the menu bar | `Isle/Core/`, `Isle/Settings/SettingsView.swift` |
 | Claude accent colour | Shipped | `Isle/Core/ClaudeAccent.swift` |
 | Jump to the session, reply from the notch | Built (M11), awaiting in-app test | `Isle/Claude/ClaudeSessionHost.swift`, `TerminalBridge.swift` |
+| Every session at once (list, pin, home count) | Built (M16), awaiting in-app test | `Isle/Claude/ClaudeSessionList.swift`, `ClaudeExpandedView.swift` |
 | Tabbed "Both" expanded view | Done (M4) | `Isle/Notch/ExpandedNotchView.swift`, `ClaudeExpandedView.swift` |
 
 The state machine (`NotchState`, `NotchStateResolver`) and the collapsed
@@ -1248,6 +1249,112 @@ background toast (short and long project).
   with it.
 - **The background toast** has no setting of its own; it's on whenever the
   bridge is.
+
+## Milestone 16 — Every Claude Code session at once
+
+From Field scan 2: several competitors show every running agent session,
+each with its state. Isle already tracked them all (per-session records,
+the registry for liveness, urgency selection); the face showed one and
+admitted the rest only as "+2 working".
+
+### What it does
+
+- **The way in** is the other-sessions marks, now a button with a chevron:
+  "+1 needs you  +1 working ›". With nothing busy elsewhere but another
+  session alive, "+1 more ›" stands in, so the list is reachable whenever
+  there's more than one session. Three entries were rendered
+  (`session-list-renders/sheet_entry{A,B,C}_1.png`): (A) the marks, chosen;
+  (B) the marks plus a `square.stack` count chip — a fourth thing in the
+  eyebrow, and in a crowded eyebrow its capsule lands under the camera
+  cutout 2pt below the band, so the project name collapses to "i";
+  (C) the project label as a picker ("isle ⌃⌄ 3") — tidy, but the marks
+  that actually say something needs you weren't the way in, and the
+  chevron reads as a pop-up menu that isn't there.
+- **The list** takes the face's width (no big glyph; each row has its own),
+  one line a session: a 12pt dot-matrix marker (the user's own design),
+  the project, the state in its marker's colour, the detail — the tool and
+  target, the command or question a hook is blocked on, or for Done/Waiting/
+  Ready the M15 excerpt — then how long since its hook last wrote, and an
+  icon-only Jump chip (the app's name is its tooltip). The session on the
+  island is lit. Four rows fit the 146pt panel under a 32pt housing; more
+  scroll vertically, with "7 live ↕" in the eyebrow and a fading foot. No
+  height change.
+- **Order** is selection's own ranking, now shared (`ClaudeSelection.ranked`):
+  needs you / failed, then working, then waiting / done / ready, each by
+  recency. A 5000-pool random check confirms `ranked.first` is exactly what
+  the old `selectStatus` picked.
+- **Live only**: a row needs a record with a session id and a pid the
+  registry can see — the strict liveness keep-awake uses. Each record goes
+  through `reconciled` (an interrupted turn isn't "Working"), then the face's
+  own clock: a question nothing is waiting on past 45s, a compaction past
+  25s and a usage limit past its reset list as Ready, since no hook will
+  ever close them. Done stays Done, with Claude's words, until the session
+  moves — that's what the list is for.
+- **Clicking a row** pins that session: the face, the approval buttons, the
+  question and the reply are all its. The eyebrow's folder becomes a
+  chevron ("‹ notch-bench"), the way back up to the list.
+- **Home tile**: "3 sessions · 1 needs you" in place of the other-sessions
+  line when more than one is live; the island's own approval or question
+  keeps its detail.
+
+### The pin (`ClaudeSelection.Pin`)
+
+The smallest override that's correct: `selectStatus` asks
+`ClaudeSelection.select(from:pin:)`, which returns the pinned record while
+it holds and the ranking's pick otherwise.
+
+- It yields only to another session that **newly** needs you — approval,
+  question or failure — while the pinned one doesn't. The pin remembers what
+  already outranked it that way (`heldAgainst`), so an approval that was up
+  when you picked another session doesn't snatch the face straight back; if
+  it's answered in the terminal and asks again, that's new. A session that
+  merely starts working never takes a pinned face.
+- If the pinned session needed you and you answer it, anything else needing
+  you now outranks it, newly — so answering one of two waiting sessions
+  moves the face to the other.
+- It goes when the session's pid leaves the registry, when you go back to
+  the list, and when the panel closes: a collapsed island always means
+  selection's pick, so a session picked once and forgotten can't keep a more
+  pressing one off it.
+- A switch the user made applies quietly (`applyClaudeStatus(announce:
+  false)`): no chime, and an alert it lands on counts as already seen, so
+  the panel doesn't pop open for it.
+
+### Tests
+
+A harness compiled with every Isle source (`scratchpad/sl/tests`), 42 checks:
+the ranking against the old selection; pin holds over working, yields to a
+new approval and a new failure, holds against an approval already up and
+its re-writes, yields when that session asks again; a pinned approval holds
+against a newer question, and answering it hands the face over; death; and
+through the real view model (`applyTestReading`): pin, an approval arriving
+in another session (its buttons are its own), a SIGKILL'd pinned session,
+back from the face and from the list, the panel closing, stale and live
+questions in the list, the question face not growing the panel under the
+list, and leftover/id-less records never listed.
+
+### Renders
+
+`session-list-renders/sheet_final_*.png`: entry points (busy, quiet,
+crowded with Ghostty's chip and the cup, on an approval); lists of 2, 4 and
+7 (with and without hosts); pinned Done and Waiting; the override (pinned on
+a working session, then an approval arriving elsewhere); Both mode (lists,
+entry, pinned); the home tile (3 with one needing you, 2 quiet, 1).
+
+### Decisions to confirm
+
+- **The pin ends when the panel closes.** The alternative — holding it while
+  collapsed — makes the island show a chosen session over the ranking with
+  nothing on screen saying so.
+- **Only needing you overrides a pin**, not a session starting work, though
+  working outranks done in selection.
+- **States are the list's own words**: "Error" (as the face says it, not
+  "Failed"), "Usage limit", "Question", and "Done" persists after the face
+  has eased to Ready.
+- **Two sessions in the same project** show the same name; the detail tells
+  them apart. The CLI's `name` ("isle-cf") could disambiguate.
+- **The row's Jump is an icon**, unlike the eyebrow's named chip — the same
+  app name down every row was noise.
 
 ## Milestone 8 — Multi-Display  ✅
 
