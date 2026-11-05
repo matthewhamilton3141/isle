@@ -148,33 +148,21 @@ struct NotchRootView: View {
                 .padding(.top, state.isExpanded ? notchBandHeight + 2 : 0)
                 .padding(.bottom, state.isExpanded ? 8 : 0)
 
-            // The face switcher (only when more than one face is on). Inside
-            // the ZStack so it clips to the notch outline; opacity-gated so it
-            // fades in with the rest of the expanded content instead of
-            // popping mid-animation.
-            //
-            // Two faces get a single toggle parked in the panel's bottom-right
-            // corner, inset enough to clear the rounded corner and the
-            // transport keys, which stay centred. Three or more get a strip
-            // in the housing band to the right of the physical cutout: the
-            // band right of the camera is ordinary screen, not hardware, and
-            // nothing else uses it but the waveform at the far right — so the
-            // strip sits there, out of the way of every face's content.
-            if state.isExpanded && viewModel.showsTabBar {
-                if viewModel.showsTabStrip {
-                    tabStrip
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                        .padding(.trailing, Self.tabStripTrailing)
-                        // Centred in the band's height.
-                        .padding(.top, max(0, (notchBandHeight - Self.tabStripCell) / 2))
-                        .opacity(expandedContentOpacity)
-                } else {
-                    tabToggle
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                        .padding(.trailing, Self.tabToggleTrailing)
-                        .padding(.bottom, Self.tabToggleBottom)
-                        .opacity(expandedContentOpacity)
+            // The way home, inside a face (only when there is more than one
+            // face, so there's a home to go back to). In the housing band to
+            // the right of the physical cutout: that band is ordinary screen,
+            // not hardware, and nothing else uses it — the waveform sits
+            // below it. Inside the ZStack so it clips to the notch outline;
+            // opacity-gated so it fades in with the rest of the expanded
+            // content instead of popping mid-animation.
+            if state.isExpanded, viewModel.showsHome, let face = viewModel.expandedPlace.face {
+                NotchCrumb(face: face, attention: viewModel.needsYouElsewhere) {
+                    viewModel.selectHome()
                 }
+                .frame(height: notchBandHeight)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .padding(.trailing, Self.crumbTrailing)
+                .opacity(expandedContentOpacity)
             }
         }
         .frame(width: size.width, height: size.height)
@@ -255,104 +243,19 @@ struct NotchRootView: View {
         }
     }
 
-    // MARK: - Tab switcher
+    // MARK: - Crumb
 
-    /// Diameter of the single toggle button, and its inset from the panel's
-    /// bottom-right corner. A face whose content reaches that corner clears
-    /// it — see `AgendaExpandedView.switcherClearance`.
-    private static let tabToggleSize: CGFloat = 34
-    private static let tabToggleTrailing: CGFloat = 22
-    private static let tabToggleBottom: CGFloat = 16
-
-    /// Square hit area of one face in the strip, and the gap between them.
-    /// Small enough that four of them fit between the cutout and the
-    /// waveform on the narrowest housing.
-    private static let tabStripCell: CGFloat = 20
-    private static let tabStripGap: CGFloat = 6
-
-    /// Inset from the panel's right edge: past the waveform pinned at the
-    /// top-right (22 panel padding + 4 + 30 wide) with a little air. Constant
-    /// whether or not the waveform is showing, so the strip never hops.
-    private static let tabStripTrailing: CGFloat = 64
-
-    /// A single toggle rather than a segmented pill: it shows the *other*
-    /// face's icon (the one you'd switch to), so on Music it's the 3x3 Claude
-    /// mark and on Claude it's the waveform. Tapping goes to that face.
-    private var tabToggle: some View {
-        let target = viewModel.nextTab
-        return Button {
-            // No withAnimation here: the content cross-fade is handled by
-            // ExpandedNotchView's own `.animation(value: expandedTab)`.
-            viewModel.selectTab(target)
-        } label: {
-            tabIcon(for: target, size: 18)
-                .frame(width: Self.tabToggleSize, height: Self.tabToggleSize)
-                .background(Circle().fill(.black.opacity(0.35)))
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(target.title)
-        .animation(.easeInOut(duration: 0.15), value: viewModel.expandedTab)
-    }
-
-    /// A strip of every face, the current one lit and the rest dimmed. Tapping any goes straight there — no cycling through faces
-    /// you didn't want to reach the one you did.
-    private var tabStrip: some View {
-        HStack(spacing: Self.tabStripGap) {
-            ForEach(viewModel.availableTabs) { tab in
-                let active = tab == viewModel.expandedTab
-                Button {
-                    // No withAnimation here: the content cross-fade is handled
-                    // by ExpandedNotchView's own `.animation(value: expandedTab)`.
-                    viewModel.selectTab(tab)
-                } label: {
-                    tabIcon(for: tab, size: 13)
-                        .opacity(active ? 1 : 0.4)
-                        .frame(width: Self.tabStripCell, height: Self.tabStripCell)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(tab.title)
-                .accessibilityAddTraits(active ? [.isSelected] : [])
-            }
-        }
-        .animation(.easeInOut(duration: 0.15), value: viewModel.expandedTab)
-    }
-
-    /// Music, Pomodoro and Agenda keep their SF Symbols; Claude uses the dot
-    /// mark. All are drawn into the same square so none outweighs the others.
-    @ViewBuilder
-    private func tabIcon(for tab: IsleTab, size: CGFloat) -> some View {
-        let color = Color.white
-        switch tab {
-        case .agenda:
-            Image(systemName: "calendar")
-                .font(.system(size: size * 0.85, weight: .semibold))
-                .foregroundStyle(color)
-                .frame(width: size, height: size)
-        case .music:
-            // A 4-bar waveform, sized to the same box as the Claude dot grid.
-            WaveformIcon(color: color)
-                .frame(width: size, height: size)
-        case .claude:
-            // A simpler 3x3 grid reads better than 5x5 at tab-icon size.
-            DotGridIcon(color: color, dimension: 3)
-                .frame(width: size, height: size)
-        case .pomodoro:
-            Image(systemName: tab.symbolName)
-                .font(.system(size: size * 0.85, weight: .semibold))
-                .foregroundStyle(color)
-                .frame(width: size, height: size)
-        }
-    }
-
+    /// Inset of the crumb from the panel's right edge: the panel's 22 plus
+    /// the waveform's own 4, so the crumb ends on the waveform's right edge
+    /// in the band just above it.
+    private static let crumbTrailing: CGFloat = 26
 }
 
 // MARK: - Previews
 
 #if DEBUG
 /// Full-app canvas preview of the notch overlay. Live and interactive — the
-/// Music/Claude switcher works, so the alert tab-override fix can be exercised
+/// home grid and the crumb work, so the alert override can be exercised
 /// right in the canvas. No subsystems start (the view model is only
 /// constructed, never `start()`ed), so nothing touches audio or the adapter.
 private enum NotchPreview {
@@ -364,7 +267,7 @@ private enum NotchPreview {
     ) -> (NotchViewModel, IslandPresentation) {
         // Isolated defaults so a preview never reads or writes the real prefs.
         let settings = AppSettings(defaults: UserDefaults(suiteName: "isle.preview")!)
-        settings.mode = .both            // show both sources + the tab switcher
+        settings.mode = .both            // show both sources + the home grid
         let vm = NotchViewModel(settings: settings)
         let island = IslandPresentation(content: vm)
         if let screen = NSScreen.main {
@@ -391,9 +294,9 @@ private struct NotchPreviewStage<Content: View>: View {
     }
 }
 
-#Preview("Notch — live alert (tab switch)") {
-    // A live approval auto-jumps to the Claude tab; click Music in the
-    // canvas to confirm the manual override now sticks.
+#Preview("Notch — live alert (face switch)") {
+    // A live approval auto-jumps to the Claude face; go Home and pick Music
+    // in the canvas to confirm the manual override sticks.
     let (vm, island) = NotchPreview.island { $0.claudeState = .needsApproval }
     return NotchPreviewStage {
         NotchRootView(viewModel: vm, island: island)

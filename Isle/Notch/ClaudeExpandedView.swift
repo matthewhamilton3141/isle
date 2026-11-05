@@ -519,12 +519,10 @@ struct ClaudeExpandedView: View {
         island.dismissAlert()
     }
 
-    /// How far the lower rows stop short of the column's right edge. With the
-    /// face toggle parked in the panel's bottom-right corner, enough that they
-    /// don't run under it; with the strip up in the housing band, nothing.
-    private var switcherClearance: CGFloat {
-        viewModel.showsTabToggle ? L.toggleClearance : 0
-    }
+    /// How far the lower rows stop short of the column's right edge. Nothing:
+    /// the way between faces is the crumb up in the housing band now, and
+    /// the panel's bottom-right corner is the face's own.
+    private var switcherClearance: CGFloat { 0 }
 
     // MARK: - Text
 

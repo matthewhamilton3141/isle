@@ -25,21 +25,23 @@ struct ExpandedNotchView: View {
     @State private var showsOutputs = false
 
     var body: some View {
-        // The face switcher itself lives in NotchRootView, positioned
-        // to the right of the physical cutout — see NotchRootView.tabBar.
+        // The way home lives in NotchRootView, in the housing band to the
+        // right of the physical cutout — see the crumb in NotchRootView.notch.
         content
-            // A clean cross-dissolve: nothing moves, the old tab just fades out
-            // as the new one fades in, in place. Covers the interrupt-driven
-            // switch to Claude too, which doesn't go through the tab button's
-            // own animation.
-            .animation(.easeInOut(duration: 0.28), value: viewModel.expandedTab)
+            // A clean cross-dissolve: nothing moves, the old place just fades
+            // out as the new one fades in, in place — Home to a face, a face
+            // to Home, a face to another, and the interrupt-driven switch to
+            // Claude, which doesn't go through a tile.
+            .animation(.easeInOut(duration: 0.28), value: viewModel.expandedPlace)
             // The waveform is pinned to ONE fixed spot in the panel and drawn
-            // outside the tab switch, so it holds the exact same real position
-            // on Music and Claude instead of re-aligning to each tab's text —
-            // switching tabs no longer makes it hop. Gated on a live track;
-            // non-interactive so it never swallows a seek or dismiss tap.
+            // outside the face switch, so it holds the exact same real position
+            // on every face instead of re-aligning to each face's text —
+            // switching faces doesn't make it hop. Not on Home, where it would sit
+            // on a tile and the Music tile already says what's playing. Gated
+            // on a live track; non-interactive so it never swallows a seek or
+            // dismiss tap.
             .overlay(alignment: .topTrailing) {
-                if media.hasTrack, viewModel.showsWaveform {
+                if media.hasTrack, viewModel.showsWaveform, viewModel.expandedPlace != .home {
                     LiveEqualizer(
                         source: viewModel.audioLevelSource,
                         palette: palette,
@@ -56,19 +58,27 @@ struct ExpandedNotchView: View {
 
     @ViewBuilder
     private var content: some View {
-        switch viewModel.expandedTab {
+        switch viewModel.expandedPlace {
+        case .home:
+            HomeGridView(viewModel: viewModel, palette: palette)
+                .transition(.opacity)
+        case .face(let tab):
+            face(tab)
+                .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder
+    private func face(_ tab: IsleTab) -> some View {
+        switch tab {
         case .music:
             musicBody
-                .transition(.opacity)
         case .claude:
             ClaudeExpandedView(viewModel: viewModel, island: island, palette: palette)
-                .transition(.opacity)
         case .pomodoro:
             PomodoroExpandedView(viewModel: viewModel, palette: palette)
-                .transition(.opacity)
         case .agenda:
             AgendaExpandedView(viewModel: viewModel, palette: palette)
-                .transition(.opacity)
         }
     }
 
@@ -474,8 +484,8 @@ private struct OutputList: View {
             }
             .scrollIndicators(.never)
         }
-        // Clear of the waveform pinned at the panel's top-right and the face
-        // toggle in its bottom-right corner, the same inset the title keeps.
+        // Clear of the waveform pinned at the panel's top-right, the same
+        // inset the title keeps.
         .padding(.trailing, 36)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .foregroundStyle(.white)

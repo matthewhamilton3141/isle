@@ -1,0 +1,369 @@
+//
+//  HomeGridView.swift
+//
+//  Home: one tile per face, in grid order, each with a glance of its own —
+//  the track, what Claude is doing, the next thing on today, the timer. A
+//  click goes into the face. Inside a face, the housing band carries the way
+//  back (`NotchCrumb`), and a two-finger swipe moves along to the neighbours
+//  (see `FacePager`).
+//
+//  Every glance is built from state Isle already holds and would show on the
+//  face itself. A face with nothing to say — no track, no session, nothing
+//  left today, a timer nobody started — gets its name and nothing else,
+//  rather than a placeholder that reads like news.
+//
+//  The tiles fill the content area under the housing band edge to edge, so
+//  the grid holds its shape whether there are two faces or five. Five is the
+//  most Isle offers, and five fit; if that ever stops being true, this row is
+//  where a horizontal scroll goes.
+//
+
+import SwiftUI
+
+struct HomeGridView: View {
+    @ObservedObject var viewModel: NotchViewModel
+    var palette: ArtworkPalette
+
+    static let tileGap: CGFloat = 8
+
+    var body: some View {
+        HStack(spacing: Self.tileGap) {
+            ForEach(viewModel.availableTabs) { tab in
+                Button {
+                    // No withAnimation: ExpandedNotchView cross-fades on
+                    // `expandedPlace` itself.
+                    viewModel.selectTab(tab)
+                } label: {
+                    tile(for: tab)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(tab.title)
+            }
+        }
+        // Level with the faces' own content: the album's top edge sits a
+        // little into the band, the tiles' a point above the content line.
+        .offset(y: -1)
+        .padding(.bottom, 2)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .foregroundStyle(.white)
+    }
+
+    @ViewBuilder
+    private func tile(for tab: IsleTab) -> some View {
+        switch tab {
+        case .music:
+            HomeTile(title: tab.title, glance: musicGlance) { musicLead }
+        case .claude:
+            HomeTile(title: tab.title, glance: claudeGlance, attention: viewModel.claudeNeedsYou) { claudeLead }
+        case .pomodoro:
+            // Ticks once a second while the clock runs and not at all while
+            // it's paused, the same clock the face and the island read.
+            TimelineView(.animation(minimumInterval: 1, paused: !viewModel.pomodoro.isRunning)) { context in
+                HomeTile(title: tab.title, glance: pomodoroGlance(at: context.date)) {
+                    FaceIcon(tab: tab, size: 18)
+                }
+            }
+        case .agenda:
+            // Once a minute, like the face: enough for "in 12 min" to count
+            // down and "Now" to arrive as a meeting starts.
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                HomeTile(title: tab.title, glance: agendaGlance(at: context.date)) {
+                    FaceIcon(tab: tab, size: 18)
+                }
+            }
+        }
+    }
+
+    // MARK: - Music
+
+    private var musicLead: some View {
+        Group {
+            if viewModel.media.hasTrack, let image = viewModel.media.artwork {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: homeTileLead, height: homeTileLead)
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            } else {
+                FaceIcon(tab: .music, size: 18)
+            }
+        }
+    }
+
+    /// The track and who it's by, while there is one.
+    private var musicGlance: TileGlance? {
+        let media = viewModel.media
+        guard media.hasTrack, !media.title.isEmpty else { return nil }
+        return .init(media.title, media.artist.isEmpty ? nil : media.artist)
+    }
+
+    // MARK: - Claude
+
+    /// The user's marker for the current state, as on the face and the
+    /// island. Disconnected has no marker to show, so it's the face's icon.
+    @ViewBuilder
+    private var claudeLead: some View {
+        if viewModel.claudeState == .disconnected {
+            FaceIcon(tab: .claude, size: 18)
+        } else {
+            ClaudeStatusGlyphView(state: viewModel.claudeState, kind: viewModel.claudeMarkerKind, palette: palette)
+                .frame(width: homeTileLead, height: homeTileLead)
+        }
+    }
+
+    /// The state in a word or two, and the one detail that says most about
+    /// it: the command waiting on an approval, the tool running, the project.
+    private var claudeGlance: TileGlance? {
+        let vm = viewModel
+        let project = vm.claudeProject.flatMap { $0.isEmpty ? nil : $0 }
+        // Another session waiting is worth more than this one's project.
+        let others = vm.otherSessions.needYou
+        let othersLine = others == 0 ? nil
+            : others == 1 ? "Another needs you" : "\(others) others need you"
+
+        switch vm.claudeState {
+        case .disconnected:
+            return others > 0 ? .init("Needs you", othersLine) : nil
+        case .needsApproval:
+            if let request = vm.pendingRequest, request.kind == .approval {
+                return .init("Needs approval", Self.approvalLine(request))
+            }
+            return .init("Needs approval", vm.claudeActivity?.phrase ?? project)
+        case .needsQuestion:
+            return .init("Has a question", vm.currentQuestion?.question ?? project)
+        case .working:
+            return .init("Working", othersLine ?? vm.claudeActivity?.phrase ?? "Thinking")
+        case .compacting:
+            return .init("Compacting", othersLine ?? project)
+        case .waitingInput:
+            return .init("Waiting for you", othersLine ?? project)
+        case .done:
+            return .init("Done", othersLine ?? project)
+        case .idle:
+            return .init("Ready", othersLine ?? project)
+        case .failed:
+            if vm.isUsageLimit {
+                let resets = vm.claudeResetAt.map {
+                    "Resets " + $0.formatted(date: .omitted, time: .shortened)
+                }
+                return .init("Usage limit", othersLine ?? resets ?? project)
+            }
+            return .init("Error", othersLine ?? project)
+        }
+    }
+
+    /// "Bash · npm test": the tool and what it wants, as the face shows it
+    /// but on one line. A path is cut to its file name; the face below has
+    /// the whole of it.
+    private static func approvalLine(_ request: ClaudeRequest) -> String {
+        var subject = (request.subject ?? "").replacingOccurrences(of: "\n", with: " ")
+        if subject.hasPrefix("/") || subject.hasPrefix("~"), !subject.contains(" ") {
+            subject = (subject as NSString).lastPathComponent
+        }
+        return subject.isEmpty ? request.toolName : "\(request.toolName) · \(subject)"
+    }
+
+    // MARK: - Pomodoro
+
+    /// The clock and the interval, once the timer has been started. A fresh
+    /// one says nothing, as it does on the island.
+    private func pomodoroGlance(at date: Date) -> TileGlance? {
+        let timer = viewModel.pomodoro
+        guard timer.isActive else { return nil }
+        let clock = PomodoroTimer.clock(timer.remaining(at: date))
+        // "Focus · 2 of 4" running; paused, "Paused" takes the phase's place,
+        // so the line still fits a tile.
+        let label = timer.isRunning ? timer.phase.title : "Paused"
+        guard timer.phase == .focus else {
+            return .init(clock, timer.isRunning ? label : "\(label) · \(timer.phase.title)", monospaced: true)
+        }
+        let total = max(1, viewModel.pomodoroSessionsPerCycle)
+        return .init(clock, "\(label) · \(min(timer.completedInCycle + 1, total)) of \(total)", monospaced: true)
+    }
+
+    // MARK: - Agenda
+
+    /// The next thing left today and when it is.
+    private func agendaGlance(at now: Date) -> TileGlance? {
+        guard let item = viewModel.agendaItems.first else { return nil }
+        return .init(item.title, Self.when(item, at: now))
+    }
+
+    static func when(_ item: AgendaItem, at now: Date) -> String {
+        let time = item.date.formatted(date: .omitted, time: .shortened)
+        switch item.kind {
+        case .event:
+            if item.isAllDay { return "All day" }
+            if item.date <= now { return "Now" }
+            let minutes = Int((item.date.timeIntervalSince(now) / 60).rounded(.up))
+            return minutes < 60 ? "in \(minutes) min" : "at \(time)"
+        case .reminder:
+            if item.isAllDay { return "Today" }
+            return item.date < now ? "Overdue · \(time)" : "Due \(time)"
+        }
+    }
+}
+
+// MARK: - Tile
+
+/// What a tile says under its face's name: a line, and a quieter one under it.
+struct TileGlance {
+    var line1: String
+    var line2: String?
+    /// Digits that change in place (a clock), so they don't jitter.
+    var monospaced = false
+
+    init(_ line1: String, _ line2: String?, monospaced: Bool = false) {
+        self.line1 = line1
+        self.line2 = line2
+        self.monospaced = monospaced
+    }
+}
+
+/// The side of a tile's mark: the album thumbnail, the marker, an icon.
+private let homeTileLead: CGFloat = 22
+
+/// One face on the home grid: its mark at the top, its name and glance at the
+/// bottom, an amber dot when it needs you.
+struct HomeTile<Lead: View>: View {
+    var title: String
+    var glance: TileGlance?
+    var attention = false
+    @ViewBuilder var lead: () -> Lead
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top) {
+                lead()
+                    .frame(width: homeTileLead, height: homeTileLead)
+                Spacer(minLength: 0)
+                if attention {
+                    AttentionDot(size: 7)
+                        .padding(.top, 2)
+                }
+            }
+            Spacer(minLength: 0)
+            Text(title)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.5))
+                .lineLimit(1)
+            if let glance {
+                Text(glance.line1)
+                    .font(glance.monospaced
+                          ? .system(size: 12, weight: .semibold).monospacedDigit()
+                          : .system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                if let line2 = glance.line2 {
+                    Text(line2)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.white.opacity(0.65))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(.white.opacity(attention ? 0.12 : 0.07))
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .animation(.easeInOut(duration: 0.2), value: attention)
+    }
+}
+
+/// The mark for "this needs you": the warm amber Isle uses for an interrupt
+/// you haven't looked at.
+struct AttentionDot: View {
+    var size: CGFloat = 6
+
+    static let color = Color(hex: "#FF9F0A")
+
+    var body: some View {
+        Circle()
+            .fill(Self.color)
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+    }
+}
+
+// MARK: - Crumb
+
+/// The housing band's chrome inside a face: the way home, and where you are.
+/// `⊞ › Music`. The home mark is the button; it carries the amber dot when
+/// another face needs you, which is the only place that shows while you're
+/// in a different face.
+struct NotchCrumb: View {
+    var face: IsleTab
+    var attention: Bool
+    var goHome: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button(action: goHome) {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.grid.2x2.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .opacity(0.55)
+                        .overlay(alignment: .topTrailing) {
+                            if attention {
+                                AttentionDot(size: 6)
+                                    .offset(x: 3, y: -2)
+                                    .transition(.opacity)
+                            }
+                        }
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .bold))
+                        .opacity(0.35)
+                }
+                // A target bigger than the glyphs, so the way home isn't a
+                // precision click.
+                .frame(height: 22)
+                .padding(.horizontal, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(attention ? "Home, something needs you" : "Home")
+            .padding(.trailing, -6)
+
+            Text(face.title)
+                .font(.system(size: 11, weight: .semibold))
+                .opacity(0.85)
+                .lineLimit(1)
+                .contentTransition(.opacity)
+        }
+        .foregroundStyle(.white)
+        .animation(.easeInOut(duration: 0.15), value: attention)
+        .animation(.easeInOut(duration: 0.15), value: face)
+    }
+}
+
+// MARK: - Face icon
+
+/// One face's mark, as the old switcher drew it: Music the four-bar
+/// waveform, Claude the 3x3 dot grid, Pomodoro and Agenda their SF Symbols,
+/// all drawn into the same square so none outweighs the others.
+struct FaceIcon: View {
+    var tab: IsleTab
+    var size: CGFloat
+    var color: Color = .white
+
+    var body: some View {
+        switch tab {
+        case .music:
+            WaveformIcon(color: color)
+                .frame(width: size, height: size)
+        case .claude:
+            // A simpler 3x3 grid reads better than 5x5 at icon size.
+            DotGridIcon(color: color, dimension: 3)
+                .frame(width: size, height: size)
+        case .pomodoro, .agenda:
+            Image(systemName: tab.symbolName)
+                .font(.system(size: size * 0.85, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: size, height: size)
+        }
+    }
+}

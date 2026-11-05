@@ -62,10 +62,11 @@ final class NotchViewModel: ObservableObject {
     /// dismissed by a stray move nearby).
     private var alertWasHovered = false
 
-    /// The user manually picked a tab while the current alert was live, so the
-    /// auto-jump to the Claude tab (see `expandedTab`) should stop overriding
-    /// their choice for the rest of this alert. Re-armed on the next state
-    /// change, so a fresh interrupt still grabs the Claude tab once.
+    /// The user went somewhere themselves — a tile, Home, a swipe — while the
+    /// current alert was live, so the auto-jump to the Claude face (see
+    /// `expandedPlace`) should stop overriding their choice for the rest of
+    /// this alert. Re-armed on the next state change, so a fresh interrupt
+    /// still grabs the Claude face once.
     private var tabOverriddenDuringAlert = false
 
     /// Claude Code state from the hook bridge, driven by `ClaudeStatusWatcher`.
@@ -149,13 +150,24 @@ final class NotchViewModel: ObservableObject {
     /// change.
     private var answeringMarkerWritten = false
 
-    /// The tab the user last selected in `.both` mode. Backed by AppSettings so
-    /// it survives relaunch. Display may override this during an interrupt —
-    /// see `expandedTab`.
+    /// The face the user last went into. Backed by AppSettings so it survives
+    /// relaunch. Display may override this during an interrupt — see
+    /// `expandedPlace`.
     @Published var activeTab: IsleTab {
         didSet {
             guard activeTab != oldValue else { return }
             settings.lastTab = activeTab
+        }
+    }
+
+    /// The user last went back to the home grid rather than into a face, so
+    /// that's where the panel opens. Persisted with `activeTab`: together
+    /// they're the last place chosen. Only the user's own moves write either
+    /// — a takeover shows Claude without touching them.
+    @Published private(set) var isHome: Bool {
+        didSet {
+            guard isHome != oldValue else { return }
+            settings.lastOnHome = isHome
         }
     }
 
@@ -757,6 +769,7 @@ final class NotchViewModel: ObservableObject {
         let resolvedSettings = settings ?? .shared
         self.settings = resolvedSettings
         self.activeTab = resolvedSettings.lastTab
+        self.isHome = resolvedSettings.lastOnHome
         self.pomodoro = PomodoroTimer(settings: resolvedSettings)
 
         // The timer publishes on its own object; the island reads it through
@@ -1228,8 +1241,8 @@ final class NotchViewModel: ObservableObject {
         if status.state != claudeState {
             alertDismissed = false
             alertWasHovered = false
-            // Re-arm the Claude-tab auto-jump: a fresh interrupt gets to grab
-            // the tab once again, even if the user overrode the previous one.
+            // Re-arm the Claude-face auto-jump: a fresh interrupt gets to grab
+            // the face once again, even if the user overrode the previous one.
             tabOverriddenDuringAlert = false
             playSound(for: status.state, errorType: status.errorType)
         }
@@ -1587,7 +1600,7 @@ final class NotchViewModel: ObservableObject {
     /// receive alerts minimized. When off, the alert still shows in the collapsed
     /// island (glyph/label) and the user expands on hover — it just doesn't pop
     /// open on its own. `hasLiveActivity` itself stays true so a manual expand
-    /// still lands on the Claude tab (see `expandedTab`).
+    /// still lands on the Claude face (see `expandedPlace`).
     /// Internal rather than private: `IslandPresentation.state` crosses it with
     /// that island's own hover.
     var autoExpandsForActivity: Bool {
@@ -1782,9 +1795,11 @@ final class NotchViewModel: ObservableObject {
     /// The Pomodoro timer is offered — the Settings toggle is on.
     var pomodoroAvailable: Bool { settings.pomodoroEnabled }
 
-    /// The faces the expanded panel can show right now, in switcher order:
-    /// whatever the mode brings, then Pomodoro if it's been switched on, then
-    /// the agenda if either of its switches is.
+    /// The faces the expanded panel can show right now, in grid order — the
+    /// order of the home tiles, and the order a swipe walks: whatever the
+    /// mode brings, then Pomodoro if it's been switched on, then the agenda
+    /// if either of its switches is. A face that exists only while it holds
+    /// something (a shelf) is appended here only while it does.
     var availableTabs: [IsleTab] {
         var tabs: [IsleTab] = []
         if settings.effectiveMode.showsMusic { tabs.append(.music) }
@@ -1794,49 +1809,55 @@ final class NotchViewModel: ObservableObject {
         return tabs
     }
 
-    /// Whether the expanded panel shows the switcher — only when there is
-    /// more than one face to switch between; a single source is just shown.
-    var showsTabBar: Bool {
+    /// Whether there's a home grid at all — only when there is more than one
+    /// face to choose between. A single source is just shown, with no crumb
+    /// and nothing to swipe to.
+    var showsHome: Bool {
         availableTabs.count > 1
     }
 
-    /// Whether the switcher is the strip of every face in the housing band
-    /// rather than a single toggle in the corner. Two faces flip: the toggle
-    /// shows the other face's icon and there is nothing to cycle past. From
-    /// three, cycling would make someone pass through a face they didn't
-    /// want to reach the one they did, so each gets its own button.
-    var showsTabStrip: Bool {
-        availableTabs.count > 2
-    }
-
-    /// The single toggle is on: exactly two faces — see `showsTabStrip`.
-    var showsTabToggle: Bool {
-        showsTabBar && !showsTabStrip
-    }
-
-    /// The face the single toggle offers: the one after the current, cycling.
-    /// With two faces that is simply the other one.
-    var nextTab: IsleTab {
+    /// Where the open panel is right now. Normally the last place the user
+    /// chose — the grid, or a face — except that a live Claude interrupt (an
+    /// approval, a question, a failure) goes straight to the Claude face,
+    /// without touching that choice, so it's back once the alert clears. A
+    /// chosen face that is no longer offered (the mode changed, the agenda or
+    /// Pomodoro was switched off) falls back to the grid rather than a guess.
+    var expandedPlace: NotchPlace {
         let tabs = availableTabs
-        guard let index = tabs.firstIndex(of: expandedTab) else { return tabs.first ?? .music }
-        return tabs[(index + 1) % tabs.count]
-    }
-
-    /// Which content the expanded panel should render right now. Normally the
-    /// user's selected tab, except that a live Claude interrupt (a question /
-    /// error) forces the Claude tab — without mutating `activeTab`, so the
-    /// user's choice is restored automatically once the alert clears. A
-    /// selection that is no longer available (the mode changed, the agenda
-    /// or Pomodoro was switched off) falls back to the first face rather than a blank.
-    var expandedTab: IsleTab {
-        let tabs = availableTabs
-        // An alert auto-jumps to Claude, but a manual tab tap during the
-        // alert sticks (see `selectTab`) so the user can still look at music.
+        // An alert auto-jumps to Claude, but going anywhere during the alert
+        // sticks (see `selectTab` / `selectHome`), so the user can still
+        // look at music.
         if hasLiveActivity, !tabOverriddenDuringAlert, tabs.contains(.claude) {
-            return .claude
+            return .face(.claude)
         }
-        if tabs.contains(activeTab) { return activeTab }
-        return tabs.first ?? .music
+        guard tabs.count > 1 else { return .face(tabs.first ?? .music) }
+        if isHome { return .home }
+        if tabs.contains(activeTab) { return .face(activeTab) }
+        return .home
+    }
+
+    /// The face `step` places from `tab` in grid order (-1 the previous, +1
+    /// the next), or nil past either end. What a swipe moves to.
+    func neighbor(of tab: IsleTab, step: Int) -> IsleTab? {
+        let tabs = availableTabs
+        guard let index = tabs.firstIndex(of: tab) else { return nil }
+        let target = index + step
+        return tabs.indices.contains(target) ? tabs[target] : nil
+    }
+
+    /// Claude is blocked on the user: an approval or a question, from the
+    /// selected session or any other the registry vouches for. Only ever from
+    /// a status that says so — never inferred from a quiet session.
+    var claudeNeedsYou: Bool {
+        guard settings.effectiveMode.showsClaude else { return false }
+        return claudeState.isAttention || otherSessions.needYou > 0
+    }
+
+    /// A face other than the one on screen needs the user — what the crumb's
+    /// home mark lights for. Claude is the only face that can ask today.
+    var needsYouElsewhere: Bool {
+        guard let face = expandedPlace.face else { return false }
+        return face != .claude && claudeNeedsYou
     }
 
     /// The height the question face wants, while it is the face on screen —
@@ -1844,20 +1865,19 @@ final class NotchViewModel: ObservableObject {
     /// `NotchMetrics.questionPanelHeight`). Nil for every other face, which
     /// all keep the standard height. The tallest question of a multi-question
     /// ask sizes it, so stepping through them doesn't bob the panel. Depends
-    /// on the description setting (row heights) and on the corner toggle
-    /// (which narrows the rows, so a description may wrap sooner).
+    /// on the description setting (row heights); the rows have the face's
+    /// full width, with nothing in the panel's corner to clear.
     ///
     /// Each question is fitted to `room`, the most the capped panel holds, so
     /// a question whose descriptions had to shorten asks for the height it's
     /// drawn at rather than the cap with a gap above the buttons.
     func questionContentHeight(room: CGFloat) -> CGFloat? {
-        guard expandedTab == .claude, let request = pendingRequest, request.kind == .question else {
+        guard expandedPlace == .face(.claude), let request = pendingRequest, request.kind == .question else {
             return nil
         }
-        let clearance = showsTabToggle ? ClaudePanelLayout.toggleClearance : 0
         return request.questions.map {
             ClaudePanelLayout.questionContentHeight(
-                $0, descriptions: optionDescriptions, trailingClearance: clearance, room: room
+                $0, descriptions: optionDescriptions, trailingClearance: 0, room: room
             )
         }.max()
     }
@@ -1866,15 +1886,25 @@ final class NotchViewModel: ObservableObject {
     var optionDescriptions: OptionDescriptions { settings.optionDescriptions }
 
 
-    /// A user tap on the Music/Claude switcher. Records the pick and, when an
-    /// alert is live, marks it as a manual override so `expandedTab` stops
-    /// forcing the Claude tab for the rest of this alert.
+    /// The user went into a face: a home tile, or a swipe landing. Records
+    /// the pick and, when an alert is live, marks it as a manual override so
+    /// `expandedPlace` stops forcing the Claude face for the rest of this
+    /// alert.
     func selectTab(_ tab: IsleTab) {
         if hasLiveActivity { tabOverriddenDuringAlert = true }
         activeTab = tab
-        // `activeTab`'s change publishes, but publish explicitly too: if the tap
-        // re-selects the already-active tab, only the override flag moved and the
-        // view still needs to re-read `expandedTab`.
+        isHome = false
+        // The changes publish, but publish explicitly too: if the tap
+        // re-selects the face already showing, only the override flag moved
+        // and the view still needs to re-read `expandedPlace`.
+        objectWillChange.send()
+    }
+
+    /// The user went back to the home grid, from the crumb. Same override
+    /// rule as `selectTab`: during an alert, Home sticks.
+    func selectHome() {
+        if hasLiveActivity { tabOverriddenDuringAlert = true }
+        isHome = true
         objectWillChange.send()
     }
 

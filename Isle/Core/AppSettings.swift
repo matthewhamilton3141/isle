@@ -22,6 +22,7 @@ final class AppSettings: ObservableObject {
     private let defaults: UserDefaults
     private static let modeKey = "isle.mode"
     private static let tabKey = "isle.lastTab"
+    private static let onHomeKey = "isle.lastOnHome"
     private static let showScrubberKey = "isle.showScrubber"
     private static let showShuffleRepeatKey = "isle.showShuffleRepeat"
     private static let waveformSourceKey = "isle.waveformSource"
@@ -71,11 +72,20 @@ final class AppSettings: ObservableObject {
         }
     }
 
-    /// Last tab the user selected in `.both` mode, restored across launches.
+    /// Last face the user went into, restored across launches.
     @Published var lastTab: IsleTab {
         didSet {
             guard lastTab != oldValue else { return }
             defaults.set(lastTab.rawValue, forKey: Self.tabKey)
+        }
+    }
+
+    /// The user last went back to the home grid rather than into a face, so
+    /// the panel opens there. With `lastTab`, this is "the last place chosen".
+    @Published var lastOnHome: Bool {
+        didSet {
+            guard lastOnHome != oldValue else { return }
+            defaults.set(lastOnHome, forKey: Self.onHomeKey)
         }
     }
 
@@ -396,6 +406,9 @@ final class AppSettings: ObservableObject {
             mode = IsleMode(rawValue: raw)
         }
         lastTab = IsleTab(rawValue: defaults.string(forKey: Self.tabKey) ?? "") ?? .music
+        // Home until the user picks a face: the grid is where the faces are
+        // found.
+        lastOnHome = defaults.object(forKey: Self.onHomeKey) as? Bool ?? true
         haptics = defaults.object(forKey: Self.hapticsKey) as? Bool ?? true
         displayScope = DisplayScope(rawValue: defaults.string(forKey: Self.displayScopeKey) ?? "")
             ?? .builtIn
