@@ -49,12 +49,14 @@ struct ExpandedNotchView: View {
             // stays put through a swipe, fading while the faces cross under
             // it and back once they land. Not on Home, where it would sit
             // on a tile and the Music tile already says what's playing, nor on
-            // the shelf or the drop face, whose items and targets run to the
-            // column's edge under it. Gated on a live track; non-interactive
-            // so it never swallows a seek or dismiss tap.
+            // the shelf, the agenda or the drop face, whose items, week strip,
+            // timeline and targets run to the column's edge under it. Gated on
+            // a live track; non-interactive so it never swallows a seek or
+            // dismiss tap.
             .overlay(alignment: .topTrailing) {
                 if media.hasTrack, viewModel.showsWaveform, viewModel.expandedPlace != .home,
-                   viewModel.expandedPlace != .face(.shelf), dropPayload == nil {
+                   viewModel.expandedPlace != .face(.shelf), viewModel.expandedPlace != .face(.agenda),
+                   dropPayload == nil {
                     LiveEqualizer(
                         source: viewModel.audioLevelSource,
                         palette: palette,
@@ -104,7 +106,7 @@ struct ExpandedNotchView: View {
         case .pomodoro:
             PomodoroExpandedView(viewModel: viewModel, palette: palette)
         case .agenda:
-            AgendaExpandedView(viewModel: viewModel, palette: palette)
+            AgendaExpandedView(viewModel: viewModel, agenda: viewModel.agendaModel, palette: palette)
         case .shelf:
             ShelfExpandedView(viewModel: viewModel, shelf: viewModel.shelf)
         }
