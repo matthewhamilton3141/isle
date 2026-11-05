@@ -2152,8 +2152,15 @@ final class NotchViewModel: ObservableObject {
     /// prompt as far as the island knows, and its terminal is one Isle can
     /// type into without focusing it. The stricter checks run at Send.
     var canReply: Bool {
-        settings.answerFromNotch && pendingRequest == nil
-            && sessionHost?.typingRoute != nil && Self.isAtPrompt(claudeState)
+        repliesFromNotch && pendingRequest == nil && Self.isAtPrompt(claudeState)
+    }
+
+    /// Whether this session's row ever holds a reply: the setting is on and
+    /// its terminal can be typed into. Not whether it can right now — that's
+    /// `canReply`, which comes and goes with the state. The face places Jump
+    /// by this, so the pill doesn't move when the reply field appears.
+    var repliesFromNotch: Bool {
+        settings.answerFromNotch && sessionHost?.typingRoute != nil
     }
 
     /// States in which Claude Code is waiting for the next prompt.

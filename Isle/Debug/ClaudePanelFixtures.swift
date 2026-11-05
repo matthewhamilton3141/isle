@@ -351,7 +351,7 @@ extension ClaudePanelFixture {
             .init(name: "both_approval", mode: .both, state: .needsApproval, action: "Bash", target: "npm",
                   request: approval("Bash", "npm run lint -- --fix")),
             .init(name: "both_question_4", mode: .both, state: .needsQuestion, request: question([fourOptions])),
-        ] + approvalKinds + descriptionModes + worstCases + liveExtras + jumpAndReply + doneSays
+        ] + approvalKinds + descriptionModes + worstCases + liveExtras + jumpAndReply + doneSays + loneJump
     }
 
     // MARK: Done says what happened (Milestone 15)
@@ -390,6 +390,28 @@ extension ClaudePanelFixture {
                   toast: .sessionDone(sessionId: "other", project: "isle-website")),
             .init(name: "m15_toast_background_long", state: .working,
                   toast: .sessionDone(sessionId: "other", project: "an-extremely-long-project-directory-name")),
+        ]
+    }
+
+    /// Jump with no reply beside it — a host Isle can't type into — in each
+    /// state it shows in, beside the hosts that do take replies, whose row
+    /// mustn't move.
+    static var loneJump: [ClaudePanelFixture] {
+        let ghostty = host("Ghostty", "com.mitchellh.ghostty")
+        return [
+            .init(name: "lj_ghostty_done", state: .done, host: ghostty, lastMessage: saidShort),
+            .init(name: "lj_ghostty_done_long", state: .done, host: ghostty, lastMessage: saidLong),
+            .init(name: "lj_ghostty_working", state: .working, action: "Bash", target: "xcodebuild", host: ghostty),
+            .init(name: "lj_ghostty_waiting", state: .waitingInput, host: ghostty),
+            .init(name: "lj_vscode_crowded", state: .done, keepAwake: true,
+                  others: .init(working: 1, needYou: 1), host: host("VS Code", "com.microsoft.VSCode"),
+                  lastMessage: saidLong),
+            .init(name: "lj_both_ghostty_done", mode: .both, state: .done, host: ghostty, lastMessage: saidLong),
+            .init(name: "lj_both_ghostty_working", mode: .both, state: .working, host: ghostty),
+            .init(name: "lj_both_ghostty_waiting", mode: .both, state: .waitingInput, host: ghostty),
+            .init(name: "lj_terminal_working", state: .working, action: "Bash", target: "xcodebuild",
+                  host: terminalHost),
+            .init(name: "lj_terminal_done", state: .done, host: terminalHost, lastMessage: saidShort),
         ]
     }
 
