@@ -142,15 +142,16 @@ struct CollapsedNotchView: View {
     /// 44% taller than the battery beside it. A point size is the size every
     /// symbol in the set is designed to agree at.
     ///
-    /// 12 is the ceiling for a 22pt slot: at 13 the widest glyph
-    /// (`battery.100percent.bolt`) measures 23pt and overhangs.
+    /// 12 is the ceiling for a 22pt slot: the widest glyph, `beats.studiobuds`,
+    /// is 20.4pt of ink at 12 and 22.1 at 13, which overhangs. This Mac's
+    /// `macbook.gen2` is 17.6.
     private static let toastGlyphPointSize: CGFloat = 12
 
     /// The slot every glyph is centred in, so the wide ones and the narrow
     /// ones share one optical centre — which lands where the album artwork's
     /// centre is, so nothing shifts when a toast takes the island and gives it
-    /// back. Tall enough for the tallest glyph at this point size (`bolt.fill`,
-    /// 17pt) without clipping.
+    /// back. Tall enough for the tallest glyphs at this point size
+    /// (`computermouse.fill`, `airpodsmax`, 16pt) without clipping.
     private static let toastGlyphSlot = CGSize(width: CollapsedSize.album, height: 18)
 
     /// The rune is hand-drawn, so it has no point size to inherit — 16 puts it
@@ -160,8 +161,7 @@ struct CollapsedNotchView: View {
 
     private func toastSymbol(_ toast: IslandToast) -> some View {
         Group {
-            switch toast.glyph {
-            case .symbol(let name):
+            if let name = toast.symbolName {
                 // Nudged onto its own ink rather than its layout box — see
                 // GlyphInk for why the two aren't the same place.
                 let ink = GlyphInk.centeringOffset(
@@ -171,7 +171,7 @@ struct CollapsedNotchView: View {
                     .font(.system(size: Self.toastGlyphPointSize, weight: .semibold))
                     .foregroundStyle(toast.tint)
                     .offset(x: -ink.width, y: -ink.height)
-            case .bluetoothRune:
+            } else {
                 BluetoothRune.view(height: Self.toastRuneHeight, tint: toast.tint)
             }
         }

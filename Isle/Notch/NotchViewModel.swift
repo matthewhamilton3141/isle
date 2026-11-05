@@ -2407,10 +2407,11 @@ extension NotchViewModel {
             .fullyCharged(),
             .lowBattery(percent: lowLevel),
             .unplugged(percent: level, minutesToEmpty: live?.minutesToEmpty ?? 627),
-            .lowPowerMode(on: live?.isLowPowerMode == false, percent: level),
+            .lowPowerMode(on: live?.isLowPowerMode == false),
             .device(PeripheralBattery(
                 name: "AirPods Pro", address: "A4:F6:E6:76:55:32",
-                percent: 12, minorType: "Headphones"
+                percent: 12, minorType: "Headphones",
+                vendorID: DeviceSymbol.appleVendorID, productID: 0x2024
             )),
             .event(
                 key: "preview-event", title: "Design review",

@@ -43,6 +43,11 @@ struct OutputDevice: Identifiable, Equatable {
     /// for built-in devices; on Apple silicon the jack is usually a device of
     /// its own instead, which reads true here too.
     let isHeadphoneJack: Bool
+    /// What a Bluetooth device reports itself as, from its model UID (see
+    /// `DeviceSymbol.bluetoothIDs`). Nil for every other transport, and for
+    /// a Bluetooth device whose model UID isn't in that form.
+    var vendorID: Int? = nil
+    var productID: Int? = nil
 
     enum Transport: Equatable {
         case builtIn, bluetooth, airPlay, usb, display, thunderbolt, aggregate, virtual, other
@@ -65,21 +70,18 @@ struct OutputDevice: Identifiable, Equatable {
     /// An SF Symbol for the device, from its transport.
     ///
     /// The transport is the only thing Core Audio says about what kind of
-    /// device this is, so that's what picks the glyph. The one exception is
-    /// AirPods, which are told apart by name: macOS names them "… AirPods",
-    /// "… AirPods Pro" or "… AirPods Max" and keeps that word through a
-    /// rename unless the owner removes it, in which case they fall back to
-    /// the Bluetooth headphones glyph like any other pair.
+    /// device this is, so that's what picks the glyph. The exception is a
+    /// Bluetooth device that names its model — AirPods and Beats, by product
+    /// ID, or AirPods by name — which gets that model's own symbol, shared
+    /// with the battery toast (see `DeviceSymbol`). Any other pair gets the
+    /// Bluetooth headphones glyph.
     var symbolName: String {
         switch transport {
         case .builtIn:
             return isHeadphoneJack ? "headphones" : "speaker.wave.2"
         case .bluetooth:
-            let lowered = name.lowercased()
-            if lowered.contains("airpods max") { return "airpodsmax" }
-            if lowered.contains("airpods pro") { return "airpodspro" }
-            if lowered.contains("airpods") { return "airpods" }
-            return "headphones"
+            return DeviceSymbol.accessory(name: name, vendorID: vendorID, productID: productID)
+                ?? "headphones"
         case .airPlay:
             return "airplayaudio"
         case .usb, .thunderbolt:
@@ -331,12 +333,17 @@ final class OutputDevices: ObservableObject {
             uint32(id, kAudioDevicePropertyTransportType) ?? 0
         )
         let dataSource = uint32(id, kAudioDevicePropertyDataSource, scope: kAudioObjectPropertyScopeOutput)
+        let ids = transport == .bluetooth
+            ? DeviceSymbol.bluetoothIDs(modelUID: string(id, kAudioDevicePropertyModelUID))
+            : nil
         let device = OutputDevice(
             id: id,
             uid: uid,
             name: name,
             transport: transport,
-            isHeadphoneJack: transport == .builtIn && dataSource == headphonesDataSource
+            isHeadphoneJack: transport == .builtIn && dataSource == headphonesDataSource,
+            vendorID: ids?.vendorID,
+            productID: ids?.productID
         )
         let facts = Facts(
             outputChannels: outputChannelCount(id),

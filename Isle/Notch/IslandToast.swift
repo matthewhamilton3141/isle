@@ -20,10 +20,14 @@
 import SwiftUI
 
 /// What a toast draws to the left of the camera cutout. An enum rather than a
-/// symbol name because one of the glyphs isn't a system symbol: SF Symbols has
-/// no Bluetooth mark, so that case is drawn by `BluetoothRune`.
+/// symbol name because two of the glyphs aren't a fixed system symbol: SF
+/// Symbols has no Bluetooth mark, so that case is drawn by `BluetoothRune`;
+/// and this Mac's symbol depends on its display, which only the main actor
+/// can ask about, so it's looked up where the toast is drawn
+/// (`DeviceSymbol.thisMac`) rather than where the power monitor makes it.
 enum ToastGlyph: Equatable {
     case symbol(String)
+    case thisMac
     case bluetoothRune
 }
 
@@ -69,9 +73,13 @@ struct IslandToast: Equatable, Identifiable {
 
     /// The SF Symbol name, when this toast uses one. Nil for the hand-drawn
     /// rune — which is exactly the distinction callers need to make.
+    @MainActor
     var symbolName: String? {
-        if case let .symbol(name) = glyph { return name }
-        return nil
+        switch glyph {
+        case .symbol(let name): return name
+        case .thisMac: return DeviceSymbol.thisMac
+        case .bluetoothRune: return nil
+        }
     }
 
     static func == (lhs: IslandToast, rhs: IslandToast) -> Bool {

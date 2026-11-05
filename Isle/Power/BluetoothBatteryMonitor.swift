@@ -20,9 +20,9 @@
 //  is the moment a flat pair of headphones is worth mentioning).
 //
 //  `-json` rather than the default text output on purpose. The keys
-//  (`device_batteryLevelLeft`, `device_minorType`) are stable identifiers;
-//  the text output's labels ("Left Battery Level:") are display strings and
-//  have moved between releases.
+//  (`device_batteryLevelLeft`, `device_minorType`, `device_productID`) are
+//  stable identifiers; the text output's labels ("Left Battery Level:") are
+//  display strings and have moved between releases.
 //
 
 import Foundation
@@ -216,7 +216,9 @@ final class BluetoothBatteryMonitor: NSObject {
                     name: name,
                     address: address.uppercased(),
                     percent: percent,
-                    minorType: properties["device_minorType"] as? String
+                    minorType: properties["device_minorType"] as? String,
+                    vendorID: DeviceSymbol.hexID(properties["device_vendorID"]),
+                    productID: DeviceSymbol.hexID(properties["device_productID"])
                 ))
             }
         }
