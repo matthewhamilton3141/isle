@@ -155,9 +155,14 @@ final class AirDropSender: NSObject, NSSharingServiceDelegate {
         MainActor.assumeIsolated { finish() }
     }
 
+    /// Hands the front back only if Isle still has it. The sheet can sit on
+    /// "Waiting…" until the other device accepts, and anyone who went off to
+    /// another app meanwhile has already taken the front back themselves —
+    /// re-activating the app from before the sheet then would pull them out
+    /// of wherever they went when the transfer lands.
     private func finish() {
         service = nil
-        if let previousApp, !previousApp.isTerminated {
+        if NSApp.isActive, let previousApp, !previousApp.isTerminated {
             previousApp.activate()
         }
         previousApp = nil
