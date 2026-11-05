@@ -101,8 +101,11 @@ enum HookInstaller {
     /// change after a session's first was invisible to the app. v9: answering
     /// from the notch — `ask` blocks for a notch decision, a second PreToolUse
     /// entry (matched to AskUserQuestion) runs `ask-question`, and both blocking
-    /// entries carry their own `timeout`.)
-    private static let currentVersion = 9
+    /// entries carry their own `timeout`. v10: a Stop writes `last_message`,
+    /// the start of Claude's final message as Claude Code escaped it, for the
+    /// Done face; and the project name is escaped, so a quote in a folder name
+    /// can no longer make the whole record unreadable.)
+    private static let currentVersion = 10
     private static let versionKey = "HookInstaller.installedVersion"
 
     private static var home: URL {
@@ -334,10 +337,26 @@ enum HookInstaller {
       "reset_at": "$RESET_AT",
       "request_id": "$2",
       "request_kind": "${3:-}",
+      "last_message": "$LAST_EXCERPT",
       "updated_at": "$ts"
     }
     EOF
       mv -f "$tmp" "$sf"
+    }
+
+    # A value made safe to sit between double quotes in the status file. Only
+    # for text this script owns outright (the project's directory name): it can
+    # hold anything a filename can, and one quote would make the whole record
+    # unreadable. Backslash first, so the escapes added after it stay single.
+    # Pure bash, then `tr` for the control characters JSON has no short form for.
+    json_escape() {
+      local s="$1"
+      s="${s//\\/\\\\}"
+      s="${s//\"/\\\"}"
+      s="${s//$'\n'/\\n}"
+      s="${s//$'\r'/\\r}"
+      s="${s//$'\t'/\\t}"
+      printf '%s' "$s" | LC_ALL=C tr -d '\000-\037'
     }
 
     # True when Isle is running and will answer from the notch: the marker exists
@@ -381,7 +400,7 @@ enum HookInstaller {
         ;;
     esac
 
-    PROJECT="$(basename "$PWD")"
+    PROJECT="$(json_escape "$(basename "$PWD")")"
     TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
     # Pull fields out of the hook's stdin JSON without jq. Each `|| true` swallows a
@@ -394,6 +413,8 @@ enum HookInstaller {
     HOOK_EVENT=""
     ERROR_TYPE=""
     LAST_MSG=""
+    # The start of what Claude said last, for the Done face (Stop only).
+    LAST_EXCERPT=""
     RESET_AT=""
     # True only between a PreToolUse and its PostToolUse — i.e. a tool is
     # actually executing right now. A long Bash or a slow MCP call goes minutes
@@ -450,6 +471,29 @@ enum HookInstaller {
       LAST_MSG="$(printf '%s' "$STDIN_JSON" \
         | grep -oE '"last_assistant_message"[[:space:]]*:[[:space:]]*"[^"]*"' \
         | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+
+      # Stop: the first 300 characters of Claude's final message, so the Done
+      # face can say what happened in Claude's own words. Kept exactly as Claude
+      # Code escaped it — the text never leaves JSON form, so nothing here has to
+      # escape it again — and cut on a whole token: an escape (\" \\ \n é),
+      # or one character under a UTF-8 locale. So the cut can't land inside an
+      # escape or a multi-byte character, and no bare quote or backslash can get
+      # through. A \u escape for half a surrogate pair isn't a token, so the
+      # excerpt simply ends before one. Two runs of 150 because 255 is the most
+      # one repeat can count. A raw DEL (JSON allows one) is dropped; anything
+      # that still isn't valid UTF-8 drops the excerpt, and the face says
+      # "Finished responding" as before.
+      if [ "$CMD" = "set-state" ] && [ "$HOOK_EVENT" = "Stop" ]; then
+        tok='(\\u([0-9A-Ca-c][0-9A-Fa-f]{3}|[Dd][0-7][0-9A-Fa-f]{2}|[EFef][0-9A-Fa-f]{3})|\\["\\/bfnrt]|[^"\\])'
+        LAST_EXCERPT="$(printf '%s' "$STDIN_JSON" \
+          | LC_ALL=en_US.UTF-8 grep -oE "\"last_assistant_message\"[[:space:]]*:[[:space:]]*\"$tok{0,150}$tok{0,150}" \
+          | head -1 \
+          | LC_ALL=en_US.UTF-8 sed -E 's/^"last_assistant_message"[[:space:]]*:[[:space:]]*"//' \
+          | LC_ALL=C tr -d '\000-\037\177' || true)"
+        if ! printf '%s' "$LAST_EXCERPT" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+          LAST_EXCERPT=""
+        fi
+      fi
     fi
 
     # `ask` (PermissionRequest hook) and `ask-question` (PreToolUse, matched to
