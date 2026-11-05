@@ -23,7 +23,7 @@
 //  The question face is the one that grows, and the one that rearranges: the
 //  glyph leaves, and the eyebrow, the question and the options take the
 //  face's whole width. The panel is sized from these same numbers before it's drawn
-//  (`questionContentHeight`, read by `NotchMetrics.questionPanelHeight`), and
+//  (`questionContentHeight`, read by `NotchMetrics.panelHeight`), and
 //  the view lays the rows out from the same `OptionsFit`, so the two can't
 //  disagree.
 //

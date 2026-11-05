@@ -564,7 +564,7 @@ private struct ClaudePanelPreview: View {
         island.metrics = NotchMetrics.preferredScreen().map(NotchMetrics.init(screen:))
         island.setHovering(true)
         return NotchRootView(viewModel: vm, island: island)
-            .frame(width: NotchMetrics.expandedSize.width + 40, height: NotchMetrics.questionPanelMaxHeight + 20)
+            .frame(width: NotchMetrics.expandedSize.width + 40, height: NotchMetrics.panelMaxHeight + 20)
             .background(Color(white: 0.25))
     }
 }
