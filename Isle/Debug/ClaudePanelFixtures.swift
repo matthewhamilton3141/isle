@@ -33,6 +33,14 @@ struct ClaudePanelFixture: Identifiable {
     var descriptions: OptionDescriptions = .default
     var keepAwake = false
     var others = ClaudeOtherSessions()
+    /// Where the session is on screen (Milestone 11): the Jump pill, and
+    /// whether a reply can be typed.
+    var host: ClaudeSessionHost? = nil
+    var composing: ComposeKind? = nil
+    var replyDraft = ""
+    var answerDraft = ""
+    var denialDraft = ""
+    var delivery: ReplyDelivery = .none
 
     var id: String { name }
 
@@ -335,7 +343,82 @@ extension ClaudePanelFixture {
             .init(name: "both_approval", mode: .both, state: .needsApproval, action: "Bash", target: "npm",
                   request: approval("Bash", "npm run lint -- --fix")),
             .init(name: "both_question_4", mode: .both, state: .needsQuestion, request: question([fourOptions])),
-        ] + approvalKinds + descriptionModes + worstCases + liveExtras
+        ] + approvalKinds + descriptionModes + worstCases + liveExtras + jumpAndReply
+    }
+
+    // MARK: Jump and reply (Milestone 11)
+
+    static func host(_ name: String, _ bundle: String, tty: String? = "/dev/ttys003",
+                     tmux: Bool = false) -> ClaudeSessionHost {
+        ClaudeSessionHost(
+            app: .init(name: name, bundleIdentifier: bundle, pid: 4242, bundleURL: nil),
+            sessionTTY: tmux ? "/dev/ttys009" : tty,
+            tabTTY: tty,
+            tmux: tmux ? TmuxPane(binary: "/opt/homebrew/bin/tmux", socket: "/private/tmp/tmux-501/default",
+                                  pane: "%3", clientTTY: tty) : nil,
+            kitty: nil
+        )
+    }
+
+    static let terminalHost = host("Terminal", "com.apple.Terminal")
+    static let iTermHost = host("iTerm", "com.googlecode.iterm2")
+    static let reply = "Yes, and bump the version to 0.4.5 first"
+
+    /// Every host the pill can name, the reply field at rest, typing,
+    /// sending, sent and failed, and the request faces' own fields.
+    static var jumpAndReply: [ClaudePanelFixture] {
+        [
+            .init(name: "jr_terminal_done", state: .done, host: terminalHost),
+            .init(name: "jr_iterm_waiting", state: .waitingInput, host: iTermHost),
+            .init(name: "jr_tmux_in_terminal_idle", state: .idle, host: host("Terminal", "com.apple.Terminal", tmux: true)),
+            .init(name: "jr_ghostty_done", state: .done, host: host("Ghostty", "com.mitchellh.ghostty")),
+            .init(name: "jr_vscode_done", state: .done, host: host("VS Code", "com.microsoft.VSCode")),
+            .init(name: "jr_cursor_waiting", state: .waitingInput, host: host("Cursor", "com.todesktop.230313mzl4w4u92")),
+            .init(name: "jr_terminal_working", state: .working, action: "Bash", target: "xcodebuild", host: terminalHost),
+            .init(name: "jr_unresolved_done", state: .done, host: nil),
+            .init(name: "jr_reply_composing_empty", state: .waitingInput, host: terminalHost, composing: .reply),
+            .init(name: "jr_reply_composing", state: .waitingInput, host: terminalHost, composing: .reply,
+                  replyDraft: reply),
+            .init(name: "jr_reply_draft_kept", state: .done, host: terminalHost, replyDraft: reply),
+            .init(name: "jr_reply_sending", state: .waitingInput, host: terminalHost, delivery: .sending(reply)),
+            .init(name: "jr_reply_sent", state: .working, host: terminalHost, delivery: .sent(reply)),
+            .init(name: "jr_reply_failed_permission", state: .done, host: terminalHost, replyDraft: reply,
+                  delivery: .failed(text: reply, reason: "Allow Isle to control Terminal in Privacy › Automation")),
+            .init(name: "jr_reply_failed_unconfirmed", state: .waitingInput, host: terminalHost, replyDraft: reply,
+                  delivery: .failed(text: reply, reason: "Typed into Terminal, but Claude didn't take it — check its prompt")),
+            .init(name: "jr_reply_failed_busy", state: .done, host: terminalHost, replyDraft: reply,
+                  delivery: .failed(text: reply, reason: "Claude isn't at its prompt right now")),
+            .init(name: "jr_both_terminal_done", mode: .both, state: .done, host: terminalHost),
+            .init(name: "jr_both_reply_composing", mode: .both, state: .waitingInput, host: terminalHost,
+                  composing: .reply, replyDraft: reply),
+            .init(name: "jr_others_keepawake_done", state: .done, keepAwake: true,
+                  others: .init(working: 1, needYou: 1), host: terminalHost),
+            // The request faces: their own fields, on every host.
+            .init(name: "jr_question_type_pill", state: .needsQuestion, request: question([fourOptions]),
+                  host: terminalHost),
+            .init(name: "jr_question_typing", state: .needsQuestion, request: question([fourOptions]),
+                  host: terminalHost, composing: .answer, answerDraft: "Mango, and make it a smoothie"),
+            .init(name: "jr_question_multi_typing", state: .needsQuestion,
+                  request: question([twoOptions, multiSelect, thirdQuestion]), questionIndex: 1,
+                  picks: [["Run now"], [], []], host: terminalHost, composing: .answer,
+                  answerDraft: "Only the unit tests, skip the rest"),
+            .init(name: "jr_both_question_type_pill", mode: .both, state: .needsQuestion,
+                  request: question([fourLongMulti]), picks: [["Approvals"]], descriptions: .full),
+            .init(name: "jr_approval_tell_pill", state: .needsApproval, action: "Bash", target: "npm",
+                  request: approval("Bash", "npm run lint -- --fix"), host: terminalHost),
+            .init(name: "jr_approval_tell_pill_always", state: .needsApproval, action: "Bash", target: "npm",
+                  request: approval(stdin: bashPrefixStdin), host: terminalHost),
+            .init(name: "jr_approval_denying", state: .needsApproval, action: "Bash", target: "npm",
+                  request: approval(stdin: bashPrefixStdin), host: terminalHost, composing: .denial,
+                  denialDraft: "Run the tests first, then the build"),
+            .init(name: "jr_approval_denying_empty", state: .needsApproval, action: "Edit", target: "NotchMetrics.swift",
+                  request: approval(stdin: editStdin), composing: .denial),
+            .init(name: "jr_plan_denying", state: .needsApproval, action: "ExitPlanMode",
+                  request: approval(stdin: planStdin), composing: .denial,
+                  denialDraft: "Put the file under Isle/Debug instead"),
+            .init(name: "jr_both_approval_tell_pill_always", mode: .both, state: .needsApproval, action: "Bash",
+                  target: "npm", request: approval(stdin: bashPrefixStdin)),
+        ]
     }
 
     /// The most `AskUserQuestion` sends at once (four options a question,
