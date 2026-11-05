@@ -43,9 +43,12 @@ struct HomeGridView: View {
                 .accessibilityLabel(tab.title)
             }
         }
-        // Level with the faces' own content: the album's top edge sits a
-        // little into the band, the tiles' a point above the content line.
-        .offset(y: -1)
+        // The middle tiles run under the camera cutout, whose hardware edge
+        // sits a point below the band the safe area reports, so their hard
+        // top edges keep 4pt clear of the band — the same room the shelf's
+        // top row keeps. The album can sit up in the band; it has no
+        // hardware above it.
+        .padding(.top, 2)
         .padding(.bottom, 2)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .foregroundStyle(.white)
