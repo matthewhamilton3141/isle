@@ -666,9 +666,24 @@ extension NotchWindowController: NotchDropHandler {
             self.viewModel.canPerform($0, with: payload)
         }
         guard presentation.litDropTarget != nil else { return [] }
-        // Nothing is moved or copied: the target acts on the files where
-        // they are. `.generic` says so, where the source allows it.
-        return info.draggingSourceOperationMask.contains(.generic) ? .generic : .copy
+        return Self.dropOperation(allowedBy: info.draggingSourceOperationMask)
+    }
+
+    /// What every target tells the source it did: a copy, or failing that
+    /// a link — never a move. The shelf keeps only a path, Start Claude
+    /// only opens one, and AirDrop sends a copy of its own, so the source's
+    /// file has to stay exactly where it was. `.generic` doesn't promise
+    /// that: plenty of sources — another shelf, a file manager, a list in an
+    /// app — read it as a move and take their copy away once the drop lands.
+    ///
+    /// Copy before link because every file source offers it, so the cursor
+    /// shows the same badge whatever the drag came from. A source offering
+    /// neither — Command held over a Finder drag asks for a move and nothing
+    /// else — gets no drop, rather than one it would take for a move.
+    static func dropOperation(allowedBy mask: NSDragOperation) -> NSDragOperation {
+        if mask.contains(.copy) { return .copy }
+        if mask.contains(.link) { return .link }
+        return []
     }
 
     func dragExited(_ window: NotchWindow) {
