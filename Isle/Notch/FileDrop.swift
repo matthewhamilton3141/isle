@@ -112,31 +112,58 @@ final class FileDragWatch {
         }
     }
 
-    private let pasteboard = NSPasteboard(name: .drag)
+    private let pasteboard: NSPasteboard
 
-    /// The drag pasteboard's change count when the button went down. Nil
-    /// while the button is up, or once this press has been decided.
-    private var countAtPress: Int?
+    /// The drag pasteboard's change count as the last press ended — or as
+    /// it was decided, if that came first. A drag this press starts is one
+    /// that moves it.
+    ///
+    /// Not read when the button goes down: the monitor's events reach the
+    /// main thread whenever it's free, and if it's late, the source has
+    /// already written the pasteboard by the time the press is handled — a
+    /// count read then would already include the drag, and it would be
+    /// missed. Nor on a `mouseMoved`, for the same reason: the move just
+    /// before a press is handled just as late as the press. The end of the
+    /// previous press is a whole click earlier, and nothing but a drag
+    /// writes this pasteboard in between.
+    private var baseline: Int
+
+    /// The button is down and this press hasn't been decided.
+    private var deciding = false
+
+    /// The button went down and hasn't been seen to come up.
+    private var pressed = false
+
+    init(pasteboard: NSPasteboard = NSPasteboard(name: .drag)) {
+        self.pasteboard = pasteboard
+        baseline = pasteboard.changeCount
+    }
 
     func handle(_ event: NSEvent) {
         switch event.type {
         case .leftMouseDown:
             isDraggingFiles = false
-            countAtPress = pasteboard.changeCount
+            pressed = true
+            deciding = true
         case .leftMouseDragged:
             // Decided once per press: the pasteboard is written when the
             // drag starts and not again, so after a fresh write with files
             // on it there's nothing more to learn, and a press that started
             // a drag without files (a window, a selection) costs a change
             // count read per event and nothing else.
-            guard let countAtPress, !isDraggingFiles else { return }
-            guard pasteboard.changeCount != countAtPress else { return }
-            self.countAtPress = nil
+            guard deciding else { return }
+            let count = pasteboard.changeCount
+            guard count != baseline else { return }
+            deciding = false
+            baseline = count
             isDraggingFiles = pasteboard.types?.contains(.fileURL) == true
-        case .leftMouseUp, .mouseMoved:
+        case .leftMouseUp:
+            pressEnded()
+        case .mouseMoved:
             // `mouseMoved` comes only with no button held, so it also ends a
             // drag whose button-up went somewhere a global monitor can't see.
-            countAtPress = nil
+            // Only then is the count read: every other move costs a flag.
+            if pressed { pressEnded() }
             isDraggingFiles = false
         default:
             break
@@ -146,7 +173,13 @@ final class FileDragWatch {
     /// The drag ended at Isle's own window — a drop, or the drag leaving
     /// for good — which can arrive before the button-up does.
     func dragConcluded() {
-        countAtPress = nil
+        pressEnded()
+    }
+
+    private func pressEnded() {
+        pressed = false
+        deciding = false
+        baseline = pasteboard.changeCount
         isDraggingFiles = false
     }
 }

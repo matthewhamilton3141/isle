@@ -66,6 +66,7 @@ final class NotchWindowController {
 
     private var screenObserver: (any NSObjectProtocol)?
     private var pointerMonitor: Any?
+    private var localPointerMonitor: Any?
     private var cancellables = Set<AnyCancellable>()
 
     /// A sync arrived while an island was open and was deferred — see
@@ -105,6 +106,9 @@ final class NotchWindowController {
         if let pointerMonitor {
             NSEvent.removeMonitor(pointerMonitor)
         }
+        if let localPointerMonitor {
+            NSEvent.removeMonitor(localPointerMonitor)
+        }
     }
 
     // MARK: - Lifecycle
@@ -139,6 +143,10 @@ final class NotchWindowController {
         if let pointerMonitor {
             NSEvent.removeMonitor(pointerMonitor)
             self.pointerMonitor = nil
+        }
+        if let localPointerMonitor {
+            NSEvent.removeMonitor(localPointerMonitor)
+            self.localPointerMonitor = nil
         }
         cancelSweepRecheck()
         viewModel.stop()
@@ -314,6 +322,13 @@ final class NotchWindowController {
     /// One monitor covers every island: the pointer is only ever in one place,
     /// so each move is routed to the island whose screen it is on and every
     /// other island is told to collapse.
+    ///
+    /// A global monitor sees only events sent to *other* apps, so it goes
+    /// blind exactly when Isle is where the moves are sent: while the AirDrop
+    /// sheet has Isle active, or while a panel is key for a reply. A local
+    /// monitor on `mouseMoved` sees those, and they take the same path. An
+    /// event goes to one app or the other, never both, so the two don't
+    /// overlap; `handlePointerMove` drops a repeat all the same.
     private func observePointer() {
         guard pointerMonitor == nil else { return }
         pointerMonitor = NSEvent.addGlobalMonitorForEvents(
@@ -332,6 +347,16 @@ final class NotchWindowController {
                 }
             }
         }
+        // Moves only. Isle's own presses and drags — an item dragged off the
+        // shelf — are no file drag *to* the island, and stay unseen as before.
+        localPointerMonitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.fileDrag.handle(event)
+                self.handlePointerMove(event)
+            }
+            return event
+        }
     }
 
     /// The whole hover rule, in one place.
@@ -343,6 +368,11 @@ final class NotchWindowController {
     /// points doesn't shut it. The gap between the two is the hysteresis: easy
     /// to commit to, hard to lose by accident.
     private func handlePointerMove(_ event: NSEvent) {
+        // A move already handled, or one older than it: no news. Matters
+        // only for the sweep reading below, which would take a repeat for a
+        // pause — and a pause for an arrival.
+        guard event.timestamp > lastPointerTimestamp else { return }
+
         // A move with no button held: whatever drag there was is over. The
         // window's own drag callbacks end the drop face on the way out; this
         // is the backstop for one that never got them.
@@ -760,9 +790,24 @@ extension NotchWindowController: NotchDropHandler {
             self.viewModel.canPerform($0, with: payload)
         }
         guard presentation.litDropTarget != nil else { return [] }
-        // Nothing is moved or copied: the target acts on the files where
-        // they are. `.generic` says so, where the source allows it.
-        return info.draggingSourceOperationMask.contains(.generic) ? .generic : .copy
+        return Self.dropOperation(allowedBy: info.draggingSourceOperationMask)
+    }
+
+    /// What every target tells the source it did: a copy, or failing that
+    /// a link — never a move. The shelf keeps only a path, Start Claude
+    /// only opens one, and AirDrop sends a copy of its own, so the source's
+    /// file has to stay exactly where it was. `.generic` doesn't promise
+    /// that: plenty of sources — another shelf, a file manager, a list in an
+    /// app — read it as a move and take their copy away once the drop lands.
+    ///
+    /// Copy before link because every file source offers it, so the cursor
+    /// shows the same badge whatever the drag came from. A source offering
+    /// neither — Command held over a Finder drag asks for a move and nothing
+    /// else — gets no drop, rather than one it would take for a move.
+    static func dropOperation(allowedBy mask: NSDragOperation) -> NSDragOperation {
+        if mask.contains(.copy) { return .copy }
+        if mask.contains(.link) { return .link }
+        return []
     }
 
     func dragExited(_ window: NotchWindow) {

@@ -2798,7 +2798,7 @@ final class NotchViewModel: ObservableObject {
         case .startClaude:
             if let folder = payload.claudeFolder { ClaudeLauncher.start(in: folder) }
         case .keep:
-            if shelf.add(payload.urls) > 0 { selectTab(.shelf) }
+            if shelf.add(payload.items) > 0 { selectTab(.shelf) }
         case .airDrop:
             AirDropSender.shared.send(payload.urls)
         }
