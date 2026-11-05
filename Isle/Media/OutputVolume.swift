@@ -92,10 +92,11 @@ final class OutputVolume: ObservableObject {
         OutputDevices.queue.async { [weak self] in
             let controls = Controls(device)
             let state = controls.flatMap { Self.read($0) }
+            let addresses = controls.map { $0.levelAddresses + ($0.mute.map { [$0] } ?? []) } ?? []
             Task { @MainActor in
                 guard let self, self.generation == generation, let controls else { return }
                 self.controls = controls
-                self.startListening(controls)
+                self.startListening(controls, addresses)
                 self.publish(state)
             }
         }
@@ -200,36 +201,46 @@ final class OutputVolume: ObservableObject {
 
     // MARK: - Listening
 
-    private func startListening(_ controls: Controls) {
+    /// Registered and removed on `OutputDevices.queue`, like every other
+    /// HAL call here — an add or a remove is a round trip to the audio
+    /// server, and finding the addresses asks the device which controls it
+    /// has. Serial, so a remove can't overtake the add it undoes. What was
+    /// added stays recorded here on the main actor, next to the generation
+    /// that says whether a bind still counts.
+    private func startListening(_ controls: Controls, _ addresses: [AudioObjectPropertyAddress]) {
         let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             Task { @MainActor in
                 guard let self else { return }
                 self.reread(self.generation)
             }
         }
-        var addresses = controls.levelAddresses
-        if let mute = controls.mute { addresses.append(mute) }
-        for var address in addresses {
-            let status = AudioObjectAddPropertyListenerBlock(
-                controls.device, &address, OutputDevices.queue, listener
-            )
-            if status != noErr {
-                NSLog("Isle: could not watch the output volume (\(status))")
-            }
-        }
+        let device = controls.device
         self.listener = listener
         listenedAddresses = addresses
-        listenedDevice = controls.device
+        listenedDevice = device
+        OutputDevices.queue.async {
+            for var address in addresses {
+                let status = AudioObjectAddPropertyListenerBlock(
+                    device, &address, OutputDevices.queue, listener
+                )
+                if status != noErr {
+                    NSLog("Isle: could not watch the output volume (\(status))")
+                }
+            }
+        }
     }
 
     private func stopListening() {
         guard let listener, let device = listenedDevice else { return }
-        for var address in listenedAddresses {
-            AudioObjectRemovePropertyListenerBlock(device, &address, OutputDevices.queue, listener)
-        }
+        let addresses = listenedAddresses
         self.listener = nil
         listenedAddresses = []
         listenedDevice = nil
+        OutputDevices.queue.async {
+            for var address in addresses {
+                AudioObjectRemovePropertyListenerBlock(device, &address, OutputDevices.queue, listener)
+            }
+        }
     }
 
     /// Re-reads the device and publishes what it says — unless a drag is

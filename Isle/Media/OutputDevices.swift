@@ -196,32 +196,43 @@ final class OutputDevices: ObservableObject {
 
     // MARK: - Listening
 
+    /// Registered and removed on `queue`, not here. The first HAL call a
+    /// process makes connects it to the audio server — 300 to 450ms,
+    /// measured — and with the waveform off, this is that call: the music
+    /// face's first open used to stall on it. The queue is serial, so a
+    /// remove always follows the add it undoes, and the read `attach`
+    /// queues next runs once the listeners are in, so nothing that changes
+    /// in between is missed.
     private func startListening() {
         guard listener == nil else { return }
         let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             Task { @MainActor in self?.refresh() }
         }
-        for selector in Self.watched {
-            var address = Self.systemAddress(selector)
-            let status = AudioObjectAddPropertyListenerBlock(
-                AudioObjectID(kAudioObjectSystemObject), &address, Self.queue, listener
-            )
-            if status != noErr {
-                NSLog("Isle: could not watch audio outputs (\(status))")
+        self.listener = listener
+        Self.queue.async {
+            for selector in Self.watched {
+                var address = Self.systemAddress(selector)
+                let status = AudioObjectAddPropertyListenerBlock(
+                    AudioObjectID(kAudioObjectSystemObject), &address, Self.queue, listener
+                )
+                if status != noErr {
+                    NSLog("Isle: could not watch audio outputs (\(status))")
+                }
             }
         }
-        self.listener = listener
     }
 
     private func stopListening() {
         guard let listener else { return }
-        for selector in Self.watched {
-            var address = Self.systemAddress(selector)
-            AudioObjectRemovePropertyListenerBlock(
-                AudioObjectID(kAudioObjectSystemObject), &address, Self.queue, listener
-            )
-        }
         self.listener = nil
+        Self.queue.async {
+            for selector in Self.watched {
+                var address = Self.systemAddress(selector)
+                AudioObjectRemovePropertyListenerBlock(
+                    AudioObjectID(kAudioObjectSystemObject), &address, Self.queue, listener
+                )
+            }
+        }
     }
 
     /// Re-reads the list and the default off the main thread and publishes
