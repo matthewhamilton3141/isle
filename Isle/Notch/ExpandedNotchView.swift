@@ -82,6 +82,8 @@ struct ExpandedNotchView: View {
             PomodoroExpandedView(viewModel: viewModel, palette: palette)
         case .agenda:
             AgendaExpandedView(viewModel: viewModel, palette: palette)
+        case .shelf:
+            ShelfExpandedView(viewModel: viewModel, shelf: viewModel.shelf)
         }
     }
 

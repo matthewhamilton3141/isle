@@ -245,6 +245,10 @@ final class NotchViewModel: ObservableObject {
     /// see `pomodoroAvailable`. Turning the setting off resets it.
     let pomodoro: PomodoroTimer
 
+    /// Files and folders kept within reach. Offered as a face only while it
+    /// holds something — see `availableTabs`.
+    let shelf: ShelfStore
+
     /// True between `start()` and `stop()` — i.e. while the notch window is
     /// shown. Guards the live mode-change subscription so it doesn't spin up
     /// subsystems while the overlay is hidden.
@@ -771,12 +775,19 @@ final class NotchViewModel: ObservableObject {
         self.activeTab = resolvedSettings.lastTab
         self.isHome = resolvedSettings.lastOnHome
         self.pomodoro = PomodoroTimer(settings: resolvedSettings)
+        self.shelf = ShelfStore(settings: resolvedSettings)
 
         // The timer publishes on its own object; the island reads it through
         // this model, so forward its changes (they're at most once a second
         // apart from the phase rolls — the digits themselves tick off a
         // TimelineView, not off a publish).
         pomodoro.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
+        // The shelf publishes on its own object too; its face, its tile and
+        // whether it's in the grid at all read it through this model.
+        shelf.objectWillChange
             .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &cancellables)
 
@@ -1629,6 +1640,9 @@ final class NotchViewModel: ObservableObject {
         // routed, every player gets asked, so whichever has a track is found.
         if hovering, hoveredIslands == 1 {
             (routedPlayer.map { [$0] } ?? players).forEach { $0.pollNow() }
+            // The shelf's watches catch a file leaving; this catches what a
+            // watch can't (a volume that went before its watch was set).
+            shelf.prune()
         }
     }
 
@@ -1806,6 +1820,7 @@ final class NotchViewModel: ObservableObject {
         if settings.effectiveMode.showsClaude { tabs.append(.claude) }
         if pomodoroAvailable { tabs.append(.pomodoro) }
         if showsAgenda { tabs.append(.agenda) }
+        if !shelf.isEmpty { tabs.append(.shelf) }
         return tabs
     }
 
@@ -2299,6 +2314,19 @@ final class NotchViewModel: ObservableObject {
         withAnimation(.easeInOut(duration: 0.25)) {
             activeToast = nil
         }
+    }
+
+    // MARK: - Shelf
+
+    /// From the shelf face.
+    func startClaude(in folder: URL) {
+        shelf.prune()
+        ClaudeLauncher.start(in: folder)
+    }
+
+    func airDrop(_ urls: [URL]) {
+        shelf.prune()
+        AirDropSender.shared.send(urls.filter { FileManager.default.fileExists(atPath: $0.path) })
     }
 
     // MARK: - Transport

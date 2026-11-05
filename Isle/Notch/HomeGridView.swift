@@ -12,6 +12,9 @@
 //  left today, a timer nobody started — gets its name and nothing else,
 //  rather than a placeholder that reads like news.
 //
+//  The shelf's tile is there only while the shelf holds something, like
+//  the face itself.
+//
 //  The tiles fill the content area under the housing band edge to edge, so
 //  the grid holds its shape whether there are two faces or five. Five is the
 //  most Isle offers, and five fit; if that ever stops being true, this row is
@@ -71,6 +74,8 @@ struct HomeGridView: View {
                     FaceIcon(tab: tab, size: 18)
                 }
             }
+        case .shelf:
+            HomeTile(title: tab.title, glance: shelfGlance) { shelfLead }
         }
     }
 
@@ -180,6 +185,29 @@ struct HomeGridView: View {
         }
         let total = max(1, viewModel.pomodoroSessionsPerCycle)
         return .init(clock, "\(label) · \(min(timer.completedInCycle + 1, total)) of \(total)", monospaced: true)
+    }
+
+    // MARK: - Shelf
+
+    /// The latest thing kept, by its own Finder icon. The tile is only on the
+    /// grid while the shelf holds something, so there's always one.
+    @ViewBuilder
+    private var shelfLead: some View {
+        if let item = viewModel.shelf.items.last {
+            Image(nsImage: viewModel.shelf.icon(for: item))
+                .resizable()
+                .interpolation(.high)
+                .frame(width: homeTileLead, height: homeTileLead)
+        } else {
+            FaceIcon(tab: .shelf, size: 18)
+        }
+    }
+
+    /// "4 items", and what they are: "1 folder, 3 files".
+    private var shelfGlance: TileGlance? {
+        let tally = viewModel.shelf.tally
+        guard tally.total > 0 else { return nil }
+        return .init(tally.itemsLine, tally.kindsLine)
     }
 
     // MARK: - Agenda
@@ -359,7 +387,7 @@ struct FaceIcon: View {
             // A simpler 3x3 grid reads better than 5x5 at icon size.
             DotGridIcon(color: color, dimension: 3)
                 .frame(width: size, height: size)
-        case .pomodoro, .agenda:
+        case .pomodoro, .agenda, .shelf:
             Image(systemName: tab.symbolName)
                 .font(.system(size: size * 0.85, weight: .semibold))
                 .foregroundStyle(color)
