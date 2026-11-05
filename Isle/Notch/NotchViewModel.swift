@@ -150,6 +150,36 @@ final class NotchViewModel: ObservableObject {
     /// so a crashed session's leftover file never inflates it.
     @Published private(set) var otherSessions = ClaudeOtherSessions()
 
+    // MARK: Every session at once (Milestone 16)
+
+    /// Every live session, in the order selection ranks them — the list the
+    /// Claude face can flip to. Only sessions the registry vouches for, each
+    /// corrected as the island corrects its own (see `updateSessionList`).
+    @Published private(set) var sessionList: [ClaudeSessionRow] = []
+
+    /// The Claude face is showing the list rather than a session. Held here,
+    /// like the question step, so every island shows the same thing; put
+    /// away when the panel closes.
+    @Published private(set) var sessionListShown = false
+
+    /// The session the user picked from the list, while it holds the island
+    /// (see `ClaudeSelection.Pin`). The face says so with a way back.
+    @Published private(set) var pinnedSessionId: String?
+
+    private var sessionPin: ClaudeSelection.Pin? {
+        didSet {
+            if pinnedSessionId != sessionPin?.sessionId { pinnedSessionId = sessionPin?.sessionId }
+        }
+    }
+
+    /// Where each listed session is on screen, for its row's Jump. Resolved
+    /// only while the list is up, and only from the session's own process
+    /// tree — a row without one has no Jump.
+    @Published private(set) var sessionHosts: [String: ClaudeSessionHost] = [:]
+
+    /// The CLI pid each entry in `sessionHosts` was resolved for.
+    private var sessionHostPIDs: [String: pid_t] = [:]
+
     // MARK: Answering from the notch (Milestone 7)
 
     /// The request the selected session's hook says it is blocked on — the
@@ -384,8 +414,24 @@ final class NotchViewModel: ObservableObject {
     /// let a background session's `Stop` or idle notification wipe the session
     /// the user was watching. Rank by how much the state wants attention, and
     /// only break ties by recency — so a quiescent session can never displace
-    /// an active one, however recently it moved.
+    /// an active one, however recently it moved (`ClaudeSelection.ranked`).
+    ///
+    /// Except for a session the user picked from the list, which holds the
+    /// island until another session newly needs them, or it goes away (see
+    /// `ClaudeSelection.Pin`). Settles the pin as it goes.
     private func selectStatus(from statuses: [ClaudeStatus]) -> ClaudeStatus {
+        var pin = sessionPin
+        // A pin needs a process the registry can see — never a leftover file.
+        if let held = pin, !claudeSessions.contains(where: { $0.sessionId == held.sessionId }) {
+            pin = nil
+        }
+        let selection = ClaudeSelection.select(from: selectionPool(statuses), pin: pin)
+        if sessionPin != selection.pin { sessionPin = selection.pin }
+        return selection.status
+    }
+
+    /// The records selection chooses between, corrected.
+    private func selectionPool(_ statuses: [ClaudeStatus]) -> [ClaudeStatus] {
         // Drop records whose process is gone. Skipped entirely while the
         // registry is empty (not yet scanned, or ~/.claude/sessions missing),
         // since filtering against nothing would blank the island.
@@ -393,11 +439,7 @@ final class NotchViewModel: ObservableObject {
             guard let id = status.sessionId else { return true }
             return claudeSessions.contains { $0.sessionId == id }
         }
-        let pool = (live.isEmpty ? statuses : live).map(reconciled)
-        return pool.max {
-            (Self.urgency($0.state), $0.updatedAt ?? .distantPast)
-                < (Self.urgency($1.state), $1.updatedAt ?? .distantPast)
-        } ?? .disconnected
+        return (live.isEmpty ? statuses : live).map(reconciled)
     }
 
     /// Corrects a `working` record the hooks will never close out.
@@ -489,19 +531,6 @@ final class NotchViewModel: ObservableObject {
         return corrected
     }
 
-    /// How much a state deserves the island. Higher wins.
-    private static func urgency(_ state: ClaudeCodeState) -> Int {
-        switch state {
-        // Blocked on the user, or ended badly — these are the whole point.
-        case .needsApproval, .needsQuestion, .failed: return 3
-        // Something is actually happening.
-        case .working, .compacting: return 2
-        // Alive but not doing anything; must never displace the tier above.
-        case .waitingInput, .done, .idle: return 1
-        case .disconnected: return 0
-        }
-    }
-
     /// Live sessions as the CLI itself reports them, hook-free. Ground truth
     /// for liveness: a session killed with SIGKILL fires no SessionEnd, and its
     /// pid simply stops existing here.
@@ -536,12 +565,13 @@ final class NotchViewModel: ObservableObject {
     /// needing attention outranks one still working, so the island can sit on
     /// a state the timer ignores while a background session holds the Mac
     /// awake or is counted as working — and that session's interrupt or
-    /// SIGKILL is only ever noticed by a tick.
+    /// SIGKILL is only ever noticed by a tick. And while the session list is
+    /// up, whose every row is subject to the same.
     ///
     /// A prompt dismissed with Esc is the same kind of stuck record — no hook
     /// fires — so the attention states ride along (see `reconciledPrompt`).
     private func updateReselectTimer(for state: ClaudeCodeState) {
-        guard keepAwake.isHeld || !otherSessions.isEmpty
+        guard keepAwake.isHeld || !otherSessions.isEmpty || sessionListShown
                 || state == .working || state == .compacting || state == .waitingInput
                 || state.isAttention else {
             stopReselectTimer()
@@ -666,6 +696,7 @@ final class NotchViewModel: ObservableObject {
             applyClaudeStatus(resolved)
         }
         updateKeepAwake()
+        updateSessionList()
         // The island's session may only now have a pid to resolve.
         if sessionsChanged { updateSessionHost() }
     }
@@ -894,6 +925,169 @@ final class NotchViewModel: ObservableObject {
         // for as long as the count does.
         if others.isEmpty != wasEmpty {
             updateReselectTimer(for: claudeState)
+        }
+    }
+
+    // MARK: - Every session at once (Milestone 16)
+
+    /// Rebuilds `sessionList` from the last reading. Liveness is the strict
+    /// kind, as for the keep-awake hold: a record with no live pid behind it,
+    /// or no session id to check one, is left out — the list never names a
+    /// session Isle can't see running.
+    ///
+    /// Each record gets the corrections the island would make. `reconciled`
+    /// first, so an interrupted turn doesn't list as working. Then the ones
+    /// the face makes on a clock, because the hooks never close those states
+    /// out: a question nothing is waiting on any more, a compaction, and a
+    /// usage limit whose reset has passed all read as Ready once the island
+    /// would have eased them there. Ranked after that, so a row sits where
+    /// its own word puts it.
+    ///
+    /// A finished turn stays Done, with what Claude said, until the session
+    /// moves again — the record says so, and the list is where you go to
+    /// find out what each session did.
+    private func updateSessionList() {
+        var rows: [ClaudeSessionRow] = []
+        if claudeRunning {
+            let now = Date()
+            let live = claudeStatuses.filter { status in
+                guard let id = status.sessionId else { return false }
+                return claudeSessions.contains { $0.sessionId == id }
+            }
+            rows = ClaudeSelection.ranked(live.map { eased(reconciled($0), at: now) })
+                .map { ClaudeSessionRow($0, request: request(for: $0)) }
+        }
+        if rows != sessionList { sessionList = rows }
+        updateSessionHosts()
+    }
+
+    /// `status` as the island would be showing it at `now`, for the states
+    /// it eases off on a clock (see `applyClaudeStatus`).
+    private func eased(_ status: ClaudeStatus, at now: Date) -> ClaudeStatus {
+        let age = status.updatedAt.map { now.timeIntervalSince($0) } ?? 0
+        let stale: Bool
+        switch status.state {
+        case .needsQuestion: stale = age > Self.questionRevertSeconds && request(for: status) == nil
+        case .compacting: stale = age > Self.compactingRevertSeconds
+        case .failed: stale = status.errorType == "usage_limit" && (status.resetAt.map { $0 <= now } ?? false)
+        default: stale = false
+        }
+        guard stale else { return status }
+        var eased = status
+        eased.state = .idle
+        eased.action = nil
+        eased.target = nil
+        eased.requestId = nil
+        return eased
+    }
+
+    /// The request a session's hook is blocked on, if its file is still
+    /// there.
+    private func request(for status: ClaudeStatus) -> ClaudeRequest? {
+        guard let id = status.requestId else { return nil }
+        return claudeRequests.first { request in
+            request.id == id && (request.sessionId == nil || request.sessionId == status.sessionId)
+        }
+    }
+
+    /// Flips the Claude face to the list. Coming from a session picked from
+    /// it, that session stops holding the island: the list is the way back
+    /// up, and the next pick pins afresh.
+    func showSessionList() {
+        guard settings.effectiveMode.showsClaude else { return }
+        releasePin()
+        sessionListShown = true
+        updateReselectTimer(for: claudeState)
+        updateSessionHosts()
+    }
+
+    /// Back from the list to the face, on whichever session selection has.
+    func closeSessionList() {
+        guard sessionListShown else { return }
+        sessionListShown = false
+        updateReselectTimer(for: claudeState)
+    }
+
+    /// A row was clicked: that session takes the face, and everything on it
+    /// — the approval, the question, the reply — is for that session, until
+    /// another session newly needs you or you go back.
+    func pinSession(_ sessionId: String) {
+        guard claudeSessions.contains(where: { $0.sessionId == sessionId }),
+              let pin = ClaudeSelection.pin(sessionId, in: selectionPool(claudeStatuses))
+        else { return }
+        sessionPin = pin
+        sessionListShown = false
+        updateReselectTimer(for: claudeState)
+        reselectQuietly()
+    }
+
+    /// Drops the pin, if there is one, and puts selection's own pick back.
+    private func releasePin() {
+        guard sessionPin != nil else { return }
+        sessionPin = nil
+        reselectQuietly()
+    }
+
+    /// Re-runs selection on what the last reading saw, for a change the user
+    /// made rather than one a session made: no chime, and no panel popping
+    /// open for an alert they have already seen in the list.
+    private func reselectQuietly() {
+        applyClaudeStatus(selectStatus(from: claudeStatuses), announce: false)
+    }
+
+    /// The panel closed: the list goes, and so does the pin. The island
+    /// collapsed always means selection's own pick — a session picked once
+    /// and forgotten mustn't keep a more pressing one off it.
+    private func resetSessionList() {
+        if sessionListShown {
+            sessionListShown = false
+            updateReselectTimer(for: claudeState)
+        }
+        releasePin()
+    }
+
+    /// Resolves where each listed session is, while the list is up. Off the
+    /// main thread, once per pid; a session gone from the list takes its
+    /// host with it.
+    private func updateSessionHosts() {
+        let listed = Set(sessionList.map(\.id))
+        for id in sessionHosts.keys where !listed.contains(id) { sessionHosts[id] = nil }
+        for id in sessionHostPIDs.keys where !listed.contains(id) { sessionHostPIDs[id] = nil }
+        guard sessionListShown else { return }
+        for row in sessionList {
+            guard let pid = claudeSessions.first(where: { $0.sessionId == row.id })?.pid,
+                  sessionHostPIDs[row.id] != pid
+            else { continue }
+            sessionHostPIDs[row.id] = pid
+            sessionHosts[row.id] = nil
+            let id = row.id
+            Task.detached(priority: .utility) { [weak self] in
+                let host = ClaudeHostResolver.resolve(cliPID: pid)
+                await self?.receiveSessionHost(host, id: id, pid: pid)
+            }
+        }
+    }
+
+    private func receiveSessionHost(_ host: ClaudeSessionHost?, id: String, pid: pid_t) {
+        guard sessionHostPIDs[id] == pid else { return }
+        sessionHosts[id] = host?.app == nil ? nil : host
+    }
+
+    /// The app a row's Jump names, or nil when there's nowhere resolved.
+    func jumpTarget(for sessionId: String) -> String? {
+        sessionHosts[sessionId]?.app?.name
+    }
+
+    /// A row's Jump: that session's tab, resolved again at the click.
+    func jumpToSession(_ sessionId: String) {
+        guard let pid = claudeSessions.first(where: { $0.sessionId == sessionId })?.pid,
+              sessionHosts[sessionId] != nil
+        else { return }
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let host = ClaudeHostResolver.resolve(cliPID: pid)
+            await self?.receiveSessionHost(host, id: sessionId, pid: pid)
+            guard let host, host.app != nil else { return }
+            _ = await TerminalBridge.jump(to: host)
         }
     }
 
@@ -1395,6 +1589,11 @@ final class NotchViewModel: ObservableObject {
             publishKeepAwake()
             liveSessionStates = [:]
             otherSessions = ClaudeOtherSessions()
+            sessionList = []
+            sessionListShown = false
+            sessionPin = nil
+            sessionHosts = [:]
+            sessionHostPIDs = [:]
             // Drop any read still in flight.
             claudeReadGeneration += 1
             claudeReadWantsApply = false
@@ -1484,7 +1683,11 @@ final class NotchViewModel: ObservableObject {
 
     /// Applies a fresh status from the watcher. Keeps the `done` checkmark on
     /// screen briefly, then eases it back to `idle` so it behaves like a toast.
-    private func applyClaudeStatus(_ status: ClaudeStatus) {
+    ///
+    /// `announce` is false for a change the user made — picking a session from
+    /// the list, or going back. That rings nothing, and an alert it lands on
+    /// counts as already seen, so the panel doesn't pop open for it.
+    private func applyClaudeStatus(_ status: ClaudeStatus, announce: Bool = true) {
         guard status != lastAppliedStatus else { return }
         lastAppliedStatus = status
 
@@ -1501,12 +1704,12 @@ final class NotchViewModel: ObservableObject {
         // alert opens even if the previous one was dismissed — but a re-write of
         // the same state (e.g. a still-pending approval) stays dismissed.
         if status.state != claudeState {
-            alertDismissed = false
+            alertDismissed = !announce
             alertWasHovered = false
             // Re-arm the Claude-face auto-jump: a fresh interrupt gets to grab
             // the face once again, even if the user overrode the previous one.
             tabOverriddenDuringAlert = false
-            playSound(for: status.state, errorType: status.errorType)
+            if announce { playSound(for: status.state, errorType: status.errorType) }
         }
         withAnimation(.easeInOut(duration: 0.25)) {
             claudeState = status.state
@@ -1899,6 +2102,7 @@ final class NotchViewModel: ObservableObject {
     /// transition, in both directions.
     func islandHoverChanged(_ hovering: Bool) {
         hoveredIslands = max(0, hoveredIslands + (hovering ? 1 : -1))
+        if !hovering, hoveredIslands == 0 { resetSessionList() }
         // Opening the panel puts the scrubber on screen: bring the position
         // current now rather than at the next relaxed read. With nothing
         // routed, every player gets asked, so whichever has a track is found.
@@ -2472,7 +2676,8 @@ final class NotchViewModel: ObservableObject {
     /// a question whose descriptions had to shorten asks for the height it's
     /// drawn at rather than the cap with a gap above the buttons.
     func questionContentHeight(room: CGFloat) -> CGFloat? {
-        guard expandedPlace == .face(.claude), let request = pendingRequest, request.kind == .question else {
+        guard expandedPlace == .face(.claude), !sessionListShown,
+              let request = pendingRequest, request.kind == .question else {
             return nil
         }
         return request.questions.map {
@@ -3168,10 +3373,27 @@ extension NotchViewModel {
 /// face reads directly, with no watcher, hook or timer behind them, so a
 /// render shows exactly the state described and nothing eases it away.
 extension NotchViewModel {
+    /// Feeds one reading through the real selection path — the records, the
+    /// registry, the requests — as a background pass would land it, with no
+    /// watcher, registry scan or transcript behind it. For checking the
+    /// session list and the pin off-app; never starts the bridge.
+    func applyTestReading(statuses: [ClaudeStatus], sessions: [ClaudeSession], requests: [ClaudeRequest] = []) {
+        claudeRunning = true
+        claudeStatuses = statuses
+        claudeRequests = requests
+        claudeReadWantsApply = true
+        applyClaudeReading(ClaudeReading(sessions: sessions, tails: [:]), generation: claudeReadGeneration)
+    }
+
     func applyPreviewFixture(_ fixture: ClaudePanelFixture) {
         claudeState = fixture.state
         claudeProject = fixture.project
-        claudeSessionId = fixture.request?.sessionId ?? "preview-session"
+        claudeSessionId = fixture.sessionId ?? fixture.request?.sessionId ?? "preview-session"
+        claudeRequests = fixture.sessionRequests + (fixture.request.map { [$0] } ?? [])
+        sessionList = ClaudeSelection.ranked(fixture.sessions).map { ClaudeSessionRow($0, request: request(for: $0)) }
+        sessionListShown = fixture.listShown
+        sessionPin = fixture.pinned ? claudeSessionId.map { ClaudeSelection.Pin(sessionId: $0) } : nil
+        sessionHosts = fixture.sessionHosts
         claudeAction = fixture.action
         claudeTarget = fixture.target
         claudeErrorType = fixture.errorType
