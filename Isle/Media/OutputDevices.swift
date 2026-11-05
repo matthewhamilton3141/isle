@@ -74,11 +74,12 @@ struct OutputDevice: Identifiable, Equatable {
     /// Bluetooth device that names its model — AirPods and Beats, by product
     /// ID, or AirPods by name — which gets that model's own symbol, shared
     /// with the battery toast (see `DeviceSymbol`). Any other pair gets the
-    /// Bluetooth headphones glyph.
+    /// Bluetooth headphones glyph. A laptop's own speakers are the laptop.
+    @MainActor
     var symbolName: String {
         switch transport {
         case .builtIn:
-            return isHeadphoneJack ? "headphones" : "speaker.wave.2"
+            return isHeadphoneJack ? "headphones" : DeviceSymbol.builtInSpeakers
         case .bluetooth:
             return DeviceSymbol.accessory(name: name, vendorID: vendorID, productID: productID)
                 ?? "headphones"

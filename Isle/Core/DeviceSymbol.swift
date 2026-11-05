@@ -22,6 +22,7 @@
 //
 
 import AppKit
+import IOKit.ps
 
 enum DeviceSymbol {
     /// Apple's company identifier from the Bluetooth SIG. Apple and Beats
@@ -106,6 +107,28 @@ enum DeviceSymbol {
     }
 
     @MainActor private static var hasSeenNotch = false
+
+    /// This Mac's own speakers: the Mac itself when it's a laptop, the
+    /// plain speaker on a desktop, where there's no telling an iMac from a
+    /// Mac mini driving its own speaker.
+    @MainActor
+    static var builtInSpeakers: String {
+        isLaptop ? thisMac : "speaker.wave.2"
+    }
+
+    /// Whether this Mac has an internal battery — the same test the power
+    /// monitor makes before it reports anything — which, for a Mac, is
+    /// whether it's a laptop. Read once: it can't change while Isle runs.
+    static let isLaptop: Bool = {
+        guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let sources = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [CFTypeRef]
+        else { return false }
+        return sources.contains { source in
+            guard let description = IOPSGetPowerSourceDescription(blob, source)?
+                .takeUnretainedValue() as? [String: Any] else { return false }
+            return description[kIOPSTypeKey] as? String == kIOPSInternalBatteryType
+        }
+    }()
 
     // MARK: - Availability
 
