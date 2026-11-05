@@ -144,12 +144,14 @@ struct HomeGridView: View {
             return .init("Working", othersLine ?? vm.claudeActivity?.phrase ?? "Thinking")
         case .compacting:
             return .init("Compacting", othersLine ?? project)
+        // After a turn, what Claude said last (Milestone 15) says more than
+        // the project's name; another session waiting says more still.
         case .waitingInput:
-            return .init("Waiting for you", othersLine ?? project)
+            return .init("Waiting for you", othersLine ?? vm.claudeFinalLine ?? project)
         case .done:
-            return .init("Done", othersLine ?? project)
+            return .init("Done", othersLine ?? vm.claudeFinalLine ?? project)
         case .idle:
-            return .init("Ready", othersLine ?? project)
+            return .init("Ready", othersLine ?? vm.claudeFinalLine ?? project)
         case .failed:
             if vm.isUsageLimit {
                 let resets = vm.claudeResetAt.map {

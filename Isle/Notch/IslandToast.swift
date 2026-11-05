@@ -51,6 +51,10 @@ struct IslandToast: Equatable, Identifiable {
         case reminder(key: String)
         /// A drag carrying files is under way — see `IslandToast.dropNotice`.
         case dropNotice
+        /// A Claude session the island wasn't showing finished its turn —
+        /// see `ClaudeToast.swift`. Keyed by session, so two finishing
+        /// together each get their say.
+        case sessionDone(session: String)
     }
 
     /// Which Settings switch governs a message. The split is by what is being
@@ -65,6 +69,8 @@ struct IslandToast: Equatable, Identifiable {
         /// The drop notice. Never queued and never switched off: it's the
         /// user's own drag, shown exactly as long as it lasts.
         case fileDrag
+        /// A background Claude session finishing. On whenever the bridge is.
+        case claudeSessions
     }
 
     let id = UUID()

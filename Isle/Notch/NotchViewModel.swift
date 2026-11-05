@@ -125,6 +125,15 @@ final class NotchViewModel: ObservableObject {
     /// countdown; the display eases back to idle at this moment. Nil when unknown.
     @Published private(set) var claudeResetAt: Date?
 
+    /// The start of what Claude said at the end of its last turn, as the face
+    /// and the home tile show it (see `ClaudeDoneLine`). Read from the
+    /// session's record, which carries the message from `Stop` until the next
+    /// prompt — so it stays through the checkmark easing back to "Ready" and
+    /// the "waiting for your input" nudge, and goes the moment a new turn
+    /// starts. Nil when the turn ended with nothing to quote (only code, or
+    /// no text), and on a helper older than v10.
+    @Published private(set) var claudeFinalLine: String?
+
     /// When the last Claude status change arrived, for the "… ago" line in the
     /// Claude expanded view. `nil` when disconnected.
     @Published private(set) var claudeUpdatedAt: Date?
@@ -802,7 +811,9 @@ final class NotchViewModel: ObservableObject {
     /// exactly the SIGKILL residue that would otherwise pin the Mac awake
     /// forever. Holding a power assertion needs a process Isle can see.
     private func updateKeepAwake() {
+        let before = liveSessionStates
         liveSessionStates = readLiveSessionStates()
+        announceBackgroundFinishes(since: before)
         let wasHeld = keepAwake.isHeld
         keepAwake.setHeld(settings.keepAwakeWhileWorking && claudeRunning
                           && liveSessionStates.values.contains(.working))
@@ -840,6 +851,21 @@ final class NotchViewModel: ObservableObject {
                 : status.state
         }
         return states
+    }
+
+    /// A toast for each session the island isn't showing that has just
+    /// finished a turn — from mid-turn to `done`, as its own `Stop` wrote it,
+    /// never inferred. The island's own session says "Done" itself, and a
+    /// turn that ended any other way (an interrupt reconciled to idle, an
+    /// error) isn't a finish. Only between two readings that both saw the
+    /// session, so nothing is announced at launch.
+    private func announceBackgroundFinishes(since before: [String: ClaudeCodeState]) {
+        let midTurn: Set<ClaudeCodeState> = [.working, .compacting, .needsApproval, .needsQuestion]
+        for (id, state) in liveSessionStates where state == .done && id != claudeSessionId {
+            guard let previous = before[id], midTurn.contains(previous) else { continue }
+            let project = claudeStatuses.first { $0.sessionId == id }?.project
+            enqueueToast(.sessionDone(sessionId: id, project: project.flatMap { $0.isEmpty ? nil : $0 }))
+        }
     }
 
     /// The last `readLiveSessionStates`. Re-read with the keep-awake decision
@@ -1276,6 +1302,7 @@ final class NotchViewModel: ObservableObject {
         case .calendar: return settings.showCalendarEvents
         case .reminders: return settings.showReminders
         case .fileDrag: return true
+        case .claudeSessions: return claudeRunning
         }
     }
 
@@ -1398,6 +1425,7 @@ final class NotchViewModel: ObservableObject {
             claudeTarget = nil
             claudeErrorType = nil
             claudeResetAt = nil
+            claudeFinalLine = nil
             claudeUpdatedAt = nil
         }
         updateAnsweringMarker()
@@ -1499,6 +1527,8 @@ final class NotchViewModel: ObservableObject {
         claudeErrorType = status.errorType
         claudeToolActive = status.toolActive
         claudeResetAt = status.resetAt
+        let finalLine = ClaudeDoneLine.line(from: status.lastMessage)
+        if claudeFinalLine != finalLine { claudeFinalLine = finalLine }
         claudeUpdatedAt = status.state == .disconnected ? nil : Date()
         claudeRequestId = status.requestId
         refreshPendingRequest()
@@ -3154,8 +3184,11 @@ extension NotchViewModel {
         sessionHost = fixture.host
         composing = fixture.composing
         replyDelivery = fixture.delivery
-        // In the face, not on the home grid, whatever the suite last had.
-        isHome = false
+        claudeFinalLine = ClaudeDoneLine.line(from: fixture.lastMessage)
+        if let toast = fixture.toast { pinPreviewToast(toast) }
+        // In the face, not on the home grid, whatever the suite last had —
+        // unless the fixture is the grid's.
+        isHome = fixture.home
         if let id = claudeSessionId { replyDrafts[id] = fixture.replyDraft.isEmpty ? nil : fixture.replyDraft }
         answerDraft = fixture.answerDraft
         denialDraft = fixture.denialDraft

@@ -138,6 +138,19 @@ struct ClaudeExpandedView: View {
                     .minimumScaleFactor(0.8)
                     .truncationMode(.tail)
                     .frame(height: L.detailLine, alignment: .leading)
+            } else if let said = claudeSaid {
+                // Claude's own words: up to two lines, cut at the end of a
+                // sentence where one falls (see `ClaudeDoneLine`), else at
+                // the tail. Never shrunk — it's prose, not a filename.
+                Text(said)
+                    .font(L.detailFont)
+                    .foregroundStyle(.white.opacity(0.72))
+                    .lineLimit(L.saidLines)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.trailing, switcherClearance)
+                    .contentTransition(.opacity)
             } else {
                 Text(detail)
                     .font(L.detailFont)
@@ -776,6 +789,16 @@ struct ClaudeExpandedView: View {
         case .done: return "Done"
         case .failed: return "Error"
         case .compacting: return "Compacting"
+        }
+    }
+
+    /// What Claude said last, for the states that follow a finished turn:
+    /// Done, the "Ready" it eases back to, and "Waiting for you". In place of
+    /// the stock line, and only when there are words to quote.
+    private var claudeSaid: String? {
+        switch state {
+        case .done, .idle, .waitingInput: return viewModel.claudeFinalLine
+        default: return nil
         }
     }
 

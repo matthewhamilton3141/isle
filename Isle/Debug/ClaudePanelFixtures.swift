@@ -41,6 +41,14 @@ struct ClaudePanelFixture: Identifiable {
     var answerDraft = ""
     var denialDraft = ""
     var delivery: ReplyDelivery = .none
+    /// The record's `last_message` (Milestone 15): the start of Claude's
+    /// final message, as the helper stores it.
+    var lastMessage: String? = nil
+    /// Drawn on the home grid (in `.both`) rather than in the face.
+    var home = false
+    /// A toast pinned on the collapsed island; the render harness draws a
+    /// fixture carrying one collapsed.
+    var toast: IslandToast? = nil
 
     var id: String { name }
 
@@ -343,7 +351,46 @@ extension ClaudePanelFixture {
             .init(name: "both_approval", mode: .both, state: .needsApproval, action: "Bash", target: "npm",
                   request: approval("Bash", "npm run lint -- --fix")),
             .init(name: "both_question_4", mode: .both, state: .needsQuestion, request: question([fourOptions])),
-        ] + approvalKinds + descriptionModes + worstCases + liveExtras + jumpAndReply
+        ] + approvalKinds + descriptionModes + worstCases + liveExtras + jumpAndReply + doneSays
+    }
+
+    // MARK: Done says what happened (Milestone 15)
+
+    /// Final messages as Claude Code 2.1.318 sent them in `Stop`'s
+    /// `last_assistant_message` (haiku, scratch project), cut to the helper's
+    /// 300 characters where they ran longer.
+    static let saidShort = #"The first word in notes.txt is "Pelican", from the line "Pelican crossing notes"."#
+    static let saidLong = "Sunlight looks white, but it is a mixture of every color in the visible spectrum, and each color corresponds to a different wavelength of electromagnetic radiation. Red light has wavelengths near 700 nanometers, while blue light sits closer to 450 nanometers. When sunlight enters Earth's atmosphere,"
+    static let saidMarkdown = "# Reversing a List in Python\n\nPython offers a few common ways to reverse a list. The most idiomatic is **slicing with a step of -1**, which returns a new list and leaves the original unchanged.\n\n- `my_list[::-1]`: returns a new reversed copy\n- `my_list.reverse()`: reverses the list **in place** and "
+    static let saidCodeOnly = "```bash\necho hello\n```"
+    static let saidList = "Here's what changed:\n\n- Bumped `CFBundleVersion` to 45 in **Isle-Info.plist**\n- Rebuilt the DMG"
+    static let saidHostile = "He said \"hi\" \\ then left. Tab:\tend. **Bold** and `code`. Émoji 🎉 ok.\nSecond line, 日本語."
+
+    static var doneSays: [ClaudePanelFixture] {
+        [
+            .init(name: "m15_done_short", state: .done, lastMessage: saidShort),
+            .init(name: "m15_done_long", state: .done, lastMessage: saidLong),
+            .init(name: "m15_done_markdown", state: .done, lastMessage: saidMarkdown),
+            .init(name: "m15_done_codeonly", state: .done, lastMessage: saidCodeOnly),
+            .init(name: "m15_done_list", state: .done, lastMessage: saidList),
+            .init(name: "m15_done_hostile", state: .done, lastMessage: saidHostile),
+            .init(name: "m15_idle_after_done", state: .idle, lastMessage: saidShort),
+            .init(name: "m15_waiting_long", state: .waitingInput, lastMessage: saidLong),
+            .init(name: "m15_done_terminal_reply", state: .done, host: terminalHost, lastMessage: saidLong),
+            .init(name: "m15_done_ghostty", state: .done, host: host("Ghostty", "com.mitchellh.ghostty"),
+                  lastMessage: saidMarkdown),
+            .init(name: "m15_done_others_keepawake", state: .done, keepAwake: true,
+                  others: .init(working: 1, needYou: 1), host: terminalHost, lastMessage: saidLong),
+            .init(name: "m15_both_done_long", mode: .both, state: .done, host: terminalHost, lastMessage: saidLong),
+            .init(name: "m15_both_done_codeonly", mode: .both, state: .done, lastMessage: saidCodeOnly),
+            .init(name: "m15_home_done", mode: .both, state: .done, lastMessage: saidShort, home: true),
+            .init(name: "m15_home_done_long", mode: .both, state: .done, lastMessage: saidLong, home: true),
+            .init(name: "m15_home_done_codeonly", mode: .both, state: .done, lastMessage: saidCodeOnly, home: true),
+            .init(name: "m15_toast_background", state: .working, action: "Bash", target: "xcodebuild",
+                  toast: .sessionDone(sessionId: "other", project: "isle-website")),
+            .init(name: "m15_toast_background_long", state: .working,
+                  toast: .sessionDone(sessionId: "other", project: "an-extremely-long-project-directory-name")),
+        ]
     }
 
     // MARK: Jump and reply (Milestone 11)
