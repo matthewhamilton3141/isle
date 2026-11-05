@@ -13,10 +13,10 @@
 //  doing, and an empty action row; an approval (Milestone 7) puts the exact
 //  command in the body and Approve / Deny / Terminal in the row; a question
 //  puts the question in the title and its options in the body, in a panel
-//  grown to seat them — the one face where the glyph steps back to a mark in
-//  its corner so the options can have the full width. Every control here is
-//  a real `Button`, so its tap is
-//  consumed and never falls through to the card's dismiss gesture.
+//  grown to seat them — the one face without the glyph, so the question and
+//  its options have the full width. Every control here is a real `Button`,
+//  so its tap is consumed and never falls through to the card's dismiss
+//  gesture.
 //
 
 import SwiftUI
@@ -46,7 +46,12 @@ struct ClaudeExpandedView: View {
     var body: some View {
         let isQuestion = asking != nil
         return ZStack(alignment: .topLeading) {
-            glyph(compact: isQuestion)
+            // The question face has no glyph: its eyebrow already says it's a
+            // question, and the options want the face's whole width.
+            if !isQuestion {
+                glyph
+                    .transition(.opacity.combined(with: .scale(scale: 0.6, anchor: .topLeading)))
+            }
 
             Group {
                 if let asking {
@@ -76,18 +81,12 @@ struct ClaudeExpandedView: View {
     /// the housing band: the glyph sits left of the camera cutout, on
     /// ordinary screen, just like the album.
     ///
-    /// On the question face it steps back to a mark in the same top-left
-    /// corner (`compact`), so the options can run the face's width under it
-    /// rather than leave a tall empty column below a big glyph. Scaled, not
-    /// re-framed: the dot matrix rebuilds its animation for a new size, while
-    /// a scale is one transform Core Animation interpolates on the panel's
-    /// own spring as the panel grows or shrinks around it.
-    private func glyph(compact: Bool) -> some View {
+    /// Absent on the question face: it goes with the same spring the panel
+    /// grows on, and comes back when the question leaves.
+    private var glyph: some View {
         ClaudeStatusGlyphView(state: state, kind: viewModel.claudeMarkerKind, palette: palette)
             .frame(width: L.glyphSize, height: L.glyphSize)
-            .scaleEffect(compact ? L.compactGlyphSize / L.glyphSize : 1, anchor: .topLeading)
             .offset(y: -L.glyphRaise)
-            .animation(compact ? .notchOpen : .notchClose, value: compact)
     }
 
     // MARK: - Status face
@@ -291,9 +290,8 @@ struct ClaudeExpandedView: View {
     /// out to the terminal. The panel has grown to fit — sized from the same
     /// `ClaudePanelLayout.fit` these rows are drawn from.
     ///
-    /// The glyph is a mark in the corner here (see `glyph(compact:)`); the
-    /// eyebrow and question sit beside it and the options run the face's
-    /// whole width beneath. Every option is always on screen: where the
+    /// No glyph here: the eyebrow, question and options all run the face's
+    /// whole width. Every option is always on screen: where the
     /// capped panel can't hold the descriptions as the setting draws them,
     /// they shorten instead (see `fit`), and the action row below is never
     /// pushed off.
@@ -335,8 +333,6 @@ struct ClaudeExpandedView: View {
                         // Level with the waveform at the top-right; clear it.
                         .padding(.trailing, L.waveformClearance)
                 }
-                // Beside the glyph's mark.
-                .padding(.leading, L.questionLeading)
 
                 Spacer().frame(height: L.questionGap)
 

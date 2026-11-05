@@ -21,9 +21,8 @@
 //  length of what's above them.
 //
 //  The question face is the one that grows, and the one that rearranges: the
-//  glyph steps back to a mark in the top-left corner, the eyebrow and the
-//  question sit beside it, and the options take the face's whole width under
-//  both. The panel is sized from these same numbers before it's drawn
+//  glyph leaves, and the eyebrow, the question and the options take the
+//  face's whole width. The panel is sized from these same numbers before it's drawn
 //  (`questionContentHeight`, read by `NotchMetrics.questionPanelHeight`), and
 //  the view lays the rows out from the same `OptionsFit`, so the two can't
 //  disagree.
@@ -56,16 +55,6 @@ enum ClaudePanelLayout {
     /// The glyph and the column together: the whole face. The question face
     /// spends all of it on the options.
     static let faceWidth = glyphSize + glyphGap + columnWidth
-
-    /// The glyph on the question face: the same marker, scaled down into its
-    /// own top-left corner, so its bottom edge lines up with the question's
-    /// first line. It keeps its state and colour; it just stops taking a
-    /// third of the width from the options.
-    static let compactGlyphSize = glyphRaise + eyebrowHeight + eyebrowGap + questionLine
-    static let compactGlyphGap: CGFloat = 10
-
-    /// Where the question face's eyebrow and question start: past the mark.
-    static let questionLeading = compactGlyphSize + compactGlyphGap
 
     /// Kept clear at the column's right edge by rows level with the waveform
     /// pinned at the panel's top-right (the eyebrow and the title).
@@ -183,16 +172,15 @@ enum ClaudePanelLayout {
 
     // MARK: - Question face
 
-    /// One line or two: what the question needs beside the glyph's mark,
-    /// short of the waveform.
+    /// One line or two: what the question needs across the face, short of
+    /// the waveform.
     static func naturalQuestionLines(_ question: ClaudeQuestion) -> Int {
         min(2, lineCount(question.question, font: questionFont, size: questionSize, line: questionLine,
-                         width: faceWidth - questionLeading - waveformClearance))
+                         width: faceWidth - waveformClearance))
     }
 
     /// Everything on the question face but the options, for a question of
-    /// `questionLines` lines. The mark beside the eyebrow and question is
-    /// never the taller of the two (see `compactGlyphSize`).
+    /// `questionLines` lines.
     static func questionChromeHeight(questionLines: Int) -> CGFloat {
         eyebrowHeight + eyebrowGap + CGFloat(questionLines) * questionLine + questionGap
             + actionGap + actionHeight + bottomInset
