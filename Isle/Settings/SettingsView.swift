@@ -333,7 +333,7 @@ struct SettingsView: View {
         Section("Calendar & Reminders") {
             VStack(alignment: .leading, spacing: 4) {
                 Toggle("Show upcoming events", isOn: $settings.showCalendarEvents)
-                Text("Today's events are listed on the Agenda face of the expanded notch, and one appears briefly in the island shortly before it starts, in its calendar's colour. Invitations you've declined are left out.")
+                Text("Today's events are listed on the Agenda face of the expanded notch, with a timeline and the week a click away, and one appears briefly in the island shortly before it starts, in its calendar's colour. A Zoom, Meet, Teams, FaceTime or Webex link in an event gets a Join button. Invitations you've declined are left out.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -356,7 +356,7 @@ struct SettingsView: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Toggle("Show reminders", isOn: $settings.showReminders)
-                Text("Reminders due today are listed on the Agenda face, and one appears in the island as it comes due. A reminder with a date but no time is listed under Today but never announced — the hour Reminders picks for those is its own setting.")
+                Text("Reminders due today are listed on the Agenda face, where clicking one's circle completes it (with a few seconds to undo), and one appears in the island as it comes due. A reminder with a date but no time is listed under Today but never announced — the hour Reminders picks for those is its own setting.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -376,7 +376,7 @@ struct SettingsView: View {
                          enabled: $settings.agendaSoundEnabled, sound: $settings.agendaSound)
             }
 
-            Text("With either on, hovering the notch gains an Agenda face. Switching both off removes it and stops Isle reading. Calendar and Reminders keep their own alerts either way; Isle adds a glance, not a replacement.")
+            Text("With either on, hovering the notch gains an Agenda face. Its field adds an event or a reminder from a line like \u{201C}Lunch with Sam tomorrow 1pm\u{201D}: Isle shows what it read and where it will go, and saves only when you click Add. Switching both off removes the face and stops Isle reading. Calendar and Reminders keep their own alerts either way; Isle adds a glance, not a replacement.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

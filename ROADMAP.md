@@ -26,7 +26,7 @@ ordered so nothing downstream is blocked. Milestones list **Goal**, **Scope**,
 | Audio-reactive waveform | Shipped; source preference pending (M5) | `Isle/Media/SystemAudioLevels.swift` |
 | Display selection (multi-display) | Built-in display only (M8) | `NotchMetrics.preferredScreen()` |
 | Power / charging activities | Shipped (M9) | `Isle/Power/` |
-| Calendar events and reminders (Agenda face + ambient toasts) | Shipped | `Isle/Agenda/` |
+| Calendar events and reminders (Agenda face + ambient toasts) | Shipped; Join, week, timeline, ticks and quick add built (M12) | `Isle/Agenda/` |
 | Claude status glyph (breathing + checkmark) | Built, wired (M3) | `Isle/Claude/` |
 | Claude hook bridge (`isle-cli` + `settings.json`) | Watched (M3); per-session files, v7 | `Isle/Claude/ClaudeStatusWatcher.swift` |
 | Claude session registry (hook-free liveness) | Shipped | `Isle/Claude/ClaudeSessionRegistry.swift` |
@@ -1131,6 +1131,61 @@ capsule clean.
   focus does.
 - **Focusing a kept draft selects it all** (the AppKit default), so typing
   replaces it.
+
+## Milestone 12 — A bigger calendar: Join, the week, a timeline, ticks and quick add
+
+**Status:** Built on `feature/calendar-plus`, rendered, awaiting in-app test.
+
+### What it is
+
+- **Taller agenda face.** Every face may ask for its own content height
+  (`NotchViewModel.faceContentHeight`), capped by one shared
+  `NotchMetrics.panelMaxHeight` (230) that the window is already sized
+  for. The question face is now one case of it; the agenda is another
+  (`AgendaLayout.contentHeight` = 144 → a 186pt panel under a 32pt band).
+  A new face that grows (the shelf, next) is one more case, no new path.
+- **Three views, Day the default.** Day (the list, five lines), Timeline,
+  Week — a switcher under the date card. Opens on today's list every time.
+- **Week strip, not month grid.** Both were rendered; the strip won because
+  a picked day's list fits under it, where the month grid fills the column
+  and a pick has to go back to Day. Paged by chevrons, last week to four
+  ahead — the range `AgendaMonitor.dayInterval` reads.
+- **Timeline** from an hour ago to the end of the last event (another day:
+  9–6 widened to fit), six hours minimum, blocks in lanes per run of
+  overlaps, all-day events as chips, one line of free/busy. The now line
+  steps with `TimelineView(.everyMinute)` — on the minute, never per frame.
+- **Join** (`MeetingLink`): exact hosts only — Zoom (+ company subdomains),
+  ZoomGov, Meet, Teams, FaceTime, Webex (+ subdomains), GoTo, Whereby,
+  Jitsi, Chime — with a meeting-shaped path; URL field, then location,
+  then notes; two different meetings in one field is no Join. A pill when
+  the call is within `max(10, lead)` minutes or under way, a quiet camera
+  before. On the home tile too. The toast wears `video.fill` for a call;
+  it isn't clickable, so it has no button.
+- **Ticks** save at once (`EKReminder.isCompleted`, `commit: true`); the
+  line stays ticked with Undo for five seconds. Repeating reminders get no
+  Undo: EventKit moves them on, and unticking wouldn't move them back.
+- **Quick add** (`QuickAddParser`, `NSDataDetector` plus "in N min", "for N
+  minutes", "remind me"): a clock time makes an event in the default
+  calendar; a day only, no date, or "remind me" a reminder. Return
+  previews (kind · title · when · calendar); only Add, or Return again on
+  the same line, saves. Refuses two dates, "at 9" with no day, "the 1st",
+  and times already past. Keys through `ComposeKind.quickAdd`, the same
+  composing path as Reply.
+- **Access**: the full access the agenda already asks for covers writing.
+  A quick add of a kind never asked for (Reminders while its switch is
+  off) asks at Add, the first write.
+
+### Decisions to confirm
+
+- The waveform overlay is off the agenda face now (its week strip and
+  timeline run to the column's corner), as it is off the shelf.
+- Opening the panel while a call's toast is up doesn't jump to the agenda;
+  Join is on the home tile and the face. A takeover like Claude's is
+  possible but would be the first non-Claude one.
+- "Call mom in 30 min" is an event (it has a time), per the rule; "remind
+  me to…" is the way to a reminder.
+- Parts of the day ("morning", "tonight", "lunch") make a dated reminder,
+  not an event at the hour the detector picks.
 
 ## Milestone 8 — Multi-Display  ✅
 
