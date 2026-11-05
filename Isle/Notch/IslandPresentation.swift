@@ -59,8 +59,48 @@ final class IslandPresentation: ObservableObject {
     /// happens on one screen; the face it lands on is the shared choice.
     let pager = FacePager()
 
+    /// A file drag is over this island, so it's open on the drop face. Set
+    /// only through `beginDrop` / `endDrop`, from the window's own dragging
+    /// callbacks (see `NotchWindowController`'s drop handling).
+    @Published private(set) var isDropTarget = false
+
+    /// The drop face's target under the pointer, lit. Nil between targets.
+    @Published private(set) var litDropTarget: DropTarget?
+
+    /// Where the drop face drew each target, in the hosting view's top-left
+    /// space, as the face reports it. Not published: only the drag reads it.
+    var dropTargetFrames: [DropTarget: CGRect] = [:]
+
     init(content: NotchViewModel) {
         self.content = content
+    }
+
+    /// A file drag reached this island: open it on the drop face. Opens past
+    /// the collapse lock, unlike a hover — a drag arriving is deliberate, and
+    /// it can't wait for the close spring to settle the way a pointer can
+    /// simply move again.
+    func beginDrop() {
+        guard !isDropTarget else { return }
+        isDropTarget = true
+        if !isHovering { isHovering = true }
+    }
+
+    /// Lights the target under `point` (hosting view, top-left space), if
+    /// releasing there would do something.
+    func lightDropTarget(at point: CGPoint, where performable: (DropTarget) -> Bool) {
+        let hit = dropTargetFrames.first { $0.value.contains(point) && performable($0.key) }?.key
+        if litDropTarget != hit { litDropTarget = hit }
+    }
+
+    /// The drag left, dropped, or ended. `collapse` when it left: the panel
+    /// goes with it, as a pointer leaving would take it. After a drop the
+    /// pointer is still on the panel, so it stays open as a hover and the
+    /// next real move decides.
+    func endDrop(collapse: Bool) {
+        guard isDropTarget else { return }
+        isDropTarget = false
+        litDropTarget = nil
+        if collapse { setHovering(false) }
     }
 
     /// A scroll event reached this island's window — which happens only with
@@ -69,7 +109,7 @@ final class IslandPresentation: ObservableObject {
     /// the views underneath shouldn't also see. A collapsed island pages
     /// nothing.
     func handleScroll(_ event: NSEvent) -> Bool {
-        guard state.isExpanded else { return false }
+        guard state.isExpanded, !isDropTarget else { return false }
         return pager.handle(event, content: content)
     }
 

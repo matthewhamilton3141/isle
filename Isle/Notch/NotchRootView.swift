@@ -155,7 +155,7 @@ struct NotchRootView: View {
             // below it. Inside the ZStack so it clips to the notch outline;
             // opacity-gated so it fades in with the rest of the expanded
             // content instead of popping mid-animation.
-            if state.isExpanded, viewModel.showsHome, let face = viewModel.expandedPlace.face {
+            if state.isExpanded, viewModel.showsHome, !island.isDropTarget, let face = viewModel.expandedPlace.face {
                 NotchCrumb(face: face, attention: viewModel.needsYouElsewhere) {
                     viewModel.selectHome()
                 }

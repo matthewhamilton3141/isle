@@ -75,6 +75,10 @@ final class NotchWindowController {
     private let viewModel = NotchViewModel()
     private let settings = AppSettings.shared
 
+    /// Whether a file drag is under way, read off the same global monitor
+    /// as the hover — see `FileDrop.swift`.
+    private let fileDrag = FileDragWatch()
+
     /// Between `show()` and `hide()`. Screen and settings changes only re-place
     /// panels while this is true.
     private var isRunning = false
@@ -88,6 +92,9 @@ final class NotchWindowController {
     init() {
         observeScreenChanges()
         observeDisplayScope()
+        fileDrag.onChange = { [weak self] inFlight in
+            self?.fileDragChanged(inFlight)
+        }
     }
 
     deinit {
@@ -119,6 +126,7 @@ final class NotchWindowController {
     func hide() {
         isRunning = false
         for island in islands.values {
+            island.presentation.endDrop(collapse: false)
             island.presentation.setHovering(false)
             island.window.orderOut(nil)
         }
@@ -179,6 +187,7 @@ final class NotchWindowController {
         }
 
         for (id, island) in islands where !wanted.contains(id) {
+            island.presentation.endDrop(collapse: false)
             island.presentation.setHovering(false)
             island.window.orderOut(nil)
             islands.removeValue(forKey: id)
@@ -194,6 +203,9 @@ final class NotchWindowController {
         window.scrollInterceptor = { [weak presentation] event in
             presentation?.handleScroll(event) ?? false
         }
+        // Files dragged onto the island open the drop face.
+        window.registerForDraggedTypes([.fileURL])
+        window.dropHandler = self
         let hosting = NotchHostingView(
             rootView: NotchRootView(viewModel: viewModel, island: presentation) { [weak self] rect in
                 self?.updateActiveRect(rect, on: id)
@@ -285,7 +297,14 @@ final class NotchWindowController {
     /// dead area around each notch, open a panel when the pointer arrives on
     /// its island, and collapse it once the pointer leaves for good. Isle never
     /// becomes the active app, so a global monitor (not a local one) is what
-    /// sees these moves. `.mouseMoved` monitoring needs no special permission.
+    /// sees these moves.
+    ///
+    /// The left button's down, dragged and up events come through the same
+    /// monitor, for one thing only: telling a file drag under way, which
+    /// sends no `mouseMoved` at all (see `FileDragWatch`). None of these
+    /// needs a permission — a global monitor is gated behind Accessibility
+    /// for key events only, and mouse events are delivered as they are for
+    /// `.mouseMoved`.
     ///
     /// One monitor covers every island: the pointer is only ever in one place,
     /// so each move is routed to the island whose screen it is on and every
@@ -293,10 +312,19 @@ final class NotchWindowController {
     private func observePointer() {
         guard pointerMonitor == nil else { return }
         pointerMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.mouseMoved]
+            matching: [.mouseMoved, .leftMouseDown, .leftMouseDragged, .leftMouseUp]
         ) { [weak self] event in
             MainActor.assumeIsolated {
-                self?.handlePointerMove(event)
+                guard let self else { return }
+                self.fileDrag.handle(event)
+                switch event.type {
+                case .mouseMoved:
+                    self.handlePointerMove(event)
+                case .leftMouseDragged:
+                    self.handleDragMove()
+                default:
+                    break
+                }
             }
         }
     }
@@ -310,6 +338,11 @@ final class NotchWindowController {
     /// points doesn't shut it. The gap between the two is the hysteresis: easy
     /// to commit to, hard to lose by accident.
     private func handlePointerMove(_ event: NSEvent) {
+        // A move with no button held: whatever drag there was is over. The
+        // window's own drag callbacks end the drop face on the way out; this
+        // is the backstop for one that never got them.
+        endDropTargets()
+
         // Every move: reconcile click-through on every island, so the window
         // server only routes clicks to Isle when the pointer is over a drawn
         // notch and passes everything else to what's underneath.
@@ -451,6 +484,53 @@ final class NotchWindowController {
         sweepRecheckWork = nil
     }
 
+    // MARK: - File drags
+
+    /// A file drag moved. The pointer is held down, so `mouseMoved` is silent
+    /// and click-through would stay as the drag found it — leaving every
+    /// island transparent to the drag it's meant to receive. Reconciled here
+    /// instead, only while the drag carries files.
+    private func handleDragMove() {
+        guard fileDrag.isDraggingFiles else { return }
+        for island in islands.values {
+            updateClickThrough(island)
+        }
+    }
+
+    private func fileDragChanged(_ inFlight: Bool) {
+        viewModel.fileDragChanged(inFlight)
+        // Back to the plain hot rect once it's over; the drag's own grown
+        // one from its first event.
+        for island in islands.values {
+            updateClickThrough(island)
+        }
+    }
+
+    /// Ends every drop face without collapsing, and forgets the payload.
+    private func endDropTargets() {
+        guard viewModel.dropPayload != nil || islands.values.contains(where: { $0.presentation.isDropTarget }) else {
+            return
+        }
+        for island in islands.values {
+            island.presentation.endDrop(collapse: false)
+        }
+        viewModel.setDropPayload(nil)
+    }
+
+    private func island(for window: NotchWindow) -> Island? {
+        islands.values.first { $0.window === window }
+    }
+
+    /// Where a file drag counts as over an island. Collapsed, the island and
+    /// the same lip below it a hover opens from; open on the drop face, the
+    /// panel and the same pad a hover stays open in. Nothing here looks at
+    /// speed: a drag is slow and deliberate, and nothing sweeps past with
+    /// files in hand on the way to the menu bar.
+    private func dropZone(for island: Island) -> CGRect? {
+        guard let zones = hoverZones(for: island) else { return nil }
+        return island.presentation.isDropTarget ? zones.stayOpen : zones.open
+    }
+
     /// Makes a panel transparent to the mouse everywhere except its drawn
     /// notch. Returning `nil` from the hosting view's `hitTest` is not enough:
     /// the window server has already chosen this panel as the click target
@@ -479,7 +559,12 @@ final class NotchWindowController {
 
         // Keep clicks routed to Isle a hair before the pointer reaches the
         // visible notch (the pad), so the first hover-in is never missed.
-        let hot = screenRect.insetBy(dx: -6, dy: -6)
+        var hot = screenRect.insetBy(dx: -6, dy: -6)
+        // A file drag reaches the window over the whole of the drop zone,
+        // or it never sees the lip below the island.
+        if fileDrag.isDraggingFiles, viewModel.acceptsDrops, let zone = dropZone(for: island) {
+            hot = hot.union(zone)
+        }
         let ignores = !hot.contains(NSEvent.mouseLocation)
         // Only on a change. This runs on every pointer move on every island,
         // and the setter is a window-server round trip whether or not the
@@ -533,5 +618,88 @@ final class NotchWindowController {
                 self?.syncIslands()
             }
             .store(in: &cancellables)
+    }
+}
+
+// MARK: - Drop destination
+
+extension NotchWindowController: NotchDropHandler {
+    /// Every `draggingEntered` and `draggingUpdated`. Opens the drop face as
+    /// the drag reaches the island, lights the target under the pointer, and
+    /// lets the face go if the drag strays past the panel's pad. Says a drop
+    /// is possible only over a target that would do something, so letting
+    /// go anywhere else hands the files straight back.
+    func dragUpdated(_ info: any NSDraggingInfo, in window: NotchWindow) -> NSDragOperation {
+        guard let island = island(for: window) else { return [] }
+        let presentation = island.presentation
+
+        // A drag that started in Isle — an item leaving the shelf — isn't a
+        // drop onto it. And nothing drops over a live alert.
+        guard info.draggingSource == nil, viewModel.acceptsDrops else {
+            presentation.endDrop(collapse: false)
+            return []
+        }
+        guard let zone = dropZone(for: island) else { return [] }
+        let pointer = window.convertPoint(toScreen: info.draggingLocation)
+
+        if !presentation.isDropTarget {
+            guard zone.contains(pointer),
+                  let urls = DropPayload.fileURLs(on: info.draggingPasteboard)
+            else { return [] }
+            viewModel.setDropPayload(DropPayload(urls: urls))
+            for other in islands.values where other !== island {
+                other.presentation.endDrop(collapse: true)
+            }
+            cancelSweepRecheck()
+            presentation.beginDrop()
+            updateClickThrough(island)
+        } else if !zone.contains(pointer) {
+            presentation.endDrop(collapse: true)
+            updateClickThrough(island)
+            return []
+        }
+
+        guard let payload = viewModel.dropPayload else { return [] }
+        presentation.lightDropTarget(at: island.hosting.topLeftPoint(fromWindow: info.draggingLocation)) {
+            self.viewModel.canPerform($0, with: payload)
+        }
+        guard presentation.litDropTarget != nil else { return [] }
+        // Nothing is moved or copied: the target acts on the files where
+        // they are. `.generic` says so, where the source allows it.
+        return info.draggingSourceOperationMask.contains(.generic) ? .generic : .copy
+    }
+
+    func dragExited(_ window: NotchWindow) {
+        guard let island = island(for: window), island.presentation.isDropTarget else { return }
+        island.presentation.endDrop(collapse: true)
+        if !islands.values.contains(where: { $0.presentation.isDropTarget }) {
+            viewModel.setDropPayload(nil)
+        }
+    }
+
+    func performDrop(_ info: any NSDraggingInfo, in window: NotchWindow) -> Bool {
+        guard let island = island(for: window) else { return false }
+        let target = island.presentation.litDropTarget
+        let payload = viewModel.dropPayload
+        island.presentation.endDrop(collapse: false)
+        viewModel.setDropPayload(nil)
+        fileDrag.dragConcluded()
+        guard island.presentation.state.isExpanded, let target, let payload,
+              viewModel.canPerform(target, with: payload)
+        else { return false }
+        // After AppKit is done with the drop: Terminal and the share sheet
+        // shouldn't come up from inside its callback.
+        DispatchQueue.main.async { [viewModel] in
+            viewModel.performDrop(target, with: payload)
+        }
+        return true
+    }
+
+    func dragEnded(_ window: NotchWindow) {
+        guard let island = island(for: window) else { return }
+        island.presentation.endDrop(collapse: false)
+        if !islands.values.contains(where: { $0.presentation.isDropTarget }) {
+            viewModel.setDropPayload(nil)
+        }
     }
 }
