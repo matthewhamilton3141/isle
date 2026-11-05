@@ -58,6 +58,11 @@ struct NotchMetrics {
     /// `maximumFrame`), since it is never resized while drawing.
     static let questionPanelMaxHeight: CGFloat = 230
 
+    /// How far either side of the open panel the pointer may stray before it
+    /// closes — the side half of `NotchWindowController.stayOpenPad`. Here
+    /// because the window has to reach it too (see `maximumFrame`).
+    static let stayOpenSidePad: CGFloat = 16
+
     /// Panel height for a question face whose content wants `contentHeight`
     /// (see `ClaudePanelLayout.questionContentHeight`), below a camera housing
     /// `bandHeight` tall. Never shorter than the standard panel, never taller
@@ -181,6 +186,13 @@ struct NotchMetrics {
             width: expanded.width,
             height: Self.questionPanelMaxHeight
         )
-        return expanded.union(collapsed).union(question)
+        // And the stay-open pad either side of the open panel. A hover reads
+        // the pad off the global pointer monitor and doesn't need the window
+        // there, but a file drag over the drop face does: AppKit hands a drag
+        // to the window only inside its frame, so a pad outside it is a drag
+        // leaving, and the drop face shut the moment a drag overshot the
+        // panel's edge. Transparent and click-through like the rest.
+        let pad = expanded.insetBy(dx: -Self.stayOpenSidePad, dy: 0)
+        return expanded.union(collapsed).union(question).union(pad)
     }
 }

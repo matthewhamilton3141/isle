@@ -277,7 +277,9 @@ final class NotchWindowController {
     /// Deliberately lopsided: generous below and to the sides, where the
     /// pointer overshoots on its way to a control, and tight up top, where
     /// there is nothing to overshoot into.
-    private static let stayOpenPad = (top: CGFloat(10), side: CGFloat(16), bottom: CGFloat(26))
+    /// The side is `NotchMetrics.stayOpenSidePad`, which the window frame is
+    /// widened by so a file drag in the pad still reaches the window.
+    private static let stayOpenPad = (top: CGFloat(10), side: NotchMetrics.stayOpenSidePad, bottom: CGFloat(26))
 
     /// A move faster than this, and mostly sideways, is the pointer crossing
     /// the island on its way to the menu bar rather than arriving at it.
