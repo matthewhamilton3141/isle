@@ -48,7 +48,7 @@ struct CollapsedNotchView: View {
 
     @ViewBuilder
     private var leading: some View {
-        if let toast = viewModel.activeToast, viewModel.showsToast {
+        if let toast = viewModel.collapsedToast {
             // A toast borrows the whole island rather than taking a third
             // seat: its symbol sits in the album cover's footprint, so
             // whatever was there slides back into exactly the same spot when
@@ -85,7 +85,7 @@ struct CollapsedNotchView: View {
 
     @ViewBuilder
     private var trailing: some View {
-        if let toast = viewModel.activeToast, viewModel.showsToast {
+        if let toast = viewModel.collapsedToast {
             toastText(toast)
         } else if viewModel.shouldSplitCollapsed {
             // Split: the Claude cluster rides on the right beside the music —

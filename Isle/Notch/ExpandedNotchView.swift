@@ -13,10 +13,18 @@ import SwiftUI
 
 struct ExpandedNotchView: View {
     @ObservedObject var viewModel: NotchViewModel
-    var island: IslandPresentation
+    /// Observed for the drop face, which is this island's alone.
+    @ObservedObject var island: IslandPresentation
     var palette: ArtworkPalette
 
     private var media: MediaPlaybackModel { viewModel.media }
+
+    /// A file drag is over this island and it may be dropped: the drop face
+    /// stands in for wherever the panel was, and goes again with the drag.
+    private var dropPayload: DropPayload? {
+        guard island.isDropTarget, viewModel.acceptsDrops else { return nil }
+        return viewModel.dropPayload
+    }
 
     /// The output list is showing in place of the text column. Per island
     /// rather than on the view model: it's this panel's state, and it goes
@@ -34,16 +42,19 @@ struct ExpandedNotchView: View {
             // doesn't go through a tile. A swipe lands without it: its faces
             // are already where they belong (see `FacePager.settle`).
             .animation(.easeInOut(duration: 0.28), value: viewModel.expandedPlace)
+            .animation(.easeInOut(duration: 0.2), value: dropPayload != nil)
             // The waveform is pinned to ONE fixed spot in the panel and drawn
             // outside the face switch, so it holds the exact same real position
             // on every face instead of re-aligning to each face's text — it
             // stays put through a swipe, fading while the faces cross under
             // it and back once they land. Not on Home, where it would sit
-            // on a tile and the Music tile already says what's playing. Gated
-            // on a live track; non-interactive so it never swallows a seek or
-            // dismiss tap.
+            // on a tile and the Music tile already says what's playing, nor on
+            // the shelf or the drop face, whose items and targets run to the
+            // column's edge under it. Gated on a live track; non-interactive
+            // so it never swallows a seek or dismiss tap.
             .overlay(alignment: .topTrailing) {
-                if media.hasTrack, viewModel.showsWaveform, viewModel.expandedPlace != .home {
+                if media.hasTrack, viewModel.showsWaveform, viewModel.expandedPlace != .home,
+                   viewModel.expandedPlace != .face(.shelf), dropPayload == nil {
                     LiveEqualizer(
                         source: viewModel.audioLevelSource,
                         palette: palette,
@@ -61,6 +72,16 @@ struct ExpandedNotchView: View {
 
     @ViewBuilder
     private var content: some View {
+        if let dropPayload {
+            DropFaceView(viewModel: viewModel, island: island, payload: dropPayload)
+                .transition(.opacity)
+        } else {
+            place
+        }
+    }
+
+    @ViewBuilder
+    private var place: some View {
         switch viewModel.expandedPlace {
         case .home:
             HomeGridView(viewModel: viewModel, palette: palette)
@@ -84,6 +105,8 @@ struct ExpandedNotchView: View {
             PomodoroExpandedView(viewModel: viewModel, palette: palette)
         case .agenda:
             AgendaExpandedView(viewModel: viewModel, palette: palette)
+        case .shelf:
+            ShelfExpandedView(viewModel: viewModel, shelf: viewModel.shelf)
         }
     }
 

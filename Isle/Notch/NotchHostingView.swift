@@ -40,4 +40,15 @@ final class NotchHostingView<Content: View>: NSHostingView<Content> {
 
         return super.hitTest(point)
     }
+
+    /// A point in the window's coordinates (a drag's location), in the
+    /// top-left space SwiftUI measures in — the space `activeRect` and the
+    /// drop face's target frames are reported in.
+    func topLeftPoint(fromWindow point: NSPoint) -> CGPoint {
+        var local = convert(point, from: nil)
+        if !isFlipped {
+            local.y = bounds.height - local.y
+        }
+        return local
+    }
 }

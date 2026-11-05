@@ -77,4 +77,43 @@ final class NotchWindow: NSPanel {
         }
         super.sendEvent(event)
     }
+
+    /// Where a drag over this window goes. The window, not a view, is the
+    /// destination: nothing in the notch registers a SwiftUI drop, so AppKit
+    /// hands every file drag over the window's frame to the window itself,
+    /// and the handler decides what part of that frame counts — the island
+    /// and its lip, or the open panel and its pad.
+    weak var dropHandler: NotchDropHandler?
+}
+
+/// The drag callbacks of one notch window, passed on with the window they
+/// arrived at.
+@MainActor
+protocol NotchDropHandler: AnyObject {
+    func dragUpdated(_ info: any NSDraggingInfo, in window: NotchWindow) -> NSDragOperation
+    func dragExited(_ window: NotchWindow)
+    func performDrop(_ info: any NSDraggingInfo, in window: NotchWindow) -> Bool
+    func dragEnded(_ window: NotchWindow)
+}
+
+extension NotchWindow: NSDraggingDestination {
+    func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        dropHandler?.dragUpdated(sender, in: self) ?? []
+    }
+
+    func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        dropHandler?.dragUpdated(sender, in: self) ?? []
+    }
+
+    func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        dropHandler?.dragExited(self)
+    }
+
+    func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        dropHandler?.performDrop(sender, in: self) ?? false
+    }
+
+    func draggingEnded(_ sender: any NSDraggingInfo) {
+        dropHandler?.dragEnded(self)
+    }
 }

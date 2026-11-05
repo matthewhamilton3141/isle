@@ -251,6 +251,20 @@ final class NotchViewModel: ObservableObject {
     /// see `pomodoroAvailable`. Turning the setting off resets it.
     let pomodoro: PomodoroTimer
 
+    /// Files and folders kept within reach. Offered as a face only while it
+    /// holds something — see `availableTabs`.
+    let shelf: ShelfStore
+
+    /// A drag carrying files is in flight somewhere on screen, as
+    /// `FileDragWatch` reads it off the global mouse events and the drag
+    /// pasteboard. Drives the drop notice.
+    @Published private(set) var fileDragInFlight = false
+
+    /// What the drag over an island carries, read off the drag's own
+    /// pasteboard as it reached the island. Nil while no island is a drop
+    /// target.
+    @Published private(set) var dropPayload: DropPayload?
+
     /// True between `start()` and `stop()` — i.e. while the notch window is
     /// shown. Guards the live mode-change subscription so it doesn't spin up
     /// subsystems while the overlay is hidden.
@@ -777,12 +791,19 @@ final class NotchViewModel: ObservableObject {
         self.activeTab = resolvedSettings.lastTab
         self.isHome = resolvedSettings.lastOnHome
         self.pomodoro = PomodoroTimer(settings: resolvedSettings)
+        self.shelf = ShelfStore(settings: resolvedSettings)
 
         // The timer publishes on its own object; the island reads it through
         // this model, so forward its changes (they're at most once a second
         // apart from the phase rolls — the digits themselves tick off a
         // TimelineView, not off a publish).
         pomodoro.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
+        // The shelf publishes on its own object too; its face, its tile and
+        // whether it's in the grid at all read it through this model.
+        shelf.objectWillChange
             .sink { [weak self] in self?.objectWillChange.send() }
             .store(in: &cancellables)
 
@@ -1062,6 +1083,7 @@ final class NotchViewModel: ObservableObject {
         case .deviceBattery: return settings.showDeviceBattery
         case .calendar: return settings.showCalendarEvents
         case .reminders: return settings.showReminders
+        case .fileDrag: return true
         }
     }
 
@@ -1636,6 +1658,9 @@ final class NotchViewModel: ObservableObject {
         // routed, every player gets asked, so whichever has a track is found.
         if hovering, hoveredIslands == 1 {
             (routedPlayer.map { [$0] } ?? players).forEach { $0.pollNow() }
+            // The shelf's watches catch a file leaving; this catches what a
+            // watch can't (a volume that went before its watch was set).
+            shelf.prune()
         }
     }
 
@@ -1836,6 +1861,7 @@ final class NotchViewModel: ObservableObject {
         if settings.effectiveMode.showsClaude { tabs.append(.claude) }
         if pomodoroAvailable { tabs.append(.pomodoro) }
         if showsAgenda { tabs.append(.agenda) }
+        if !shelf.isEmpty { tabs.append(.shelf) }
         return tabs
     }
 
@@ -1947,7 +1973,7 @@ final class NotchViewModel: ObservableObject {
     /// the hardware; it stays hoverable (see NotchWindowController's pointer
     /// backstop), so hovering the notch still reveals it.
     var isCollapsedIdle: Bool {
-        !showsToast && !hasMusicActivity && !hasClaudeActivity && !hasPomodoroActivity
+        collapsedToast == nil && !hasMusicActivity && !hasClaudeActivity && !hasPomodoroActivity
     }
 
     /// The Pomodoro clock has something worth showing in the collapsed island:
@@ -2069,7 +2095,7 @@ final class NotchViewModel: ObservableObject {
         // the message sits on the right. Same straddle as the Claude-solo
         // layout, so music and Claude slide back into place when it ends
         // rather than jumping.
-        if let toast = activeToast, showsToast {
+        if let toast = collapsedToast {
             return (s.album + g, IslandToast.width(of: toast.text) + g)
         }
 
@@ -2262,6 +2288,14 @@ final class NotchViewModel: ObservableObject {
         activeToast != nil && !hasLiveActivity
     }
 
+    /// What borrows the collapsed island right now, if anything: the drop
+    /// notice while a file drag is under way — the user is mid-gesture, and
+    /// that outranks a toast — else the toast. Neither under a live alert.
+    var collapsedToast: IslandToast? {
+        if showsDropNotice { return .dropNotice }
+        return showsToast ? activeToast : nil
+    }
+
     /// Accepts a toast, or declines it. Dropped rather than queued when a
     /// Claude alert is live — a power event or a meeting reminder is ambient
     /// and stale within seconds, so waiting its turn behind an approval would
@@ -2329,6 +2363,81 @@ final class NotchViewModel: ObservableObject {
         withAnimation(.easeInOut(duration: 0.25)) {
             activeToast = nil
         }
+    }
+
+    // MARK: - Drop and shelf
+
+    /// The collapsed island says "Drop on Isle" while a file drag is under
+    /// way — but never over a live alert, which outranks everything.
+    var showsDropNotice: Bool {
+        fileDragInFlight && acceptsDrops
+    }
+
+    /// Whether the island takes a drop at all right now. Not while an
+    /// approval, question or failure holds the panel: the drop face would
+    /// cover the thing that needs answering.
+    var acceptsDrops: Bool {
+        !hasLiveActivity
+    }
+
+    /// From `FileDragWatch`, on every change.
+    func fileDragChanged(_ inFlight: Bool) {
+        guard fileDragInFlight != inFlight else { return }
+        withAnimation(.easeInOut(duration: 0.25)) {
+            fileDragInFlight = inFlight
+        }
+    }
+
+    /// A drag reached an island (or left the last one): what it carries.
+    func setDropPayload(_ payload: DropPayload?) {
+        guard dropPayload != payload else { return }
+        dropPayload = payload
+    }
+
+    /// The targets the drop face offers for this payload, in order: Start
+    /// Claude only for exactly one folder, AirDrop only when AirDrop can
+    /// take these items. Keep is always offered — when the shelf is full it
+    /// says so and doesn't light (see `canKeep`).
+    func dropTargets(for payload: DropPayload) -> [DropTarget] {
+        var targets: [DropTarget] = []
+        if payload.claudeFolder != nil { targets.append(.startClaude) }
+        targets.append(.keep)
+        if payload.canAirDrop { targets.append(.airDrop) }
+        return targets
+    }
+
+    /// A target that would do something if released on: offered, and for
+    /// Keep, room on the shelf for at least one of the items.
+    func canPerform(_ target: DropTarget, with payload: DropPayload) -> Bool {
+        guard dropTargets(for: payload).contains(target) else { return false }
+        if target == .keep { return shelf.wouldKeep(payload.urls) > 0 }
+        return true
+    }
+
+    /// The drop was released on a target. Keeping goes to the shelf face, so
+    /// the panel the pointer is still over shows what was kept; the other
+    /// two leave the panel where it was.
+    func performDrop(_ target: DropTarget, with payload: DropPayload) {
+        guard acceptsDrops, canPerform(target, with: payload) else { return }
+        switch target {
+        case .startClaude:
+            if let folder = payload.claudeFolder { ClaudeLauncher.start(in: folder) }
+        case .keep:
+            if shelf.add(payload.urls) > 0 { selectTab(.shelf) }
+        case .airDrop:
+            AirDropSender.shared.send(payload.urls)
+        }
+    }
+
+    /// From the shelf face.
+    func startClaude(in folder: URL) {
+        shelf.prune()
+        ClaudeLauncher.start(in: folder)
+    }
+
+    func airDrop(_ urls: [URL]) {
+        shelf.prune()
+        AirDropSender.shared.send(urls.filter { FileManager.default.fileExists(atPath: $0.path) })
     }
 
     // MARK: - Transport

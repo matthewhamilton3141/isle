@@ -49,6 +49,8 @@ struct IslandToast: Equatable, Identifiable {
         case event(key: String)
         /// A reminder coming due, keyed the same way.
         case reminder(key: String)
+        /// A drag carrying files is under way — see `IslandToast.dropNotice`.
+        case dropNotice
     }
 
     /// Which Settings switch governs a message. The split is by what is being
@@ -60,6 +62,9 @@ struct IslandToast: Equatable, Identifiable {
         case deviceBattery
         case calendar
         case reminders
+        /// The drop notice. Never queued and never switched off: it's the
+        /// user's own drag, shown exactly as long as it lasts.
+        case fileDrag
     }
 
     let id = UUID()
@@ -91,6 +96,24 @@ struct IslandToast: Equatable, Identifiable {
     func coalesces(with other: IslandToast) -> Bool {
         kind == other.kind
     }
+}
+
+// MARK: - Drop notice
+
+extension IslandToast {
+    /// "Drop on Isle", while a drag carrying files is in flight anywhere on
+    /// screen. Toast-shaped because it's the same kind of thing — a moment's
+    /// borrow of the whole island — but it doesn't go through the queue or
+    /// its clock: it's on for exactly as long as the drag is, which the drag
+    /// itself reports (see `FileDragWatch`). One value, so its identity is
+    /// stable for as long as it's up.
+    static let dropNotice = IslandToast(
+        kind: .dropNotice,
+        glyph: .symbol("tray.and.arrow.down.fill"),
+        text: "Drop on Isle",
+        tint: neutral,
+        gate: .fileDrag
+    )
 }
 
 // MARK: - Formatting

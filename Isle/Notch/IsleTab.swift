@@ -3,7 +3,7 @@
 //
 //  The faces of the expanded panel. Music and Claude come with the mode;
 //  Pomodoro is opt-in from Settings; Agenda comes with the calendar and
-//  reminders switches. Which ones are actually offered is
+//  reminders switches; the Shelf is there only while it holds something. Which ones are actually offered is
 //  `NotchViewModel.availableTabs`, in the order the home grid lays them out
 //  and a swipe walks them — when only one is, there's no home and the panel
 //  just shows that source.
@@ -23,6 +23,7 @@ enum IsleTab: String, CaseIterable, Identifiable {
     case claude
     case pomodoro
     case agenda
+    case shelf
 
     var id: String { rawValue }
 
@@ -32,6 +33,7 @@ enum IsleTab: String, CaseIterable, Identifiable {
         case .claude: return "Claude"
         case .pomodoro: return "Pomodoro"
         case .agenda: return "Agenda"
+        case .shelf: return "Shelf"
         }
     }
 
@@ -41,6 +43,7 @@ enum IsleTab: String, CaseIterable, Identifiable {
         case .claude: return "sparkle"
         case .pomodoro: return "timer"
         case .agenda: return "calendar"
+        case .shelf: return "tray.full"
         }
     }
 }
