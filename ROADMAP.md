@@ -653,8 +653,13 @@ hook returns (finding 6). Two consequences:
 ```json
 // Approve
 {"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}
+// Approve a plan (ExitPlanMode) — the input handed back, verbatim (finding 18)
+{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedInput":{"plan":"…","planFilePath":"…"}}}}
+// Always… → Confirm — `permission_suggestions` echoed verbatim (finding 16)
+{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedPermissions":[…]}}}
 // Deny — no `interrupt`, so Claude can try another way, as after a terminal "No"
-{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied from the Isle notch"}}}
+// ("The user rejected this plan from the Isle notch." for ExitPlanMode)
+{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"The user denied this tool call from the Isle notch."}}}
 // Answer — `questions` echoed verbatim from the request; multi-select joins labels with ", "
 {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"questions":[…],"answers":{"Which framework?":"React"}}}}
 // Answer in terminal — the hook prints nothing and Claude shows its own UI
@@ -715,7 +720,8 @@ face keeps 146), or render label-only rows and lose the descriptions.
 ### Acceptance
 
 - A permission prompt shows Approve / Deny in the notch. Approve runs the
-  tool; Deny blocks it and Claude sees *Denied from the Isle notch*. The
+  tool; Deny blocks it and Claude sees *The user denied this tool call from
+  the Isle notch.* (originally *Denied from the Isle notch*). The
   transcript shows *Allowed/Denied by PermissionRequest hook*.
 - An `AskUserQuestion` shows its options; clicking one continues Claude with
   that label and no terminal UI appears. Multi-select and multi-question both
@@ -736,9 +742,8 @@ face keeps 146), or render label-only rows and lose the descriptions.
   with `canBecomeKey` false; a text field would have to take key focus,
   which is the one thing the overlay must never do to the terminal. *Type
   something* and *Chat about this* stay "Answer in terminal".
-- **"Always allow" is deferred.** The suggestions are in the request file
-  (finding 9), so a third button that echoes one as `updatedPermissions` is
-  a later, additive change.
+- **"Always allow"** — was deferred here; shipped as **Always…** (see
+  "Approval options" below).
 - **Deadlines** — approvals 300s (the dialog is concurrent, a long block is
   free), questions 45s (the terminal is blank meanwhile). **Locked as
   recommended.**
@@ -861,7 +866,73 @@ with `--setting-sources project --settings <scratch>`):
 (the `PermissionRequest` for `AskUserQuestion`, where the terminal UI is
 already up) would remove the 45s blank-terminal wait entirely; it needs a
 check that it fires in every permission mode before the PreToolUse path is
-retired. "Always allow" (finding 9) remains an additive third button.
+retired.
+
+### Approval options (`feature/approval-options`)
+
+"Make sure it works for the different options" — every kind of tool that
+asks, and the terminal dialog's answers beyond yes and no. Checked against
+Claude Code 2.1.318 with a dump hook first (the raw stdin of every prompt is
+kept under the scratchpad's `m7/payloads/`, and the debug fixtures decode
+those same payloads), then end to end with the stand-in Isle built from the
+app's own `ClaudeRequestWatcher.swift`, in `-p` and interactive sessions,
+scratch `HOME`, `--setting-sources project,local`, each in its own scratch
+project. The real `~/.claude/settings.json` was hashed before and after:
+unchanged.
+
+| # | Finding | Consequence for the design |
+|---|---|---|
+| 16 | `decision.updatedPermissions` = the request's `permission_suggestions`, verbatim, did exactly what the dialog's "Yes, and don't ask again" does: the rule landed in the project's `.claude/settings.local.json` (`Bash(npm run *)`, `WebSearch`, `mcp__acme__deploy_service`, `WebFetch(domain:example.com)`, `Bash(python3 -c 'print\(6*7\)')`), or for a `session` destination only in memory, and the next matching call didn't ask — in the same session (`npm run build` → `npm run lint`, a second WebSearch, the MCP tool with other arguments, a second Edit under `setMode: acceptEdits`) and in a fresh one. | **Always…** is an echo, never a rule of Isle's making. |
+| 17 | The suggestions are often *not* what the terminal's option 2 shows. For `python3 -c 'print(6*7)'` the hook got the exact command while the dialog offered `python3 *`; a Bash `find /etc …` got a *Read* rule; a `touch` in the project got `addDirectories` **and** `setMode: acceptEdits` together (finding 9); Read outside the project got two rules (`//etc/**`, `//private/etc/**`); a subagent's Bash got `[]`. Destinations seen: `localSettings`, `session`. | The label comes from the suggestion alone, so it can't match the terminal's wording — and must not try. Saving a rule outlives the call, so Always… is two taps: the first shows exactly what would be saved. |
+| 18 | **ExitPlanMode ignores a bare `allow`**: the hook's output is taken, nothing happens, the plan dialog stays up (the first build's Approve did nothing for a plan). With `updatedInput` = its `tool_input` echoed it is *Allowed by PermissionRequest hook* and the session leaves plan mode for **default** (the next Write asked) — the dialog's "Yes, manually approve edits". `updatedPermissions: setMode` alone is ignored too. A deny keeps it in plan mode and Claude says so. Its request carries no suggestions. | Approve on a plan echoes the input. No "auto mode" / "accept edits" choice from the notch: nothing in the request offers one. |
+| 19 | The deny `message` is the *only* thing Claude is told — it arrives as the tool's error. With "Denied from the Isle notch" the model reasoned aloud about what an Isle notch was. | Now "The user denied this tool call from the Isle notch." (plans: "The user rejected this plan …"). Claude doesn't retry and carries on, as before (no `interrupt`). |
+| 20 | Tools that asked in `default` mode: Bash, Edit, Write, NotebookEdit, WebFetch (run inside a `web-fetch` subagent, so its payload has `agent_type`), WebSearch, MCP tools (payload has `mcp_server.name`), Read outside the project, ExitPlanMode (plan mode). Didn't ask: Task/Agent itself (its subagent's tools do, with `agent_id`/`agent_type`), Skill, Monitor, CronCreate, PushNotification, ScheduleWakeup, EnterWorktree, RemoteTrigger, SendMessage. **MultiEdit no longer exists** in 2.1.318 (the name survives only as a rule alias). | The decoder covers MultiEdit anyway; unknown tools still fall back to their whole input. |
+| 21 | **Parallel calls each raise a PermissionRequest at once**, and the second `ask`'s status write retires the first's id: in `-p` the first was denied for want of an answer, interactively it falls through to its terminal dialog. | As before: safe, but only one of two parallel prompts is notch-answerable. A queue is a later change. |
+
+**What the face shows now** (renders: `approval-renders/` in the
+scratchpad, `before_*` / `after_*` / `afterrev_*` and `compare_*.png`):
+
+- The tool, then its exact subject. MCP tools read `acme › deploy_service`
+  then every argument as `key: <json>` (strings keep their quotes, a newline
+  stays `\n`). File paths are relative to the session's directory when inside
+  it (the eyebrow names the project), otherwise whole with `~`.
+- Edits give the second line to what they change, counted from the input:
+  `−1 +1 lines` (Edit, plus `· every occurrence` for `replace_all`),
+  `3 lines` (Write), `replace · cell c1` (NotebookEdit). The path then keeps
+  one line, middle-truncated.
+- ExitPlanMode: headline **Plan ready**, the plan's own text (heading marks
+  and blank lines dropped), cut at the end — read from the top.
+- **Always…** sits between Approve and Deny when every suggestion is one Isle
+  can name exactly (allow `addRules`, `setMode`, `addDirectories`, with a
+  known destination); otherwise it isn't offered. Terminal then gives up its
+  word for its icon (tooltip and accessibility label keep it); in Both mode,
+  beside the corner toggle, the four pills drop their symbols instead of
+  truncating. A tap turns the face into **Don't ask again?** with the change
+  in Claude Code's own terms — `Allow Bash(npm run *)`, `Switch to
+  acceptEdits mode`, `Allow access to ~/Documents/isle` — and where it's kept
+  (`this session`, `this project · .claude/settings.local.json`, `every
+  project · ~/.claude/settings.json`), and **Confirm** / **Back**.
+- A request without suggestions keeps the face exactly as it was.
+- "No, and tell Claude what to do differently" stays **Terminal**: it needs
+  free text (Milestone 11's reply-to-agent).
+
+**Test in the running app:** default permission mode, then
+
+1. `python3 -c "print(1)"` → Approve; again → Deny (Claude says you denied
+   it); again → Always… → check the review names `Allow Bash(python3 -c …)`
+   and `.claude/settings.local.json` → Back returns, → Always… → Confirm; ask
+   for the identical command again: no prompt anywhere. Remove the rule from
+   the project's `.claude/settings.local.json` afterwards.
+2. An Edit: the second line reads `−n +m lines`; Always… says `Switch to
+   acceptEdits mode · this session`; Confirm, then a second edit doesn't ask
+   (the terminal footer shows accept edits on).
+3. A WebFetch and an MCP tool if one is configured: `server › tool` with its
+   arguments.
+4. Shift-Tab into plan mode, ask for a small plan: the notch says **Plan
+   ready** with the plan's first lines; Approve → Claude starts implementing
+   and asks again before its first edit; another plan → Deny → Claude stays
+   in plan mode.
+5. Both mode: a prompt with Always… shows four word-only pills, none cut off.
 
 ## Milestone 8 — Multi-Display  ✅
 
