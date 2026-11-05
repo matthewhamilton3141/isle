@@ -1249,7 +1249,7 @@ background toast (short and long project).
 - **The background toast** has no setting of its own; it's on whenever the
   bridge is.
 
-## Milestone 12 — A bigger calendar: Join, the week, a timeline, ticks and quick add
+## Milestone 18 — A bigger calendar: Join, the week, a timeline, ticks and quick add
 
 **Status:** Built on `feature/calendar-plus`, rendered, awaiting in-app test.
 
