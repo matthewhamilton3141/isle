@@ -78,6 +78,13 @@ struct NotchRootView: View {
         return NotchMetrics.panelHeight(contentHeight: content, bandHeight: notchBandHeight)
     }
 
+    /// The spring for a height change while open — a face growing or
+    /// shrinking the panel. The open and close curves, by direction.
+    private var panelResizeAnimation: Animation {
+        reduceMotion ? .notchCloseReduced
+            : expandedHeight > NotchMetrics.expandedSize.height ? .notchOpen : .notchClose
+    }
+
     /// The collapsed sides are asymmetric (Claude's side is usually wider), so
     /// shift the shape to keep the camera cutout centred under the housing.
     private var collapsedShift: CGFloat {
@@ -151,8 +158,7 @@ struct NotchRootView: View {
         // or a move to or from a taller face, changes the height without
         // changing the state; give that its own spring rather than a jump.
         // The same curves, by direction.
-        .animation(expandedHeight > NotchMetrics.expandedSize.height ? .notchOpen : .notchClose,
-                   value: expandedHeight)
+        .animation(panelResizeAnimation, value: expandedHeight)
         .onChange(of: state) { previous, current in
             if previous.isExpanded, !current.isExpanded, liveSize.width > 0, liveSize.height > 0 {
                 collapseOrigin = liveSize
@@ -221,7 +227,17 @@ struct NotchRootView: View {
         // the two move together as one frame would.
         .frame(width: size.width)
         .islandCollapseChannel(.width)
-        .frame(height: size.height)
+        // A swipe lands in an untimed transaction (see `FacePager.settle`),
+        // which would snap the height to the new face's. Scoped to this frame
+        // only, it gets the same spring a tile click's height change gets
+        // below; the faces inside keep their instant swap.
+        .transaction { t in
+            guard t.isPanelResize else { return }
+            t.disablesAnimations = false
+            t.animation = panelResizeAnimation
+        } body: { content in
+            content.frame(height: size.height)
+        }
         .islandCollapseChannel(.height)
         // Clip everything to the notch outline. The expanded content is laid
         // out at its full width the instant the state flips, but the frame
