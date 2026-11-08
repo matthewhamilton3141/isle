@@ -200,13 +200,14 @@ do {
               "\(name): each wing runs from the core to its own end")
         func a(_ x: CGFloat, _ y: CGFloat = 16) -> Double { IslandGlass.closedCoverAlpha(x: x, y: y, core: core, runs: runs) }
         check(a(0) == 1 && a(c.width / 2) == 1 && a(-c.width / 2) == 1, "\(name): solid over the housing and 4pt past it")
-        check(a(-leftEnd) == 0 && a(rightEnd) == 0, "\(name): clear (the plain tint) at both ends")
+        check(a(-leftEnd, 31) == 0 && a(rightEnd, 31) == 0, "\(name): clear (the plain tint) at both ends' bottom edge")
+        check(a(-leftEnd, 0) == 1 && a(rightEnd, 0) == 1, "\(name): black at the top edge, out to both ends")
         var mono = true
         for side in [-1.0, 1.0] {
             var last = 2.0
             for i in 0...400 {
                 let x = CGFloat(side) * (c.width / 2 + (side < 0 ? runs.leading : runs.trailing) * CGFloat(i) / 400)
-                let v = a(x)
+                let v = a(x, IslandGlass.topDepth + 1)
                 if v > last + 1e-12 { mono = false }
                 last = v
             }
@@ -223,6 +224,32 @@ do {
     check(IslandGlass.wingAlpha(0.15) > 0.7, "content just beside the camera stays on dark")
     check(IslandGlass.wingAlpha(0.6) < 0.25, "the outer end, where the artwork sits, is mostly glass")
     check(IslandGlass.wingAlpha(0.5) < 0.5, "eased, not linear: under half by half way")
+
+    // The top edge: black at the bezel, eased out within the top half of
+    // the 32pt pill, combined with the sides by the darker of the two.
+    check(IslandGlass.topAlpha(y: 0) == 1 && IslandGlass.topAlpha(y: IslandGlass.topDepth) == 0, "top edge: black at the top, gone topDepth down")
+    check(IslandGlass.topDepth >= 32 * 0.4 && IslandGlass.topDepth <= 32 * 0.5, "top edge: 40-50% of the 32pt pill", "\(IslandGlass.topDepth)")
+    check(near(IslandGlass.topEase, 1.6) && IslandGlass.topAlpha(y: IslandGlass.topDepth / 2) < 0.5, "top edge: eased, under half by half way")
+    do {
+        let runs = IslandGlass.wingRuns(width: music.width, shift: music.shift, core: core.width)
+        var isMax = true, topMono = true
+        for x in stride(from: CGFloat(-170), through: 170, by: 1) {
+            var last = 2.0
+            for y in stride(from: CGFloat(0), through: 32, by: 0.5) {
+                let v = IslandGlass.closedCoverAlpha(x: x, y: y, core: core, runs: runs)
+                let side = IslandGlass.sideAlpha(x: x, core: core, runs: runs), top = IslandGlass.topAlpha(y: y)
+                if abs(v - max(side, top)) > 1e-12 { isMax = false }
+                if v > last + 1e-12 { topMono = false }
+                last = v
+            }
+        }
+        check(isMax, "top edge and sides: the darker wins, not the two compounded")
+        check(topMono, "every column lightens monotonically down the pill")
+        // Where the content sits: the middle of the pill, below the top edge.
+        let wingMid = core.width / 2 + runs.trailing * 0.5
+        check(IslandGlass.closedCoverAlpha(x: wingMid, y: 16, core: core, runs: runs) == IslandGlass.sideAlpha(x: wingMid, core: core, runs: runs),
+              "mid-height (the content's line): the side gradient alone")
+    }
 
     // Vertical: whole to the core's depth, gone closedFadeDown below.
     let runs = IslandGlass.wingRuns(width: music.width, shift: music.shift, core: core.width)
