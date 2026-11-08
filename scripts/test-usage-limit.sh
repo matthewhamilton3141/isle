@@ -338,14 +338,18 @@ notify quota_auto_resume_disabled "Automatic continue stopped after repeated usa
 expect "disabled with no limit on record: nothing invented" state=error limit_next=stopped limit_kind= reset_at=
 
 echo "Notification: nothing rewrites a request being answered"
-printf '%s' "$$" > "$SCRATCH/pid"
+# A request whose hook is still waiting: its file is there, and the pid that
+# ends its id (this script's) is alive.
+mkdir -p "$H/.isle/requests"
+printf '{"session_id":"s1","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"rm -rf build"}}' \
+  > "$H/.isle/requests/s1-1-$$.json"
 for t in permission_prompt idle_prompt quota_auto_resume_fired quota_auto_resume_stale auth_success; do
   cat > "$SF" <<EOF
 {
   "state": "needs_approval",
   "project": "isle",
   "session_id": "s1",
-  "request_id": "s1-1-2",
+  "request_id": "s1-1-$$",
   "updated_at": "2026-11-07T00:00:00Z"
 }
 EOF
@@ -353,6 +357,9 @@ EOF
   notify "$t" "Claude needs your permission"
   if [ "$(cat "$SF")" = "$before" ]; then ok "a blocked approval survives $t"; else bad "a blocked approval survives $t" "$(field state)"; fi
 done
+rm -f "$H/.isle/requests/s1-1-$$.json"
+notify permission_prompt "Claude needs your permission"
+expect "a request whose hook is gone holds nothing: the notification lands" state=needs_question
 state working
 printf '{"session_id":"s1","hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion","tool_input":{}}' | hook ask
 for t in permission_prompt idle_prompt elicitation_dialog; do

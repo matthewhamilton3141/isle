@@ -4,6 +4,8 @@
 # matcher, run the way Claude Code runs it — a PreToolUse payload on stdin —
 # under a scratch HOME, so nothing touches ~/.isle or ~/.claude. Nothing in
 # here is ever executed: every command is only ever text in a JSON payload.
+# Also the notch's records, one a call (v16), read back by the app's own
+# GuardedCommands.pattern(forCommand:…), built with swiftc.
 #
 # Usage: scripts/test-guarded-commands.sh [path/to/isle-cli]
 #
@@ -229,19 +231,77 @@ check "deploy.sh" "./scripts/deploy.sh --prod" "a script by name"
 echo "The record for the notch"
 list "git push"
 run_guard "cd repo && git push \"origin\"" > /dev/null
-rec="$SCRATCH/.isle/guarded/test-session.json"
+rec="$SCRATCH/.isle/guarded/test-session/toolu_test.json"
 want='{"pattern": "git push", "command": "cd repo && git push \"origin\""}'
 if [ "$(cat "$rec" 2>/dev/null)" = "$want" ]; then
   passes=$((passes + 1)); echo "  ok    record holds the pattern and the command as Claude Code escaped it"
 else
-  failures=$((failures + 1)); echo "  FAIL  record: $(cat "$rec" 2>/dev/null)"
+  failures=$((failures + 1)); echo "  FAIL  record: $(cat "$rec" 2>/dev/null) ($(ls -R "$SCRATCH/.isle/guarded"))"
 fi
 printf '{"session_id":"test-session","hook_event_name":"SessionEnd"}' | HOME="$SCRATCH" /bin/bash "$CLI" end
-if [ ! -e "$rec" ]; then
-  passes=$((passes + 1)); echo "  ok    the session's end takes its record with it"
+if [ ! -e "$rec" ] && [ ! -e "$SCRATCH/.isle/guarded/test-session" ]; then
+  passes=$((passes + 1)); echo "  ok    the session's end takes its records with it"
 else
   failures=$((failures + 1)); echo "  FAIL  record still there after end"
 fi
+
+echo "Parallel guarded calls, each with its own record"
+list "git push" "rm -rf"
+# guard_call <command> <tool_use_id>: a PreToolUse in session test-par.
+guard_call() {
+  printf '{"session_id":"test-par","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"%s","description":"test"},"tool_use_id":"%s"}' \
+    "$(json_string "$1")" "$2" | HOME="$SCRATCH" /bin/bash "$CLI" guard > /dev/null
+}
+guard_call "git push origin main" toolu_par1 &
+guard_call "rm -rf build" toolu_par2 &
+wait
+n="$(ls "$SCRATCH/.isle/guarded/test-par" 2>/dev/null | grep -c '\.json$')"
+if [ "$n" = 2 ]; then
+  passes=$((passes + 1)); echo "  ok    two at once: two records"
+else
+  failures=$((failures + 1)); echo "  FAIL  two at once: $n records ($(ls -R "$SCRATCH/.isle/guarded"))"
+fi
+# The app's side: GuardedCommands.pattern(forCommand:…) on these very records.
+export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
+cat > "$SCRATCH/main.swift" <<'EOF'
+import Foundation
+let dir = URL(fileURLWithPath: CommandLine.arguments[1])
+let now = Date()
+func say(_ name: String, _ got: String?, _ want: String?) {
+    print(got == want ? "  ok    \(name)" : "  FAIL  \(name): want \(want ?? "nil"), got \(got ?? "nil")")
+}
+say("the first approval reads its own guard",
+    GuardedCommands.pattern(forCommand: "git push origin main", sessionId: "test-par", requestDate: now, in: dir), "git push")
+say("the second approval reads its own",
+    GuardedCommands.pattern(forCommand: "rm -rf build", sessionId: "test-par", requestDate: now, in: dir), "rm -rf")
+say("a command no record names is no guard",
+    GuardedCommands.pattern(forCommand: "git status", sessionId: "test-par", requestDate: now, in: dir), nil)
+say("another session's records are not this one's",
+    GuardedCommands.pattern(forCommand: "rm -rf build", sessionId: "test-other", requestDate: now, in: dir), nil)
+say("a record from before the window is about some earlier call",
+    GuardedCommands.pattern(forCommand: "rm -rf build", sessionId: "test-par", requestDate: now.addingTimeInterval(120), in: dir), nil)
+try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+try? Data(#"{"pattern": "npm publish", "command": "npm publish"}"#.utf8).write(to: dir.appendingPathComponent("test-old.json"))
+say("a record from a helper before v16 (one a session) still reads",
+    GuardedCommands.pattern(forCommand: "npm publish", sessionId: "test-old", requestDate: now, in: dir), "npm publish")
+EOF
+xcrun swiftc -swift-version 5 -Onone -target arm64-apple-macos14.0 -o "$SCRATCH/guard-run" \
+  "$ROOT/Isle/Claude/GuardedCommands.swift" "$SCRATCH/main.swift" 2>&1 | grep -E "error" || true
+if [ -x "$SCRATCH/guard-run" ]; then
+  out="$("$SCRATCH/guard-run" "$SCRATCH/.isle/guarded")"
+  printf '%s\n' "$out"
+  passes=$((passes + $(printf '%s\n' "$out" | grep -c '^  ok')))
+  failures=$((failures + $(printf '%s\n' "$out" | grep -c '^  FAIL')))
+else
+  failures=$((failures + 1)); echo "  FAIL  GuardedCommands didn't build"
+fi
+printf '{"session_id":"test-par","hook_event_name":"UserPromptSubmit","prompt":"next"}' | HOME="$SCRATCH" /bin/bash "$CLI" set-state working
+if [ ! -e "$SCRATCH/.isle/guarded/test-par" ]; then
+  passes=$((passes + 1)); echo "  ok    the next prompt clears the last turn's records"
+else
+  failures=$((failures + 1)); echo "  FAIL  records kept past the next prompt: $(ls "$SCRATCH/.isle/guarded/test-par")"
+fi
+rm -rf "$SCRATCH/.isle/sessions"
 out="$(run_guard "git push")"
 want='{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"Guarded in Isle: matches `git push`, which always asks."}}'
 if [ "$out" = "$want" ]; then

@@ -18,11 +18,16 @@
 //                                         while the feature is on and the list
 //                                         isn't empty, so with nothing to
 //                                         guard the hook is one `test`.
-//    guarded/<session>.json hook → Isle   The last call the guard asked about
-//                                         in that session: the pattern and the
-//                                         command. The PermissionRequest that
-//                                         follows carries no reason, so this
-//                                         is how the approval face knows why.
+//    guarded/<session>/<tool_use_id>.json
+//                         hook → Isle   Each call the guard asked about in
+//                                         that session's turn: the pattern and
+//                                         the command. The PermissionRequest
+//                                         that follows carries no reason, so
+//                                         this is how the approval face knows
+//                                         why. One a call, so parallel guarded
+//                                         calls each keep theirs; the next
+//                                         prompt and the session's end clear
+//                                         them.
 //
 
 import Foundation
@@ -91,19 +96,32 @@ enum GuardedCommands {
     /// `directory` is the records' folder: `guarded` beside the requests
     /// folder the watcher reads, so a watcher pointed at a scratch folder
     /// never reads the real records.
+    ///
+    /// One record a call (v16), at `<session>/<tool_use_id>.json`, so parallel
+    /// guarded calls can't overwrite each other's; the PermissionRequest names
+    /// no tool_use_id, so the record is the one whose command this is. A
+    /// helper before v16 kept one a session, at `<session>.json`, read too.
     static func pattern(forCommand command: String, sessionId: String?, requestDate: Date?,
                         in directory: URL = recordsDirectory) -> String? {
+        let fm = FileManager.default
         let safe = String((sessionId ?? "").unicodeScalars.filter {
             CharacterSet.alphanumerics.contains($0) && $0.isASCII || $0 == "-" || $0 == "_"
         }.map(Character.init))
-        let url = directory.appendingPathComponent("\(safe.isEmpty ? "unknown" : safe).json")
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        if let requestDate,
-           let written = (try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date {
-            let lead = requestDate.timeIntervalSince(written)
-            guard lead > -2, lead < recordWindow else { return nil }
+        let name = safe.isEmpty ? "unknown" : safe
+        let calls = directory.appendingPathComponent(name, isDirectory: true)
+        let records = ((try? fm.contentsOfDirectory(at: calls, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.pathExtension == "json" }
+            + [directory.appendingPathComponent("\(name).json")]
+        for url in records {
+            guard let data = try? Data(contentsOf: url) else { continue }
+            if let requestDate,
+               let written = (try? fm.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date {
+                let lead = requestDate.timeIntervalSince(written)
+                guard lead > -2, lead < recordWindow else { continue }
+            }
+            if let pattern = pattern(inRecord: data, command: command) { return pattern }
         }
-        return pattern(inRecord: data, command: command)
+        return nil
     }
 
     /// The record's pattern when its command is `command`. Pure, for tests.

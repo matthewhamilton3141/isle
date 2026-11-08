@@ -5,7 +5,8 @@
 # program, the command's first line up to 48 characters, auto mode's reason
 # and how many since the last prompt — in every record as `blocked`, without
 # changing the state; the call no longer reading as running; and the next
-# prompt and the session's end clearing it, but not Stop. Then the app's side,
+# prompt and the session's end clearing it, but not Stop; parallel blocks all
+# counted, and the rewrite racing the session's end (v16). Then the app's side,
 # built from scripts/auto-mode-blocks-tests.swift with every Isle source: the
 # record parser on the files this run wrote, the reason read as a category or
 # a refusal without a judgment, the face's line, the toast and its timing.
@@ -213,6 +214,57 @@ EOF
 denied toolu_13 'rm -rf /tmp/build' '[Irreversible Local Destruction]' s1 Bash
 [ "$(field state)" = needs_approval ] && [ "$(field request_id)" = s1-1794121762-4242 ] && [ "$(field target)" = npm ] \
   && ok "an approval being waited on keeps its state and request id" || bad "an approval being waited on" "$(cat "$SF")"
+
+echo "Many at once, and racing the session's end"
+prompt
+for i in 01 02 03 04 05 06 07 08 09 10 11 12; do denied "toolu_p$i" 'rm -rf /tmp/build' '[Irreversible Local Destruction]' & done
+wait
+[ "$(blk count)" = 12 ] && [ "$(sed -nE 's/.*"count": ([0-9]+).*/\1/p' <<< "$(blocked)")" = 12 ] \
+  && ok "twelve blocked in parallel: twelve, in the file and the record" || bad "twelve blocked in parallel" "file $(blk count), record $(blocked)"
+ls -a "$H/.isle/blocked" | grep -q lock && bad "no lock left behind" "$(ls -a "$H/.isle/blocked")" || ok "no lock left behind"
+mkdir -p "$H/.isle/blocked/.s1.lock"
+t0=$SECONDS
+denied toolu_p13 'rm -rf /tmp/build' '[Irreversible Local Destruction]'
+[ "$(blk count)" = 13 ] && [ $((SECONDS - t0)) -le 4 ] && [ ! -d "$H/.isle/blocked/.s1.lock" ] \
+  && ok "a lock its holder never let go of is taken after a wait" || bad "a stale lock" "count $(blk count), $((SECONDS - t0))s, $(ls -a "$H/.isle/blocked")"
+# A fake `stat` / `date` in front of the real one, counting its calls in the
+# hook under test: before call FAKE_AT it runs FAKE_DO, landing SessionEnd
+# mid-rewrite, and leaves FB/landed to say so.
+FB="$SCRATCH/fakebin"; mkdir -p "$FB"
+for tool in stat:/usr/bin/stat date:/bin/date; do
+  cat > "$FB/${tool%%:*}" <<EOF
+#!/bin/bash
+c="$FB/count.\$(basename "\$0")"
+n=\$(( \$(cat "\$c" 2>/dev/null || echo 0) + 1 )); echo "\$n" > "\$c"
+if [ "\$(basename "\$0")" = "\${FAKE_TOOL:-}" ] && [ "\$n" = "\${FAKE_AT:-}" ]; then
+  ( unset FAKE_TOOL FAKE_AT; PATH=/usr/bin:/bin:/usr/sbin:/sbin; eval "\$FAKE_DO" )
+  : > "$FB/landed"
+fi
+exec ${tool#*:} "\$@"
+EOF
+  chmod +x "$FB/${tool%%:*}"
+done
+END_S1="printf '{\"session_id\":\"s1\",\"hook_event_name\":\"SessionEnd\"}' | HOME='$H' /bin/bash '$CLI' end"
+# The review's case (v15): `stat` saw a new inode after the read, the pass went
+# round again with nothing to read, and the first pass's temp file went back
+# into place. A rewrite has no `stat` left for it to land in.
+prompt
+pre 'rm -rf /tmp/build'
+rm -f "$FB"/count.* "$FB/landed"
+FAKE_TOOL=stat FAKE_AT=2 FAKE_DO="$END_S1" PATH="$FB:$PATH" denied toolu_r1 'rm -rf /tmp/build' '[Irreversible Local Destruction]'
+if [ -e "$FB/landed" ] && [ -e "$SF" ]; then
+  bad "SessionEnd after the inode check's read brought the record back" "state $(field state), blocked $(blocked)"
+else
+  ok "SessionEnd after the read, seen as a new inode: stays ended"
+fi
+# The rewrite's own window: its timestamp is taken between the read and the rename.
+prompt
+pre 'rm -rf /tmp/build'
+rm -f "$FB"/count.* "$FB/landed"
+FAKE_TOOL=date FAKE_AT=2 FAKE_DO="$END_S1" PATH="$FB:$PATH" denied toolu_r2 'rm -rf /tmp/build' '[Irreversible Local Destruction]'
+[ -e "$FB/landed" ] && [ ! -e "$SF" ] && ok "SessionEnd between the read and the rename: stays ended" \
+  || bad "SessionEnd between the read and the rename" "landed $([ -e "$FB/landed" ] && echo yes || echo no), state $(field state)"
+ls "$H/.isle/sessions" | grep -q tmp && bad "no temp file left behind" "$(ls "$H/.isle/sessions")" || ok "no temp file left behind"
 
 echo "Other sessions, and the session's end"
 prompt s2
