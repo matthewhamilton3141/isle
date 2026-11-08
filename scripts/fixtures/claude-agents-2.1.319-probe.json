@@ -1,0 +1,34 @@
+[
+  {
+    "pid": 94941,
+    "id": "4a2d55f1",
+    "cwd": "/private/tmp/m21/bgprobe/proj-b",
+    "kind": "background",
+    "startedAt": 1794101758985,
+    "sessionId": "4a2d55f1-fd4f-4b5e-a896-3c3ef19a1708",
+    "name": "m21-probe-b",
+    "status": "waiting",
+    "waitingFor": "permission prompt",
+    "state": "blocked"
+  },
+  {
+    "pid": 94930,
+    "id": "9feb2230",
+    "cwd": "/private/tmp/m21/bgprobe/proj-a",
+    "kind": "background",
+    "startedAt": 1794101675263,
+    "sessionId": "9feb2230-d730-4ce7-8cf7-f888972bdf16",
+    "name": "m21-probe-a",
+    "status": "idle",
+    "state": "done"
+  },
+  {
+    "id": "4a2d55f1",
+    "cwd": "/private/tmp/m21/bgprobe/proj-b",
+    "kind": "background",
+    "startedAt": 1794101758702,
+    "sessionId": "4a2d55f1-fd4f-4b5e-a896-3c3ef19a1708",
+    "name": "m21-probe-b",
+    "state": "done"
+  }
+]

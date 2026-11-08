@@ -183,6 +183,33 @@ final class NotchViewModel: ObservableObject {
     /// The CLI pid each entry in `sessionHosts` was resolved for.
     private var sessionHostPIDs: [String: pid_t] = [:]
 
+    // MARK: Background sessions (Milestone 21)
+
+    /// Every session `claude agents --json --all` last listed.
+    private var claudeAgents: [ClaudeAgent] = []
+
+    /// When Isle saw each background session finish (see
+    /// `ClaudeBackground.noteFinishes`), by session id.
+    private var backgroundFinishedAt: [String: Date] = [:]
+
+    /// The background half of the last reading: names, attach ids, Claude
+    /// Code's states, and the sessions only agent view knows of.
+    private var backgroundMerge = ClaudeBackground.Merge.empty
+
+    /// What agent view adds about the island's session, when it hosts it:
+    /// its name for the eyebrow and its attach id for Jump.
+    @Published private(set) var claudeBackground: ClaudeBackgroundInfo?
+
+    /// The island's state is Claude Code's (`claude agents`), not a hook's:
+    /// the face says it in Claude Code's words, and nothing eases it away.
+    @Published private(set) var claudeStateFromAgent = false
+
+    /// Whether the live sessions the hooks report, besides the island's, are
+    /// all quiet — what the reselect tick runs on. The background sessions
+    /// only agent view knows of are counted in `otherSessions` but don't
+    /// keep the tick going: nothing a tick re-reads can change them.
+    private var hookOthersQuiet = true
+
     // MARK: Answering from the notch (Milestone 7)
 
     /// The request the selected session's hook says it is blocked on — the
@@ -343,6 +370,8 @@ final class NotchViewModel: ObservableObject {
     private let claudeWatcher = ClaudeStatusWatcher()
     private let requestWatcher = ClaudeRequestWatcher()
     private let sessionRegistry = ClaudeSessionRegistry()
+    /// Agent view's background sessions (Milestone 21), read on a cue.
+    private let agentsMonitor = ClaudeAgentsMonitor()
     private let keepAwake = ClaudeKeepAwake()
     private let power = PowerMonitor()
     private let bluetoothBattery = BluetoothBatteryMonitor()
@@ -429,17 +458,25 @@ final class NotchViewModel: ObservableObject {
     /// `ClaudeSelection.Pin`). Settles the pin as it goes.
     private func selectStatus(from statuses: [ClaudeStatus]) -> ClaudeStatus {
         var pin = sessionPin
-        // A pin needs a process the registry can see — never a leftover file.
-        if let held = pin, !claudeSessions.contains(where: { $0.sessionId == held.sessionId }) {
+        // A pin needs a process the registry can see — never a leftover file
+        // — or a background session agent view still lists (Milestone 21).
+        if let held = pin, !claudeSessions.contains(where: { $0.sessionId == held.sessionId }),
+           backgroundMerge.agentOnly(held.sessionId) == nil {
             pin = nil
         }
-        let selection = ClaudeSelection.select(from: selectionPool(statuses), pin: pin)
+        let selection = ClaudeSelection.select(from: selectionPool(statuses, pinned: pin?.sessionId), pin: pin)
         if sessionPin != selection.pin { sessionPin = selection.pin }
         return selection.status
     }
 
     /// The records selection chooses between, corrected.
-    private func selectionPool(_ statuses: [ClaudeStatus]) -> [ClaudeStatus] {
+    ///
+    /// A background session only agent view knows of (Milestone 21) is in
+    /// the pool only while it's the one pinned: it is listed and counted,
+    /// but never takes the island by itself — its state comes from a read on
+    /// a cue, not an event there is a moment to announce, and a session
+    /// blocked for days would otherwise hold the island for days.
+    private func selectionPool(_ statuses: [ClaudeStatus], pinned: String? = nil) -> [ClaudeStatus] {
         // Drop records whose process is gone. Skipped entirely while the
         // registry is empty (not yet scanned, or ~/.claude/sessions missing),
         // since filtering against nothing would blank the island.
@@ -447,7 +484,12 @@ final class NotchViewModel: ObservableObject {
             guard let id = status.sessionId else { return true }
             return claudeSessions.contains { $0.sessionId == id }
         }
-        return (live.isEmpty ? statuses : live).map(reconciled)
+        let pool = (live.isEmpty ? statuses : live).map(reconciled).map(backgroundMerge.resolve)
+        if let pinned, !pool.contains(where: { $0.sessionId == pinned }),
+           let background = backgroundMerge.agentOnly(pinned) {
+            return pool + [background]
+        }
+        return pool
     }
 
     /// Corrects a `working` record the hooks will never close out.
@@ -579,7 +621,7 @@ final class NotchViewModel: ObservableObject {
     /// A prompt dismissed with Esc is the same kind of stuck record — no hook
     /// fires — so the attention states ride along (see `reconciledPrompt`).
     private func updateReselectTimer(for state: ClaudeCodeState) {
-        guard keepAwake.isHeld || !otherSessions.isEmpty || sessionListShown
+        guard keepAwake.isHeld || !hookOthersQuiet || sessionListShown
                 || state == .working || state == .compacting || state == .waitingInput
                 || state.isAttention else {
             stopReselectTimer()
@@ -691,8 +733,14 @@ final class NotchViewModel: ObservableObject {
         claudeReadWantsApply = false
 
         let sessionsChanged = reading.sessions != claudeSessions
+        // A background session's process starting, exiting or changing its
+        // status is a cue to ask agent view what that means (Milestone 21).
+        if reading.sessions.filter(\.isBackground) != claudeSessions.filter(\.isBackground) {
+            agentsMonitor.cue()
+        }
         claudeSessions = reading.sessions
         transcriptTails = reading.tails
+        updateBackgroundMerge()
 
         // A request that came or went shows (or retires) its buttons here,
         // after the same hops as the status that goes with it — so a click's
@@ -705,8 +753,57 @@ final class NotchViewModel: ObservableObject {
         }
         updateKeepAwake()
         updateSessionList()
+        syncIslandBackground()
         // The island's session may only now have a pid to resolve.
         if sessionsChanged { updateSessionHost() }
+    }
+
+    // MARK: - Background sessions (Milestone 21)
+
+    /// A new read of `claude agents`. Applied like a reading: the merge,
+    /// then selection, the counts and the list — and only when it changes
+    /// what the merge says, so an unchanged read costs nothing more.
+    private func receiveAgents(_ agents: [ClaudeAgent]) {
+        let now = Date()
+        backgroundFinishedAt = ClaudeBackground.noteFinishes(
+            previous: claudeAgents, current: agents, finishedAt: backgroundFinishedAt, now: now)
+        claudeAgents = agents
+        guard claudeRunning else { return }
+        let before = backgroundMerge
+        updateBackgroundMerge(now: now)
+        guard backgroundMerge != before else { return }
+        let resolved = selectStatus(from: claudeStatuses)
+        if resolved.state != claudeState || resolved.fromAgent != claudeStateFromAgent
+            || resolved.sessionId != claudeSessionId {
+            applyClaudeStatus(resolved)
+        }
+        updateKeepAwake()
+        updateSessionList()
+        syncIslandBackground()
+    }
+
+    /// Re-merges the last `claude agents` read with the bridge's sessions.
+    /// Cheap and pure; run on every reading, since a hook record appearing
+    /// or going changes which background sessions are agent view's alone.
+    /// A finished session Isle saw finish drops off an hour later at the
+    /// first reading after that — there's no timer for it.
+    private func updateBackgroundMerge(now: Date = Date()) {
+        var seen = Set<String>()
+        let hookIds = claudeStatuses.compactMap { status -> String? in
+            guard let id = status.sessionId, !seen.contains(id),
+                  claudeSessions.contains(where: { $0.sessionId == id }) else { return nil }
+            seen.insert(id)
+            return id
+        }
+        backgroundMerge = ClaudeBackground.merge(
+            hookSessionIds: hookIds, registry: claudeSessions, agents: claudeAgents,
+            finishedAt: backgroundFinishedAt, now: now)
+    }
+
+    /// Publishes what agent view adds about the island's session.
+    private func syncIslandBackground() {
+        let info = claudeSessionId.flatMap { backgroundMerge.info[$0] }
+        if claudeBackground != info { claudeBackground = info }
     }
 
     /// The transcript's last timestamped entry: whether it leaves the model
@@ -885,9 +982,11 @@ final class NotchViewModel: ObservableObject {
             guard let id = status.sessionId,
                   claudeSessions.contains(where: { $0.sessionId == id })
             else { continue }
-            states[id] = status.state == .working || status.state.isAttention
-                ? reconciled(status).state
-                : status.state
+            let corrected = status.state == .working || status.state.isAttention
+                ? reconciled(status)
+                : status
+            // A finished turn Claude Code says is blocked (Milestone 21).
+            states[id] = backgroundMerge.resolve(corrected).state
         }
         return states
     }
@@ -914,24 +1013,36 @@ final class NotchViewModel: ObservableObject {
 
     /// Recounts `otherSessions` from `liveSessionStates`, leaving out the
     /// session the island is showing. Publishes only on a change.
+    ///
+    /// The background sessions only agent view knows of (Milestone 21) are
+    /// counted too, as Claude Code reports them — blocked needs you, working
+    /// is working — but kept out of `hookOthersQuiet`, the tick's reason.
     private func updateOtherSessions() {
         var others = ClaudeOtherSessions()
-        if claudeRunning {
-            for (id, state) in liveSessionStates where id != claudeSessionId {
-                if state.isAttention {
-                    others.needYou += 1
-                } else if state == .working || state == .compacting {
-                    others.working += 1
-                }
+        func count(_ state: ClaudeCodeState) {
+            if state.isAttention {
+                others.needYou += 1
+            } else if state == .working || state == .compacting {
+                others.working += 1
             }
         }
-        guard others != otherSessions else { return }
-        let wasEmpty = otherSessions.isEmpty
-        otherSessions = others
+        var hookQuiet = true
+        if claudeRunning {
+            for (id, state) in liveSessionStates where id != claudeSessionId {
+                count(state)
+            }
+            hookQuiet = others.isEmpty
+            for status in backgroundMerge.agentOnly where status.sessionId != claudeSessionId {
+                count(status.state)
+            }
+        }
+        let wasQuiet = hookOthersQuiet
+        hookOthersQuiet = hookQuiet
+        if others != otherSessions { otherSessions = others }
         // A busy background session is only ever noticed going quiet by an
         // event or a tick — an interrupt fires no hook — so the tick runs
         // for as long as the count does.
-        if others.isEmpty != wasEmpty {
+        if hookQuiet != wasQuiet {
             updateReselectTimer(for: claudeState)
         }
     }
@@ -954,6 +1065,11 @@ final class NotchViewModel: ObservableObject {
     /// A finished turn stays Done, with what Claude said, until the session
     /// moves again — the record says so, and the list is where you go to
     /// find out what each session did.
+    ///
+    /// Background sessions (Milestone 21) are merged in last: a live one
+    /// keeps its hook row, with its own name and Claude Code's word where
+    /// the hooks have none; one only agent view knows of gets a row of its
+    /// own. Matched on session id, so nothing is listed twice.
     private func updateSessionList() {
         var rows: [ClaudeSessionRow] = []
         if claudeRunning {
@@ -962,8 +1078,8 @@ final class NotchViewModel: ObservableObject {
                 guard let id = status.sessionId else { return false }
                 return claudeSessions.contains { $0.sessionId == id }
             }
-            rows = ClaudeSelection.ranked(live.map { eased(reconciled($0), at: now) })
-                .map { ClaudeSessionRow($0, request: request(for: $0)) }
+            rows = ClaudeBackground.rows(live: live.map { eased(reconciled($0), at: now) },
+                                         merge: backgroundMerge, request: request(for:))
         }
         if rows != sessionList { sessionList = rows }
         updateSessionHosts()
@@ -1007,6 +1123,8 @@ final class NotchViewModel: ObservableObject {
         sessionListShown = true
         updateReselectTimer(for: claudeState)
         updateSessionHosts()
+        // What agent view says now, not when it last changed a file.
+        agentsMonitor.cue()
     }
 
     /// Back from the list to the face, on whichever session selection has.
@@ -1020,8 +1138,9 @@ final class NotchViewModel: ObservableObject {
     /// — the approval, the question, the reply — is for that session, until
     /// another session newly needs you or you go back.
     func pinSession(_ sessionId: String) {
-        guard claudeSessions.contains(where: { $0.sessionId == sessionId }),
-              let pin = ClaudeSelection.pin(sessionId, in: selectionPool(claudeStatuses))
+        guard claudeSessions.contains(where: { $0.sessionId == sessionId })
+                || backgroundMerge.agentOnly(sessionId) != nil,
+              let pin = ClaudeSelection.pin(sessionId, in: selectionPool(claudeStatuses, pinned: sessionId))
         else { return }
         sessionPin = pin
         sessionListShown = false
@@ -1081,13 +1200,28 @@ final class NotchViewModel: ObservableObject {
         sessionHosts[id] = host?.app == nil ? nil : host
     }
 
-    /// The app a row's Jump names, or nil when there's nowhere resolved.
+    /// The app a row's Jump names, or nil when there's nowhere resolved. A
+    /// background session with no terminal of its own (Milestone 21) jumps
+    /// by attaching in Terminal, when its attach id is known.
     func jumpTarget(for sessionId: String) -> String? {
         sessionHosts[sessionId]?.app?.name
+            ?? (backgroundMerge.info[sessionId]?.attachId != nil ? ClaudeLauncher.attachApp : nil)
     }
 
-    /// A row's Jump: that session's tab, resolved again at the click.
+    /// Whether a row's Jump attaches (`claude attach`) rather than going to
+    /// a terminal the session is already in.
+    func jumpAttaches(_ sessionId: String) -> Bool {
+        sessionHosts[sessionId]?.app == nil && backgroundMerge.info[sessionId]?.attachId != nil
+    }
+
+    /// A row's Jump: that session's tab, resolved again at the click — or,
+    /// for a background session with no terminal, a Terminal window
+    /// attached to it.
     func jumpToSession(_ sessionId: String) {
+        if jumpAttaches(sessionId), let info = backgroundMerge.info[sessionId], let id = info.attachId {
+            ClaudeLauncher.attach(id, in: info.cwd)
+            return
+        }
         guard let pid = claudeSessions.first(where: { $0.sessionId == sessionId })?.pid,
               sessionHosts[sessionId] != nil
         else { return }
@@ -1360,6 +1494,10 @@ final class NotchViewModel: ObservableObject {
             self?.requestClaudeReading()
         }
 
+        agentsMonitor.onAgents = { [weak self] agents in
+            self?.receiveAgents(agents)
+        }
+
         power.onEvent = { [weak self] toast in
             self?.enqueueToast(toast)
         }
@@ -1604,12 +1742,20 @@ final class NotchViewModel: ObservableObject {
             claudeWatcher.start()
             requestWatcher.start()
             sessionRegistry.start()
+            agentsMonitor.start()
             // The registry, even if no status file ever publishes.
             requestClaudeReading()
         } else {
             claudeWatcher.stop()
             requestWatcher.stop()
             sessionRegistry.stop()
+            agentsMonitor.stop()
+            claudeAgents = []
+            backgroundFinishedAt = [:]
+            backgroundMerge = .empty
+            claudeBackground = nil
+            claudeStateFromAgent = false
+            hookOthersQuiet = true
             // Not watching means nothing to back the claim with.
             keepAwake.release()
             publishKeepAwake()
@@ -1751,6 +1897,8 @@ final class NotchViewModel: ObservableObject {
             replyDelivery = .none
         }
         claudeSessionId = status.sessionId
+        if claudeStateFromAgent != status.fromAgent { claudeStateFromAgent = status.fromAgent }
+        syncIslandBackground()
         claudeAction = status.action
         claudeTarget = status.target
         claudeErrorType = status.errorType
@@ -1758,7 +1906,10 @@ final class NotchViewModel: ObservableObject {
         claudeResetAt = status.resetAt
         let finalLine = ClaudeDoneLine.line(from: status.lastMessage)
         if claudeFinalLine != finalLine { claudeFinalLine = finalLine }
-        claudeUpdatedAt = status.state == .disconnected ? nil : Date()
+        // A background session no hook wrote for has no "when" Isle can
+        // vouch for: no "… ago" rather than one counted from the read.
+        claudeUpdatedAt = status.state == .disconnected || (status.fromAgent && status.updatedAt == nil)
+            ? nil : Date()
         claudeRequestId = status.requestId
         refreshPendingRequest()
         // The island may have moved to another session; the count leaves out
@@ -1774,6 +1925,10 @@ final class NotchViewModel: ObservableObject {
             stopWorkingWords()
         }
         updateReselectTimer(for: status.state)
+
+        // Claude Code's own state isn't a hook's toast: it says blocked
+        // until Claude Code says otherwise, so nothing eases it to Ready.
+        guard !status.fromAgent else { return }
 
         // `done` and `failed` are both terminal toasts: show them, then ease
         // back to idle so they don't stick until the next prompt. A failure
@@ -2134,6 +2289,9 @@ final class NotchViewModel: ObservableObject {
         // routed, every player gets asked, so whichever has a track is found.
         if hovering, hoveredIslands == 1 {
             (routedPlayer.map { [$0] } ?? players).forEach { $0.pollNow() }
+            // The Claude face and the home tile count agent view's sessions;
+            // opening the panel is the moment to have them current.
+            if settings.effectiveMode.showsClaude { agentsMonitor.cue() }
             // The shelf's watches catch a file leaving; this catches what a
             // watch can't (a volume that went before its watch was set).
             shelf.prune()
@@ -2364,13 +2522,28 @@ final class NotchViewModel: ObservableObject {
     /// there's nowhere resolved to jump to.
     var jumpTarget: String? {
         guard claudeState != .disconnected else { return nil }
-        return sessionHost?.app?.name
+        return sessionHost?.app?.name ?? (islandAttachId != nil ? ClaudeLauncher.attachApp : nil)
+    }
+
+    /// The island's session is a background one with no terminal of its own
+    /// (Milestone 21): Jump attaches to it in Terminal.
+    var jumpAttaches: Bool {
+        sessionHost?.app == nil && islandAttachId != nil
+    }
+
+    private var islandAttachId: String? {
+        claudeBackground?.attachId
     }
 
     /// Brings the session's tab (or its app) to the front. Resolved again
     /// at the click, since tabs move between windows and a tmux client can
     /// re-attach elsewhere; a session that no longer resolves goes nowhere.
+    /// A background session with no terminal is attached to instead.
     func jumpToSession() {
+        if jumpAttaches, let id = islandAttachId {
+            ClaudeLauncher.attach(id, in: claudeBackground?.cwd)
+            return
+        }
         guard let pid = selectedSession?.pid, sessionHost?.app != nil else { return }
         Task.detached(priority: .userInitiated) { [weak self] in
             let host = ClaudeHostResolver.resolve(cliPID: pid)
@@ -3452,12 +3625,25 @@ extension NotchViewModel {
         applyClaudeReading(ClaudeReading(sessions: sessions, tails: [:]), generation: claudeReadGeneration)
     }
 
+    /// Lands one `claude agents` read, as the monitor would (Milestone 21).
+    /// After `applyTestReading`, which is what turns the bridge on.
+    func applyTestAgents(_ agents: [ClaudeAgent]) {
+        receiveAgents(agents)
+    }
+
     func applyPreviewFixture(_ fixture: ClaudePanelFixture) {
         claudeState = fixture.state
         claudeProject = fixture.project
         claudeSessionId = fixture.sessionId ?? fixture.request?.sessionId ?? "preview-session"
         claudeRequests = fixture.sessionRequests + (fixture.request.map { [$0] } ?? [])
-        sessionList = ClaudeSelection.ranked(fixture.sessions).map { ClaudeSessionRow($0, request: request(for: $0)) }
+        // Through the real merge, as if `claude agents` had listed
+        // `fixture.agents` (Milestone 21).
+        backgroundMerge = ClaudeBackground.merge(
+            hookSessionIds: fixture.sessions.compactMap(\.sessionId), registry: [], agents: fixture.agents,
+            finishedAt: [:], now: Date())
+        sessionList = ClaudeBackground.rows(live: fixture.sessions, merge: backgroundMerge, request: request(for:))
+        claudeBackground = claudeSessionId.flatMap { backgroundMerge.info[$0] }
+        claudeStateFromAgent = fixture.stateFromAgent
         sessionListShown = fixture.listShown
         sessionPin = fixture.pinned ? claudeSessionId.map { ClaudeSelection.Pin(sessionId: $0) } : nil
         sessionHosts = fixture.sessionHosts

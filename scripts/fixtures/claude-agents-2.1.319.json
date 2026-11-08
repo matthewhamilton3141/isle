@@ -1,0 +1,39 @@
+[
+  {
+    "id": "30d0d02c",
+    "cwd": "/Users/matthew/Documents/retermina",
+    "kind": "background",
+    "startedAt": 1781978364057,
+    "sessionId": "30d0d02c-03cd-4849-bcfd-5c8c43c49dc9",
+    "name": "Redesign grid system and modernize app chrome",
+    "state": "blocked"
+  },
+  {
+    "pid": 38412,
+    "cwd": "/Users/matthew/Documents/autopilot",
+    "kind": "interactive",
+    "startedAt": 1793318884727,
+    "sessionId": "1a472770-684c-4da7-beb9-901fab83c199",
+    "name": "autopilot-bd",
+    "status": "waiting",
+    "waitingFor": "dialog open"
+  },
+  {
+    "pid": 49210,
+    "cwd": "/Users/matthew/Documents",
+    "kind": "interactive",
+    "startedAt": 1793742782509,
+    "sessionId": "f5c3e4b2-1826-4214-afea-da74df192475",
+    "name": "documents-5f",
+    "status": "idle"
+  },
+  {
+    "pid": 77016,
+    "cwd": "/Users/matthew/Documents/isle",
+    "kind": "interactive",
+    "startedAt": 1793751000186,
+    "sessionId": "adf8176b-8654-4f0e-bb09-f9c545e90b60",
+    "name": "isle-ae",
+    "status": "busy"
+  }
+]
