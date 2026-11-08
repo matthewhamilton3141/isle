@@ -141,6 +141,10 @@ enum ClaudePanelLayout {
     /// The Jump chip at a row's end, and the room held for it on a row
     /// without one, so the times stay in one column.
     static let sessionJumpWidth: CGFloat = 24
+    /// A background session's own name (Milestone 21) — a sentence, often,
+    /// like "Redesign grid system and modernize app chrome" — gets more of
+    /// the row than a project folder, since its detail is short.
+    static let sessionNameMaxWidth: CGFloat = 170
 
     static var sessionProjectFont: Font { .system(size: sessionTextSize, weight: .semibold) }
     static var sessionStateFont: Font { .system(size: sessionTextSize, weight: .semibold) }

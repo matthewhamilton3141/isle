@@ -150,6 +150,16 @@ struct HomeGridView: View {
 
         switch vm.claudeState {
         case .disconnected:
+            // Nothing live on the island, but agent view has background
+            // sessions (Milestone 21): what they are, counted the same way.
+            if !sessions.isEmpty {
+                let working = sessions.filter { $0.state == .working || $0.state == .compacting }.count
+                let line = "\(sessions.count) \(sessions.count == 1 ? "session" : "sessions")"
+                    + (needYou == 0 ? "" : " · \(needYou) \(needYou == 1 ? "needs" : "need") you")
+                if needYou > 0 { return .init("Needs you", line) }
+                if working > 0 { return .init("Working", line) }
+                return nil
+            }
             return others > 0 ? .init("Needs you", othersLine) : nil
         case .needsApproval:
             if let request = vm.pendingRequest, request.kind == .approval {

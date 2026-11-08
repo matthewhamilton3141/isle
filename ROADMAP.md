@@ -1580,6 +1580,138 @@ empty, a list, every suggestion used, the hook not installed).
 - **Monitor is guarded too**, since it runs a shell command and never asks on
   its own.
 
+## Milestone 21 — Background sessions in the list
+
+From Field scan 3. Claude Code's agent view runs sessions with no terminal
+(`claude --bg`, `claude agents`), hosted by a supervisor. Isle couldn't see
+most of them: a blocked one (since June, its process long gone) was in
+`claude agents` and nowhere on the notch.
+
+### What we found (2.1.319, 2026-11-07)
+
+Two short `claude --bg` runs (haiku, a scratch project, a scratch
+`--settings` that dumped every hook's stdin), both removed afterwards.
+
+- **A live background session is an ordinary session to the bridge.** Its
+  process (`claude bg-spare`, under `claude daemon run`) writes
+  `~/.claude/sessions/<pid>.json` with `kind: "bg"` and its `jobId`, and fires
+  the user's hooks: SessionStart, UserPromptSubmit, PreToolUse,
+  PermissionRequest, Notification (`permission_prompt`), PostToolUse, Stop,
+  SessionEnd. Isle's real `isle-cli` wrote `~/.isle/sessions/<id>.json`
+  (`done`, "ok") for the first run. The hook `session_id` is the
+  `sessionId` `claude agents` prints; the job's short id is its first eight
+  characters. No tty (`CLAUDE_CODE_SESSION_ATTENDED=0`, `CLAUDE_JOB_DIR` set).
+- **The approval handshake works with no terminal.** The second run's
+  PermissionRequest went to the worktree's `isle-cli ask` under a scratch
+  HOME, with a stand-in for Isle answering by rename after 10s: the hook
+  blocked, `claude agents` said `state: blocked, status: waiting, waitingFor:
+  "permission prompt"` throughout, the answer was honoured, `touch` ran,
+  PostToolUse fired the same second. So the notch's Approve/Deny reach a
+  background session; nothing new is needed for them.
+- **What the bridge can't see** is everything after the process: `claude
+  stop` (or the supervisor's ~1h idle stop) fires SessionEnd, `isle-cli end`
+  deletes the record, and `claude agents` keeps listing the session (`done`,
+  no pid). A session blocked on you can sit there for days. Nor does any
+  hook say *blocked* when a turn ends on a question — the hooks say Done.
+- **`claude agents --json --all`**: 0.09–0.15s wall, ~0.12s CPU, ~150 MB
+  peak RSS (short-lived), 1 KB for four sessions. It doesn't start the
+  supervisor. Background entries carry `id`, `state`, `name`, and while the
+  process lives `pid`, `status`, `waitingFor`; interactive ones `pid`,
+  `status`, `waitingFor` and no `state`.
+- **What to watch.** `~/.claude/jobs/<id>/state.json` is replaced by rename
+  on every change (inode changed at start, blocked and done), so a directory
+  watch on each job's folder sees it; `~/.claude/jobs` itself sees jobs come
+  and go. The docs say those files aren't a stable interface, so Isle never
+  parses them — they're only the cue.
+- **Attach** is `claude attach <id|name>` (CLI help and the docs); it restarts
+  a stopped session from its conversation.
+
+### What it does
+
+- **The list** gets every background session `claude agents` reports, merged
+  with the hook rows by session id (then the registry's `jobId`, then pid),
+  so nothing is listed twice. A row goes by Claude Code's own name for the
+  session (up to 170pt, against a project's 120). A live one keeps its
+  hook detail; one only agent view knows of says the state in Claude Code's
+  words (Working, Needs you, Needs approval, Done, Failed, Stopped, or an
+  unknown word verbatim) and, as its detail, what it's waiting for when
+  Claude Code names it, then the project. No age: no hook wrote it. The
+  header says "N sessions" instead of "N live" when a row may have no process.
+- **Blocked beats a hook's Done.** When the hooks saw a turn end and Claude
+  Code says the session is blocked, the row and the island say Needs you,
+  with Claude's last words (usually the question). Every other disagreement
+  goes to the hook, which is fresher.
+- **Finished ones are quieter** (dimmer name, grey state) and listed while
+  their process is alive — Claude Code keeps it about an hour — or for an
+  hour after Isle saw them finish. Done/failed/stopped seen only after the
+  fact (at launch) aren't listed.
+- **Counts.** `otherSessions` and the home tile count them (blocked needs you,
+  working is working). The 5s reselect tick doesn't run for them.
+- **The island** is never taken by a session only agent view knows of; it can
+  be picked from the list and pinned, under M16's rules. The face then says
+  Needs you / Needs your approval / Stopped… with its name in the eyebrow and
+  an **Attach in Terminal** pill. No reply field: there's no terminal.
+- **Jump** prefers the M11 path (a terminal the pid's tree resolves to); a
+  background session with a known id otherwise opens Terminal.app running
+  `cd -- '<cwd>' 2>/dev/null; claude attach <id>` (the id must be
+  `[A-Za-z0-9_-]`, ≤64, no leading `-`). No id, no Jump.
+- **With nothing live** but agent view's sessions, the face says "One session
+  in the background" with the marks as the way in, and the home tile "Needs
+  you · 1 session · 1 needs you".
+
+### Cost and cues
+
+Read on a cue only: a `~/.claude/jobs` change, a job folder's change, a
+background session's registry record changing, the panel opening (Claude
+showing), and the list opening. Coalesced (0.4s) and at most once every 3s,
+however many cues arrive. No timer, fast or slow: every change Claude Code
+makes to a background session's state renames its `state.json`, so there's
+nothing a timer would catch that the watch doesn't, and an hour's expiry of
+a finished row is checked at the next read. `claude` is found in the usual
+install places, then once via the login shell; a miss is retried after ten
+minutes. A failed read empties the background half rather than keeping a
+stale one.
+
+### Tests
+
+`scripts/test-background-sessions.sh`, 174 checks, compiled with every Isle
+source: the parser against the real `claude agents --json --all` output from
+this Mac and the probe's shapes (`scripts/fixtures/`), malformed and partial
+JSON, unknown states, wrong types; attach-id safety; the merge (by id,
+jobId, pid; registry-only; listing rules; blocked over Done); the rows; the
+attach command line; and through the view model — counts, the pin, a
+background session going away, nothing live, and a live one turning blocked.
+
+### Renders
+
+`scratchpad/m21/render/png/{before,after}_*.png` and `sheet_*.png`:
+terminal-only lists (unchanged), mixed lists of 4 and 7, Both mode, the way
+in, pinned (blocked with a long name, on a permission prompt, working and
+done with hooks, Both), the home tile, and background-only face/list/tile.
+
+### Not verified
+
+- In the running app: Terminal's attach window, the jobs watch firing in
+  Isle (the rename was seen from the shell), and the `claude` lookup from a
+  launchd-started app.
+- A session sent to the background from a terminal with `←`: assumed the
+  same `kind: "bg"` record; not run.
+- Being attached to a background session elsewhere: its worker's process
+  tree has no terminal, so Jump opens a second attach.
+
+### Decisions to confirm
+
+- **Agent-only sessions never take the island by themselves.** The list's
+  first row can then be one the island isn't showing (it's lit, so it's
+  visible). The alternative puts a session blocked for days on the island for
+  days.
+- **Finished background sessions**: listed while their process lives or an
+  hour after Isle saw them finish, quieter; else hidden.
+- **Blocked over a hook's Done** for a live background session.
+- **"Failed"** for Claude Code's failed (the hooks' API error stays "Error").
+- **Attach always opens Terminal.app**, whatever terminal the user prefers —
+  it's the one Isle already scripts for Start Claude.
+
 ## Milestone 8 — Multi-Display  ✅
 
 The spec scoped v1 to the built-in display ("non-goal: multi-display sync"), and

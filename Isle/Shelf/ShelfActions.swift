@@ -70,7 +70,11 @@ enum ClaudeLauncher {
     /// opened its startup window too, so the command goes into that one
     /// rather than leaving an empty window behind it.
     static func appleScript(for folder: URL) -> String {
-        let command = appleScriptLiteral(shellCommand(for: folder))
+        appleScript(running: shellCommand(for: folder))
+    }
+
+    static func appleScript(running shellCommand: String) -> String {
+        let command = appleScriptLiteral(shellCommand)
         return """
         set wasRunning to application "Terminal" is running
         tell application "Terminal"
@@ -90,7 +94,33 @@ enum ClaudeLauncher {
     /// Automation prompt, and every run waits on Terminal.
     static func start(in folder: URL) {
         guard canStart(in: folder) else { return }
-        let source = appleScript(for: folder)
+        run(appleScript(for: folder))
+    }
+
+    // MARK: Attach (Milestone 21)
+
+    /// The app a background session's Jump opens, as the notch names it.
+    static let attachApp = "Terminal"
+
+    /// The command line for attaching to a background session:
+    /// `cd -- '<cwd>' 2>/dev/null; claude attach <id>`. In its own folder, so
+    /// the window opens where the session works, but attached even if that
+    /// folder has gone. Nil for an id that isn't plainly one — `claude --bg`
+    /// prints eight hex digits — or a folder `canStart` wouldn't take.
+    static func attachCommand(_ id: String, in cwd: String?) -> String? {
+        guard ClaudeAgent(id: id, cwd: "/", kind: "background").attachId == id else { return nil }
+        let attach = "claude attach \(id)"
+        guard let cwd, !cwd.isEmpty, canStart(in: URL(fileURLWithPath: cwd)) else { return attach }
+        return "cd -- \(shellQuoted(cwd)) 2>/dev/null; \(attach)"
+    }
+
+    /// Opens a Terminal window attached to background session `id`.
+    static func attach(_ id: String, in cwd: String?) {
+        guard let command = attachCommand(id, in: cwd) else { return }
+        run(appleScript(running: command))
+    }
+
+    private static func run(_ source: String) {
         queue.async {
             guard let script = NSAppleScript(source: source) else { return }
             var error: NSDictionary?

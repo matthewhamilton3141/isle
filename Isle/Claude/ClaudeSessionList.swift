@@ -101,7 +101,8 @@ enum ClaudeSelection {
     }
 }
 
-/// One live session, as a row of the list.
+/// One live session, as a row of the list — or a background session agent
+/// view lists that has no live process to be live in (Milestone 21).
 struct ClaudeSessionRow: Identifiable, Equatable {
     let id: String
     let project: String?
@@ -114,8 +115,26 @@ struct ClaudeSessionRow: Identifiable, Equatable {
     let limitKind: String?
     /// What it's doing, what it's asking, or what Claude said last.
     let detail: String
-    /// When the session's hook last wrote.
+    /// When the session's hook last wrote. Nil for a background session no
+    /// hook has written for — the row then shows no age.
     let updatedAt: Date?
+    /// For a session agent view hosts (Milestone 21): its name, how to
+    /// attach to it, and Claude Code's state for it.
+    let background: ClaudeBackgroundInfo?
+    /// The state is Claude Code's (`claude agents`), not a hook's.
+    let stateFromAgent: Bool
+
+    /// What the row is called: a background session by its own name, any
+    /// other by its project.
+    var label: String? {
+        background?.name ?? project
+    }
+
+    /// A background session Claude Code reports finished — done, failed or
+    /// stopped — is drawn quieter than the ones still going.
+    var isQuiet: Bool {
+        background?.isFinished ?? false
+    }
 
     /// The marker the row draws: the island's own mapping, failure kinds and
     /// all.
@@ -124,8 +143,11 @@ struct ClaudeSessionRow: Identifiable, Equatable {
     }
 
     /// The state in a word or two, as the face's headline and the home tile
-    /// say it.
+    /// say it. Claude Code's own word when the state came from it.
     var stateTitle: String {
+        if stateFromAgent, let agentState = background?.state {
+            return ClaudeBackground.title(for: agentState, waitingFor: background?.waitingFor)
+        }
         switch state {
         case .needsApproval: return "Needs approval"
         case .needsQuestion: return "Question"
@@ -152,7 +174,13 @@ struct ClaudeSessionRow: Identifiable, Equatable {
     /// The row for `status`, whose request (if a hook is blocked on one) is
     /// `request`. Words only from what the record carries: the tool and its
     /// target, the request's own text, or Claude's final message.
-    init(_ status: ClaudeStatus, request: ClaudeRequest?) {
+    ///
+    /// A background session's row (Milestone 21) carries `background`. When
+    /// its state is Claude Code's rather than a hook's (`status.fromAgent`),
+    /// the detail is what `claude agents` gives — the project, and what it's
+    /// waiting for when it names it — or, for a turn the hooks saw end,
+    /// Claude's own last words.
+    init(_ status: ClaudeStatus, request: ClaudeRequest?, background: ClaudeBackgroundInfo? = nil) {
         id = status.sessionId ?? ""
         project = status.project.flatMap { $0.isEmpty ? nil : $0 }
         state = status.state
@@ -160,17 +188,38 @@ struct ClaudeSessionRow: Identifiable, Equatable {
         limitNext = status.limitNext
         limitKind = status.limitKind
         updatedAt = status.updatedAt
+        self.background = background
+        stateFromAgent = status.fromAgent && background?.state != nil
         let activity = ClaudeActivity(action: status.action, target: status.target)?.phrase
         let said = ClaudeDoneLine.line(from: status.lastMessage)
+        if self.stateFromAgent, let background {
+            // What it's waiting for first, so a narrow row cuts the project
+            // rather than it — except a permission prompt, which the state
+            // ("Needs approval") already says.
+            let waiting = background.waitingFor == "permission prompt"
+                ? nil : ClaudeBackground.waitingPhrase(background.waitingFor)
+            let whereAndWhat = [waiting, project ?? background.project]
+                .compactMap { $0 }
+                .joined(separator: " · ")
+            let fallback = whereAndWhat.isEmpty ? "In the background" : whereAndWhat
+            switch background.state {
+            case .working?: detail = fallback
+            default: detail = said ?? fallback
+            }
+            return
+        }
+        // No terminal to answer in: a background session is answered by
+        // attaching to it.
+        let answerIn = background?.attachId != nil ? "Attach to answer" : "Answer in its terminal"
         switch status.state {
         case .working:
             detail = activity ?? (status.limitNext == .resumed ? ClaudeLimit.resumedLine(kind: status.limitKind) : "Thinking…")
         case .compacting:
             detail = "Compacting the conversation"
         case .needsApproval:
-            detail = request.map(Self.approvalLine) ?? activity ?? "Answer in its terminal"
+            detail = request.map(Self.approvalLine) ?? activity ?? answerIn
         case .needsQuestion:
-            detail = request?.questions.first?.question ?? "Answer in its terminal"
+            detail = request?.questions.first?.question ?? answerIn
         case .waitingInput:
             detail = said ?? "Ready for your next prompt"
         case .done:

@@ -63,6 +63,11 @@ struct ClaudePanelFixture: Identifiable {
     var sessionHosts: [String: ClaudeSessionHost] = [:]
     /// Drawn on the home grid (in `.both`) rather than in the face.
     var home = false
+    /// What `claude agents --json --all` lists (Milestone 21), merged with
+    /// `sessions` the way the bridge merges them.
+    var agents: [ClaudeAgent] = []
+    /// The island's state is Claude Code's, not a hook's.
+    var stateFromAgent = false
     /// A toast pinned on the collapsed island; the render harness draws a
     /// fixture carrying one collapsed.
     var toast: IslandToast? = nil
