@@ -74,6 +74,12 @@ struct ClaudeExpandedView: View {
                 } else {
                     statusFace
                         .padding(.leading, L.glyphSize + L.glyphGap)
+                        // A two-line body (a long command, Claude's words, the
+                        // subagent line) fills the content area under a 32pt
+                        // band. The row's own bottom inset gives way into the
+                        // panel's bottom padding before the gap above the row
+                        // does, so the row keeps its `bodyGap`.
+                        .padding(.bottom, -L.bottomInset)
                         .transition(.opacity)
                 }
             }
@@ -106,6 +112,12 @@ struct ClaudeExpandedView: View {
     private var glyph: some View {
         ClaudeStatusGlyphView(state: state, kind: viewModel.claudeMarkerKind, palette: palette)
             .frame(width: L.glyphSize, height: L.glyphSize)
+            // No height of its own in the face's layout. The glyph is taller
+            // than the content area under a 32pt band (114 against 104), and
+            // as a full-height child it made the face overflow, which centred
+            // it: the whole face rode ~5pt up, the eyebrow into the camera
+            // cutout, and out of line with the question and list faces'.
+            .frame(width: L.glyphSize, height: 0, alignment: .top)
             .offset(y: -L.glyphRaise)
     }
 
