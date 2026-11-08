@@ -2234,6 +2234,180 @@ and `b1980fb` if it's ever wanted back.
 
 ---
 
+## Field scan — what notch apps ship (X, 2026-11-04)
+
+A sweep of X for notch apps and feature requests. Two things changed the
+landscape since the milestones above were written.
+
+**Apple shipped the baseline.** macOS 27.3 beta adds a system Dynamic Island,
+and the new OLED MacBook Pro has one in hardware. On an M5 it's reported as a
+pill in the menu bar that drops a player down, not something drawn around the
+notch. Plain now-playing is no longer a reason to install Isle. The Claude
+side, the real-signal waveform, and polish are.
+
+**The Claude-in-the-notch category got crowded.** Ten or more apps (Notchy,
+look alive, CrewNotch, Lookout, Drop Notch, Halo, earshot, ClaudeNotch,
+kishinotch, plus a multi-agent app at 6.6K likes) and they converge on the same
+set:
+
+| Feature | Seen in | Isle |
+|---|---|---|
+| Approve / deny tool calls in the notch | Nearly all | **M7**, specced, not built |
+| Answer the agent in the notch | look alive, Drop Notch | M7 covers `AskUserQuestion` options; free text stays out (M7 boundary) |
+| 5h / weekly plan usage | Halo, CrewNotch, Lookout, Codenotch | Shown only after a usage-limit failure |
+| Click → back to that exact session | Multi-agent app | No → **M11** |
+| Keep the Mac awake while an agent works | Notchy | No → small, below |
+| Chime on finish | Notchy | Has `NotificationSound` |
+| Several agents (Codex, Cursor, …) | Most | Codex on `backup/codex-and-apple-music` |
+| Drop a folder on the notch to launch an agent there | ClaudeNotch | — |
+
+Music-side asks that recur: **synced lyrics** (the most visible), **switching
+output to AirPods** from the island, Up Next reordering, a per-app volume mixer.
+Popular but off-identity, and not pursued: teleprompter (6.1K), clipboard
+drawer, file shelf / AirDrop, system stats, scores and tickers, a plugin SDK.
+
+### Priority
+
+**M7 first.** It's the one feature every competitor has and Isle lacks, and it
+is already specced with verified findings. Then the candidates below, in order.
+
+### M11 — Jump to the session (candidate)
+
+Click the Claude panel (or the session row) → the terminal window or tab that
+hosts that session comes to the front. The registry already has the CLI's pid;
+walk its parent chain to the hosting app, and for Terminal / iTerm2 select the
+tab by the session's tty. **Says nothing it can't back up:** if the host can't
+be resolved, there is no affordance, rather than one that activates the wrong
+window.
+
+### M12 — Plan usage meter (dropped)
+
+**Dropped 2026-11-05 at Matthew's call:** not worth taking over the
+status-line slot for. The research below stays as the record of how it
+would be done.
+
+5h and weekly percentages in the Claude panel. **Blocked on a real source.**
+Before anything is drawn, find out whether Claude Code exposes the numbers
+anywhere Isle can read without scraping or guessing (status-line input,
+a local file, the `/usage` path). A computed estimate is exactly what Isle
+doesn't show; if no real number exists, this stays parked.
+
+**Researched 2026-11-04 (Claude Code 2.1.318). Verdict: buildable with caveats.**
+
+- **The real source is the status line.** Its stdin carries
+  `rate_limits.five_hour` and `rate_limits.seven_day`, each with
+  `used_percentage` (0–100) and `resets_at` (epoch seconds). These are the
+  numbers `/usage` shows; see the docs' "Rate limit usage" section.
+  - Present only for Pro, Max and Ultra subscribers, and only after a
+    session's first API response. Each window can be absent on its own.
+  - Updates on each assistant message, on resume, after `/compact`, and on
+    the optional `refreshInterval`.
+  - The status line doesn't run in `-p` mode, so this can't be observed
+    headless.
+- **Hooks, files under `~/.claude`, and the CLI carry none of it.** A Stop
+  hook's input has no usage fields. Headless `stream-json` emits a
+  `rate_limit_event` with `utilization` on a 0–1 scale, but only on a request
+  that spends quota.
+- **How competitors get it.**
+  - Lookout and eater-altria/ClaudeNotch wrap the status line.
+  - CrewNotch, Codenotch and CraftStick/ClaudeNotch read Claude Code's OAuth
+    token from the Keychain and call the undocumented `/api/oauth/usage`.
+    Isle won't do that: the legal page bars collecting or intermediating
+    Claude.ai tokens, it causes Keychain prompts, and it's beta-header
+    dependent.
+  - ccusage estimates from transcripts.
+- **Shape, if built.**
+  - An `isle-cli statusline` verb atomically writes
+    `~/.isle/claude-rate-limits.json` (`observed_at`, `session_id`,
+    `rate_limits`) and passes stdin through to any status line it wraps.
+  - HookInstaller sets `statusLine` only with consent, restores a wrapped one
+    on Remove, and detects being replaced by `/statusline`.
+  - The panel shows the percentage with its reset time and the reading's age.
+    A window disappears once `resets_at` passes, and everything hides when the
+    reading is stale. Usage only climbs within a window, so an old reading
+    understates and never overstates.
+- **Decision to lock.** Taking over (or wrapping) the user's single
+  `statusLine` slot. Unverified: whether the IDE extensions and the Desktop
+  Code tab run the user status line at all.
+
+### M13 — Synced lyrics (candidate)
+
+The current line in the expanded music view, time-synced to the playhead.
+Neither Spotify nor Apple Music has a public lyrics API; LRCLIB serves synced
+LRC keyed by title / artist / album / duration. Only *synced* lyrics are shown.
+No line at all when there is no match, never plain lyrics paced by guesswork.
+Opt-in in Settings, since it sends track metadata to a third party.
+
+### M14 — Output device switcher (candidate)
+
+The expanded player lists output devices (Core Audio default output) and
+switches with a click. The process tap follows the player process across
+output switches (see the 0.4.2 notes), so the waveform should survive. Verify
+that on hardware. AirPods noise-control modes are private API; out of scope.
+
+### Navigation (decided 2026-11-05)
+
+Researched in `design/notch-navigation-2` (16e3307 holds debug mockups;
+the proposal was written alongside it). Matthew's decisions:
+
+- **Home grid.** A row of tiles, one per face, each with a live glance
+  (track, Claude state, next event, timer, shelf count). Click a tile to go
+  into its face. Inside a face, a "Home › Music" crumb in the band leads back.
+  This replaces the corner toggle and the top strip.
+- **Two-finger horizontal swipe inside a face moves to the neighbouring
+  face**, tracking the fingers part-way and settling on the gesture's own
+  end phase, never on a timer. Vertical swipes stay with Agenda's list.
+- **The notch opens on the last face chosen.** Only an approval, a question,
+  a failure or a file drag picks the face for you, and those open the
+  Claude face or the drop face directly.
+- **"Start Claude here"** (from a folder dropped on the notch) opens
+  Terminal.app in that folder.
+- **The shelf** (quick storage and AirDrop) is in scope. Its tile shows only
+  while it holds something.
+- **Reply and Jump** live in the Claude face's action row, each shown only
+  when it can actually reach the session.
+
+### Small ones
+
+- **Keep awake while working.** An `IOPMAssertion` held while any session is
+  `working`, released on every exit from it. Opt-in.
+
+---
+
+## Field scan 2 — more from X (2026-11-05)
+
+What's new since the first scan, filtered for what fits Isle:
+
+- **"When an agent finishes, a banner shows what it did"** (Halo 3.0). The
+  Stop hook already carries `last_assistant_message`, so the Done face, or a
+  short toast, can show the first line of what Claude actually said. That's
+  real data, not a summary Isle invents. **Candidate: M15, Done says what
+  happened.**
+- **Every session at once, each with a face** (Notch Island, look alive,
+  NotchNudge). With jump-to-session landing, a session list in the Claude
+  face (state, project, a click to jump) is the next step from "+2 working".
+  **Candidate: M16, session list.**
+- **More agents** (Halo: Claude Code, Codex, OpenCode). Codex support
+  already exists on `backup/codex-and-apple-music` (b4be955) and was never
+  merged. **Candidate: bring Codex back** onto the current hook bridge.
+- **"Every git push waits for your click, even in auto mode"** (earshot). A
+  short, user-set list of commands that always ask in the notch, via a
+  PreToolUse `ask`. A safety net for auto mode. **Candidate: M17, guarded
+  commands.**
+- Seen but not pursued:
+  - one-click 2FA codes (needs Full Disk Access to Messages)
+  - email in the notch
+  - tasks and notes
+  - Live Activities through MenuBarAgent (needs SIP off)
+  - an on-device voice assistant
+- Polish noted: Apple's new Dynamic Island reacts to the pointer approaching,
+  and iPhone's has a genie-like collapse. Worth a look once the faces settle.
+- Context: macOS 27.3 puts Live Activity pills in the menu bar on Macs
+  without a Dynamic Island (MacRumors, 2026-11-04). Apple's island is a
+  menu-bar pill on most Macs, so the notch stays Isle's to own.
+
+---
+
 ## Field scan 3 — Claude Code moved under the bridge (2026-11-07)
 
 Searched the web, Product Hunt, GitHub, Apple press, and the Claude Code docs
