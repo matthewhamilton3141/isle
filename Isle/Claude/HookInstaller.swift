@@ -39,8 +39,9 @@ enum HookInstaller {
     }
 
     /// Hook event → the `isle-cli` arguments for it. `Notification` uses the
-    /// `notify` subcommand, which classifies the message into question /
-    /// waiting; the rest set a fixed state. An event may carry more than one
+    /// `notify` subcommand, which routes it by `notification_type` (and
+    /// leaves the state alone for a type that doesn't concern the island);
+    /// the rest set a fixed state. An event may carry more than one
     /// entry (PreToolUse does).
     private static let hookEvents: [HookEntry] = [
         HookEntry(event: "UserPromptSubmit", args: "set-state working"),
@@ -115,8 +116,15 @@ enum HookInstaller {
     /// PreToolUse entry, matched to Bash and Monitor, runs `guard`, which asks
     /// for a command on the user's list and leaves the notch the reason; and
     /// `ask` drops `updatedPermissions` from an answer for a guarded command,
-    /// so "Always…" can never save a rule that covers one.)
-    private static let currentVersion = 11
+    /// so "Always…" can never save a rule that covers one. v12: the usage
+    /// limit said straight — `fail` writes `limit_kind` and `limit_next` and
+    /// finds the reset in the transcript or the words, since Claude Code's
+    /// text carries no epoch; `notify` routes by `notification_type`, so a
+    /// sign-in or a finished background session no longer reads as a
+    /// question, and the `quota_auto_resume_*` types say what came of the
+    /// wait; and a Bash or Monitor target is the program's name, read from
+    /// the whole command rather than its first 48 characters.)
+    private static let currentVersion = 12
     private static let versionKey = "HookInstaller.installedVersion"
 
     private static var home: URL {
@@ -283,7 +291,8 @@ enum HookInstaller {
     #
     # Usage:
     #   isle-cli set-state <disconnected|idle|working|done>   # state comes from the hook
-    #   isle-cli notify                                        # classify a Notification
+    #   isle-cli notify                                        # route a Notification by its type
+    #   isle-cli fail                                          # StopFailure → the error, or the usage limit
     #   isle-cli ask                                           # permission → block for the notch
     #   isle-cli ask-question                                  # AskUserQuestion → block for the notch
     #   isle-cli guard                                         # Bash → ask when it's a guarded command
@@ -359,6 +368,8 @@ enum HookInstaller {
       "error_type": "$ERROR_TYPE",
       "tool_active": $TOOL_ACTIVE,
       "reset_at": "$RESET_AT",
+      "limit_kind": "$LIMIT_KIND",
+      "limit_next": "$LIMIT_NEXT",
       "request_id": "$2",
       "request_kind": "${3:-}",
       "last_message": "$LAST_EXCERPT",
@@ -395,6 +406,303 @@ enum HookInstaller {
         ''|*[!0-9]*) return 1 ;;
       esac
       kill -0 "$pid" 2>/dev/null
+    }
+
+    # ---- Usage limits -----------------------------------------------------------
+    #
+    # When a claude.ai usage limit ends a turn, StopFailure says only `rate_limit`
+    # and the words Claude showed: "You've hit your 5-hour limit · resets 6:50pm
+    # (America/Toronto)". No hook field carries the reset as a number (2.1.319
+    # sets no `error_details` for it). The transcript does: the failed turn's
+    # record has `quotaLimits` with `resetsAt` (epoch seconds) and
+    # `rateLimitType`, and when Claude Code starts its own wait it writes a
+    # `system` record, "Usage limit reached · continuing automatically at
+    # 6:50pm". Both are internal, so each is read only for what it plainly says,
+    # and anything missing stays empty: the island falls back to what it said
+    # before rather than to a guess. The words are the last resort.
+    #
+    # Only `fail` and `notify` come here, and only on a limit, so the forks below
+    # cost nothing on the hooks that run all the time. ISLE_CLI_NOW (epoch
+    # seconds) stands in for the clock in the tests.
+
+    # The status file's value for $1, for a field this script wrote.
+    record_field() {
+      LC_ALL=C grep -oE "\"$1\": \"[^\"]*\"" "$2" 2>/dev/null | head -n 1 \
+        | LC_ALL=C sed -E 's/.*: "([^"]*)"$/\1/'
+    }
+
+    # Epoch seconds for Claude Code's "2026-11-05T05:31:38.143Z"; empty if not one.
+    iso_epoch() {
+      local t="${1%Z}"
+      t="${t%%.*}"
+      [ -n "$t" ] || return 0
+      date -j -u -f '%Y-%m-%dT%H:%M:%S' "$t" +%s 2>/dev/null
+    }
+
+    # `date -r <epoch> <format>` in zone $1 (empty: this Mac's own). An empty TZ
+    # would mean UTC, not local, so it is left out rather than set empty.
+    zone_date() {
+      if [ -n "$1" ]; then TZ="$1" date -r "$2" "$3" 2>/dev/null
+      else date -r "$2" "$3" 2>/dev/null; fi
+    }
+
+    # Epoch seconds for the wall-clock time $2 (Y-m-d) $3:$4 in zone $1.
+    zone_epoch() {
+      if [ -n "$1" ]; then TZ="$1" date -j -f '%Y-%m-%d %H:%M:%S' "$2 $3:$4:00" +%s 2>/dev/null
+      else date -j -f '%Y-%m-%d %H:%M:%S' "$2 $3:$4:00" +%s 2>/dev/null; fi
+    }
+
+    # A reset that is a real one: from a day ago (just reset) to 40 days out.
+    # Anything else is a number that happens to look like a time.
+    plausible_reset() {
+      case "$1" in ''|*[!0-9]*) return 1 ;; esac
+      [ "$1" -ge $(($2 - 86400)) ] && [ "$1" -le $(($2 + 40 * 86400)) ]
+    }
+
+    # The window and the reset from the words Claude showed, into TEXT_KIND and
+    # TEXT_RESET. "resets 6:50pm" is the next time that clock reads 6:50pm in
+    # the zone named after it, so a limit hit at 11pm that resets at 1:20am
+    # resets tomorrow; within five minutes past counts as now, since the words
+    # were written a moment before this runs. "resets Nov 9 at 8pm" (more than a
+    # day out; with the year when it isn't this one) is that moment. A zone Isle
+    # can't find leaves both empty; no zone at all is this Mac's, which is the
+    # one Claude Code formats in. $1 = the text, $2 = now.
+    limit_from_text() {
+      local t="$1" now="$2" re when zone h m ap mon day year M today noon next cand
+      TEXT_KIND=""; TEXT_RESET=""
+      case "$t" in
+        *"hit your 5-hour limit"*|*"hit your session limit"*) TEXT_KIND="five_hour" ;;
+        *"hit your weekly limit"*) TEXT_KIND="seven_day" ;;
+        *"hit your Opus limit"*) TEXT_KIND="seven_day_opus" ;;
+        *"hit your Sonnet limit"*) TEXT_KIND="seven_day_sonnet" ;;
+      esac
+      re='resets ([A-Za-z0-9:, ]*[0-9](am|pm))( \(([A-Za-z0-9_+/-]+)\))?'
+      [[ $t =~ $re ]] || return 0
+      when="${BASH_REMATCH[1]}"; zone="${BASH_REMATCH[4]}"
+      if [ -n "$zone" ]; then
+        case "$zone" in *..*|/*) return 0 ;; esac
+        [ -f "/usr/share/zoneinfo/$zone" ] || return 0
+      fi
+      re='^([0-9]{1,2})(:([0-9]{2}))?(am|pm)$'
+      if [[ $when =~ $re ]]; then
+        h="${BASH_REMATCH[1]}"; m="${BASH_REMATCH[3]:-00}"; ap="${BASH_REMATCH[4]}"
+      else
+        re='^([A-Z][a-z]{2}) ([0-9]{1,2})(, ([0-9]{4}))?(,| at) ([0-9]{1,2})(:([0-9]{2}))?(am|pm)$'
+        [[ $when =~ $re ]] || return 0
+        mon="${BASH_REMATCH[1]}"; day="${BASH_REMATCH[2]}"; year="${BASH_REMATCH[4]}"
+        h="${BASH_REMATCH[6]}"; m="${BASH_REMATCH[8]:-00}"; ap="${BASH_REMATCH[9]}"
+        case "$mon" in
+          Jan) M=01 ;; Feb) M=02 ;; Mar) M=03 ;; Apr) M=04 ;; May) M=05 ;; Jun) M=06 ;;
+          Jul) M=07 ;; Aug) M=08 ;; Sep) M=09 ;; Oct) M=10 ;; Nov) M=11 ;; Dec) M=12 ;;
+          *) return 0 ;;
+        esac
+      fi
+      h=$((10#$h))
+      if [ "$h" -lt 1 ] || [ "$h" -gt 12 ]; then return 0; fi
+      if [ "$ap" = am ]; then
+        if [ "$h" -eq 12 ]; then h=0; fi
+      elif [ "$h" -lt 12 ]; then
+        h=$((h + 12))
+      fi
+      if [ -n "$mon" ]; then
+        [ -n "$year" ] || year="$(zone_date "$zone" "$now" +%Y)"
+        cand="$(zone_epoch "$zone" "$year-$M-$(printf '%02d' $((10#$day)))" "$h" "$m")"
+      else
+        today="$(zone_date "$zone" "$now" +%Y-%m-%d)"
+        cand="$(zone_epoch "$zone" "$today" "$h" "$m")"
+        if [ -n "$cand" ] && [ "$cand" -lt $((now - 300)) ]; then
+          # Tomorrow's date from today's noon, so a DST change can't skip a day.
+          noon="$(zone_epoch "$zone" "$today" 12 00)"
+          next="$(zone_date "$zone" $((noon + 86400)) +%Y-%m-%d)"
+          cand="$(zone_epoch "$zone" "$next" "$h" "$m")"
+        fi
+      fi
+      plausible_reset "$cand" "$now" || return 0
+      TEXT_RESET="$cand"
+    }
+
+    # The limit from the transcript at $1, into TR_RESET, TR_KIND and TR_AUTO
+    # (1 when Claude Code said it will continue on its own). Only a record from
+    # the last two minutes is this hit; an older one is a different window.
+    #
+    # Claude Code writes the transcript on its own clock, and its "continuing
+    # automatically" record lands a few milliseconds either side of the failed
+    # turn's, so this looks again for up to two seconds, until it has that record
+    # or the turn's closing `turn_duration`. Nothing waits on StopFailure. A reset
+    # more than a day out is never waited for by Claude Code, so that's settled
+    # at once. $2 = now.
+    limit_from_transcript() {
+      local tp="$1" now="$2" i=0 lines rec ts ets q line its
+      TR_RESET=""; TR_KIND=""; TR_AUTO=""
+      [ -n "$tp" ] && [ -f "$tp" ] || return 0
+      while [ "$i" -lt 20 ]; do
+        [ "$i" -eq 0 ] || sleep 0.1
+        i=$((i + 1))
+        lines="$(tail -c 2000000 "$tp" 2>/dev/null | LC_ALL=C grep -E \
+          '"apiError":"usage_limit_reached"|"subtype":"(informational|turn_duration)"' 2>/dev/null)"
+        rec="$(printf '%s\n' "$lines" | LC_ALL=C grep -F '"apiError":"usage_limit_reached"' | tail -n 1)"
+        [ -n "$rec" ] || continue
+        ts="$(printf '%s' "$rec" | LC_ALL=C grep -oE '"timestamp":"[^"]*"' | head -n 1 | LC_ALL=C sed -E 's/.*:"([^"]*)"$/\1/')"
+        ets="$(iso_epoch "$ts")"
+        [ -n "$ets" ] || continue
+        if [ $((now - ets)) -gt 120 ] || [ $((ets - now)) -gt 60 ]; then continue; fi
+        q="$(printf '%s' "$rec" | LC_ALL=C grep -oE '"quotaLimits":\{[^}]*\}' | head -n 1)"
+        [ -n "$q" ] || q="$(printf '%s' "$rec" | LC_ALL=C grep -oE '"rate_limit_info":\{[^}]*\}' | head -n 1)"
+        TR_RESET="$(printf '%s' "$q" | LC_ALL=C grep -oE '"resetsAt":[0-9]+' | head -n 1 | LC_ALL=C sed 's/.*://')"
+        plausible_reset "$TR_RESET" "$now" || TR_RESET=""
+        TR_KIND="$(printf '%s' "$q" | LC_ALL=C grep -oE '"rateLimitType":"[a-z0-9_]+"' | head -n 1 | LC_ALL=C sed -E 's/.*:"([^"]*)"$/\1/')"
+        while IFS= read -r line; do
+          case "$line" in
+            *'"subtype":"informational"'*'Usage limit reached'*'continuing automatically'*) ;;
+            *) continue ;;
+          esac
+          ts="$(printf '%s' "$line" | LC_ALL=C grep -oE '"timestamp":"[^"]*"' | head -n 1 | LC_ALL=C sed -E 's/.*:"([^"]*)"$/\1/')"
+          its="$(iso_epoch "$ts")"
+          [ -n "$its" ] || continue
+          if [ $((its - ets)) -le 10 ] && [ $((ets - its)) -le 10 ]; then TR_AUTO=1; return 0; fi
+        done <<< "$lines"
+        if [ -n "$TR_RESET" ] && [ $((TR_RESET - now)) -gt 86400 ]; then return 0; fi
+        while IFS= read -r line; do
+          case "$line" in *'"subtype":"turn_duration"'*) ;; *) continue ;; esac
+          ts="$(printf '%s' "$line" | LC_ALL=C grep -oE '"timestamp":"[^"]*"' | head -n 1 | LC_ALL=C sed -E 's/.*:"([^"]*)"$/\1/')"
+          its="$(iso_epoch "$ts")"
+          if [ -n "$its" ] && [ "$its" -ge "$ets" ]; then return 0; fi
+        done <<< "$lines"
+      done
+      return 0
+    }
+
+    # ---- A Bash command's program -----------------------------------------------
+    #
+    # The status file's target is cut to 48 characters, which a `cd <long path>
+    # && xcodebuild …` spends on the path, so for Bash (and Monitor) the target is
+    # the program's name, read from the whole command here: the rules of
+    # ClaudeActivity.program(ofCommand:) in the app, so the two can't disagree.
+    # Past `NAME=value` assignments and shell keywords, through `env` / `sudo` /
+    # `time` / `nohup` / `command` / `exec` (and their options), past whole `cd` /
+    # `pushd` / `popd` / `export` / `unset` / `set` segments, to the first word of
+    # the first segment left, de-pathed. Segments end at ; & | ( ) and newlines;
+    # a `#` before a word starts a comment; quotes are taken off. The word must be
+    # a plain name, or the target is empty and the app says "Running a command".
+    #
+    # Only the start of the command is read (4 KB), and it stops at the first
+    # segment that names something, so a long heredoc costs no more than a short
+    # command. Builtins only.
+
+    BP_PLAIN=$'^[^ \t;&|()\\\\\'"#\n\r]+'
+    BP_ASSIGN='^[A-Za-z_][A-Za-z0-9_]*='
+    BP_NAME='^[A-Za-z0-9._+@~-]+$'
+    BP_PATH='^[A-Za-z0-9._+@/~ -]+$'
+    # A command whose closing quote is past what was read.
+    BP_RE_OPEN='"command"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)'
+
+    # The program for segment BP_W[0..BP_N) (BP_E: whether each word ended), into
+    # BP_OUT. Returns 0 when the segment decides it (a name, or none), 1 when it
+    # only set things up and the next segment should be read.
+    bp_segment() {
+      local k=0 w first takes name
+      while [ "$k" -lt "$BP_N" ]; do
+        w="${BP_W[k]}"
+        case "$w" in
+          '!'|'{'|'}'|if|then|elif|else|while|until|do) k=$((k + 1)); continue ;;
+        esac
+        if [[ $w =~ $BP_ASSIGN ]]; then k=$((k + 1)); continue; fi
+        case "$w" in
+          env|sudo|time|nohup|command|exec)
+            # `command -v name` only looks the name up.
+            if [ "$w" = command ] && [ $((k + 1)) -lt "$BP_N" ]; then
+              case "${BP_W[k+1]}" in -v|-V) break ;; esac
+            fi
+            first="$w"; k=$((k + 1))
+            while [ "$k" -lt "$BP_N" ]; do
+              w="${BP_W[k]}"
+              if [ "${w:0:1}" = "-" ] || [[ $w =~ $BP_ASSIGN ]]; then
+                takes=1
+                if [ "$first" = sudo ]; then
+                  case "$w" in -u|-g|-C|-h|-p|-U) takes=2 ;; esac
+                fi
+                k=$((k + takes))
+              else
+                break
+              fi
+            done
+            continue ;;
+        esac
+        break
+      done
+      [ "$k" -lt "$BP_N" ] || return 1
+      w="${BP_W[k]}"
+      case "$w" in cd|pushd|popd|export|unset|set) return 1 ;; esac
+      if [ "${BP_E[k]}" = 0 ] && [ "$BP_CUT" = 1 ]; then return 0; fi
+      # A path may have spaces in its folders (it was quoted); the name may not.
+      [[ $w =~ $BP_PATH ]] || return 0
+      name="$w"
+      while [ "${#name}" -gt 1 ] && [ "${name%/}" != "$name" ]; do name="${name%/}"; done
+      [ "$name" = "/" ] || name="${name##*/}"
+      case "$name" in ''|.|..|/|'~'|-*) return 0 ;; esac
+      [[ $name =~ $BP_NAME ]] || return 0
+      BP_OUT="$name"
+      return 0
+    }
+
+    # The program the command $1 (unescaped) runs, into BP_OUT; empty when it
+    # can't be named. $2 = 1 when $1 is only the start of the command.
+    bash_program() {
+      local LC_ALL=C
+      local t="$1" i=0 n c q="" esc=0 com=0 word="" inw=0
+      BP_OUT=""; BP_N=0; BP_CUT="${2:-0}"
+      BP_W=(); BP_E=()
+      n=${#t}
+      while [ "$i" -lt "$n" ]; do
+        c="${t:i:1}"
+        if [ "$com" = 1 ]; then
+          if [ "$c" = $'\n' ]; then
+            com=0
+            if [ "$BP_N" -gt 0 ]; then bp_segment && return 0; BP_N=0; fi
+            i=$((i + 1))
+          else
+            # Straight to the end of the comment's line.
+            c="${t:i}"; c="${c%%$'\n'*}"; i=$((i + ${#c}))
+          fi
+          continue
+        fi
+        if [ "$esc" = 1 ]; then
+          word="$word$c"; inw=1; esc=0; i=$((i + 1)); continue
+        fi
+        if [ -n "$q" ]; then
+          # Inside "…", a backslash keeps the quote or backslash after it.
+          if [ "$q" = '"' ] && [ "$c" = '\' ] && [ $((i + 1)) -lt "$n" ]; then
+            case "${t:i+1:1}" in
+              '"'|'\'|'$'|'`') word="$word${t:i+1:1}"; i=$((i + 2)); continue ;;
+            esac
+          fi
+          if [ "$c" = "$q" ]; then q=""; else word="$word$c"; fi
+          i=$((i + 1)); continue
+        fi
+        case "$c" in
+          '\') esc=1 ;;
+          "'"|'"') q="$c"; inw=1 ;;
+          ' '|$'\t')
+            if [ "$inw" = 1 ]; then BP_W[BP_N]="$word"; BP_E[BP_N]=1; BP_N=$((BP_N + 1)); fi
+            word=""; inw=0 ;;
+          ';'|'&'|'|'|'('|')'|$'\n'|$'\r')
+            if [ "$inw" = 1 ]; then BP_W[BP_N]="$word"; BP_E[BP_N]=1; BP_N=$((BP_N + 1)); fi
+            word=""; inw=0
+            if [ "$BP_N" -gt 0 ]; then bp_segment && return 0; BP_N=0; fi ;;
+          '#')
+            if [ "$inw" = 1 ]; then word="$word#"; else com=1; fi ;;
+          *)
+            if [[ ${t:i} =~ $BP_PLAIN ]]; then
+              word="$word${BASH_REMATCH[0]}"; inw=1; i=$((i + ${#BASH_REMATCH[0]})); continue
+            fi
+            word="$word$c"; inw=1 ;;
+        esac
+        i=$((i + 1))
+      done
+      # The last word ran into the end of what was read.
+      if [ "$inw" = 1 ]; then BP_W[BP_N]="$word"; BP_E[BP_N]=0; BP_N=$((BP_N + 1)); fi
+      if [ "$BP_N" -gt 0 ]; then bp_segment; fi
+      return 0
     }
 
     # ---- Guarded commands -------------------------------------------------------
@@ -927,6 +1235,19 @@ enum HookInstaller {
     # The start of what Claude said last, for the Done face (Stop only).
     LAST_EXCERPT=""
     RESET_AT=""
+    # A usage limit (Milestone 19): which window was hit (five_hour, seven_day,
+    # seven_day_opus, seven_day_sonnet), and what Claude Code said comes next —
+    # `auto` (it will continue on its own at the reset), `enter` (the reset passed
+    # while the Mac slept, and it waits for Enter), `stopped` (it won't continue
+    # on its own), or `resumed` (it has continued). Empty when nothing said so.
+    LIMIT_KIND=""
+    LIMIT_NEXT=""
+    # The Notification's `notification_type`, the transcript's path (StopFailure),
+    # and the prompt (UserPromptSubmit) — each read only where it's used.
+    NTYPE=""
+    TRANSCRIPT=""
+    PROMPT=""
+    ERROR_DETAILS=""
     # True only between a PreToolUse and its PostToolUse — i.e. a tool is
     # actually executing right now. A long Bash or a slow MCP call goes minutes
     # with no hook write and no transcript growth, which is indistinguishable
@@ -973,6 +1294,28 @@ enum HookInstaller {
         */*)     TARGET="${TARGET##*/}" ;;
       esac
       TARGET="$(printf '%s' "$TARGET" | cut -c1-48)"
+      # A command's target is its program, read from the whole command (see
+      # bash_program): the cut above can leave a long `cd` path, stop at an
+      # escaped quote, or keep a comment line. Empty when it can't be named.
+      case "$ACTION" in
+        Bash|Monitor)
+          TARGET=""
+          bp_win="${STDIN_JSON:0:8192}"
+          bp_cut=1
+          if [[ $bp_win =~ $GUARD_RE_COMMAND ]]; then
+            bp_cut=0
+          else
+            [[ $bp_win =~ $BP_RE_OPEN ]] || bp_win=""
+          fi
+          if [ -n "$bp_win" ]; then
+            bp_raw="${BASH_REMATCH[1]}"
+            if [ "${#bp_raw}" -gt 4096 ]; then bp_raw="${bp_raw:0:4096}"; bp_cut=1; fi
+            guard_unescape "$bp_raw"
+            bash_program "$GUARD_TEXT" "$bp_cut" || true
+            TARGET="$BP_OUT"
+          fi
+          ;;
+      esac
       MESSAGE="$(printf '%s' "$STDIN_JSON" \
         | grep -oE '"message"[[:space:]]*:[[:space:]]*"[^"]*"' \
         | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
@@ -1005,6 +1348,29 @@ enum HookInstaller {
           LAST_EXCERPT=""
         fi
       fi
+
+      case "$CMD" in
+        notify)
+          NTYPE="$(printf '%s' "$STDIN_JSON" \
+            | grep -oE '"notification_type"[[:space:]]*:[[:space:]]*"[^"]*"' \
+            | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' | LC_ALL=C tr -cd 'a-z0-9_' || true)"
+          ;;
+        fail)
+          TRANSCRIPT="$(printf '%s' "$STDIN_JSON" \
+            | grep -oE '"transcript_path"[[:space:]]*:[[:space:]]*"[^"]*"' \
+            | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+          ERROR_DETAILS="$(printf '%s' "$STDIN_JSON" \
+            | grep -oE '"error_details"[[:space:]]*:[[:space:]]*"[^"]*"' \
+            | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+          ;;
+        set-state)
+          if [ "$HOOK_EVENT" = "UserPromptSubmit" ]; then
+            PROMPT="$(printf '%s' "$STDIN_JSON" \
+              | grep -oE '"prompt"[[:space:]]*:[[:space:]]*"[^"]*"' \
+              | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+          fi
+          ;;
+      esac
     fi
 
     # `ask` (PermissionRequest hook) and `ask-question` (PreToolUse, matched to
@@ -1115,31 +1481,74 @@ enum HookInstaller {
       done
     fi
 
-    # Classify a Notification from its message: an idle "waiting for your input"
-    # nudge is calmer; everything else is a question (some attention is needed).
+    # Route a Notification by its `notification_type`. Only the types that mean
+    # something for the island change it: a prompt waiting in the terminal is a
+    # question, the idle nudge is calmer, and the usage-limit wait's three
+    # outcomes say what came of it. Everything else — a sign-in, an MCP form
+    # finishing, a background session done, a mod's own notice, a type newer
+    # than this script — leaves the state exactly as it was: none of them means
+    # this session needs you, and saying so would be a guess.
     if [ "$CMD" = "notify" ]; then
-      # Keep an active question: a question (from the AskUserQuestion tool) is the
-      # more specific signal, and the notification that follows it is just "waiting
-      # on you" for the same prompt — don't let it downgrade.
-      # The question clears on its own when Claude moves on (next tool use / Stop).
-      # Likewise an approval that `ask` is blocked on: the permission_prompt
-      # notification lands a few seconds into the wait, and rewriting the status
-      # would drop the request id the hook is waiting under (which it reads as
-      # "answered elsewhere" and gives up).
       sf="$SESSION_DIR/${SESSION_ID:-unknown}.json"
-      if [ -f "$sf" ]; then
-        if grep -q '"state": "needs_question"' "$sf" 2>/dev/null; then
-          exit 0
-        fi
-        if grep -q '"state": "needs_approval"' "$sf" 2>/dev/null \
-           && grep -qE '"request_id": "[^"]+"' "$sf" 2>/dev/null; then
-          exit 0
-        fi
+      # An approval that `ask` is blocked on: the permission_prompt notification
+      # lands a few seconds into the wait, and rewriting the status would drop
+      # the request id the hook is waiting under (which it reads as "answered
+      # elsewhere" and gives up). Nothing may rewrite it.
+      if [ -f "$sf" ] && grep -q '"state": "needs_approval"' "$sf" 2>/dev/null \
+         && grep -qE '"request_id": "[^"]+"' "$sf" 2>/dev/null; then
+        exit 0
       fi
-      lower="$(printf '%s' "$MESSAGE" | tr '[:upper:]' '[:lower:]')"
-      case "$lower" in
-        *waiting*) STATE="waiting_input" ;;
-        *)         STATE="needs_question" ;;
+      case "$NTYPE" in
+        permission_prompt|elicitation_dialog|elicitation_url_dialog|idle_prompt|'')
+          # Keep an active question: a question (from the AskUserQuestion tool)
+          # is the more specific signal, and the notification that follows it is
+          # just "waiting on you" for the same prompt — don't let it downgrade.
+          # The question clears on its own when Claude moves on.
+          if [ -f "$sf" ] && grep -q '"state": "needs_question"' "$sf" 2>/dev/null; then
+            exit 0
+          fi
+          ;;
+      esac
+      case "$NTYPE" in
+        permission_prompt|elicitation_dialog|elicitation_url_dialog)
+          STATE="needs_question" ;;
+        idle_prompt)
+          STATE="waiting_input" ;;
+        quota_auto_resume_fired)
+          # Claude Code has picked the task up again. Not over a tool that is
+          # already running (the continued turn got there first): that write
+          # is the newer one.
+          if [ -f "$sf" ] && grep -q '"state": "working"' "$sf" 2>/dev/null \
+             && grep -q '"tool_active": true' "$sf" 2>/dev/null; then
+            exit 0
+          fi
+          STATE="working"; LIMIT_NEXT="resumed"
+          if [ -f "$sf" ] && grep -qE '"(error_type": "usage_limit|limit_next": "resumed)"' "$sf" 2>/dev/null; then
+            LIMIT_KIND="$(record_field limit_kind "$sf" || true)"
+          fi
+          ;;
+        quota_auto_resume_stale|quota_auto_resume_disabled)
+          # The limit, still: the reset passed while the Mac slept and Claude
+          # Code waits for Enter, or it has stopped waiting and won't continue.
+          # The window and the reset are the limit's own, kept from its record.
+          STATE="error"; ERROR_TYPE="usage_limit"
+          if [ "$NTYPE" = quota_auto_resume_stale ]; then LIMIT_NEXT="enter"; else LIMIT_NEXT="stopped"; fi
+          if [ -f "$sf" ] && grep -q '"error_type": "usage_limit"' "$sf" 2>/dev/null; then
+            LIMIT_KIND="$(record_field limit_kind "$sf" || true)"
+            RESET_AT="$(record_field reset_at "$sf" || true)"
+          fi
+          ;;
+        '')
+          # A Claude Code too old to send the type: the message is all there is.
+          # The idle nudge says "waiting"; anything else asked for attention.
+          lower="$(printf '%s' "$MESSAGE" | tr '[:upper:]' '[:lower:]')"
+          case "$lower" in
+            *waiting*) STATE="waiting_input" ;;
+            *)         STATE="needs_question" ;;
+          esac
+          ;;
+        *)
+          exit 0 ;;
       esac
       # The idle nudge comes a minute after a Stop, about the same finished turn:
       # keep what Claude said, copied from the record verbatim (it is already
@@ -1173,30 +1582,80 @@ enum HookInstaller {
       STATE="needs_question"
     fi
 
+    # A turn Claude Code continued after a usage limit stays "resumed" until it
+    # ends: the continuation's own prompt (Claude Code's words, "Your claude.ai
+    # usage limit has reset. Continue the task you were working on…") says so,
+    # and so does the fired notification, whichever lands first; every tool call
+    # after keeps it. Your own prompt is a turn of your own, and drops it.
+    if [ "$CMD" = "set-state" ] && [ "$STATE" = "working" ]; then
+      sf="$SESSION_DIR/${SESSION_ID:-unknown}.json"
+      if [ "$HOOK_EVENT" = "UserPromptSubmit" ]; then
+        case "$PROMPT" in
+          "Your claude.ai usage "*"Continue the task you were working on"*) LIMIT_NEXT="resumed" ;;
+        esac
+      elif [ -f "$sf" ] && grep -q '"limit_next": "resumed"' "$sf" 2>/dev/null; then
+        LIMIT_NEXT="resumed"
+      fi
+      if [ "$LIMIT_NEXT" = "resumed" ] && [ -f "$sf" ] \
+         && grep -qE '"(error_type": "usage_limit|limit_next": "resumed)"' "$sf" 2>/dev/null; then
+        LIMIT_KIND="$(record_field limit_kind "$sf" || true)"
+      fi
+    fi
+
     # The Claude usage/subscription limit is distinct from a transient API error:
     # it resets on a schedule rather than being worth an immediate retry. Detect it
-    # from the error type or message (either the failure or a notification can carry
-    # it) and surface it as a named failure the app labels "Usage limit reached".
-    if [ "$CMD" = "fail" ] || [ "$CMD" = "notify" ]; then
+    # from the error type or the words (a failure, or a notification from a
+    # Claude Code too old to name its type) and surface it as a named failure.
+    if [ "$CMD" = "fail" ] || { [ "$CMD" = "notify" ] && [ -z "$NTYPE" ]; }; then
       lc_all="$(printf '%s %s %s' "$ERROR_TYPE" "$MESSAGE" "$LAST_MSG" \
         | tr '[:upper:]' '[:lower:]')"
       # Claude sends `rate_limit` for both a transient 429 and the subscription
       # limit, so the wording is what separates them: the subscription limit
-      # always reads "You've hit your <session|weekly|monthly spend> limit".
+      # reads "You've hit your <5-hour|weekly|…> limit". "API Error: Rate limit
+      # reached" is the transient one, and is not a limit with a reset.
       case "$lc_all" in
+        *"rate limit reached"*) : ;;
         *usage*limit*|*limit*reached*|*quota*|*"hit your"*limit*)
           STATE="error"; ERROR_TYPE="usage_limit" ;;
       esac
     fi
 
-    # When the failure is the usage/subscription limit, try to recover the moment
-    # it resets so the island can count down to it. Claude's limit message carries
-    # that moment as a Unix epoch (e.g. "...reached|1719849600"), so pull the first
-    # 10–13 digit run out of the message. Absent one, RESET_AT stays empty and the
-    # app just pins "Limit reached" with no timer.
-    if [ "$ERROR_TYPE" = "usage_limit" ]; then
-      RESET_AT="$(printf '%s %s' "$MESSAGE" "$LAST_MSG" \
-        | grep -oE '[0-9]{10,13}' | head -1 || true)"
+    # The limit's reset and window, from the best source there is (see "Usage
+    # limits" above): a reset in StopFailure's own `error_details`, should it ever
+    # carry one; else the transcript, which is also the only thing that can say
+    # Claude Code will continue on its own; else an epoch in the message (the old
+    # "…reached|1719849600" form); else the words. Absent all of them, RESET_AT
+    # stays empty and the app pins the limit with no reset time.
+    if [ "$ERROR_TYPE" = "usage_limit" ] && [ "$CMD" != "notify" -o -z "$NTYPE" ]; then
+      set +eu +o pipefail
+      now="${ISLE_CLI_NOW:-$(date +%s)}"
+      sf="$SESSION_DIR/${SESSION_ID:-unknown}.json"
+      # Every write is a rename, so a new write is a new inode, even one whose
+      # words match the last.
+      before="$(stat -f %i "$sf" 2>/dev/null) $(cat "$sf" 2>/dev/null)"
+      cand="$(printf '%s' "$ERROR_DETAILS" | grep -oE '[0-9]{10,13}' | head -n 1)"
+      [ "${#cand}" -eq 13 ] && cand="${cand:0:10}"
+      plausible_reset "$cand" "$now" && RESET_AT="$cand"
+      if [ "$CMD" = "fail" ]; then
+        limit_from_transcript "$TRANSCRIPT" "$now"
+        [ -n "$RESET_AT" ] || RESET_AT="$TR_RESET"
+        LIMIT_KIND="$TR_KIND"
+        [ "$TR_AUTO" = 1 ] && LIMIT_NEXT="auto"
+      fi
+      if [ -z "$RESET_AT" ]; then
+        cand="$(printf '%s %s' "$MESSAGE" "$LAST_MSG" | grep -oE '[0-9]{10,13}' | head -n 1)"
+        [ "${#cand}" -eq 13 ] && cand="${cand:0:10}"
+        plausible_reset "$cand" "$now" && RESET_AT="$cand"
+      fi
+      if [ -z "$RESET_AT" ] || [ -z "$LIMIT_KIND" ]; then
+        limit_from_text "$LAST_MSG $MESSAGE" "$now"
+        [ -n "$RESET_AT" ] || RESET_AT="$TEXT_RESET"
+        [ -n "$LIMIT_KIND" ] || LIMIT_KIND="$TEXT_KIND"
+      fi
+      LIMIT_KIND="$(printf '%s' "$LIMIT_KIND" | LC_ALL=C tr -cd 'a-z0-9_')"
+      # The transcript can take a moment; a newer hook that wrote meanwhile (the
+      # prompt you typed, a resume) is the truth now, and this is not.
+      if [ "$(stat -f %i "$sf" 2>/dev/null) $(cat "$sf" 2>/dev/null)" != "$before" ]; then exit 0; fi
     fi
 
     # `end` (SessionEnd hook): drop this session's file and stop. With one file

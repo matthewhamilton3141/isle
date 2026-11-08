@@ -42,15 +42,17 @@ hook() {
 }
 
 # What produced "Running -Users-matthew-Documen": a command that starts by
-# setting a variable to a path under the encoded project folder. No space in
-# its first 48 characters, so the cut left one token, de-pathed to the cut
-# folder name.
-hook "Running a command" 'R=/private/tmp/claude-501/-Users-matthew-Documents-isle/adf8176b-8654-4f0e-bb09-f9c545e90b60/scratchpad/m17/render; cat $R/build.sh' "the reported command"
+# setting a variable to a path under the encoded project folder. Until v12 the
+# hook cut it to its first 48 characters, which left one token, de-pathed to
+# the cut folder name. Since v12 the hook names the program from the whole
+# command (isle-cli's bash_program, the same rules as ClaudeActivity), and the
+# target is that name alone.
+hook "Running cat" 'R=/private/tmp/claude-501/-Users-matthew-Documents-isle/adf8176b-8654-4f0e-bb09-f9c545e90b60/scratchpad/m17/render; cat $R/build.sh' "the reported command"
 hook "Running cat" 'cat ~/.claude/projects/-Users-matthew-Documents-isle/memory/MEMORY.md' "a path under the encoded folder as an argument"
 hook "Running npm" 'FOO=1 npm test'
 hook "Running swift" 'export PATH=/opt/homebrew/bin:$PATH; swift build'
 hook "Running git" 'cd /Users/matthew/Documents/isle && git status'
-hook "Running a command" 'cd /Users/matthew/Documents/isle/.claude/worktrees/agent-a2a1d0bb9ce4fe989 && git status' "a cd cut off by the hook's 48 characters"
+hook "Running git" 'cd /Users/matthew/Documents/isle/.claude/worktrees/agent-a2a1d0bb9ce4fe989 && git status' "a cd longer than 48 characters"
 hook "Running make" 'cd ~/proj; make -j8'
 hook "Running swift" '(cd Isle && swift build)'
 hook "Running git" 'env -i PATH=/usr/bin git status'
@@ -59,12 +61,23 @@ hook "Running xcodebuild" 'time xcodebuild -scheme Isle build'
 hook "Running python3" 'nohup python3 server.py > server.log 2>&1 &'
 hook "Running git" 'command git status'
 hook "Running node" "'/usr/local/bin/node' app.js" "a single-quoted path"
-hook "Running a command" '"/usr/local/bin/node" app.js' "a double-quoted path (the hook stops at the escaped quote)"
-hook "Running a command" 'FOO="bar" npm test' "a double-quoted assignment (likewise)"
+hook "Running node" '"/usr/local/bin/node" app.js' "a double-quoted path"
+hook "Running npm" 'FOO="bar" npm test' "a double-quoted assignment"
 hook "Running git" '/usr/bin/git log --oneline -5'
 hook "Running test-guarded-commands.sh" './scripts/test-guarded-commands.sh'
 hook "Running xcodebuild" 'xcodebuild -project Isle.xcodeproj -scheme Isle -configuration Debug build' "a long command, cut in its arguments"
-hook "Running a command" $'# Build it\nxcodebuild -scheme Isle' "a comment first (the hook turns \\n into n)"
+hook "Running xcodebuild" $'# Build it\nxcodebuild -scheme Isle' "a comment line first"
+hook "Running xcodebuild" 'cd /private/tmp/claude-501/-Users-matthew-Documents-isle/adf8176b-8654-4f0e-bb09-f9c545e90b60/scratchpad/m19 && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project Isle.xcodeproj -scheme Isle build' "a long cd and an assignment before the program"
+hook "Running Isle" '"/Users/matthew/Library/Application Support/Isle Builds/Debug/Isle.app/Contents/MacOS/Isle" --version' "a double-quoted program path with spaces"
+hook "Running swift" $'# Rebuild the harness\n# then run it\ncd /tmp/h && swift run' "two comment lines and a cd before the program"
+hook "Running python3" $'cd /Users/matthew/Documents/isle/.claude/worktrees/agent-ab78effb488e2ffb5\npython3 - <<\'EOF\'\nprint("hi")\nEOF' "a cd on its own line, then a heredoc's program"
+hook "Running git" 'cd "/Users/matthew/Documents/My \"Quoted\" Folder" && git log' "a cd into a path with escaped quotes"
+hook "Running a command" '$EDITOR notes.txt' "a variable in command position"
+hook "Running a command" 'command -v swiftc' "command -v only looks a name up (the app reads a lone \`command\` as a wrapper)"
+hook "Running a command" 'cd /tmp; export X=1' "only setup, nothing run"
+hook "Running rg" "rg -n pattern $(printf 'x%.0s' $(seq 1 6000))" "a command longer than the hook reads"
+hook "Running a command" "cd $(printf 'd%.0s' $(seq 1 6000)) && make" "a cd longer than the hook reads"
+hook "Running a command" $'  \n# only a comment' "no command at all"
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 cp "$ROOT/scripts/claude-activity-tests.swift" "$SCRATCH/main.swift"
