@@ -122,17 +122,32 @@ enum TerminalBridge {
     /// focusing anything. The caller has already checked the session is at
     /// its prompt — this only delivers keys.
     ///
-    /// Return is sent as a carriage return in the same write: Claude Code
-    /// submits on CR and takes a bare LF as a newline in the prompt (verified
-    /// on 2.1.318), and a burst of text ending in CR is submitted, not taken
-    /// as a paste. Terminal's `do script` adds its own line ending after that;
-    /// whichever byte it is, it lands on an already-submitted, empty prompt.
+    /// The text goes in as an explicit bracketed paste, then one carriage
+    /// return. Claude Code takes an unmarked burst of typing as a paste once
+    /// it's long enough — about a sentence — and a CR inside a paste is a
+    /// newline in the prompt, not Enter, so a long reply used to sit there
+    /// unsent. Marked as a paste, the text can't swallow the CR after it,
+    /// whatever its length and whether or not the two arrive in one read
+    /// (verified on 2.1.319). A CR followed by an LF is *not* submitted, so
+    /// exactly one CR follows: Terminal's `do script` adds it itself (it
+    /// appends a lone CR — captured raw), iTerm's and tmux's are sent here.
     static func type(_ text: String, via route: ClaudeSessionHost.TypingRoute) async -> Result<Void, Failure> {
-        await withCheckedContinuation { continuation in
+        let pasted = bracketedPaste(text)
+        return await withCheckedContinuation { continuation in
             queue.async {
-                continuation.resume(returning: typeNow(text, via: route))
+                continuation.resume(returning: typeNow(pasted, via: route))
             }
         }
+    }
+
+    /// `text` between the bracketed-paste markers, with every control
+    /// character dropped first: the reply is one line, and an ESC of its own
+    /// could end the paste early.
+    nonisolated static func bracketedPaste(_ text: String) -> String {
+        let clean = String(String.UnicodeScalarView(text.unicodeScalars.filter {
+            !($0.value < 0x20 || (0x7F...0x9F).contains($0.value))
+        }))
+        return "\u{1B}[200~" + clean + "\u{1B}[201~"
     }
 
     nonisolated private static func typeNow(_ text: String, via route: ClaudeSessionHost.TypingRoute) -> Result<Void, Failure> {
@@ -177,7 +192,7 @@ enum TerminalBridge {
                     repeat with w in windows
                         repeat with t in tabs of w
                             if tty of t is theTTY then
-                                do script (theText & return) in t
+                                do script theText in t
                                 return "ok"
                             end if
                         end repeat
