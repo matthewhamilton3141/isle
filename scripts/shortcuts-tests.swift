@@ -45,6 +45,9 @@ final class FakeRegistrar: HotKeyRegistrar {
     func register(_ combo: KeyCombo, id: UInt32) -> OSStatus {
         log.append("+\(id)")
         if taken.contains(combo) { return OSStatus(eventHotKeyExistsErr) }
+        // As Carbon: a combo this process already holds under another id
+        // is refused like anyone else's.
+        if held.contains(where: { $0.key != id && $0.value == combo }) { return OSStatus(eventHotKeyExistsErr) }
         held[id] = combo
         return noErr
     }
@@ -475,6 +478,37 @@ enum ShortcutsTests {
         reg.taken = []
         center.isSuspended = false
         equal(reg.heldActions, [.toggleIsland, .deny, .approve], "done: what's wanted now is held")
+
+        print("Recording: onto its own keys")
+        reg.taken = []
+        center.apply([.toggleIsland: toggle, .approve: approve, .deny: deny])
+        var bindings = defaults
+        equal(center.probe(approve), OSStatus(eventHotKeyExistsErr),
+              "(why it mattered: a probe of a combo Isle holds reads as taken)")
+        reg.log = []
+        equal(ShortcutRecording.record(approve, for: .approve, into: &bindings, center: center), .unchanged,
+              "re-recording Approve's own keys: no change, no false conflict")
+        check(!reg.log.contains("+\(A.allCases.count + 1)"), "and no probe at all")
+        // The recorder's order: still suspended when it records.
+        center.isSuspended = true
+        equal(ShortcutRecording.record(approve, for: .approve, into: &bindings, center: center), .unchanged,
+              "while recording (suspended): the same")
+        equal(ShortcutRecording.record(KeyCombo(kVK_ANSI_J, c), for: .approve, into: &bindings, center: center), .recorded,
+              "new keys, suspended: probed and recorded")
+        equal(bindings[.approve].combo, KeyCombo(kVK_ANSI_J, c), "and stored")
+        equal(ShortcutRecording.record(toggle, for: .approve, into: &bindings, center: center),
+              .refused("\(toggle.display()) is already \(A.toggleIsland.title)’s."), "another action's keys: said so")
+        reg.taken = [KeyCombo(kVK_ANSI_K, c)]
+        if case .refused(let why) = ShortcutRecording.record(KeyCombo(kVK_ANSI_K, c), for: .deny, into: &bindings, center: center) {
+            check(why.contains("Another app"), "keys another app holds: refused, by the probe")
+        } else {
+            check(false, "keys another app holds: refused, by the probe")
+        }
+        equal(ShortcutRecording.record(KeyCombo(kVK_ANSI_K, 0), for: .deny, into: &bindings, center: center),
+              .refused("Hold ⌥, ⌃ or ⌘ with the key — a bare key is typing."), "a bare key: refused")
+        center.isSuspended = false
+        reg.taken = []
+        center.apply([:])
     }
 
     // MARK: - End to end
