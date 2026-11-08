@@ -174,8 +174,9 @@ enum HookInstaller {
     /// running — an agent stopped by Esc fires no SubagentStop (measured,
     /// 2.1.319), so it was counted until the session ended. v19: a Stop with
     /// no `background_tasks` at all lets every agent go, as before v17, and
-    /// an empty list written with spaces is read as empty.
-    private static let currentVersion = 19
+    /// an empty list written with spaces is read as empty. v20: so does a
+    /// Stop that carries wake-ups (`session_crons`) but no task list.
+    private static let currentVersion = 20
     private static let versionKey = "HookInstaller.installedVersion"
 
     private static var home: URL {
@@ -1314,7 +1315,11 @@ enum HookInstaller {
       set -eu
       # Only from a list read to its end: one that stopped the walk says nothing
       # about which agents still run, so the count stays as it was.
-      if [ "$ok" = 1 ] && [ "$walked" = 1 ]; then stop_prune_agents; fi
+      # A Stop with wake-ups but no task list at all says no agent outlived it,
+      # as a Stop with neither does.
+      if [ "$ok" = 1 ] && { [ "$walked" = 1 ] || [[ $STDIN_JSON != *'"background_tasks"'* ]]; }; then
+        stop_prune_agents
+      fi
       if [ "$ok" = 0 ] || { [ "$LT_KEPT" = 0 ] && [ "$LT_MORE" = 0 ] && [ "$LT_CRONS_KEPT" = 0 ]; }; then
         rm -f "$f"; return 0
       fi
