@@ -59,10 +59,6 @@ enum ClaudePanelLayout {
     /// spends all of it on the options.
     static let faceWidth = glyphSize + glyphGap + columnWidth
 
-    /// Kept clear at the column's right edge by rows level with the waveform
-    /// pinned at the panel's top-right (the eyebrow and the title).
-    static let waveformClearance: CGFloat = 36
-
     // MARK: - Rows
 
     static let eyebrowHeight: CGFloat = 14
@@ -212,11 +208,10 @@ enum ClaudePanelLayout {
 
     // MARK: - Question face
 
-    /// One line or two: what the question needs across the face, short of
-    /// the waveform.
+    /// One line or two: what the question needs across the face.
     static func naturalQuestionLines(_ question: ClaudeQuestion) -> Int {
         min(2, lineCount(question.question, font: questionFont, size: questionSize, line: questionLine,
-                         width: faceWidth - waveformClearance))
+                         width: faceWidth))
     }
 
     /// Everything on the question face but the options, for a question of
