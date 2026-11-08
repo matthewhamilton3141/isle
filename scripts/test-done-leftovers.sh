@@ -4,7 +4,8 @@
 # what the turn left running (`background_tasks`) and the wake-ups it
 # scheduled (`session_crons`) at ~/.isle/left/<session>.json and in every
 # record as `left`; a shell kept as its program and that program's words; a
-# background agent moving from the subagent count to `left`, never in both;
+# background agent in `left` as of the turn's end and still in the subagent
+# count until its own stop (v17; the face says it once: `left` wins on Done);
 # and the next prompt, a failed turn and the session's end clearing it, while
 # the idle nudge and a compaction keep it. Then the app's side, built from
 # scripts/done-leftovers-tests.swift with every Isle source: the record parser
@@ -87,13 +88,14 @@ hook set-state done < "$REAL1"
 expect "a background shell and a background agent" \
   '{"tasks": [{"type": "shell", "name": "sleep", "run": "sleep 300", "cut": false}, {"type": "subagent", "name": "Explore", "run": "", "cut": false}], "more": 0, "crons": [], "more_crons": 0}' \
   state=done last_message=ok
-[ "$(agents)" = "[]" ] && ok "the agent left running is no longer counted (no double show)" || bad "no double show" "$(agents)"
+[ "$(agents)" = '["Explore"]' ] && ok "the agent left running is still counted until its own stop (v17)" || bad "still counted" "$(agents)"
 [ -f "$LF" ] && ok "kept at left/<session>.json" || bad "kept at left/<session>.json" "no file"
 cp "$SF" "$SCRATCH/records/real1.json"
 printf '{"session_id":"s1","hook_event_name":"SubagentStop","agent_id":"a4504733bb7697137","agent_type":"Explore","last_assistant_message":"x","background_tasks":[],"session_crons":[]}' | hook subagent-stop
-expect "its SubagentStop after the turn changes nothing" \
+expect "its SubagentStop after the turn leaves what the turn left as it was" \
   '{"tasks": [{"type": "shell", "name": "sleep", "run": "sleep 300", "cut": false}, {"type": "subagent", "name": "Explore", "run": "", "cut": false}], "more": 0, "crons": [], "more_crons": 0}' \
   state=done
+[ "$(agents)" = "[]" ] && ok "and counts the agent out" || bad "and counts the agent out" "$(agents)"
 
 printf '{"session_id":"s1","hook_event_name":"Notification","notification_type":"idle_prompt","message":"Claude is waiting for your input"}' | hook notify
 expect "the idle nudge keeps it" \

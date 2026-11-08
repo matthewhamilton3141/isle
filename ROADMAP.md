@@ -1802,6 +1802,33 @@ the hold ends and it's an ordinary hover — leaving closes it. ⌥⇥ on an ope
 island closes it: a hover ends, a field's draft is kept, and an alert's
 auto-open is dismissed as a click would (if "Dismiss alert panel" is on).
 
+### The keys on the buttons (decided 2026-11-08: "show the hint")
+
+Approve and Deny carry their keys after the word, in place of the ✓ and ✕
+("Approve ⌃'", "Deny ⌃⎋"); the review's Confirm and Back carry Approve's and
+Deny's, a multi-select's Done carries Approve's, and each of the first four
+options has its own at the row's end ("⌥1"). 10pt, `.islandSecondary` (0.6
+on a pill, 0.45 on an option), so it lifts on glass.
+
+- **The user's keys.** From the bindings, live: rebinding in Settings changes
+  the hint at once; a shortcut turned off has no hint, and its pill gets its
+  symbol back.
+- **Shown only while a press would do it** (`ShortcutHints`,
+  `ShortcutPlan.live`): the key is held (not refused by another app), the
+  request is armed, no field has the keys, and for a guarded command,
+  Always…'s review and a question's options the face has been seen. Before
+  that a press would reach another app or only reveal the request, so a hint
+  then would say something untrue. Its room is kept from the start, so it
+  fading in half a second later moves nothing. A one-shot look at the seen
+  moment brings it up, like the arm's; nothing polls.
+- **Never a wider row.** The row tries the hints at 8pt spacing, then 6pt
+  (Always…'s five pills fit that way with the default keys), then goes
+  without them (keys rebound to long chords). An option's key sits beside a
+  one-line row's text (which is cut anyway) or over a stacked row's corner,
+  so descriptions wrap to the lines the fit measured. Nothing is near the
+  camera band.
+- Renders: `scratchpad/key-hints/key-hints-contact-sheet.png`.
+
 ### Settings › Shortcuts
 
 Each shortcut with a recorder (click, type the keys; Esc cancels), a reset
@@ -1839,8 +1866,9 @@ differs from the defaults.
   a visit and leaving put it away.
 - ⌃' and ⌃⎋ for Approve and Deny (⌃⏎ was the first pick, but it's Claude
   Code's send-now).
-- No hint on the face's buttons (e.g. "⌃'" on Approve); Settings is the only
-  place the keys are written.
+- Hints on the buttons appear only once a press would act (up to half a
+  second after the face is up), rather than from the start. Rebound keys too
+  long for Always…'s row show no hints there.
 
 ## Milestone 8 — Multi-Display  ✅
 
@@ -2340,10 +2368,10 @@ and a dump hook; `scratchpad/m20/probe/`):
 - **When it clears.** The next prompt (a task's own notification included),
   a non-compaction SessionStart, StopFailure (it carries no list) and
   SessionEnd clear it. The idle nudge and a compaction keep it.
-- **No double show with M22.** Stop clears the subagent count before it
-  writes, so a background agent still running moves from "3 agents · …" to
-  "Left running: Explore agent". Its later SubagentStop finds no file and
-  changes nothing.
+- **No double show with M22.** Since v17 the record carries a background
+  agent both ways at Stop (`left` as of the turn's end, `subagents` until
+  its own stop). The face shows `left` in preference on Done and Waiting,
+  and a row or tile counts agents only while working, so it's said once.
 - **App side.** `ClaudeStatus.left` and `ClaudeLeftovers` build the line.
   Same names are grouped as "×N" in listed order. The view tries all names
   in full, then programs alone, then fewer names with "+N", then "Left 3
@@ -2436,8 +2464,16 @@ agents and a dump hook):
   lands mid-write isn't lost. A subagent event rewrites the record line by
   line and keeps everything else, including a request id an `ask` is waiting
   under.
-- **When the count clears.** Stop, StopFailure, UserPromptSubmit,
-  SessionStart (except `source: compact`) and SessionEnd all clear it.
+- **When the count clears.** Since v17 (decided 2026-11-08, "keep counting
+  it"): an agent is counted until its own SubagentStop, across turns, so a
+  background agent still running at Stop or at the next prompt stays in
+  "2 agents". SessionEnd clears the session's agents, and so does a
+  SessionStart other than a compaction (a new process taking up the id, as
+  a resume does). A session whose process is gone shows none: selection
+  passes a record's agents only for a session id the registry lists alive
+  (`ClaudeSubagents.counted`), and the existing 5s re-select tick also runs
+  while agents are counted, so a SIGKILL is seen. (v13–v16 cleared at Stop,
+  StopFailure and UserPromptSubmit.)
 - **App side.** `ClaudeStatus.subagents` and `ClaudeSubagents` build the line.
   Types are grouped by count, most first, and ties go to the first started.
   A plugin's agent goes by its own name. Kinds that don't fit become "+N",
@@ -2456,13 +2492,12 @@ agents and a dump hook):
 
 **Open:**
 
-- **Interrupts.** UserPromptSubmit clears the count because an interrupt fires
-  no Stop. If Claude Code fires it for a message queued mid-turn, the count
-  under-reads for the rest of that turn. That errs toward saying less.
-- **Background agents.** `run_in_background` agents still running at the
-  parent's Stop are dropped from the count. Stop's `background_tasks` does
-  carry them (seen on 2.1.319), and M20 shows them as "Left running:
-  Explore agent".
+- **Interrupts (unverified).** Whether an Esc that kills a foreground agent
+  fires its SubagentStop isn't known. If it doesn't, v17 counts that agent
+  until the session ends. The face drops the count while it shows the
+  interrupt's Ready, but the next prompt would bring it back.
+- **Background agents.** Counted until their own stop (v17). On Done, M20's
+  "Left running: Explore agent" takes the line, so the face says it once.
 - **The action row.** The row moves down one line while agents run, like a
   two-line "said".
 
