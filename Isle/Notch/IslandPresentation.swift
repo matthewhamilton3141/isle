@@ -48,7 +48,9 @@ final class IslandPresentation: ObservableObject {
 
     /// How long re-expansion stays locked out after a collapse begins. Covers
     /// the close spring (`Animation.notchClose`, response 0.30) so the hover
-    /// region has fully shrunk before hover can fire again.
+    /// region has fully shrunk before hover can fire again. The shaped
+    /// collapse keeps that spring for its height, the slowest of its channels
+    /// (see `IslandMotion`), so this still covers it.
     private static let collapseLockDuration: TimeInterval = 0.32
 
     /// The shared content. Unowned because the view model outlives every
@@ -67,6 +69,12 @@ final class IslandPresentation: ObservableObject {
     /// The drop face's target under the pointer, lit. Nil between targets.
     @Published private(set) var litDropTarget: DropTarget?
 
+    /// How near the pointer is, for the collapsed island's swell. A model of
+    /// its own so a change redraws the fill and nothing else; fed only
+    /// through `trackProximity` / `relaxProximity`.
+    let proximity = IslandProximityModel()
+    private var proximityGate = ProximityGate()
+
     /// Where the drop face drew each target, in the hosting view's top-left
     /// space, as the face reports it. Not published: only the drag reads it.
     var dropTargetFrames: [DropTarget: CGRect] = [:]
@@ -81,6 +89,7 @@ final class IslandPresentation: ObservableObject {
     /// simply move again.
     func beginDrop() {
         guard !isDropTarget else { return }
+        relaxProximity()
         isDropTarget = true
         if !isHovering { isHovering = true }
     }
@@ -135,6 +144,7 @@ final class IslandPresentation: ObservableObject {
             // back off it can count as a dismiss.
             content.noteAlertVisited()
             guard !collapseLocked, !isHovering else { return }
+            relaxProximity()
             isHovering = true
         } else {
             guard isHovering else { return }
@@ -144,6 +154,31 @@ final class IslandPresentation: ObservableObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.collapseLockDuration) { [weak self] in
                 self?.collapseLocked = false
             }
+        }
+    }
+
+    /// A pointer move on this island's screen: update the swell. `drawn` is
+    /// the island's drawn rect in the same (screen) coordinates as `pointer`.
+    ///
+    /// Out of reach this is a rect test and an early return — see
+    /// `ProximityGate`. The rest of the rule is asked only once the pointer is
+    /// near: the island must be collapsed, settled (the collapse lock is the
+    /// close spring's length, so a swell never lands on a collapse still in
+    /// flight) and not taking a drag.
+    func trackProximity(pointer: CGPoint, drawn: CGRect?) {
+        let allowed = { [unowned self] in
+            !self.collapseLocked && !self.isDropTarget && self.state == .collapsed
+        }
+        if let next = proximityGate.update(pointer: pointer, island: drawn, allowed: allowed()) {
+            proximity.reading = next
+        }
+    }
+
+    /// Take the swell back to rest: the pointer left this screen, crossed
+    /// fast, or the island is about to open.
+    func relaxProximity() {
+        if let next = proximityGate.relax() {
+            proximity.reading = next
         }
     }
 

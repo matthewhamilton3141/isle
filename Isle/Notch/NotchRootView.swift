@@ -32,6 +32,14 @@ struct NotchRootView: View {
     /// content and the hit-test, so neither jumps ahead of the frame.
     @State private var liveSize: CGSize = .zero
 
+    /// The size the island last started collapsing from, for the collapse's
+    /// taper (see `outline`). Snapshotted from the live frame at the moment
+    /// of the close rather than recomputed, because the open size a face
+    /// would report can change under a collapse already in flight.
+    @State private var collapseOrigin: CGSize?
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     /// Horizontal padding inside the collapsed shape: 10 (root) + 4 (collapsed
     /// view), each side. Used to turn content widths into a shape width.
     private static let collapsedHPadding: CGFloat = 28
@@ -111,13 +119,34 @@ struct NotchRootView: View {
     }
 
     var body: some View {
+        // Read here, not in the closure: the transaction is built from the
+        // state this body was evaluated for.
+        let opening = state.isExpanded
+        let reduced = reduceMotion
         VStack(spacing: 0) {
             notch
                 .offset(x: collapsedShift)
+                // The shift exists to centre an asymmetric pill, so it moves
+                // with the width.
+                .islandCollapseChannel(.width)
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .animation(state.isExpanded ? .notchOpen : .notchClose, value: state)
+        // Open on the open spring. Close on the close spring, marked as a
+        // collapse so the outline's width, height and corners each take their
+        // own (see `notch`) — or, with Reduce Motion, on a plain quick ease
+        // with nothing shaped about it.
+        .transaction(value: state) { t in
+            guard !t.disablesAnimations else { return }
+            if opening {
+                t.animation = .notchOpen
+            } else if reduced {
+                t.animation = .notchCloseReduced
+            } else {
+                t.animation = .notchClose
+                t.isIslandCollapse = true
+            }
+        }
         // A question arriving while the panel is already open (or leaving it),
         // or a move to or from a taller face, changes the height without
         // changing the state; give that its own spring rather than a jump.
@@ -125,6 +154,9 @@ struct NotchRootView: View {
         .animation(expandedHeight > NotchMetrics.expandedSize.height ? .notchOpen : .notchClose,
                    value: expandedHeight)
         .onChange(of: state) { previous, current in
+            if previous.isExpanded, !current.isExpanded, liveSize.width > 0, liveSize.height > 0 {
+                collapseOrigin = liveSize
+            }
             // Only on the open/close transition itself, not on changes between
             // the two expanded states — those aren't a gesture the user made
             // and buzzing for them would feel random.
@@ -133,15 +165,29 @@ struct NotchRootView: View {
         }
     }
 
+    /// The island's outline, shared by the clip and the fill so the two can
+    /// never disagree. While collapsing it carries the sizes it's collapsing
+    /// between, which is what lets it taper (see `NotchShape.genie`).
+    private var outline: NotchShape {
+        let corners = state.isExpanded ? IslandMotion.openCorners : IslandMotion.collapsedCorners
+        var genie: NotchShape.Genie?
+        if state == .collapsed, !reduceMotion, let collapseOrigin {
+            genie = NotchShape.Genie(
+                expanded: collapseOrigin,
+                collapsed: size,
+                band: island.metrics?.notchSize ?? NotchMetrics.fallbackNotchSize,
+                bandShift: collapsedShift
+            )
+        }
+        return NotchShape(topCornerRadius: corners.top, bottomCornerRadius: corners.bottom, genie: genie)
+    }
+
     private var notch: some View {
         ZStack {
-            NotchShape(
-                topCornerRadius: state.isExpanded ? 12 : 8,
-                bottomCornerRadius: state.isExpanded ? 22 : 12
-            )
-            // Flat black on both tabs — the ambient artwork/Claude wash was
-            // removed, so nothing tints the panel behind the content.
-            .fill(.black)
+            // Holds the ZStack at the full frame the way the fill used to.
+            // The fill itself is now `IslandFill`, behind and outside the
+            // clip, so it can carry the proximity swell.
+            Color.clear
 
             content
                 .padding(.horizontal, state.isExpanded ? 22 : 10)
@@ -169,17 +215,33 @@ struct NotchRootView: View {
                 .opacity(expandedContentOpacity)
             }
         }
-        .frame(width: size.width, height: size.height)
+        // Width and height as separate frames so a collapse can run them on
+        // separate springs: the width leads, the height follows. Outside a
+        // collapse the channels pass the transaction through untouched and
+        // the two move together as one frame would.
+        .frame(width: size.width)
+        .islandCollapseChannel(.width)
+        .frame(height: size.height)
+        .islandCollapseChannel(.height)
         // Clip everything to the notch outline. The expanded content is laid
         // out at its full width the instant the state flips, but the frame
         // only reaches that width at the end of the animation — without this
         // the content spills out of a still-growing notch.
-        .clipShape(
-            NotchShape(
-                topCornerRadius: state.isExpanded ? 12 : 8,
-                bottomCornerRadius: state.isExpanded ? 22 : 12
+        .clipShape(outline)
+        // Flat black on both tabs — the ambient artwork/Claude wash was
+        // removed, so nothing tints the panel behind the content. Drawn
+        // outside the clip so the collapsed island can swell a few points as
+        // the pointer nears; never part of the hit rect below.
+        .background(alignment: .top) {
+            IslandFill(
+                proximity: island.proximity,
+                shape: outline,
+                size: size,
+                active: state == .collapsed
             )
-        )
+        }
+        // The corners lead the collapse: the clip's and the fill's radii.
+        .islandCollapseChannel(.corners)
         // Hit region is the full bounding rectangle, not the notch outline. The
         // outline's top edge sits at the screen edge and its top corners are
         // carved inward by the concave flares, so the corners of the island

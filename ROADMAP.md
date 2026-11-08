@@ -1411,6 +1411,33 @@ entry, pinned); the home tile (3 with one needing you, 2 quiet, 1).
 - **The row's Jump is an icon**, unlike the eyebrow's named chip — the same
   app name down every row was noise.
 
+## Island motion — the proximity swell and a shaped collapse
+
+From Field scan 2's polish note: Apple's island reacts to the pointer
+approaching, and iPhone's collapses with a genie-like motion. Built on
+`feature/island-motion`; numbers in `IslandMotion.swift`, checked by
+`scripts/test-island-motion.sh`.
+
+- **Swell.** Within 56pt of the collapsed island it grows by up to 3pt a side
+  and 2pt down, and leans up to 1.5pt toward the pointer. The top never moves.
+  It's a `scaleEffect` on the black fill, outside the clip, so the hover
+  zones, the hit rect and the open timing don't see it. The reading is
+  stepped (8 levels, 3 of lean) and published only on a change, from the
+  pointer monitor that already runs. Out of reach it costs one rect test. A
+  sideways sweep, a drag, an open or settling island, and Reduce Motion all
+  hold it at rest.
+- **Collapse.** Corners lead (0.18s), then width (0.24s, ζ 0.78, settling
+  ~2% past its target), then height on the old close spring, which is
+  critically damped and so never shorter than the housing. While the width
+  leads, the walls pinch toward the bottom (up to ~8pt). The pinch never
+  reaches into the camera band, and the outline is never narrower than the
+  band. Each channel is a SwiftUI spring picked by a transaction flag set only
+  on the open→collapsed change. There's no clock. Reduce Motion gets a plain
+  0.18s ease.
+- **Still to judge on the real screen:** whether the swell reads at all over a
+  dark menu bar, and whether sweeping along the menu bar beside the notch
+  pulses it too often.
+
 ## Milestone 8 — Multi-Display  ✅
 
 The spec scoped v1 to the built-in display ("non-goal: multi-display sync"), and
