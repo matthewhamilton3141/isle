@@ -72,6 +72,8 @@ GUARD_DIR="$STATUS_DIR/guarded"
 # no file and changes nothing. An agent is counted until its own stop, across
 # turns: a background agent still running when the turn ends (Stop,
 # StopFailure) or the next prompt starts (UserPromptSubmit) is still running.
+# Stop also lets go of every agent its `background_tasks` doesn't list: one
+# stopped by Esc gets no SubagentStop of its own (see `stop_prune_agents`).
 # The session's directory goes only with the session: its end (SessionEnd), or
 # a new process taking up its id (SessionStart other than a compaction, as a
 # resume does), since the agents of a process that's gone are gone too. One
@@ -775,7 +777,7 @@ lt_array() {
     lt_ws
     [ "${LT_REST:0:1}" = "{" ] || return 1
     LT_REST="${LT_REST:1}"
-    LO_TYPE=""; LO_STATUS=""; LO_COMMAND=""; LO_AGENT=""; LO_TOOL=""; LO_SERVER=""
+    LO_ID=""; LO_TYPE=""; LO_STATUS=""; LO_COMMAND=""; LO_AGENT=""; LO_TOOL=""; LO_SERVER=""
     LO_NAME=""; LO_SCHEDULE=""; LO_RECURRING=""
     lt_ws
     if [ "${LT_REST:0:1}" = "}" ]; then
@@ -791,6 +793,7 @@ lt_array() {
         fi
         LT_REST="${LT_REST:${#BASH_REMATCH[0]}}"
         case "$key" in
+          id) LO_ID="$val" ;;
           type) LO_TYPE="$val" ;;
           status) LO_STATUS="$val" ;;
           command) LO_COMMAND="$val" ;;
@@ -854,6 +857,9 @@ lt_task() {
   local type name run="" cut=false raw
   case "$LO_STATUS" in running|pending|'') ;; *) return 0 ;; esac
   lt_safe "$LO_TYPE"; type="$LT_SAFE"
+  # A subagent still running is one the count keeps (see `stop_prune_agents`),
+  # whether or not the line below has room to name it.
+  [ "$type" = subagent ] && LT_AGENT_IDS="$LT_AGENT_IDS${LO_ID//[^A-Za-z0-9_-]/} "
   case "$type" in
     dream|'auto-mode scan'|'memory import'|'memory save') return 0 ;;
   esac
@@ -892,16 +898,45 @@ lt_cron() {
   LT_CRONS="$LT_CRONS${LT_CRONS:+, }{\"schedule\": \"$schedule\", \"recurring\": $recurring}"
 }
 
+# At Stop, the session's counted agents that aren't among the turn's
+# `background_tasks` (LT_AGENT_IDS, " id id "): their turn is over and they
+# didn't outlive it. That is how an agent stopped by Esc goes: Claude Code
+# 2.1.319 fires no SubagentStop for it (measured), and without this it would
+# be counted until the session ended. A background agent is listed by the
+# same id its SubagentStart carried (also measured), so it stays until its
+# own stop.
+stop_prune_agents() {
+  local id="${SESSION_ID//[^A-Za-z0-9_-]/}" d f
+  [ -n "$id" ] || return 0
+  d="$AGENT_DIR/$id"
+  [ -d "$d" ] || return 0
+  for f in "$d"/*; do
+    [ -e "$f" ] || continue
+    f="${f##*/}"
+    case "$f" in *.*) continue ;; esac
+    case "$LT_AGENT_IDS" in *" $f "*) ;; *) rm -f "$d/$f" ;; esac
+  done
+  rmdir "$d" 2>/dev/null || true
+  return 0
+}
+
 # Stop: what the turn left, kept at left/<session>.json, or nothing kept. A
 # payload with neither array, or both empty (nearly every Stop), costs two
 # pattern tests.
 stop_leftovers() {
-  local id="${SESSION_ID//[^A-Za-z0-9_-]/}" f out arr ok=1
+  local id="${SESSION_ID//[^A-Za-z0-9_-]/}" f out arr ok=1 walked=0
   [ -n "$id" ] || return 0
   f="$LEFT_DIR/$id.json"
+  LT_AGENT_IDS=" "
   case "$STDIN_JSON" in
     *'"background_tasks":[{'*|*'"session_crons":[{'*|*'"background_tasks": [{'*|*'"session_crons": [{'*) ;;
-    *) rm -f "$f"; return 0 ;;
+    *)
+      rm -f "$f"
+      # Nothing left running at all, said outright: no agent is.
+      case "$STDIN_JSON" in
+        *'"background_tasks":[]'*|*'"background_tasks": []'*) stop_prune_agents ;;
+      esac
+      return 0 ;;
   esac
   set +eu
   local LC_ALL=C
@@ -913,12 +948,16 @@ stop_leftovers() {
     LT_REST="${LT_REST:${#BASH_REMATCH[0]}}"
     if [ "$arr" = background_tasks ]; then
       lt_array lt_task || { ok=0; break; }
+      walked=1
     else
       lt_array lt_cron || { ok=0; break; }
     fi
     lt_ws
   done
   set -eu
+  # Only from a list read to its end: one that stopped the walk says nothing
+  # about which agents still run, so the count stays as it was.
+  if [ "$ok" = 1 ] && [ "$walked" = 1 ]; then stop_prune_agents; fi
   if [ "$ok" = 0 ] || { [ "$LT_KEPT" = 0 ] && [ "$LT_MORE" = 0 ] && [ "$LT_CRONS_KEPT" = 0 ]; }; then
     rm -f "$f"; return 0
   fi

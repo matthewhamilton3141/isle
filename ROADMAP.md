@@ -2492,10 +2492,13 @@ agents and a dump hook):
 
 **Open:**
 
-- **Interrupts (unverified).** Whether an Esc that kills a foreground agent
-  fires its SubagentStop isn't known. If it doesn't, v17 counts that agent
-  until the session ends. The face drops the count while it shows the
-  interrupt's Ready, but the next prompt would bring it back.
+- **Interrupts (measured, fixed in v18).** An Esc that kills a foreground
+  agent fires no SubagentStop (2.1.319, probed in a scratch session: Stop
+  came, the agent's stop never did). Stop's `background_tasks` lists each
+  agent still running with `type: "subagent"` and `id` equal to its
+  SubagentStart's `agent_id`, so v18 drops at Stop every counted agent the
+  list doesn't name. A Stop without the field (older Claude Code) or with a
+  list the parser can't read to the end keeps the count as it was.
 - **Background agents.** Counted until their own stop (v17). On Done, M20's
   "Left running: Explore agent" takes the line, so the face says it once.
 - **The action row.** The row moves down one line while agents run, like a

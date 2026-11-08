@@ -69,7 +69,16 @@ sub_tool() {  # a tool call inside a subagent: the parent's session id, the agen
   printf '{"session_id":"s1","hook_event_name":"PreToolUse","agent_id":"%s","agent_type":"Explore","tool_name":"Bash","tool_input":{"command":"ls -la /tmp/work","description":"List"},"tool_use_id":"toolu_2"}' "$1" \
     | hook set-state working
 }
-end_turn() { printf '{"session_id":"%s","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Done.","background_tasks":[],"session_crons":[]}' "${1:-s1}" | hook set-state done; }
+# end_turn [session] [agent_id:type …]: a Stop whose background_tasks lists
+# those agents as still running (2.1.319's shape, from a real run).
+end_turn() {
+  local sid="${1:-s1}" bg="" a
+  shift || true
+  for a in "$@"; do
+    bg="$bg${bg:+,}{\"id\":\"${a%%:*}\",\"type\":\"subagent\",\"status\":\"running\",\"description\":\"Run sleep 90 then reply\",\"agent_type\":\"${a#*:}\"}"
+  done
+  printf '{"session_id":"%s","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Done.","background_tasks":[%s],"session_crons":[]}' "$sid" "$bg" | hook set-state done
+}
 
 echo "SubagentStart / SubagentStop"
 printf '{"session_id":"s1","hook_event_name":"SessionStart","source":"startup"}' | hook set-state idle
@@ -107,8 +116,8 @@ expect "every agent stopped: none" "[]" state=working
 
 echo "Counted until their own stop, across turns (v17)"
 start x1 Explore; start x2 Plan
-end_turn
-expect "the turn's end keeps them: a background agent still runs" '["Explore", "Plan"]' state=done last_message=Done.
+end_turn s1 x1:Explore x2:Plan
+expect "the turn's end keeps the ones it lists as still running" '["Explore", "Plan"]' state=done last_message=Done.
 prompt
 expect "start A, a new prompt: A still counted" '["Explore", "Plan"]' state=working
 stop x1 Explore
@@ -138,7 +147,7 @@ printf '{"session_id":"s1","hook_event_name":"SessionStart","source":"resume"}' 
 expect "a resumed session starts with none" "[]" state=idle
 
 prompt; start e1 Explore
-end_turn; prompt
+end_turn s1 e1:Explore; prompt
 start o1 Plan s2
 printf '{"session_id":"s1","hook_event_name":"SessionEnd","reason":"exit"}' | hook end
 [ ! -e "$SF" ] && [ ! -d "$AD" ] && ok "SessionEnd clears them, turns later, with the record" || bad "SessionEnd removes the record and the agents" "$(ls "$H/.isle/subagents")"
@@ -148,6 +157,33 @@ stop e1 Explore
   || bad "another session's agents are its own" "$(agents "$H/.isle/sessions/s2.json")"
 printf '{"hook_event_name":"Stop"}' | hook set-state done
 [ -e "$H/.isle/subagents/s2/o1" ] && ok "a Stop with no session id clears no one's" || bad "a Stop with no session id clears no one's" "s2 lost o1"
+
+echo "Agents the turn's end doesn't list (Esc)"
+prompt; start f1 general-purpose; start b1 general-purpose
+end_turn s1 b1:general-purpose
+expect "an agent stopped by Esc (no SubagentStop) goes at Stop; the background one stays" '["general-purpose"]' state=done
+[ ! -e "$AD/f1" ] && [ -e "$AD/b1" ] && ok "f1's file is gone, b1's kept" || bad "f1's file is gone, b1's kept" "$(ls "$AD")"
+stop b1 general-purpose
+prompt; start f2 Explore
+end_turn
+expect "a Stop listing nothing running: none" "[]" state=done
+[ ! -d "$AD" ] && ok "and the session's directory goes" || bad "and the session's directory goes" "$(ls -la "$AD")"
+prompt; start f3 Explore
+printf '{"session_id":"s1","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Done."}' | hook set-state done
+expect "a Stop without background_tasks (an older Claude Code) keeps them" '["Explore"]' state=done
+printf '{"session_id":"s1","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Done.","background_tasks":[{"id":"zz","type":"subagent","status":"running","nested":{"x":1}}],"session_crons":[]}' | hook set-state done
+expect "a list it can't read to the end keeps them" '["Explore"]' state=done
+printf '{"session_id":"s1","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Done.","background_tasks":[{"id":"f3","type":"subagent","status":"completed","agent_type":"Explore"}],"session_crons":[]}' | hook set-state done
+expect "listed but completed: gone" "[]" state=done
+prompt; start g1 Explore; start g2 Plan
+printf '{"session_id":"s1","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Done.","background_tasks":[{"id":"sh1","type":"shell","status":"running","description":"dev","command":"npm run dev"},{"id":"g2","type":"subagent","status":"running","description":"d","agent_type":"Plan"}],"session_crons":[]}' | hook set-state done
+expect "listed among shells: kept by id, the rest gone" '["Plan"]' state=done
+stop g2 Plan
+prompt; start m1 Explore
+end_turn s2
+expect "another session's Stop leaves this one's" '["Explore"]' state=working
+stop m1 Explore
+end_turn
 
 echo "Records it didn't write first"
 rm -f "$SF"
