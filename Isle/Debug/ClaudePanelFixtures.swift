@@ -365,7 +365,39 @@ extension ClaudePanelFixture {
                   request: approval("Bash", "npm run lint -- --fix")),
             .init(name: "both_question_4", mode: .both, state: .needsQuestion, request: question([fourOptions])),
         ] + approvalKinds + descriptionModes + worstCases + liveExtras + jumpAndReply + doneSays + loneJump
-            + sessionLists + guardedApprovals
+            + sessionLists + guardedApprovals + faceRow
+    }
+
+    // MARK: The action row's place
+
+    /// A Bash call long enough to take both of the command's lines, with a
+    /// rule Claude Code offers to save.
+    static let bashLongAlwaysStdin = permissionRequest("Bash",
+        input: #"{"command":"xcodebuild -project Isle.xcodeproj -scheme Isle -configuration Debug -derivedDataPath /private/tmp/isle-dd build 2>&1 | tail -20","description":"Build Isle"}"#,
+        suggestions: #"[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"xcodebuild -project Isle.xcodeproj *"}],"behavior":"allow","destination":"localSettings"}]"#)
+
+    /// Every status and approval face's row, under content of each height:
+    /// the row follows what's above it at one gap, and what's left of the
+    /// panel goes below it. The first is the face as it was reported, a
+    /// working session in Terminal with others alive, on the hook's target
+    /// for `R=/private/tmp/…; …` cut at 48 characters.
+    static var faceRow: [ClaudePanelFixture] {
+        [
+            .init(name: "fr_working_terminal_crowded", state: .working,
+                  action: "Bash", target: "R=/private/tmp/claude-501/-Users-matthew-Documen",
+                  updatedAt: Date(), workingWord: "Puzzling", keepAwake: true, host: terminalHost,
+                  sessions: [ownWorking, bench, dotfiles]),
+            .init(name: "fr_working_terminal", state: .working, action: "Bash", target: "xcodebuild",
+                  host: terminalHost),
+            .init(name: "fr_approval_long_always", state: .needsApproval, action: "Bash", target: "xcodebuild",
+                  request: approval(stdin: bashLongAlwaysStdin), host: terminalHost),
+            .init(name: "fr_review_long_always", state: .needsApproval, action: "Bash", target: "xcodebuild",
+                  request: approval(stdin: bashLongAlwaysStdin), reviewingRemember: true, host: terminalHost),
+            .init(name: "fr_approval_short_always", state: .needsApproval, action: "Bash", target: "npm",
+                  request: approval(stdin: bashPrefixStdin), host: terminalHost),
+            .init(name: "fr_review_short_always", state: .needsApproval, action: "Bash", target: "npm",
+                  request: approval(stdin: bashPrefixStdin), reviewingRemember: true, host: terminalHost),
+        ]
     }
 
     // MARK: Every session at once (Milestone 16)

@@ -10,15 +10,16 @@
 //    title     the state as a headline, or the question itself.
 //    body      what Claude is doing, the exact command to approve, or the
 //              options to pick from.
-//    actions   one row of pills pinned to the bottom: Approve / Deny /
-//              Terminal, Answer in terminal / Next. Held empty on a status
-//              face, where it is the room reserved for Milestones 11 (jump
-//              to the session, leading) and 12 (the usage row, trailing).
+//    actions   one row of pills: Approve / Deny / Terminal, Answer in
+//              terminal / Next, or Jump and the reply field. Held empty on a
+//              status face with nothing to offer, at its usual height.
 //
 //  The eyebrow and title sit at the same height on every face, so moving
-//  between states cross-fades text in place rather than shuffling rows; the
-//  action row is pinned to the bottom, so the buttons don't move with the
-//  length of what's above them.
+//  between states cross-fades text in place rather than shuffling rows. On a
+//  status or approval face the action row follows the body at `bodyGap`, and
+//  the panel's spare room goes below it; a request that can switch its body
+//  between one line and two (an edit's note, Always…'s review) holds two, so
+//  its buttons don't move under the pointer.
 //
 //  The question face is the one that grows, and the one that rearranges: the
 //  glyph leaves, and the eyebrow, the question and the options take the
@@ -69,9 +70,11 @@ enum ClaudePanelLayout {
     static let headlineGap: CGFloat = 2
     /// Question → options.
     static let questionGap: CGFloat = 6
-    /// The least room above the action row. On the standard panel a status
-    /// face has far more; an approval has about this much.
+    /// The least room above the question face's action row.
     static let actionGap: CGFloat = 6
+    /// Body → action row on a status or approval face: one gap whatever the
+    /// body's height, with the panel's spare room below the row.
+    static let bodyGap: CGFloat = 10
     static let actionHeight: CGFloat = 22
     /// Under the action row, on top of the panel's own bottom inset.
     static let bottomInset: CGFloat = 4
@@ -114,12 +117,11 @@ enum ClaudePanelLayout {
         textHeight("Wg", font: font, width: nil)
     }
 
-    /// The approval's command: two lines, so the buttons below never move
-    /// with its length.
+    /// The most lines the approval's command takes.
     static let commandLines = 2
 
     /// What Claude said last, on a status face (Milestone 15): two lines at
-    /// most, in the room the status face has to spare above its action row.
+    /// most, which the status face's standard panel seats above its row.
     static let saidLines = 2
 
     // MARK: - Session list (Milestone 16)
