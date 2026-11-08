@@ -515,9 +515,12 @@ final class NotchViewModel: ObservableObject {
             return claudeSessions.contains { $0.sessionId == id }
         }
         // A record's agents only while its process lives: one killed outright
-        // fires no SessionEnd to clear them (Milestone 22).
+        // fires no SessionEnd to clear them (Milestone 22). Like `live`, only
+        // against a registry that has been read: checked against nothing,
+        // every agent would go.
         let liveIds = Set(claudeSessions.map(\.sessionId))
         let pool = (live.isEmpty ? statuses : live).map(reconciled).map(backgroundMerge.resolve).map { status in
+            guard !claudeSessions.isEmpty else { return status }
             var status = status
             status.subagents = ClaudeSubagents.counted(status.subagents, sessionId: status.sessionId, live: liveIds)
             return status
@@ -583,7 +586,10 @@ final class NotchViewModel: ObservableObject {
         corrected.state = .idle
         corrected.action = nil
         corrected.target = nil
-        // The turn is over, so are its agents, whatever stop never came.
+        // The turn is over without the Stop that says which agents outlived
+        // it (isle-cli v18 keeps only those `background_tasks` lists), so
+        // none are claimed: a background one may still run, but nothing here
+        // can say so.
         corrected.subagents = []
         return corrected
     }

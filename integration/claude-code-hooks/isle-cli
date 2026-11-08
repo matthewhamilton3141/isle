@@ -72,8 +72,9 @@ GUARD_DIR="$STATUS_DIR/guarded"
 # no file and changes nothing. An agent is counted until its own stop, across
 # turns: a background agent still running when the turn ends (Stop,
 # StopFailure) or the next prompt starts (UserPromptSubmit) is still running.
-# Stop also lets go of every agent its `background_tasks` doesn't list: one
-# stopped by Esc gets no SubagentStop of its own (see `stop_prune_agents`).
+# Stop also lets go of every agent its `background_tasks` doesn't list (all
+# of them when it carries no list): one stopped by Esc gets no SubagentStop
+# of its own (see `stop_prune_agents`).
 # The session's directory goes only with the session: its end (SessionEnd), or
 # a new process taking up its id (SessionStart other than a compaction, as a
 # resume does), since the agents of a process that's gone are gone too. One
@@ -859,7 +860,11 @@ lt_task() {
   lt_safe "$LO_TYPE"; type="$LT_SAFE"
   # A subagent still running is one the count keeps (see `stop_prune_agents`),
   # whether or not the line below has room to name it.
-  [ "$type" = subagent ] && LT_AGENT_IDS="$LT_AGENT_IDS${LO_ID//[^A-Za-z0-9_-]/} "
+  # Cut as SubagentStart cut the file name, so the two agree.
+  if [ "$type" = subagent ]; then
+    local aid="${LO_ID//[^A-Za-z0-9_-]/}"
+    LT_AGENT_IDS="$LT_AGENT_IDS${aid:0:64} "
+  fi
   case "$type" in
     dream|'auto-mode scan'|'memory import'|'memory save') return 0 ;;
   esac
@@ -932,10 +937,16 @@ stop_leftovers() {
     *'"background_tasks":[{'*|*'"session_crons":[{'*|*'"background_tasks": [{'*|*'"session_crons": [{'*) ;;
     *)
       rm -f "$f"
-      # Nothing left running at all, said outright: no agent is.
-      case "$STDIN_JSON" in
-        *'"background_tasks":[]'*|*'"background_tasks": []'*) stop_prune_agents ;;
-      esac
+      # Nothing left running at all, said outright: no agent is. No list at
+      # all (a Claude Code from before it, or a turn that didn't say): the
+      # turn's end lets them go, as before v17, rather than count an agent
+      # for turns on end that may be long gone. `"background_tasks"` right up
+      # to its closing quote can't occur inside a string, where quotes are
+      # escaped. Anything else unread keeps the count.
+      if [[ $STDIN_JSON =~ \"background_tasks\"[[:space:]]*:[[:space:]]*\[[[:space:]]*\] ]] \
+         || [[ $STDIN_JSON != *'"background_tasks"'* ]]; then
+        stop_prune_agents
+      fi
       return 0 ;;
   esac
   set +eu

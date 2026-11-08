@@ -258,8 +258,10 @@ struct NotchRootView: View {
                     .padding(.trailing, Self.crumbTrailing)
                     .opacity(expandedContentOpacity)
                     .transition(.opacity)
-                } else if state.isExpanded, viewModel.expandedPlace == .home, !island.isDropTarget {
-                    // On Home the same spot holds Settings. Its right edge
+                } else if state.isExpanded, viewModel.expandedPlace == .home || !viewModel.showsHome, !island.isDropTarget {
+                    // On Home the same spot holds Settings — and on the one
+                    // face of an island with no Home, which has no way home
+                    // to sit there and would otherwise have no gear at all. Its right edge
                     // sits where the crumb's does (the crumb's label carries
                     // its own 4pt inset; the gear's 22pt target is centred).
                     NotchSettingsButton()
