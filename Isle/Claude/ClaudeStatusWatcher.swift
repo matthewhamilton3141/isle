@@ -51,9 +51,10 @@ struct ClaudeStatus: Equatable {
     /// doesn't emit the field, which only costs a suppression, never a wrong
     /// state.
     var toolActive: Bool = false
-    /// For a `usage_limit` failure, the moment the limit resets, recovered from
-    /// the limit message's embedded Unix epoch. Nil when the message carried no
-    /// reset time (the island then pins "Limit reached" with no countdown).
+    /// For a `usage_limit` failure, the moment the limit resets: from the
+    /// transcript's `quotaLimits.resetsAt`, else from Claude Code's own words
+    /// ("resets 6:50pm (America/Toronto)"). Nil when neither said (the face
+    /// then gives no time).
     var resetAt: Date?
     /// When the hook wrote this record. Breaks ties between sessions of equal
     /// urgency — see `NotchViewModel.selectStatus`.
@@ -67,6 +68,12 @@ struct ClaudeStatus: Equatable {
     /// takes its first sentence (see `ClaudeDoneLine`). Nil when there was
     /// nothing to quote, or on a helper older than v10.
     var lastMessage: String?
+    /// For a usage limit, the window that was hit (`five_hour`, `seven_day`,
+    /// …), and — on the limit or the turn that continued after it — what
+    /// Claude Code said comes next (Milestone 19, helper v12). Nil when
+    /// nothing said.
+    var limitKind: String? = nil
+    var limitNext: ClaudeLimitNext? = nil
 
     static let disconnected = ClaudeStatus(state: .disconnected, project: nil, sessionId: nil)
 }
@@ -202,7 +209,9 @@ final class ClaudeStatusWatcher {
             resetAt: payload.resetDate,
             updatedAt: payload.updated_at.flatMap(timestamp(from:)),
             requestId: payload.request_id.flatMap { $0.isEmpty ? nil : $0 },
-            lastMessage: payload.last_message.flatMap { $0.isEmpty ? nil : $0 }
+            lastMessage: payload.last_message.flatMap { $0.isEmpty ? nil : $0 },
+            limitKind: payload.limit_kind.flatMap { $0.isEmpty ? nil : $0 },
+            limitNext: payload.limit_next.flatMap(ClaudeLimitNext.init(rawValue:))
         )
     }
 
@@ -231,6 +240,9 @@ private struct StatusPayload: Decodable {
     let request_id: String?
     /// The start of Claude's final message, written on `Stop` (helper v10).
     let last_message: String?
+    /// A usage limit's window and what comes next (helper v12).
+    let limit_kind: String?
+    let limit_next: String?
 
     /// The usage-limit reset moment, parsed from the epoch string the helper
     /// writes. Accepts seconds (10-digit) or milliseconds (13-digit); anything

@@ -352,10 +352,18 @@ struct ClaudeExpandedView: View {
         }
     }
 
-    /// Live "… ago", ticking once a second.
+    /// Live "… ago", ticking once a second — or, on a usage limit with a
+    /// reset still to come, the live count to it ("in 2h 14m").
     @ViewBuilder
     private var elapsed: some View {
-        if let date = viewModel.claudeUpdatedAt {
+        if viewModel.isUsageLimit, !viewModel.isLimitWaitingForEnter,
+           let reset = viewModel.claudeResetAt, reset > Date() {
+            TimelineView(.periodic(from: Date(), by: 1)) { context in
+                Text(ClaudeLimit.countdown(to: reset, now: context.date) ?? "now")
+                    .monospacedDigit()
+            }
+            .fixedSize()
+        } else if let date = viewModel.claudeUpdatedAt {
             TimelineView(.periodic(from: date, by: 1)) { context in
                 Text(Self.relative(from: date, to: context.date))
                     .monospacedDigit()
@@ -1150,7 +1158,10 @@ struct ClaudeExpandedView: View {
         case .needsQuestion: return "Has a question"
         case .waitingInput: return "Waiting for you"
         case .done: return "Done"
-        case .failed: return "Error"
+        case .failed:
+            return viewModel.isUsageLimit
+                ? ClaudeLimit.headline(kind: viewModel.claudeLimitKind, next: viewModel.claudeLimitNext)
+                : "Error"
         case .compacting: return "Compacting"
         }
     }
@@ -1170,6 +1181,11 @@ struct ClaudeExpandedView: View {
         switch state {
         case .working:
             // No tool running → Claude is reasoning, not acting.
+            // A turn Claude Code continued after a usage limit says so until
+            // its first tool runs.
+            if actionText == nil, viewModel.claudeLimitNext == .resumed {
+                return ClaudeLimit.resumedLine(kind: viewModel.claudeLimitKind)
+            }
             return actionText ?? "Thinking…"
         case .needsApproval, .needsQuestion:
             // Name the tool + target when known ("Running npm", "Editing
@@ -1183,6 +1199,10 @@ struct ClaudeExpandedView: View {
         case .idle:
             return "Session ready"
         case .failed:
+            if viewModel.isUsageLimit {
+                return ClaudeLimit.detail(resetAt: viewModel.claudeResetAt, next: viewModel.claudeLimitNext,
+                                          terminal: viewModel.jumpTarget)
+            }
             return "The turn stopped on an error — resend to retry."
         case .compacting:
             return "Compacting the conversation to free up context"
