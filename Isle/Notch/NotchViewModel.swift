@@ -143,6 +143,12 @@ final class NotchViewModel: ObservableObject {
     /// no text), and on a helper older than v10.
     @Published private(set) var claudeFinalLine: String?
 
+    /// The subagents the island's session has running, by type, oldest
+    /// first (Milestone 22): what its hooks reported, cleared when the turn
+    /// ends. Empty when none are, or the helper or Claude Code is too old to
+    /// say. See `ClaudeSubagents` for the line made of it.
+    @Published private(set) var claudeSubagents: [String] = []
+
     /// When the last Claude status change arrived, for the "… ago" line in the
     /// Claude expanded view. `nil` when disconnected.
     @Published private(set) var claudeUpdatedAt: Date?
@@ -552,6 +558,8 @@ final class NotchViewModel: ObservableObject {
         corrected.state = .idle
         corrected.action = nil
         corrected.target = nil
+        // The turn is over, so are its agents, whatever stop never came.
+        corrected.subagents = []
         return corrected
     }
 
@@ -584,6 +592,7 @@ final class NotchViewModel: ObservableObject {
         corrected.action = nil
         corrected.target = nil
         corrected.requestId = nil
+        corrected.subagents = []
         return corrected
     }
 
@@ -1108,6 +1117,7 @@ final class NotchViewModel: ObservableObject {
         eased.action = nil
         eased.target = nil
         eased.requestId = nil
+        eased.subagents = []
         return eased
     }
 
@@ -1805,6 +1815,7 @@ final class NotchViewModel: ObservableObject {
             claudeLimitKind = nil
             claudeLimitNext = nil
             claudeFinalLine = nil
+            claudeSubagents = []
             claudeUpdatedAt = nil
         }
         updateAnsweringMarker()
@@ -1916,6 +1927,7 @@ final class NotchViewModel: ObservableObject {
         claudeLimitNext = status.limitNext
         let finalLine = ClaudeDoneLine.line(from: status.lastMessage)
         if claudeFinalLine != finalLine { claudeFinalLine = finalLine }
+        if claudeSubagents != status.subagents { claudeSubagents = status.subagents }
         // A background session no hook wrote for has no "when" Isle can
         // vouch for: no "… ago" rather than one counted from the read.
         claudeUpdatedAt = status.state == .disconnected || (status.fromAgent && status.updatedAt == nil)
@@ -1996,6 +2008,8 @@ final class NotchViewModel: ObservableObject {
             // Idle is quiescent — nothing left to re-select for, unless a
             // background session is holding the Mac awake.
             self.updateReselectTimer(for: .idle)
+            // Ready says no agents are running, as `eased` does for the list.
+            self.claudeSubagents = []
             withAnimation(.easeInOut(duration: 0.25)) {
                 self.claudeState = .idle
             }
@@ -3704,6 +3718,7 @@ extension NotchViewModel {
         composing = fixture.composing
         replyDelivery = fixture.delivery
         claudeFinalLine = ClaudeDoneLine.line(from: fixture.lastMessage)
+        claudeSubagents = fixture.subagents
         if let toast = fixture.toast { pinPreviewToast(toast) }
         // In the face, not on the home grid, whatever the suite last had —
         // unless the fixture is the grid's.

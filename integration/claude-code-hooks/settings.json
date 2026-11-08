@@ -29,6 +29,12 @@
     "SessionStart": [
       { "hooks": [{ "type": "command", "command": "isle-cli set-state idle" }] }
     ],
+    "SubagentStart": [
+      { "hooks": [{ "type": "command", "command": "isle-cli subagent-start" }] }
+    ],
+    "SubagentStop": [
+      { "hooks": [{ "type": "command", "command": "isle-cli subagent-stop" }] }
+    ],
     "SessionEnd": [
       { "hooks": [{ "type": "command", "command": "isle-cli end" }] }
     ]

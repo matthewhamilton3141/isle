@@ -2159,15 +2159,69 @@ state. Jump opens `claude attach <id>`.
   its age is the later of its state file's `updatedAt` and modification date,
   and with no age to go on it stays listed.
 
-### M22 — Subagents, counted (candidate) · S–M
+### M22 — Subagents, counted · S–M · built (`feature/subagent-count`, helper v13), not yet tested in the app
 
-"Claude · 3 agents: Explore ×2, Plan", from `SubagentStart` and
-`SubagentStop` (which carries `last_assistant_message`).
+"3 agents · Explore ×2, Plan" under what Claude is doing, from `SubagentStart`
+and `SubagentStop`.
 
-- Count only agents whose start was seen, since internal agents also fire
-  stop.
-- Clear the count on the parent's Stop.
-- Require 2.1.311+.
+**The payloads** (2.1.319, one `claude -p` run with two parallel Explore
+agents and a dump hook):
+
+- `SubagentStart`: `session_id` (the parent's), `transcript_path`, `cwd`,
+  `prompt_id`, `agent_id` (`a70394980b44198b6`), `agent_type` (`Explore`),
+  `hook_event_name`.
+- `SubagentStop`: the same, plus `permission_mode`, `effort`,
+  `stop_hook_active`, `agent_transcript_path` (`…/subagents/agent-<id>.jsonl`),
+  `last_assistant_message`, `background_tasks` and `session_crons`.
+- Every hook fired inside a subagent (its PreToolUse, say) carries the
+  parent's `session_id` plus `agent_id` and `agent_type`. So the island's
+  "Running ls" while agents run is one of theirs.
+- 2.1.319 skips a hook event it doesn't know, with a warning, and keeps the
+  rest of the file ("Unknown hook event … was ignored"). An older Claude Code
+  that predates `SubagentStart` should do the same. It then never sends one,
+  and nothing shows. There's no version check.
+
+**What was built:**
+
+- **isle-cli v13.** It has two new verbs, `subagent-start` and
+  `subagent-stop`. Each running agent is a file at
+  `~/.isle/subagents/<session>/<agent_id>` that holds its type. A file per
+  agent means parallel agents never rewrite each other.
+- A stop with no file changes nothing, not even the record's inode. That
+  covers internal agents and stops after the turn ended.
+- Every record now carries `subagents`, the types oldest first. It is read
+  from the files on each write and checked again afterwards, so a start that
+  lands mid-write isn't lost. A subagent event rewrites the record line by
+  line and keeps everything else, including a request id an `ask` is waiting
+  under.
+- **When the count clears.** Stop, StopFailure, UserPromptSubmit,
+  SessionStart (except `source: compact`) and SessionEnd all clear it.
+- **App side.** `ClaudeStatus.subagents` and `ClaudeSubagents` build the line.
+  Types are grouped by count, most first, and ties go to the first started.
+  A plugin's agent goes by its own name. Kinds that don't fit become "+N",
+  where N counts the agents not named, so the numbers add up. An untyped
+  agent is counted but never named.
+- **The face.** The line sits under the detail on a status face, one line at
+  0.5 white. The view picks the fullest form that fits.
+- **Home tile and session rows.** The home tile's Working glance uses the same
+  forms unless several sessions are listed. A working session row reads
+  "3 agents · Running rg".
+- The view model drops the agents wherever it eases a state to Ready
+  (interrupt, stale compaction or question). It never shows agents past a
+  turn it knows ended.
+- **Tests.** `scripts/test-subagent-count.sh`: 28 isle-cli cases, including
+  ten starts and stops in parallel, and 27 Swift cases.
+
+**Open:**
+
+- **Interrupts.** UserPromptSubmit clears the count because an interrupt fires
+  no Stop. If Claude Code fires it for a message queued mid-turn, the count
+  under-reads for the rest of that turn. That errs toward saying less.
+- **Background agents.** `run_in_background` agents still running at the
+  parent's Stop are dropped from the count. Stop's `background_tasks` could
+  carry them; it's unverified.
+- **The action row.** The row moves down one line while agents run, like a
+  two-line "said".
 
 ### M23 — Auto mode's blocks, shown (candidate) · S
 

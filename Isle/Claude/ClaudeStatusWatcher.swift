@@ -74,6 +74,12 @@ struct ClaudeStatus: Equatable {
     /// nothing said.
     var limitKind: String? = nil
     var limitNext: ClaudeLimitNext? = nil
+    /// The subagents this session has running (Milestone 22, helper v13):
+    /// each one's type (`Explore`, `Plan`, a custom agent's name), oldest
+    /// first, one entry per agent. Only agents whose `SubagentStart` the
+    /// helper saw and whose `SubagentStop` hasn't come; cleared when the turn
+    /// ends. Empty on an older helper or Claude Code.
+    var subagents: [String] = []
     /// The state is Claude Code's own, from `claude agents` (Milestone 21),
     /// rather than this record's: a background session no hook writes for,
     /// or one Claude Code says is blocked after the hooks saw its turn end.
@@ -216,7 +222,8 @@ final class ClaudeStatusWatcher {
             requestId: payload.request_id.flatMap { $0.isEmpty ? nil : $0 },
             lastMessage: payload.last_message.flatMap { $0.isEmpty ? nil : $0 },
             limitKind: payload.limit_kind.flatMap { $0.isEmpty ? nil : $0 },
-            limitNext: payload.limit_next.flatMap(ClaudeLimitNext.init(rawValue:))
+            limitNext: payload.limit_next.flatMap(ClaudeLimitNext.init(rawValue:)),
+            subagents: payload.subagents ?? []
         )
     }
 
@@ -248,6 +255,8 @@ private struct StatusPayload: Decodable {
     /// A usage limit's window and what comes next (helper v12).
     let limit_kind: String?
     let limit_next: String?
+    /// The running subagents' types, oldest first (helper v13).
+    let subagents: [String]?
 
     /// The usage-limit reset moment, parsed from the epoch string the helper
     /// writes. Accepts seconds (10-digit) or milliseconds (13-digit); anything
