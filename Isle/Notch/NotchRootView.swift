@@ -258,6 +258,16 @@ struct NotchRootView: View {
                     .padding(.trailing, Self.crumbTrailing)
                     .opacity(expandedContentOpacity)
                     .transition(.opacity)
+                } else if state.isExpanded, viewModel.expandedPlace == .home, !island.isDropTarget {
+                    // On Home the same spot holds Settings. Its right edge
+                    // sits where the crumb's does (the crumb's label carries
+                    // its own 4pt inset; the gear's 22pt target is centred).
+                    NotchSettingsButton()
+                        .frame(height: notchBandHeight)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                        .padding(.trailing, Self.crumbTrailing - 5)
+                        .opacity(expandedContentOpacity)
+                        .transition(.opacity)
                 }
             }
             .animation(reduceMotion ? .easeInOut(duration: 0.28) : .tileMorph, value: viewModel.expandedPlace == .home)

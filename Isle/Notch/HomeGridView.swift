@@ -455,6 +455,33 @@ struct NotchCrumb: View {
     }
 }
 
+extension Notification.Name {
+    /// Asks the app to show its Settings window (see `AppDelegate`).
+    static let isleOpenSettings = Notification.Name("isle.openSettings")
+}
+
+/// Settings, from the home grid: a gear in the housing band to the right of
+/// the camera, where a face's way home sits — the band is free on Home, and
+/// one spot for "the top-right control" keeps it findable. Same weight and
+/// target as the crumb.
+struct NotchSettingsButton: View {
+    var body: some View {
+        Button {
+            NotificationCenter.default.post(name: .isleOpenSettings, object: nil)
+        } label: {
+            Image(systemName: "gearshape.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .opacity(0.55)
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.white)
+        .help("Isle Settings")
+        .accessibilityLabel("Settings")
+    }
+}
+
 // MARK: - Face icon
 
 /// One face's mark, as the old switcher drew it: Music the four-bar
