@@ -128,8 +128,8 @@ final class AppSettings: ObservableObject {
     /// With a glass background, black grows out of the camera housing and
     /// fades into the glass, so the notch melts into the panel instead of
     /// biting into it. On by default; only drawn on a screen with a notch,
-    /// and Black ignores it. Off, the closed island still keeps the camera
-    /// itself black (`IslandGlass.CameraCover.band`); the open panel doesn't.
+    /// and Black ignores it. Only the open panel's: closed, the island keeps
+    /// just the camera itself black either way (`IslandGlass.CameraCover`).
     @Published var panelNotchGlow: Bool {
         didSet { defaults.set(panelNotchGlow, forKey: Self.panelNotchGlowKey) }
     }

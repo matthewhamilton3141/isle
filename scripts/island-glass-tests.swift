@@ -171,54 +171,112 @@ do {
 
 print("camera cover")
 do {
+    typealias C = IslandGlass.CameraCover
     check(IslandGlass.cameraCover(hasPhysicalNotch: false, glowOn: true) == .none, "no notch, glow on: no cover, all glass")
     check(IslandGlass.cameraCover(hasPhysicalNotch: false, glowOn: false) == .none, "no notch, glow off: no cover, all glass")
-    check(IslandGlass.cameraCover(hasPhysicalNotch: true, glowOn: true) == .glow, "notch, glow on: the glow")
-    check(IslandGlass.cameraCover(hasPhysicalNotch: true, glowOn: false) == .band, "notch, glow off: the camera band")
+    check(IslandGlass.cameraCover(hasPhysicalNotch: true, glowOn: true) == .bandToGlow, "notch, glow on: band closed, glow open")
+    check(IslandGlass.cameraCover(hasPhysicalNotch: true, glowOn: false) == .bandToClear, "notch, glow off: band closed, clear open")
 
-    // The glow is the same open and closed; the band is the closed island's.
-    check(IslandGlass.cameraOpacity(.glow, progress: 0) == 1 && IslandGlass.cameraOpacity(.glow, progress: 1) == 1, "glow: closed and open")
-    check(IslandGlass.cameraOpacity(.band, progress: 0) == 1, "band: whole while closed")
-    check(IslandGlass.cameraOpacity(.band, progress: IslandGlass.blendEnd) == 0 && IslandGlass.cameraOpacity(.band, progress: 1) == 0,
-          "band: gone once the panel is glass, so the open panel is as it was")
-    check(IslandGlass.cameraOpacity(.none, progress: 0) == 0, "none: nothing")
-    var mono = true, last = 2.0
-    for i in 0...100 {
-        let v = IslandGlass.cameraOpacity(.band, progress: Double(i) / 100)
-        if v > last + 1e-12 { mono = false }
-        last = v
-    }
-    check(mono, "band thins monotonically as the panel opens")
-
-    // The covered rect: the 14\" MacBook Pro housing with clearance.
     let housing = CGSize(width: 185, height: 32)
     let c = IslandGlass.coveredHousing(housing)
     check(IslandGlass.cameraClearance >= 4, "at least 4pt of clearance")
     check(c.width == 185 + 2 * IslandGlass.cameraClearance && c.height == 32 + IslandGlass.cameraClearance, "covered: housing plus clearance each side and below")
-    // Solid over the housing and its clearance, for both covers.
-    func glow(_ x: CGFloat, _ y: CGFloat) -> Double { IslandGlass.glowAlpha(x: x, y: y, housing: c) }
     func band(_ x: CGFloat, _ y: CGFloat) -> Double { IslandGlass.bandAlpha(x: x, y: y, covered: c) }
-    let edge = 185.0 / 2 + 4
-    check(glow(edge, 0) == 1 && glow(-edge, 35.9) == 1 && glow(0, 36) == 1, "glow solid 4pt past the housing")
-    check(band(edge, 0) == 1 && band(-edge, 35.9) == 1 && band(0, 36) == 1, "band solid 4pt past the housing")
-    // The wings of a compact pill (32pt tall: y within the housing's height).
-    check(glow(edge + 30, 16) > 0.3 && glow(edge + 30, 16) < 0.95, "glow: part black 30pt out along a wing", "\(glow(edge + 30, 16))")
-    check(glow(edge + 48 / 0.55 + 0.01, 16) == 0, "glow: clear at its sideways reach")
-    check(band(edge + IslandGlass.bandFade, 16) == 0, "band: clear \(IslandGlass.bandFade)pt past the clearance")
-    check(near(band(edge + IslandGlass.bandFade / 2, 16), 0.5), "band: half way through its fade, half")
-    var bmono = true, prev = 1.0
-    for i in 0...200 { let v = band(edge - 2 + CGFloat(i) / 10, 10); if v > prev + 1e-12 { bmono = false }; prev = v }
-    check(bmono, "band falls monotonically along a wing")
+    func glow(_ x: CGFloat, _ y: CGFloat) -> Double { IslandGlass.glowAlpha(x: x, y: y, housing: c) }
+    func cover(_ k: C, _ x: CGFloat, _ y: CGFloat, _ p: Double) -> Double { IslandGlass.coverAlpha(k, x: x, y: y, covered: c, progress: p) }
+    let edge: CGFloat = 185.0 / 2   // the housing's side, from the camera's centre line
+
+    // Closed: the band, whatever the glow setting — glass right up to the camera.
+    var closedIsBand = true
+    for k in [C.bandToGlow, .bandToClear] {
+        for x in stride(from: CGFloat(0), through: 200, by: 0.5) {
+            for y in stride(from: CGFloat(0), through: 32, by: 4) where abs(cover(k, x, y, 0) - band(x, y)) > 1e-9 { closedIsBand = false }
+        }
+    }
+    check(closedIsBand, "closed: the cover is the band, glow on or off")
+    check(cover(.bandToGlow, edge + 4, 16, 0) == 1 && cover(.bandToClear, -edge - 4, 16, 0) == 1, "closed: solid 4pt past the housing")
+    check(cover(.bandToGlow, edge + 4 + IslandGlass.bandFade, 16, 0) == 0, "closed: clear \(Int(4 + IslandGlass.bandFade))pt past the housing")
+    // The Claude glyph's slot starts CollapsedSize.cutoutGap (6pt) from the camera.
+    check(cover(.bandToGlow, edge + 6, 16, 0) <= 0.5, "closed: the glyph 6pt from the camera starts over half glass at most", "\(cover(.bandToGlow, edge + 6, 16, 0))")
+    check(cover(.bandToGlow, edge + 7, 16, 0) < 0.2, "closed: and is all but clear of black a point further")
+    // The wings, 20pt out: glass, not black (the glow alone left them ~60% black).
+    check(cover(.bandToGlow, edge + 20, 16, 0) == 0 && glow(edge + 20, 16) > 0.5, "closed: a wing 20pt out is glass (the glow there was > 50% black)")
+
+    // Open: the glow exactly with it on, nothing with it off.
+    var openIsGlow = true, openIsClear = true, maxOver = 0.0
+    for x in stride(from: CGFloat(0), through: 300, by: 0.5) {
+        for y in stride(from: CGFloat(0), through: 90, by: 1) {
+            let o = cover(.bandToGlow, x, y, 1), g = glow(x, y), b = band(x, y)
+            if abs(o - max(g, b)) > 0.002 { openIsGlow = false }
+            maxOver = max(maxOver, o - g)
+            if cover(.bandToClear, x, y, 1) != 0 { openIsClear = false }
+        }
+    }
+    check(openIsGlow, "open, glow on: the band and the glow layer together are the glow")
+    check(maxOver < 0.01, "open, glow on: never more than the glow alone by a hair", "\(maxOver)")
+    check(openIsClear, "open, glow off: no cover at all, the open panel as it was")
+    check(cover(.bandToGlow, 0, 0, IslandGlass.blendEnd) == 1 && abs(cover(.bandToGlow, edge + 30, 40, IslandGlass.blendEnd) - glow(edge + 30, 40)) < 0.002,
+          "the glow is whole by blendEnd")
+
+    // In between: a per-pixel mix, no dip anywhere it's solid both ends,
+    // and continuous on the open's progress (the genie collapse runs it back).
+    var noDip = true, mono = true, maxStep = 0.0
+    for x in stride(from: CGFloat(0), through: 200, by: 1) {
+        for y in stride(from: CGFloat(0), through: 80, by: 2) {
+            var last = -1.0
+            for i in 0...200 {
+                let p = Double(i) / 200
+                let v = cover(.bandToGlow, x, y, p)
+                if min(band(x, y), glow(x, y)) == 1 && v < 1 - 1e-12 { noDip = false }
+                // From band to glow is a mix: it moves one way only.
+                if last >= 0 {
+                    let up = glow(x, y) >= band(x, y)
+                    if up ? v < last - 1e-9 : v > last + 1e-9 { mono = false }
+                    maxStep = max(maxStep, abs(v - last))
+                }
+                last = v
+            }
+        }
+    }
+    check(noDip, "band to glow: no dip where both are solid")
+    check(mono, "band to glow: each pixel moves one way only")
+    // The blend's steepest slope is 1.5 over its 0.5 span, so per 0.5% of
+    // the open no pixel can move more than 0.015 — the cover adds no step
+    // of its own.
+    check(maxStep <= 0.015 + 1e-9, "band to glow: no step beyond the blend's own slope", "\(maxStep)")
+    var clearMono = true, clast = 2.0
+    for i in 0...200 {
+        let v = cover(.bandToClear, 0, 10, Double(i) / 200)
+        if v > clast + 1e-12 { clearMono = false }
+        clast = v
+    }
+    check(clearMono && cover(.bandToClear, 0, 10, 0) == 1, "band to clear: thins monotonically from whole")
+    check(IslandGlass.coverOpenness(progress: 0) == 0 && IslandGlass.coverOpenness(progress: 1) == 1, "cover openness: 0 closed, 1 open")
+    var sameCurve = true
+    for i in 0...100 {
+        let p = Double(i) / 100
+        let t = IslandGlass.coverOpenness(progress: p)
+        let tint = IslandGlass.tint(for: .glass, progress: p)
+        let expect = IslandGlass.closedTintFloor + (IslandGlass.glassTint - IslandGlass.closedTintFloor) * t
+        if abs(tint - expect) > 1e-12 { sameCurve = false }
+    }
+    check(sameCurve, "the cover moves on the same curve as the tint floor")
+    check(IslandGlass.bandOpacity(.none, progress: 0) == 0 && IslandGlass.glowLayerOpacity(.none, progress: 1) == 0, "none: nothing drawn")
+
+    // The band's own shape.
+    check(near(band(edge + 4 + IslandGlass.bandFade / 2, 16), 0.5), "band: half way through its fade, half")
     check(band(-150, 12) == band(150, 12), "band symmetric about the camera")
     let e = IslandGlass.bandExtent(covered: c)
     check(e.width == c.width + 2 * IslandGlass.bandFade && e.height == c.height + IslandGlass.bandFade, "band extent: fade each side and below")
     let m = IslandGlass.bandMask(covered: c, scale: 2)
     check(m.width == Int((e.width * 2).rounded(.up)) && m.height == Int((e.height * 2).rounded(.up)), "band mask sized at 2x")
-    // The outermost pixel centres sit a quarter point inside the fade's end:
-    // under 1/255, as good as clear.
-    check(m.alpha[0 * m.width + m.width / 2] == 255 && m.alpha[0] <= 1 && m.alpha[m.width - 1] <= 1,
-          "band mask solid at the top centre, clear at the corners")
-    check(m.alpha[(m.height - 1) * m.width + m.width / 2] <= 1, "band mask clear below")
+    // The outermost pixel centres sit a quarter point inside the fade's end.
+    check(m.alpha[m.width / 2] == 255 && m.alpha[0] <= 4 && m.alpha[m.width - 1] <= 4, "band mask solid at the top centre, clear at the corners")
+    let gm = IslandGlass.glowOverBandMask(covered: c, scale: 2)
+    let ge = IslandGlass.glowExtent(housing: c)
+    check(gm.width == Int((ge.width * 2).rounded(.up)) && gm.height == Int((ge.height * 2).rounded(.up)), "glow layer sized like the glow")
+    check(gm.alpha[gm.width / 2] == 0, "glow layer adds nothing over the solid band")
+    check(gm.alpha[(gm.height - 1) * gm.width + gm.width / 2] == 0 && gm.alpha[0] == 0, "glow layer clear at its reach")
 }
 
 print("legibility")

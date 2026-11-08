@@ -313,7 +313,7 @@ struct SettingsView: View {
     /// Why the glow does nothing, when it can't — Black, or no notch to
     /// grow from on any screen attached.
     private var notchGlowCaption: String {
-        let what = "Black fades out of the camera into the glass, so the notch melts into the panel instead of biting into it."
+        let what = "In the opened panel, black fades out of the camera into the glass, so the notch melts into the panel instead of biting into it. Closed, only the camera itself is kept black."
         if !settings.panelBackground.isGlass { return what + " Glass and Smoked only." }
         if !NSScreen.screens.contains(where: { $0.safeAreaInsets.top > 0 }) {
             return what + " Only on a display with a notch — none attached has one."

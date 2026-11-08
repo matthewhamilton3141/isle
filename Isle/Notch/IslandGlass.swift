@@ -13,10 +13,11 @@
 //    island's glass, coming and going with its content, is the blend's
 //    second input. `blackCover` is how much black still lies over the glass.
 //  - The camera cover, on a display with a notch: black over the physical
-//    housing so the cutout doesn't bite into the glass. With the notch glow
-//    on it is the glow — solid over the housing, fading outward, wider
-//    sideways than down. With it off it is the camera band, solid over the
-//    housing and gone a few points past it, drawn only while closed.
+//    housing so the cutout doesn't bite into the glass. Closed it is the
+//    camera band, solid just past the housing and gone a few points
+//    further, so the wings are glass up to the camera. Opening, it becomes
+//    the notch glow — solid over the housing, fading outward, wider
+//    sideways than down — or with the glow off, clears.
 //  - The tints laid over the system material, one per mode, with a floor
 //    for the closed island's small coloured content.
 //  - The legibility lifts for content on glass: secondary text a little
@@ -121,21 +122,23 @@ enum IslandGlass {
 
     // MARK: - The camera cover
 
-    /// What lies over the physical camera housing on glass.
+    /// What lies over the physical camera housing on glass. Closed, it is
+    /// always the camera band — black over the housing and a few points
+    /// past it, so the wings are glass right up to the camera. Opening, the
+    /// band becomes the notch glow if that's on, or clears if it's off.
     enum CameraCover: Equatable {
         /// No notch: nothing to cover, the glass runs edge to edge.
         case none
-        /// The notch glow, open and closed.
-        case glow
-        /// The glow switched off: black over the housing and a few points
-        /// past it, while closed only — open, the housing hangs into the
-        /// glass as the setting says.
-        case band
+        /// Notch, glow on: the band closed, the glow open.
+        case bandToGlow
+        /// Notch, glow off: the band closed, nothing open — the housing
+        /// hangs into the open panel's glass as the setting says.
+        case bandToClear
     }
 
     static func cameraCover(hasPhysicalNotch: Bool, glowOn: Bool) -> CameraCover {
         guard hasPhysicalNotch else { return .none }
-        return glowOn ? .glow : .band
+        return glowOn ? .bandToGlow : .bandToClear
     }
 
     /// How far solid black reaches past the housing's sides and bottom, so
@@ -144,26 +147,39 @@ enum IslandGlass {
     static let cameraClearance: CGFloat = 4
 
     /// The rect black is solid over: the housing, `cameraClearance` wider
-    /// each side and deeper. Both covers grow from it.
+    /// each side and deeper. Both the band and the glow grow from it.
     static func coveredHousing(_ housing: CGSize) -> CGSize {
         CGSize(width: housing.width + 2 * cameraClearance, height: housing.height + cameraClearance)
     }
 
-    /// How much of the camera cover shows at `progress`. The glow is the
-    /// same open and closed. The band is the closed island's alone: whole
-    /// closed, gone by the time the panel is glass (`blendEnd`), on the
-    /// blend's own curve, so it thins as the panel grows past the camera.
-    static func cameraOpacity(_ cover: CameraCover, progress: Double) -> Double {
+    /// How far the cover has gone from the band toward its open form at
+    /// `progress`: 0 closed, 1 from `blendEnd`, on the blend's own curve —
+    /// the curve the tint follows from its closed floor to the open tint.
+    static func coverOpenness(progress: Double) -> Double {
+        1 - blackCover(progress: progress)
+    }
+
+    /// The band layer's opacity. Under the glow it stays whole (the glow
+    /// layer is drawn as what the glow adds over it, so the two together
+    /// are the glow exactly); with nothing to become, it thins away.
+    static func bandOpacity(_ cover: CameraCover, progress: Double) -> Double {
         switch cover {
         case .none: return 0
-        case .glow: return 1
-        case .band: return blackCover(progress: progress)
+        case .bandToGlow: return 1
+        case .bandToClear: return 1 - coverOpenness(progress: progress)
         }
     }
 
+    /// The glow layer's opacity (`glowOverBandAlpha`): none closed, whole
+    /// open.
+    static func glowLayerOpacity(_ cover: CameraCover, progress: Double) -> Double {
+        cover == .bandToGlow ? coverOpenness(progress: progress) : 0
+    }
+
     /// How far the band takes to fade out past the covered rect, in points.
-    /// Short: it only has to soften the edge. Tune here.
-    static let bandFade: CGFloat = 8
+    /// Short, so the Claude glyph 6pt from the camera sits over glass: with
+    /// the 4pt clearance the band is clear 8pt from the housing. Tune here.
+    static let bandFade: CGFloat = 4
 
     /// The band's opacity `x` points from the housing's centre line and `y`
     /// from the top of the screen, around a `covered` rect
@@ -188,6 +204,34 @@ enum IslandGlass {
         sample(extent: bandExtent(covered: covered), scale: scale) { x, y in
             bandAlpha(x: x, y: y, covered: covered)
         }
+    }
+
+    /// What the glow adds over the band: the black that, laid over the band
+    /// (`1 - (1 - band)(1 - this)`), makes the glow — so drawing it at
+    /// opacity t over the whole band mixes band to glow by t, pixel for
+    /// pixel, with no dip where the two are both solid. Where the band is
+    /// already the darker (within a fraction of a point of the covered
+    /// rect's edge) it adds nothing.
+    static func glowOverBandAlpha(x: CGFloat, y: CGFloat, covered: CGSize) -> Double {
+        let b = bandAlpha(x: x, y: y, covered: covered)
+        let g = glowAlpha(x: x, y: y, housing: covered)
+        guard b < 1 else { return 0 }
+        return min(max((g - b) / (1 - b), 0), 1)
+    }
+
+    /// `glowOverBandAlpha` sampled over the glow's extent.
+    static func glowOverBandMask(covered: CGSize, scale: CGFloat) -> (width: Int, height: Int, alpha: [UInt8]) {
+        sample(extent: glowExtent(housing: covered), scale: scale) { x, y in
+            glowOverBandAlpha(x: x, y: y, covered: covered)
+        }
+    }
+
+    /// The cover's opacity at a point, band and glow layers composited as
+    /// IslandGlassBlend draws them.
+    static func coverAlpha(_ cover: CameraCover, x: CGFloat, y: CGFloat, covered: CGSize, progress: Double) -> Double {
+        let b = bandAlpha(x: x, y: y, covered: covered) * bandOpacity(cover, progress: progress)
+        let g = glowOverBandAlpha(x: x, y: y, covered: covered) * glowLayerOpacity(cover, progress: progress)
+        return 1 - (1 - b) * (1 - g)
     }
 
     // MARK: - The notch glow

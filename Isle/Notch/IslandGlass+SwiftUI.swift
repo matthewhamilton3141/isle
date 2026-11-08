@@ -98,11 +98,17 @@ private struct IslandGlassBlend: View, Animatable {
                     .transition(.identity)
             }
             if camera != .none {
-                CameraCoverView(cover: camera, housing: housing, shift: housingShift)
-                    // Hidden rather than removed under full black, so its
-                    // counter-offset keeps running with the outline's; the
-                    // empty pill is then the plain black fill, edge and all.
-                    .opacity(shows ? IslandGlass.cameraOpacity(camera, progress: progress) : 0)
+                CameraCoverView(
+                    cover: camera,
+                    housing: housing,
+                    shift: housingShift,
+                    bandOpacity: IslandGlass.bandOpacity(camera, progress: progress),
+                    glowOpacity: IslandGlass.glowLayerOpacity(camera, progress: progress)
+                )
+                // Hidden rather than removed under full black, so its
+                // counter-offset keeps running with the outline's; the
+                // empty pill is then the plain black fill, edge and all.
+                .opacity(shows ? 1 : 0)
             }
             Rectangle()
                 .fill(.black)
@@ -111,8 +117,9 @@ private struct IslandGlassBlend: View, Animatable {
     }
 }
 
-/// The camera cover (`IslandGlass.CameraCover`): the notch glow, or with it
-/// off the camera band, black over the housing and fading outward.
+/// The camera cover (`IslandGlass.CameraCover`): the camera band, and over
+/// it what the notch glow adds, each a cached bitmap at its own opacity —
+/// closed the band alone, open the glow (or, with the glow off, nothing).
 /// Anchored on the camera, not the panel: while the outline is a lopsided
 /// pill it is drawn `shift` right of the housing, and gets there on the
 /// width's spring, so the cover is moved back by the same amount on the same
@@ -121,42 +128,53 @@ private struct CameraCoverView: View {
     var cover: IslandGlass.CameraCover
     var housing: CGSize
     var shift: CGFloat
+    var bandOpacity: Double
+    var glowOpacity: Double
 
     var body: some View {
         let covered = IslandGlass.coveredHousing(housing)
-        let extent = cover == .band
-            ? IslandGlass.bandExtent(covered: covered)
-            : IslandGlass.glowExtent(housing: covered)
         // An overlay on a flexible clear view, so the cover takes the fill's
         // size and never sets it: wider and deeper than a pill, as a frame it
         // would grow the fill, and the outline clipped to it with it.
         Color.clear.overlay(alignment: .top) {
-            if let image = CameraCoverImage.image(cover, covered: covered) {
-                Image(decorative: image, scale: CameraCoverImage.scale)
-                    .resizable()
-                    .frame(width: extent.width, height: extent.height)
-                    .offset(x: -shift)
-                    .islandCollapseChannel(.width)
+            ZStack(alignment: .top) {
+                layer(.band, covered: covered, extent: IslandGlass.bandExtent(covered: covered), opacity: bandOpacity)
+                if cover == .bandToGlow {
+                    layer(.glowOverBand, covered: covered, extent: IslandGlass.glowExtent(housing: covered), opacity: glowOpacity)
+                }
             }
+            .offset(x: -shift)
+            .islandCollapseChannel(.width)
+        }
+    }
+
+    @ViewBuilder
+    private func layer(_ kind: CameraCoverImage.Kind, covered: CGSize, extent: CGSize, opacity: Double) -> some View {
+        if let image = CameraCoverImage.image(kind, covered: covered) {
+            Image(decorative: image, scale: CameraCoverImage.scale)
+                .resizable()
+                .frame(width: extent.width, height: extent.height)
+                .opacity(opacity)
         }
     }
 }
 
-/// The cover's falloff as an image, built once per cover and housing size: a
-/// static bitmap the compositor only has to place, rather than a field
+/// The cover's layers as images, built once per housing size: static
+/// bitmaps the compositor only has to place and fade, rather than a field
 /// redrawn as the panel moves.
 @MainActor
 private enum CameraCoverImage {
+    enum Kind: String { case band, glowOverBand }
+
     static let scale: CGFloat = 2
     private static var cache: [String: CGImage] = [:]
 
-    static func image(_ cover: IslandGlass.CameraCover, covered: CGSize) -> CGImage? {
-        guard cover != .none else { return nil }
-        let key = "\(cover)-\(covered.width)x\(covered.height)"
+    static func image(_ kind: Kind, covered: CGSize) -> CGImage? {
+        let key = "\(kind.rawValue)-\(covered.width)x\(covered.height)"
         if let cached = cache[key] { return cached }
-        let mask = cover == .band
+        let mask = kind == .band
             ? IslandGlass.bandMask(covered: covered, scale: scale)
-            : IslandGlass.glowMask(housing: covered, scale: scale)
+            : IslandGlass.glowOverBandMask(covered: covered, scale: scale)
         // Black, premultiplied: every channel but alpha is zero.
         var pixels = [UInt8](repeating: 0, count: mask.width * mask.height * 4)
         for i in 0..<mask.alpha.count { pixels[i * 4 + 3] = mask.alpha[i] }
