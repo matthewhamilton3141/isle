@@ -174,8 +174,8 @@ final class IslandProximityModel: ObservableObject {
 }
 
 /// The island's fill, swollen and leaning by the proximity reading: flat
-/// black, or in a glass mode (`PanelBackground`) black that blends to glass
-/// while the island is open.
+/// black, or in a glass mode (`PanelBackground`) glass while the island is
+/// open or shows something closed, and black as the empty pill.
 ///
 /// It's the only fill: drawn behind the clipped content, outside the clip,
 /// so it can reach a few points past the outline the content and the hit
@@ -190,15 +190,18 @@ struct IslandFill: View {
     var size: CGSize
     /// Collapsed and allowed to swell. False takes the swell back to rest.
     var active: Bool
-    /// What the open panel is drawn on. Black is the plain black fill; the
-    /// glass modes draw `IslandGlassFill`, which is that same black while
-    /// closed and blends to glass as the island opens.
+    /// What the island is drawn on. Black is the plain black fill; the
+    /// glass modes draw `IslandGlassFill`, which is that same black as the
+    /// empty pill and glass otherwise.
     var background: PanelBackground = .black
-    /// Whether the island is open, for the glass blend.
+    /// Whether the island is open, and whether it is glass closed, for the
+    /// glass blend.
     var opened: Bool = false
-    /// The physical camera housing to grow the notch glow from (nil for no
-    /// glow), and how far right of it the outline is drawn.
-    var housing: CGSize? = nil
+    var closedGlass: Bool = false
+    /// What lies over the camera on glass, the housing it covers, and how
+    /// far right of it the outline is drawn.
+    var camera: IslandGlass.CameraCover = .none
+    var housing: CGSize = .zero
     var housingShift: CGFloat = 0
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -225,6 +228,8 @@ struct IslandFill: View {
                 background: background,
                 shape: shape,
                 opened: opened,
+                closedGlass: closedGlass,
+                camera: camera,
                 housing: housing,
                 housingShift: housingShift
             )

@@ -41,17 +41,26 @@ struct NotchRootView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
-    /// What the open panel is drawn on. Reduce Transparency takes the glass
+    /// What the island is drawn on. Reduce Transparency takes the glass
     /// modes back to black.
     private var panelBackground: PanelBackground {
         reduceTransparency ? .black : viewModel.panelBackground
     }
 
-    /// The camera housing the notch glow grows from: with the glow on, and
-    /// only on a screen with a real notch.
-    private var glowHousing: CGSize? {
-        guard viewModel.panelNotchGlow, let metrics = island.metrics, metrics.hasPhysicalNotch else { return nil }
-        return metrics.notchSize
+    /// Whether the island is glass while closed: in a glass mode, with
+    /// something showing beside the camera. Read whatever the state, so an
+    /// open from (or a close to) a glass island stays glass the whole way.
+    private var closedGlass: Bool {
+        IslandGlass.closedIsGlass(background: panelBackground, showsContent: !viewModel.isCollapsedIdle)
+    }
+
+    /// What covers the camera on glass: the glow, or with it off the camera
+    /// band — only on a screen with a real notch.
+    private var cameraCover: IslandGlass.CameraCover {
+        IslandGlass.cameraCover(
+            hasPhysicalNotch: island.metrics?.hasPhysicalNotch ?? false,
+            glowOn: viewModel.panelNotchGlow
+        )
     }
 
     /// Horizontal padding inside the collapsed shape: 10 (root) + 4 (collapsed
@@ -137,6 +146,10 @@ struct NotchRootView: View {
     /// guessing low hides content, guessing high only wastes a few points.
     private var notchBandHeight: CGFloat {
         island.metrics?.notchSize.height ?? 32
+    }
+
+    private var notchBandSize: CGSize {
+        island.metrics?.notchSize ?? NotchMetrics.fallbackNotchSize
     }
 
     var body: some View {
@@ -287,7 +300,7 @@ struct NotchRootView: View {
         .clipShape(outline)
         // Flat black on both tabs — the ambient artwork/Claude wash was
         // removed, so nothing tints the panel behind the content — or, in a
-        // glass mode, black that blends to glass while open. Drawn
+        // glass mode, glass while open or showing something closed. Drawn
         // outside the clip so the collapsed island can swell a few points as
         // the pointer nears; never part of the hit rect below.
         .background(alignment: .top) {
@@ -298,7 +311,9 @@ struct NotchRootView: View {
                 active: state == .collapsed,
                 background: panelBackground,
                 opened: state.isExpanded,
-                housing: glowHousing,
+                closedGlass: closedGlass,
+                camera: cameraCover,
+                housing: notchBandSize,
                 housingShift: collapsedShift
             )
         }
@@ -368,7 +383,9 @@ struct NotchRootView: View {
                 .opacity(expandedContentOpacity)
                 .transition(.opacity)
         } else {
-            CollapsedNotchView(viewModel: viewModel, island: island, palette: palette)
+            let glass = closedGlass
+            CollapsedNotchView(viewModel: viewModel, island: island, palette: glass ? palette.flooredForGlass : palette)
+                .environment(\.islandOnGlass, glass)
                 .transition(.opacity)
         }
     }

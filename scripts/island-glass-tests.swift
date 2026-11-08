@@ -49,6 +49,22 @@ do {
     check(IslandGlass.tint(for: .smoked) == IslandGlass.smokedTint, "Smoked uses smokedTint")
     check(near(IslandGlass.smokedTint, 0.48), "Smoked is the mockups' 48%")
     check(IslandGlass.smokedTint > IslandGlass.glassTint, "Smoked is darker than Glass")
+    // The closed island's floor, thinning to the open tint as it opens.
+    check(IslandGlass.tint(for: .black, progress: 0) == 0 && IslandGlass.tint(for: .black, progress: 1) == 0, "Black: no tint open or closed")
+    check(near(IslandGlass.tint(for: .glass, progress: 0), IslandGlass.closedTintFloor), "Glass closed: held at the floor")
+    check(near(IslandGlass.tint(for: .glass, progress: 1), IslandGlass.glassTint), "Glass open: its own tint")
+    check(near(IslandGlass.tint(for: .glass, progress: IslandGlass.blendEnd), IslandGlass.glassTint), "Glass: open tint by blendEnd")
+    check(near(IslandGlass.tint(for: .smoked, progress: 0), IslandGlass.smokedTint) && near(IslandGlass.tint(for: .smoked, progress: 1), IslandGlass.smokedTint),
+          "Smoked: already past the floor, the same open and closed")
+    check(IslandGlass.closedTintFloor > IslandGlass.glassTint && IslandGlass.closedTintFloor <= IslandGlass.smokedTint,
+          "the floor sits between Glass and Smoked")
+    var tmono = true, tlast = 2.0
+    for i in -5...105 {
+        let v = IslandGlass.tint(for: .glass, progress: Double(i) / 100)
+        if v > tlast + 1e-12 { tmono = false }
+        tlast = v
+    }
+    check(tmono, "Glass tint thins monotonically as the island opens, overshoot included")
 }
 
 print("blend")
@@ -109,6 +125,100 @@ do {
     check(m.alpha[(m.height - 1) * m.width + m.width / 2] == 0, "mask clear at the bottom centre")
     check(m.alpha[0] == 0 && m.alpha[m.width - 1] == 0, "mask clear at the top corners (the reach's edge)")
     check(m.alpha[(m.height - 1) * m.width] == 0, "mask clear at the bottom corners")
+}
+
+print("closed island")
+do {
+    // Which closed states go glass: only a glass mode with something showing.
+    for b in PanelBackground.allCases {
+        check(!IslandGlass.closedIsGlass(background: b, showsContent: false), "\(b.rawValue): the empty pill stays black")
+    }
+    check(!IslandGlass.closedIsGlass(background: .black, showsContent: true), "Black: the wings stay black")
+    check(IslandGlass.closedIsGlass(background: .glass, showsContent: true), "Glass: the wings go glass")
+    check(IslandGlass.closedIsGlass(background: .smoked, showsContent: true), "Smoked: the wings go glass")
+
+    // The blend with the closed island's glass as its second input.
+    check(IslandGlass.blackCover(progress: 0, closedGlass: 0) == 1, "empty pill: all black")
+    check(IslandGlass.blackCover(progress: 0, closedGlass: 1) == 0, "wings: no black")
+    check(!IslandGlass.showsGlass(progress: 0, closedGlass: 0), "empty pill: glass not drawn (Black-identical)")
+    check(IslandGlass.showsGlass(progress: 0, closedGlass: 1), "wings: glass drawn")
+    check(IslandGlass.showsGlass(progress: 0, closedGlass: 0.01), "glass drawn as soon as content starts to arrive")
+    var same = true
+    for i in 0...100 {
+        let p = Double(i) / 100
+        if IslandGlass.blackCover(progress: p, closedGlass: 0) != IslandGlass.blackCover(progress: p) { same = false }
+    }
+    check(same, "opening from the empty pill is the blend it always was")
+    var neverBlack = true
+    for i in -5...105 {
+        let p = Double(i) / 100   // a spring's overshoot either side included
+        if IslandGlass.blackCover(progress: p, closedGlass: 1) != 0 { neverBlack = false }
+    }
+    check(neverBlack, "open from the wings and collapse back: never any black over the glass")
+    check(IslandGlass.blackCover(progress: 0, closedGlass: 1.08) == 0 && IslandGlass.blackCover(progress: 0, closedGlass: -0.05) == 1,
+          "closed-glass overshoot clamps")
+    check(near(IslandGlass.blackCover(progress: 0, closedGlass: 0.5), 0.5), "content arriving: black thins with it")
+    var mono = true, last = 2.0
+    for i in 0...100 {
+        let v = IslandGlass.blackCover(progress: 0, closedGlass: Double(i) / 100)
+        if v > last + 1e-12 { mono = false }
+        last = v
+    }
+    check(mono, "black falls monotonically as the wings arrive")
+    check(IslandGlass.blackCover(progress: 1, closedGlass: 0) == 0 && IslandGlass.blackCover(progress: 1, closedGlass: 1) == 0,
+          "open is glass whatever the closed island")
+}
+
+print("camera cover")
+do {
+    check(IslandGlass.cameraCover(hasPhysicalNotch: false, glowOn: true) == .none, "no notch, glow on: no cover, all glass")
+    check(IslandGlass.cameraCover(hasPhysicalNotch: false, glowOn: false) == .none, "no notch, glow off: no cover, all glass")
+    check(IslandGlass.cameraCover(hasPhysicalNotch: true, glowOn: true) == .glow, "notch, glow on: the glow")
+    check(IslandGlass.cameraCover(hasPhysicalNotch: true, glowOn: false) == .band, "notch, glow off: the camera band")
+
+    // The glow is the same open and closed; the band is the closed island's.
+    check(IslandGlass.cameraOpacity(.glow, progress: 0) == 1 && IslandGlass.cameraOpacity(.glow, progress: 1) == 1, "glow: closed and open")
+    check(IslandGlass.cameraOpacity(.band, progress: 0) == 1, "band: whole while closed")
+    check(IslandGlass.cameraOpacity(.band, progress: IslandGlass.blendEnd) == 0 && IslandGlass.cameraOpacity(.band, progress: 1) == 0,
+          "band: gone once the panel is glass, so the open panel is as it was")
+    check(IslandGlass.cameraOpacity(.none, progress: 0) == 0, "none: nothing")
+    var mono = true, last = 2.0
+    for i in 0...100 {
+        let v = IslandGlass.cameraOpacity(.band, progress: Double(i) / 100)
+        if v > last + 1e-12 { mono = false }
+        last = v
+    }
+    check(mono, "band thins monotonically as the panel opens")
+
+    // The covered rect: the 14\" MacBook Pro housing with clearance.
+    let housing = CGSize(width: 185, height: 32)
+    let c = IslandGlass.coveredHousing(housing)
+    check(IslandGlass.cameraClearance >= 4, "at least 4pt of clearance")
+    check(c.width == 185 + 2 * IslandGlass.cameraClearance && c.height == 32 + IslandGlass.cameraClearance, "covered: housing plus clearance each side and below")
+    // Solid over the housing and its clearance, for both covers.
+    func glow(_ x: CGFloat, _ y: CGFloat) -> Double { IslandGlass.glowAlpha(x: x, y: y, housing: c) }
+    func band(_ x: CGFloat, _ y: CGFloat) -> Double { IslandGlass.bandAlpha(x: x, y: y, covered: c) }
+    let edge = 185.0 / 2 + 4
+    check(glow(edge, 0) == 1 && glow(-edge, 35.9) == 1 && glow(0, 36) == 1, "glow solid 4pt past the housing")
+    check(band(edge, 0) == 1 && band(-edge, 35.9) == 1 && band(0, 36) == 1, "band solid 4pt past the housing")
+    // The wings of a compact pill (32pt tall: y within the housing's height).
+    check(glow(edge + 30, 16) > 0.3 && glow(edge + 30, 16) < 0.95, "glow: part black 30pt out along a wing", "\(glow(edge + 30, 16))")
+    check(glow(edge + 48 / 0.55 + 0.01, 16) == 0, "glow: clear at its sideways reach")
+    check(band(edge + IslandGlass.bandFade, 16) == 0, "band: clear \(IslandGlass.bandFade)pt past the clearance")
+    check(near(band(edge + IslandGlass.bandFade / 2, 16), 0.5), "band: half way through its fade, half")
+    var bmono = true, prev = 1.0
+    for i in 0...200 { let v = band(edge - 2 + CGFloat(i) / 10, 10); if v > prev + 1e-12 { bmono = false }; prev = v }
+    check(bmono, "band falls monotonically along a wing")
+    check(band(-150, 12) == band(150, 12), "band symmetric about the camera")
+    let e = IslandGlass.bandExtent(covered: c)
+    check(e.width == c.width + 2 * IslandGlass.bandFade && e.height == c.height + IslandGlass.bandFade, "band extent: fade each side and below")
+    let m = IslandGlass.bandMask(covered: c, scale: 2)
+    check(m.width == Int((e.width * 2).rounded(.up)) && m.height == Int((e.height * 2).rounded(.up)), "band mask sized at 2x")
+    // The outermost pixel centres sit a quarter point inside the fade's end:
+    // under 1/255, as good as clear.
+    check(m.alpha[0 * m.width + m.width / 2] == 255 && m.alpha[0] <= 1 && m.alpha[m.width - 1] <= 1,
+          "band mask solid at the top centre, clear at the corners")
+    check(m.alpha[(m.height - 1) * m.width + m.width / 2] <= 1, "band mask clear below")
 }
 
 print("legibility")
