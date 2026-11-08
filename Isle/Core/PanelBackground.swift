@@ -1,12 +1,10 @@
 //
 //  PanelBackground.swift
 //
-//  What the island is drawn on: the flat black Isle has always had, or
-//  frosted glass, light or smoked. In a glass mode the opened panel is glass,
-//  and so is the closed island while it shows something beside the camera
-//  (music, Claude, the timer, a toast), with black over the camera itself.
-//  The empty closed pill stays flat black in every mode: it is only the
-//  camera's cutout, and as glass it would be a rim round a black bite.
+//  What the opened panel is drawn on: the flat black Isle has always had, or
+//  frosted glass, light or smoked. Only the open panel changes — the
+//  collapsed pill stays flat black in every mode, because as glass it would
+//  be a sliver with the camera's black bite in the middle of it.
 //
 //  Kept free of SwiftUI so the stored-value parsing compiles on its own for
 //  scripts/test-island-glass.sh. The drawing is in IslandGlass+SwiftUI.swift.
@@ -43,9 +41,9 @@ enum PanelBackground: String, CaseIterable, Identifiable {
         case .black:
             return "Flat black, like the notch it grows out of."
         case .glass:
-            return "Frosted glass, darkened over bright windows so text stays readable."
+            return "Frosted glass when open, darkened over bright windows so text stays readable."
         case .smoked:
-            return "Glass with a heavy dark tint: steadier over busy windows, less see-through."
+            return "Glass with a heavy dark tint when open: steadier over busy windows."
         }
     }
 
