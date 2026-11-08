@@ -7,7 +7,8 @@
 #
 # Usage:
 #   isle-cli set-state <disconnected|idle|working|done>   # state comes from the hook
-#   isle-cli notify                                        # route a Notification by its type
+#                                                          # (Stop also keeps what the turn left running)
+#   isle-cli notify                                       # route a Notification by its type
 #   isle-cli fail                                          # StopFailure → the error, or the usage limit
 #   isle-cli ask                                           # permission → block for the notch
 #   isle-cli ask-question                                  # AskUserQuestion → block for the notch
@@ -83,6 +84,33 @@ AGENT_DIR="$STATUS_DIR/subagents"
 # can still say what was blocked.
 BLOCK_DIR="$STATUS_DIR/blocked"
 
+# What the session's last turn left behind (Milestone 20), as one line of JSON
+# at left/<session>.json, written at Stop from its `background_tasks` (the
+# shells, agents and other background work still in flight) and
+# `session_crons` (the wake-ups scheduled with CronCreate, ScheduleWakeup or
+# /loop), and carried into every record as `left`. It is what was so when the
+# turn ended, not a live count: a task's own end fires no hook of its own. (Its
+# end does wake the session: Claude Code 2.1.319 submits a <task-notification>
+# prompt, so UserPromptSubmit clears it and the next Stop says it afresh.) The
+# next prompt (UserPromptSubmit, SessionStart other than a compaction), a
+# StopFailure and the session's end clear it.
+LEFT_DIR="$STATUS_DIR/left"
+
+# This session's leftovers as JSON, in LT_JSON; `null` when there are none.
+# Made JSON-safe when stored.
+left_json() {
+  local id="${SESSION_ID//[^A-Za-z0-9_-]/}" f
+  LT_JSON="null"
+  [ -n "$id" ] || return 0
+  f="$LEFT_DIR/$id.json"
+  [ -f "$f" ] || return 0
+  { IFS= read -r LT_JSON || [ -n "$LT_JSON" ]; } 2>/dev/null < "$f" || LT_JSON=""
+  case "$LT_JSON" in
+    '{'*'}') : ;;
+    *) LT_JSON="null" ;;
+  esac
+}
+
 # This session's last block as JSON, in BL_JSON; `null` when there is none,
 # which is one file test on nearly every write. Made JSON-safe when stored.
 blocked_json() {
@@ -138,6 +166,7 @@ write_status() {
   # and again after: a SubagentStart or SubagentStop landing in between would
   # otherwise be lost under this write until the next one. Twice more at most.
   blocked_json
+  left_json
   while :; do
   subagents_json
   seen="$SA_JSON"
@@ -157,6 +186,7 @@ write_status() {
   "request_kind": "${3:-}",
   "last_message": "$LAST_EXCERPT",
   "blocked": $BL_JSON,
+  "left": $LT_JSON,
   "subagents": $SA_JSON,
   "updated_at": "$ts"
 }
@@ -518,15 +548,17 @@ bp_segment() {
   case "$name" in ''|.|..|/|'~'|-*) return 0 ;; esac
   [[ $name =~ $BP_NAME ]] || return 0
   BP_OUT="$name"
+  BP_K="$k"
   return 0
 }
 
 # The program the command $1 (unescaped) runs, into BP_OUT; empty when it
-# can't be named. $2 = 1 when $1 is only the start of the command.
+# can't be named. $2 = 1 when $1 is only the start of the command. Its word is
+# BP_W[BP_K], the rest of its segment after it.
 bash_program() {
   local LC_ALL=C
   local t="$1" i=0 n c q="" esc=0 com=0 word="" inw=0
-  BP_OUT=""; BP_N=0; BP_CUT="${2:-0}"
+  BP_OUT=""; BP_N=0; BP_K=0; BP_CUT="${2:-0}"
   BP_W=(); BP_E=()
   n=${#t}
   while [ "$i" -lt "$n" ]; do
@@ -578,6 +610,208 @@ bash_program() {
   # The last word ran into the end of what was read.
   if [ "$inw" = 1 ]; then BP_W[BP_N]="$word"; BP_E[BP_N]=0; BP_N=$((BP_N + 1)); fi
   if [ "$BP_N" -gt 0 ]; then bp_segment; fi
+  return 0
+}
+
+# ---- What a turn left behind (Milestone 20) ---------------------------------
+#
+# Stop carries, after `last_assistant_message`, two arrays of flat objects
+# (2.1.319): `background_tasks` — `id`, `type` (shell, subagent, monitor,
+# workflow, MCP task, teammate, cloud session, …), `status` (running or
+# pending), `description`, and `command` for a shell, `agent_type` for an
+# agent, `server` and `tool` for a monitor or an MCP task, `name` for a
+# workflow — and `session_crons` — `id`, `schedule` (five cron fields, this
+# Mac's time), `recurring`, `prompt`. Read here without jq: `,"` can't occur
+# inside a JSON string (a quote in one is always escaped), so the first
+# `,"background_tasks":[` is the key itself, and the arrays after it are walked
+# value by value. Anything that isn't the flat shape stops the walk, and the
+# turn is said to have left nothing: the island says less, never more.
+#
+# A shell is kept as its program, read from the whole command the way the
+# target is, and the program's words up to the end of its own command (a
+# redirection, `&&`, `|`): `cd web && npm run dev > log` is "npm run dev". At
+# most 48 characters, on a whole word; `cut` says there was more. An agent is
+# its type, a monitor or an MCP task its tool, a workflow its name. Claude
+# Code's own housekeeping (dream, auto-mode scan, memory import) isn't kept.
+# Eight tasks and four wake-ups at most; `more` and `more_crons` count the rest.
+
+LT_RE_WS='^[[:space:]]+'
+LT_RE_KEY='^"([A-Za-z_]{1,40})"[[:space:]]*:[[:space:]]*'
+LT_RE_STR='^"(([^"\\]|\\.)*)"'
+LT_RE_LIT='^(true|false|null|-?[0-9][0-9.eE+-]{0,30})'
+LT_RE_ARRAY='^,[[:space:]]*"(background_tasks|session_crons)"[[:space:]]*:[[:space:]]*\['
+
+lt_ws() {
+  if [[ $LT_REST =~ $LT_RE_WS ]]; then LT_REST="${LT_REST:${#BASH_REMATCH[0]}}"; fi
+  return 0
+}
+
+# One array of flat objects from LT_REST (which starts just past its `[`),
+# each handed to $1 with its fields in LO_*; LT_REST is left past the `]`.
+# Returns 1 on anything else.
+lt_array() {
+  local handler="$1" key val
+  lt_ws
+  if [ "${LT_REST:0:1}" = "]" ]; then LT_REST="${LT_REST:1}"; return 0; fi
+  while :; do
+    lt_ws
+    [ "${LT_REST:0:1}" = "{" ] || return 1
+    LT_REST="${LT_REST:1}"
+    LO_TYPE=""; LO_STATUS=""; LO_COMMAND=""; LO_AGENT=""; LO_TOOL=""; LO_SERVER=""
+    LO_NAME=""; LO_SCHEDULE=""; LO_RECURRING=""
+    lt_ws
+    if [ "${LT_REST:0:1}" = "}" ]; then
+      LT_REST="${LT_REST:1}"
+    else
+      while :; do
+        lt_ws
+        [[ $LT_REST =~ $LT_RE_KEY ]] || return 1
+        key="${BASH_REMATCH[1]}"; LT_REST="${LT_REST:${#BASH_REMATCH[0]}}"
+        if [[ $LT_REST =~ $LT_RE_STR ]]; then val="${BASH_REMATCH[1]}"
+        elif [[ $LT_REST =~ $LT_RE_LIT ]]; then val="${BASH_REMATCH[1]}"
+        else return 1
+        fi
+        LT_REST="${LT_REST:${#BASH_REMATCH[0]}}"
+        case "$key" in
+          type) LO_TYPE="$val" ;;
+          status) LO_STATUS="$val" ;;
+          command) LO_COMMAND="$val" ;;
+          agent_type) LO_AGENT="$val" ;;
+          tool) LO_TOOL="$val" ;;
+          server) LO_SERVER="$val" ;;
+          name) LO_NAME="$val" ;;
+          schedule) LO_SCHEDULE="$val" ;;
+          recurring) LO_RECURRING="$val" ;;
+        esac
+        lt_ws
+        case "${LT_REST:0:1}" in
+          ,) LT_REST="${LT_REST:1}" ;;
+          '}') LT_REST="${LT_REST:1}"; break ;;
+          *) return 1 ;;
+        esac
+      done
+    fi
+    "$handler"
+    lt_ws
+    case "${LT_REST:0:1}" in
+      ,) LT_REST="${LT_REST:1}" ;;
+      ']') LT_REST="${LT_REST:1}"; return 0 ;;
+      *) return 1 ;;
+    esac
+  done
+}
+
+# A name from the payload made safe to sit in the record: the characters a
+# type, a tool or a workflow's name has, 64 at most. Escapes lose their
+# backslash and are kept as letters, as `agent_type` is for the subagents.
+lt_safe() {
+  local s="${1//[^A-Za-z0-9 _.:-]/}"
+  LT_SAFE="${s:0:64}"
+}
+
+# A shell's words, from `bash_program`'s: the program and what follows it in
+# its own command, up to a redirection, into LT_RUN; LT_CUT=true when words
+# were left off for length or the read stopped inside them.
+lt_run() {
+  local i w
+  LT_RUN="$BP_OUT"; LT_CUT=false
+  i=$((BP_K + 1))
+  while [ "$i" -lt "$BP_N" ]; do
+    w="${BP_W[i]}"
+    i=$((i + 1))
+    case "$w" in
+      '>'*|'<'*|[0-9]'>'*|[0-9]'<'*|'&>'*) break ;;
+    esac
+    if [ "${BP_E[i-1]}" = 0 ] && [ "$BP_CUT" = 1 ]; then LT_CUT=true; break; fi
+    w="${w//[[:cntrl:]]/ }"
+    [ -n "$w" ] || continue
+    if [ $((${#LT_RUN} + 1 + ${#w})) -gt 48 ]; then LT_CUT=true; break; fi
+    LT_RUN="$LT_RUN $w"
+  done
+  LT_RUN="${LT_RUN//\\/\\\\}"
+  LT_RUN="${LT_RUN//\"/\\\"}"
+}
+
+lt_task() {
+  local type name run="" cut=false raw
+  case "$LO_STATUS" in running|pending|'') ;; *) return 0 ;; esac
+  lt_safe "$LO_TYPE"; type="$LT_SAFE"
+  case "$type" in
+    dream|'auto-mode scan'|'memory import'|'memory save') return 0 ;;
+  esac
+  name=""
+  case "$type" in
+    shell)
+      raw="${LO_COMMAND:0:4096}"
+      # Claude Code's own mark on a command it clipped at 1000 characters.
+      local clipped=0
+      case "$raw" in *' [+'*' chars]') raw="${raw% \[+*}"; clipped=1 ;; esac
+      [ "${#LO_COMMAND}" -gt 4096 ] && clipped=1
+      guard_unescape "$raw"
+      bash_program "$GUARD_TEXT" "$clipped" || true
+      if [ -n "$BP_OUT" ]; then
+        name="$BP_OUT"
+        lt_run
+        run="$LT_RUN"; cut="$LT_CUT"
+      fi
+      ;;
+    subagent) lt_safe "$LO_AGENT"; name="$LT_SAFE" ;;
+    monitor|'MCP task') lt_safe "${LO_TOOL:-$LO_SERVER}"; name="$LT_SAFE" ;;
+    workflow) lt_safe "$LO_NAME"; name="$LT_SAFE" ;;
+  esac
+  if [ "$LT_KEPT" -ge 8 ]; then LT_MORE=$((LT_MORE + 1)); return 0; fi
+  LT_KEPT=$((LT_KEPT + 1))
+  LT_TASKS="$LT_TASKS${LT_TASKS:+, }{\"type\": \"$type\", \"name\": \"$name\", \"run\": \"$run\", \"cut\": $cut}"
+}
+
+lt_cron() {
+  local schedule recurring=false drop='[^0-9A-Za-z*/,? -]'
+  schedule="${LO_SCHEDULE//$drop/}"
+  schedule="${schedule:0:64}"
+  [ "$LO_RECURRING" = true ] && recurring=true
+  if [ "$LT_CRONS_KEPT" -ge 4 ]; then LT_MORE_CRONS=$((LT_MORE_CRONS + 1)); return 0; fi
+  LT_CRONS_KEPT=$((LT_CRONS_KEPT + 1))
+  LT_CRONS="$LT_CRONS${LT_CRONS:+, }{\"schedule\": \"$schedule\", \"recurring\": $recurring}"
+}
+
+# Stop: what the turn left, kept at left/<session>.json, or nothing kept. A
+# payload with neither array, or both empty (nearly every Stop), costs two
+# pattern tests.
+stop_leftovers() {
+  local id="${SESSION_ID//[^A-Za-z0-9_-]/}" f out arr ok=1
+  [ -n "$id" ] || return 0
+  f="$LEFT_DIR/$id.json"
+  case "$STDIN_JSON" in
+    *'"background_tasks":[{'*|*'"session_crons":[{'*|*'"background_tasks": [{'*|*'"session_crons": [{'*) ;;
+    *) rm -f "$f"; return 0 ;;
+  esac
+  set +eu
+  local LC_ALL=C
+  LT_TASKS=""; LT_CRONS=""; LT_KEPT=0; LT_MORE=0; LT_CRONS_KEPT=0; LT_MORE_CRONS=0
+  LT_REST="$(printf '%s' "$STDIN_JSON" | LC_ALL=C grep -oE -e ',[[:space:]]*"(background_tasks|session_crons)"[[:space:]]*:[[:space:]]*\[.*' \
+    | head -c 262144)"
+  while [[ $LT_REST =~ $LT_RE_ARRAY ]]; do
+    arr="${BASH_REMATCH[1]}"
+    LT_REST="${LT_REST:${#BASH_REMATCH[0]}}"
+    if [ "$arr" = background_tasks ]; then
+      lt_array lt_task || { ok=0; break; }
+    else
+      lt_array lt_cron || { ok=0; break; }
+    fi
+    lt_ws
+  done
+  set -eu
+  if [ "$ok" = 0 ] || { [ "$LT_KEPT" = 0 ] && [ "$LT_MORE" = 0 ] && [ "$LT_CRONS_KEPT" = 0 ]; }; then
+    rm -f "$f"; return 0
+  fi
+  out="{\"tasks\": [$LT_TASKS], \"more\": $LT_MORE, \"crons\": [$LT_CRONS], \"more_crons\": $LT_MORE_CRONS, \"at\": \"$TIMESTAMP\"}"
+  # A word that isn't valid UTF-8 drops the line rather than the record.
+  case "$out" in
+    *[![:print:]]*)
+      if ! printf '%s' "$out" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then rm -f "$f"; return 0; fi ;;
+  esac
+  mkdir -p "$LEFT_DIR" 2>/dev/null || true
+  printf '%s\n' "$out" > "$f.tmp.$$" 2>/dev/null && mv -f "$f.tmp.$$" "$f" 2>/dev/null || rm -f "$f.tmp.$$"
   return 0
 }
 
@@ -1379,6 +1613,21 @@ if [ -n "$bl_session" ] && [ -f "$BLOCK_DIR/$bl_session.json" ]; then
       rm -f "$BLOCK_DIR/$bl_session.json" ;;
     set-state:SessionStart)
       [ "$SOURCE" = compact ] || rm -f "$BLOCK_DIR/$bl_session.json" ;;
+  esac
+fi
+
+# What a finished turn left running or scheduled (Milestone 20): said afresh at
+# every Stop, before the record is written so it carries it; gone with the next
+# prompt, a failed turn (StopFailure says nothing of it) or the session.
+lt_session="${SESSION_ID//[^A-Za-z0-9_-]/}"
+if [ "$CMD" = "set-state" ] && [ "$HOOK_EVENT" = "Stop" ]; then
+  stop_leftovers || true
+elif [ -n "$lt_session" ] && [ -f "$LEFT_DIR/$lt_session.json" ]; then
+  case "$CMD:$HOOK_EVENT" in
+    set-state:UserPromptSubmit|fail:*|end:*)
+      rm -f "$LEFT_DIR/$lt_session.json" ;;
+    set-state:SessionStart)
+      [ "$SOURCE" = compact ] || rm -f "$LEFT_DIR/$lt_session.json" ;;
   esac
 fi
 

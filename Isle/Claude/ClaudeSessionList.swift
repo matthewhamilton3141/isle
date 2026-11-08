@@ -228,11 +228,11 @@ struct ClaudeSessionRow: Identifiable, Equatable {
         case .needsQuestion:
             detail = request?.questions.first?.question ?? answerIn
         case .waitingInput:
-            detail = said ?? "Ready for your next prompt"
+            detail = Self.leftFirst(status, said ?? "Ready for your next prompt")
         case .done:
-            detail = said ?? "Finished responding"
+            detail = Self.leftFirst(status, said ?? "Finished responding")
         case .idle:
-            detail = said ?? "Session ready"
+            detail = Self.leftFirst(status, said ?? "Session ready")
         case .failed:
             if status.errorType == "usage_limit" {
                 detail = ClaudeLimit.shortDetail(resetAt: status.resetAt, next: status.limitNext) ?? "Limit reached"
@@ -242,6 +242,14 @@ struct ClaudeSessionRow: Identifiable, Equatable {
         case .disconnected:
             detail = ""
         }
+    }
+
+    /// What the turn left running or scheduled (Milestone 20) ahead of what
+    /// Claude said, so a narrow row cuts the words rather than it: "Left npm
+    /// running · I've started the dev server…".
+    private static func leftFirst(_ status: ClaudeStatus, _ rest: String) -> String {
+        guard let phrase = status.left?.shown()?.rowPhrase() else { return rest }
+        return "\(phrase) · \(rest)"
     }
 
     /// "Bash · npm test": the tool and what it wants, on one line. A path is

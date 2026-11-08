@@ -175,18 +175,25 @@ struct ClaudeExpandedView: View {
                 // Claude's own words: up to two lines, cut at the end of a
                 // sentence where one falls (see `ClaudeDoneLine`), else at
                 // the tail. Never shrunk — it's prose, not a filename.
-                // One line of it when a block's line is below: the two
-                // together hold the room two lines of it would.
+                // One line of it when a block's line, or what the turn left
+                // running, is below: the two together hold the room two
+                // lines of it would.
                 Text(said)
                     .font(L.detailFont)
                     .foregroundStyle(.islandSecondary(0.72))
-                    .lineLimit(viewModel.claudeBlock == nil ? L.saidLines : 1)
+                    .lineLimit(viewModel.claudeBlock == nil && leftovers == nil ? L.saidLines : 1)
                     .truncationMode(.tail)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.trailing, switcherClearance)
                     .contentTransition(.opacity)
-                blockLine
+                // Room for one line under it: a block keeps it (Milestone
+                // 23), as the one thing on the face that didn't happen.
+                if viewModel.claudeBlock != nil {
+                    blockLine
+                } else {
+                    leftLine
+                }
             } else {
                 Text(detail)
                     .font(L.detailFont)
@@ -203,6 +210,8 @@ struct ClaudeExpandedView: View {
                 // one thing on the face that didn't happen.
                 if viewModel.claudeBlock != nil {
                     blockLine
+                } else if leftovers != nil {
+                    leftLine
                 } else {
                     subagentLine
                 }
@@ -248,6 +257,32 @@ struct ClaudeExpandedView: View {
             .contentTransition(.opacity)
             .transition(.opacity)
             .accessibilityLabel(lines[0])
+        }
+    }
+
+    /// What the turn left behind (Milestone 20), on the faces that follow a
+    /// finished turn: "Left running: npm run dev · Explore agent", "Wakes
+    /// 9:00am". One quiet line, as of the turn's end, in the fullest form
+    /// that fits; the tooltip has the whole of it.
+    @ViewBuilder
+    private var leftLine: some View {
+        if let left = leftovers {
+            let lines = left.lines()
+            ViewThatFits(in: .horizontal) {
+                ForEach(lines, id: \.self) { line in
+                    Text(line).lineLimit(1)
+                }
+            }
+            .font(L.detailFont)
+            .foregroundStyle(.islandSecondary(0.5))
+            .frame(height: L.detailLine, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.trailing, switcherClearance)
+            .contentTransition(.opacity)
+            .transition(.opacity)
+            .help(left.help())
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(left.help())
         }
     }
 
@@ -1306,6 +1341,17 @@ struct ClaudeExpandedView: View {
     ///
     /// Also on a background session Claude Code says is blocked after the
     /// hooks saw its turn end: what Claude said is usually what it's asking.
+    /// What the last turn left running or scheduled (Milestone 20), on the
+    /// same faces as Claude's last words, from a hook's record only, and
+    /// only while some of it is still to say.
+    private var leftovers: ClaudeLeftovers? {
+        guard agentState == nil else { return nil }
+        switch state {
+        case .done, .idle, .waitingInput: return viewModel.claudeLeftovers?.shown()
+        default: return nil
+        }
+    }
+
     private var claudeSaid: String? {
         if agentState != nil { return viewModel.claudeFinalLine }
         switch state {
