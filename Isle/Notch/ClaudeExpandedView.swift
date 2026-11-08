@@ -130,15 +130,21 @@ struct ClaudeExpandedView: View {
 
             Spacer().frame(height: L.eyebrowGap)
 
-            Text(headline)
-                .font(L.headlineFont)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .contentTransition(.opacity)
-                .frame(height: L.headlineLine, alignment: .leading)
-                // Level with the waveform pinned at the panel's top-right by
-                // ExpandedNotchView; stop short of it.
-                .padding(.trailing, L.waveformClearance)
+            HStack(spacing: 8) {
+                Text(headline)
+                    .font(L.headlineFont)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .contentTransition(.opacity)
+                    .layoutPriority(1)
+                if let pattern = approval?.guardedBy {
+                    guardChip(pattern)
+                }
+            }
+            .frame(height: L.headlineLine, alignment: .leading)
+            // Level with the waveform pinned at the panel's top-right by
+            // ExpandedNotchView; stop short of it.
+            .padding(.trailing, L.waveformClearance)
 
             Spacer().frame(height: L.headlineGap)
 
@@ -588,6 +594,38 @@ struct ClaudeExpandedView: View {
         if request.isPlan { return Text(subject) }
         return Text(request.displayTool).fontWeight(.semibold).foregroundStyle(.white.opacity(0.9))
             + Text(subject.isEmpty ? "" : "  " + subject)
+    }
+
+    /// Beside the headline when Isle's own guard is why Claude is asking
+    /// (Milestone 17), from the guard's record of this very call. The pattern
+    /// it matched is the tooltip: beside "Needs your approval" a chip with
+    /// the pattern never fit the row's width, and the command is right below.
+    /// In a tighter row the word goes, leaving the shield; the headline never
+    /// gives way to it.
+    private func guardChip(_ pattern: String) -> some View {
+        let help = "Guarded in Isle: matches “\(pattern)”, so it asks every time, in any permission mode, and never offers Always…. A speed bump for honest mistakes, not a sandbox."
+        func chip(_ showWord: Bool) -> some View {
+            HStack(spacing: 4) {
+                Image(systemName: "shield.lefthalf.filled")
+                    .font(.system(size: 9.5, weight: .semibold))
+                if showWord { Text("Guarded") }
+            }
+            .font(L.eyebrowFont)
+            .foregroundStyle(Color(red: 1, green: 0.8, blue: 0.55))
+            .padding(.horizontal, 7)
+            .frame(height: 17)
+            .background(Capsule().fill(Color.orange.opacity(0.2)))
+            .overlay(Capsule().inset(by: 0.5).stroke(Color.orange.opacity(0.45), lineWidth: 1))
+            .fixedSize()
+        }
+        return ViewThatFits(in: .horizontal) {
+            chip(true)
+            chip(false)
+        }
+        .help(help)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(help)
+        .transition(.opacity)
     }
 
     /// What "Always…" would save, in Claude Code's own terms — the rule as it

@@ -365,7 +365,7 @@ extension ClaudePanelFixture {
                   request: approval("Bash", "npm run lint -- --fix")),
             .init(name: "both_question_4", mode: .both, state: .needsQuestion, request: question([fourOptions])),
         ] + approvalKinds + descriptionModes + worstCases + liveExtras + jumpAndReply + doneSays + loneJump
-            + sessionLists
+            + sessionLists + guardedApprovals
     }
 
     // MARK: Every session at once (Milestone 16)
