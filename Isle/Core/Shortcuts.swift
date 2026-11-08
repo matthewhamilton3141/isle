@@ -12,10 +12,14 @@
 //  - **Approve, Deny and the option keys are held only while a request is
 //    waiting on you** — on the session the island is showing, unanswered,
 //    with no field taking keys — and given back the moment it's answered,
-//    withdrawn or gone. So they can be easy keys (⌥⏎, ⌥⎋, ⌥1…⌥4) without
-//    taking those keys from other apps the rest of the time.
+//    withdrawn or gone. So they can be easy keys (⌃', ⌃⎋, ⌥1…⌥4) without
+//    taking those keys from other apps the rest of the time. Easy, but never
+//    a key anyone types for its meaning: a request waits up to five minutes,
+//    and a keystroke meant for another app — a newline in another session's
+//    terminal — must not answer it. Hence ⌃' and ⌃⎋, not ⌥⏎ (Claude Code's
+//    newline) or ⌃⏎ (its send-now).
 //  - They are taken half a second after the request appears, not at once:
-//    a ⌥⏎ already on its way to another app as the request lands must reach
+//    a keystroke already on its way to another app as the request lands must reach
 //    that app, not approve something nobody has seen.
 //  - **A press does exactly what the face's button does**, through the same
 //    view model call, and where the face needs a look first the press opens
@@ -74,21 +78,39 @@ enum ShortcutAction: String, CaseIterable, Codable {
         }
     }
 
-    /// The defaults: one modifier, the key that says what it does. Approve
-    /// on Return and Deny on Esc as in any dialog; the options on their
-    /// numbers. The island on ⌥⇥ rather than ⌥Space, which ChatGPT, Claude,
-    /// Raycast and Alfred all reach for first (ChatGPT is on ⌥Space out of
-    /// the box), where Option-Tab types nothing and no part of macOS uses it.
+    /// The defaults: one modifier, and keys nobody types for their meaning —
+    /// Approve and Deny are held while a request waits, so a keystroke meant
+    /// for another app would answer it instead. Every one-modifier Return is
+    /// someone's: ⌥⏎ is Claude Code's newline, ⌃⏎ its send-now, ⌘⏎ submits
+    /// in half the web and toggles full screen in iTerm2 and Ghostty. So
+    /// Approve is on the key beside Return, ⌃', and Deny on ⌃⎋ — neither
+    /// types anything, and neither macOS nor Claude Code uses them. The
+    /// options on their numbers. The island on ⌥⇥ rather than ⌥Space, which
+    /// ChatGPT, Claude, Raycast and Alfred all reach for first (ChatGPT is on
+    /// ⌥Space out of the box), where Option-Tab types nothing and no part of
+    /// macOS uses it.
     var defaultCombo: KeyCombo {
         switch self {
         case .toggleIsland: return KeyCombo(0x30, KeyCombo.option)      // kVK_Tab
-        case .approve: return KeyCombo(0x24, KeyCombo.option)           // kVK_Return
-        case .deny: return KeyCombo(0x35, KeyCombo.option)              // kVK_Escape
+        case .approve: return KeyCombo(0x27, KeyCombo.control)          // kVK_ANSI_Quote
+        case .deny: return KeyCombo(0x35, KeyCombo.control)             // kVK_Escape
         case .option1: return KeyCombo(0x12, KeyCombo.option)           // kVK_ANSI_1
         case .option2: return KeyCombo(0x13, KeyCombo.option)           // kVK_ANSI_2
         case .option3: return KeyCombo(0x14, KeyCombo.option)           // kVK_ANSI_3
         case .option4: return KeyCombo(0x15, KeyCombo.option)           // kVK_ANSI_4
         case .dismiss: return KeyCombo(0x35, 0)                         // kVK_Escape, bare
+        }
+    }
+
+    /// What the defaults were before the version-2 store (Approve on ⌥⏎,
+    /// Deny on ⌥⎋): a version-1 entry on these keys was never recorded —
+    /// they were the defaults then, which aren't stored — only switched
+    /// off, so it reads as today's default (see `ShortcutBindings.decode`).
+    var legacyDefaultCombo: KeyCombo? {
+        switch self {
+        case .approve: return KeyCombo(0x24, KeyCombo.option)           // kVK_Return
+        case .deny: return KeyCombo(0x35, KeyCombo.option)              // kVK_Escape
+        default: return nil
         }
     }
 
@@ -129,9 +151,12 @@ struct ShortcutBinding: Hashable, Codable {
 }
 
 /// Every configurable shortcut's binding. Stored as one JSON object keyed by
-/// action; anything missing, unreadable or not a valid shortcut reads as
-/// that action's default, one action at a time, so a bad entry never costs
-/// the others theirs.
+/// action, plus `"v"` (the store's version); anything missing, unreadable or
+/// not a valid shortcut reads as that action's default, one action at a
+/// time, so a bad entry never costs the others theirs.
+///
+/// Only what differs from the defaults is stored, so a change of default
+/// reaches everyone who never recorded their own keys — and nobody who did.
 struct ShortcutBindings: Equatable {
     private var entries: [ShortcutAction: ShortcutBinding] = [:]
 
@@ -187,12 +212,20 @@ struct ShortcutBindings: Equatable {
 
     // MARK: Storage
 
+    /// The store's version. 1 (no `"v"`): Approve and Deny defaulted to ⌥⏎
+    /// and ⌥⎋. 2: ⌃' and ⌃⎋.
+    static let storeVersion = 2
+
     func encoded() -> Data? {
-        let stored = Dictionary(uniqueKeysWithValues: entries.map { ($0.key.rawValue, $0.value) })
-        guard !stored.isEmpty else { return nil }
+        guard !entries.isEmpty else { return nil }
+        var stored: [String: Any] = ["v": Self.storeVersion]
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        return try? encoder.encode(stored)
+        for (action, binding) in entries {
+            guard let data = try? encoder.encode(binding),
+                  let object = try? JSONSerialization.jsonObject(with: data) else { continue }
+            stored[action.rawValue] = object
+        }
+        return try? JSONSerialization.data(withJSONObject: stored, options: [.sortedKeys, .withoutEscapingSlashes])
     }
 
     static func decode(_ data: Data?) -> ShortcutBindings {
@@ -200,19 +233,29 @@ struct ShortcutBindings: Equatable {
         guard let data,
               let raw = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         else { return bindings }
+        let version = (raw["v"] as? Int) ?? 1
         for (key, value) in raw {
             guard let action = ShortcutAction(rawValue: key), action.isConfigurable,
                   let entry = try? JSONSerialization.data(withJSONObject: value),
-                  let binding = try? JSONDecoder().decode(ShortcutBinding.self, from: entry),
+                  var binding = try? JSONDecoder().decode(ShortcutBinding.self, from: entry),
                   binding.combo.isValidShortcut
             else { continue }
+            // Version 1 stored the old default's keys only with the switch
+            // off: the keys were never chosen, so they move to the new ones.
+            if version < 2, binding.combo == action.legacyDefaultCombo {
+                binding.combo = action.defaultCombo
+            }
             bindings[action] = binding
         }
-        // Two actions on one combo (an edited plist): the later one in
-        // Settings order goes back to its default — or, if that's taken
+        // Two actions on one combo (an edited plist, or a recording that
+        // has since become another action's default): keys someone chose
+        // win over a default, and among those the earlier in Settings
+        // order. The loser goes back to its default — or, if that's taken
         // too, off — so a press never means two things.
         var seen: [KeyCombo: ShortcutAction] = [:]
-        for action in ShortcutAction.configurable {
+        let chosen = ShortcutAction.configurable.filter { !bindings.isDefault($0) }
+        let defaulted = ShortcutAction.configurable.filter { bindings.isDefault($0) }
+        for action in chosen + defaulted {
             if seen[bindings[action].combo] != nil {
                 let on = bindings[action].isOn
                 bindings[action] = ShortcutBinding(combo: action.defaultCombo, isOn: on)
@@ -243,7 +286,9 @@ enum ShortcutNotes {
         case (0x30, o): return "AltTab and other window switchers use ⌥⇥, if you have one."
         case (0x35, o): return "Also macOS’s Speak Selection key, when that’s on (Accessibility › Spoken Content)."
         case (0x35, o | cmd): return "macOS uses ⌥⌘⎋ for Force Quit."
-        case (0x24, o): return "Some terminals send ⌥⏎ to Claude Code as a newline. Isle takes it only while a request waits."
+        case (0x24, o): return "Claude Code uses ⌥⏎ for a newline: while a request waits, one typed in any terminal would answer it instead."
+        case (0x24, c): return "Claude Code uses ⌃⏎ to send a message now: while a request waits, one typed in any terminal would answer it instead."
+        case (0x33, c): return "Many terminals and editors delete a word on ⌃⌫."
         default:
             if combo.modifiers == cmd || combo.modifiers == cmd | KeyCombo.shift {
                 return "⌘ shortcuts belong to every app’s menus; this one would be Isle’s everywhere."

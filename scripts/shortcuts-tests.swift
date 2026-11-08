@@ -160,7 +160,9 @@ enum ShortcutsTests {
         print("Key combos: display")
         let us: (UInt32) -> String? = { _ in nil }
         equal(optReturn.display(character: us), "⌥⏎", "⌥⏎")
-        equal(A.deny.defaultCombo.display(character: us), "⌥⎋", "⌥⎋")
+        equal(A.deny.defaultCombo.display(character: us), "⌃⎋", "⌃⎋")
+        equal(A.approve.defaultCombo.display(character: us), "⌃'", "⌃'")
+        equal(A.approve.defaultCombo.spoken, "Control-'", "spoken, ⌃'")
         equal(A.toggleIsland.defaultCombo.display(character: us), "⌥⇥", "⌥⇥")
         equal(A.option3.defaultCombo.display(character: us), "⌥3", "⌥3")
         equal(KeyCombo(kVK_Space, o).display(character: us), "⌥Space", "⌥Space")
@@ -180,8 +182,13 @@ enum ShortcutsTests {
     static func bindings() {
         print("Bindings: defaults")
         equal(defaults[.toggleIsland].combo, KeyCombo(kVK_Tab, o), "open/close is ⌥⇥")
-        equal(defaults[.approve].combo, KeyCombo(kVK_Return, o), "Approve is ⌥⏎")
-        equal(defaults[.deny].combo, KeyCombo(kVK_Escape, o), "Deny is ⌥⎋")
+        equal(defaults[.approve].combo, KeyCombo(kVK_ANSI_Quote, c), "Approve is ⌃' (the key beside Return)")
+        equal(defaults[.deny].combo, KeyCombo(kVK_Escape, c), "Deny is ⌃⎋")
+        for a in [A.approve, .deny] {
+            check(defaults[a].combo != KeyCombo(kVK_Return, o), "\(a.title) isn't ⌥⏎: Claude Code's newline")
+            check(defaults[a].combo != KeyCombo(kVK_Return, c), "\(a.title) isn't ⌃⏎: Claude Code's send-now")
+            check(defaults[a].combo.modifiers.nonzeroBitCount == 1, "\(a.title) is one modifier and a key")
+        }
         equal(A.options.map { defaults[$0].combo }, [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4].map { KeyCombo($0, o) },
               "options are ⌥1…⌥4")
         check(A.configurable.allSatisfy { defaults[$0].isOn }, "all on out of the box")
@@ -199,8 +206,8 @@ enum ShortcutsTests {
         b[.toggleIsland].isOn = false
         let data = b.encoded()!
         let text = String(decoding: data, as: UTF8.self)
-        equal(text, #"{"approve":{"combo":{"key":16,"mods":["option"]},"on":true},"toggleIsland":{"combo":{"key":48,"mods":["option"]},"on":false}}"#,
-              "only what differs is stored, as JSON")
+        equal(text, #"{"approve":{"combo":{"key":16,"mods":["option"]},"on":true},"toggleIsland":{"combo":{"key":48,"mods":["option"]},"on":false},"v":2}"#,
+              "only what differs is stored, as JSON, with the store's version")
         equal(ShortcutBindings.decode(data), b, "and reads back the same")
         b[.approve] = ShortcutBinding(combo: A.approve.defaultCombo)
         check(!(String(decoding: b.encoded()!, as: UTF8.self).contains("approve")), "set back to its default, an entry goes")
@@ -218,9 +225,33 @@ enum ShortcutsTests {
         equal(mixed[.deny].combo, A.deny.defaultCombo, "a stored combo that isn't a shortcut (⇧⏎) reads as the default")
         equal(mixed[.option2].combo, A.option2.defaultCombo, "an unreadable entry reads as the default, alone")
         equal(mixed.combo(for: .dismiss), KeyCombo(kVK_Escape, 0), "Esc can't be rebound from the plist")
-        let dupes = ShortcutBindings.decode(Data(#"{"deny":{"combo":{"key":36,"mods":["option"]},"on":true}}"#.utf8))
-        check(dupes[.approve].combo != dupes[.deny].combo, "an edited plist putting Deny on ⌥⏎ never makes one press mean two")
-        equal(dupes[.approve].combo, A.approve.defaultCombo, "the earlier action in Settings order keeps it")
+        let dupes = ShortcutBindings.decode(Data(#"{"approve":{"combo":{"key":16,"mods":["option"]},"on":true},"deny":{"combo":{"key":16,"mods":["option"]},"on":true},"v":2}"#.utf8))
+        check(dupes[.approve].combo != dupes[.deny].combo, "an edited plist putting Deny on Approve's ⌥Y never makes one press mean two")
+        equal(dupes[.approve].combo, KeyCombo(kVK_ANSI_Y, o), "the earlier action in Settings order keeps it")
+        equal(dupes[.deny].combo, A.deny.defaultCombo, "the later goes back to its default")
+        let onDefault = ShortcutBindings.decode(Data(#"{"deny":{"combo":{"key":39,"mods":["control"]},"on":true},"v":2}"#.utf8))
+        equal(onDefault[.deny].combo, KeyCombo(kVK_ANSI_Quote, c), "keys someone chose win over another action's default")
+        check(!onDefault[.approve].isOn && onDefault.combo(for: .approve) == nil, "and that action goes off rather than share them")
+
+        print("Bindings: the move off ⌥⏎ and ⌥⎋ (store version 1 to 2)")
+        let untouched = ShortcutBindings.decode(Data(#"{"toggleIsland":{"combo":{"key":34,"mods":["option"]},"on":true}}"#.utf8))
+        equal(untouched[.approve].combo, A.approve.defaultCombo, "never customised: the new Approve")
+        equal(untouched[.deny].combo, A.deny.defaultCombo, "and the new Deny")
+        equal(untouched[.toggleIsland].combo, KeyCombo(kVK_ANSI_I, o), "what they did record stays")
+        let switchedOff = ShortcutBindings.decode(Data(#"{"approve":{"combo":{"key":36,"mods":["option"]},"on":false},"deny":{"combo":{"key":53,"mods":["option"]},"on":false}}"#.utf8))
+        equal(switchedOff[.approve], ShortcutBinding(combo: A.approve.defaultCombo, isOn: false),
+              "only switched off (version 1 stored the old default then): the new keys, still off")
+        equal(switchedOff[.deny], ShortcutBinding(combo: A.deny.defaultCombo, isOn: false), "Deny the same")
+        check(switchedOff.encoded().map { String(decoding: $0, as: UTF8.self) }?.contains(#""v":2"#) == true,
+              "written back as version 2")
+        let recordedV1 = ShortcutBindings.decode(Data(#"{"approve":{"combo":{"key":16,"mods":["option"]},"on":true},"deny":{"combo":{"key":45,"mods":["control"]},"on":true}}"#.utf8))
+        equal(recordedV1[.approve].combo, KeyCombo(kVK_ANSI_Y, o), "recorded their own Approve: kept")
+        equal(recordedV1[.deny].combo, KeyCombo(kVK_ANSI_N, c), "and their own Deny")
+        let recordedV2 = ShortcutBindings.decode(Data(#"{"approve":{"combo":{"key":36,"mods":["option"]},"on":true},"v":2}"#.utf8))
+        equal(recordedV2[.approve].combo, KeyCombo(kVK_Return, o), "⌥⏎ recorded after the move is theirs: kept")
+        var roundTrip = defaults
+        roundTrip.assign(KeyCombo(kVK_Return, o), to: .approve)
+        equal(ShortcutBindings.decode(roundTrip.encoded()), roundTrip, "and survives a relaunch")
 
         print("Bindings: recording")
         var r = defaults
@@ -253,8 +284,13 @@ enum ShortcutsTests {
         check(ShortcutNotes.note(for: KeyCombo(kVK_Space, cmd))?.contains("Spotlight") == true, "⌘Space is Spotlight")
         check(ShortcutNotes.note(for: KeyCombo(kVK_Space, c))?.contains("input") == true, "⌃Space is input sources")
         check(ShortcutNotes.note(for: A.toggleIsland.defaultCombo)?.contains("AltTab") == true, "⌥⇥ says AltTab, honestly")
-        check(ShortcutNotes.note(for: A.deny.defaultCombo)?.contains("Speak Selection") == true, "⌥⎋ says Speak Selection")
-        check(ShortcutNotes.note(for: A.approve.defaultCombo)?.contains("newline") == true, "⌥⏎ says the terminal newline")
+        check(ShortcutNotes.note(for: KeyCombo(kVK_Escape, o))?.contains("Speak Selection") == true, "⌥⎋ says Speak Selection")
+        check(ShortcutNotes.note(for: KeyCombo(kVK_Return, o))?.contains("Claude Code uses ⌥⏎ for a newline") == true,
+              "recording ⌥⏎ says it's Claude Code's newline")
+        check(ShortcutNotes.note(for: KeyCombo(kVK_Return, c))?.contains("send a message now") == true,
+              "recording ⌃⏎ says it's Claude Code's send-now")
+        check(ShortcutNotes.note(for: A.approve.defaultCombo) == nil, "⌃' has nothing to say")
+        check(ShortcutNotes.note(for: A.deny.defaultCombo) == nil, "⌃⎋ has nothing to say")
         check(ShortcutNotes.note(for: KeyCombo(kVK_ANSI_K, cmd)) != nil, "⌘K is every app's menus")
         check(ShortcutNotes.note(for: A.option1.defaultCombo) == nil, "⌥1 has nothing to say")
         check(ShortcutNotes.note(for: KeyCombo(kVK_ANSI_I, c | o)) == nil, "⌃⌥I has nothing to say")
