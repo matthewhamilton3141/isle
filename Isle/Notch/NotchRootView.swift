@@ -136,6 +136,24 @@ struct NotchRootView: View {
                 // The shift exists to centre an asymmetric pill, so it moves
                 // with the width.
                 .islandCollapseChannel(.width)
+                // A swipe lands in an untimed transaction (see
+                // `FacePager.settle`): `disablesAnimations`, so the faces swap
+                // and the pager re-bases its offset in one frame. The
+                // `.animation(value: expandedHeight)` below honours that flag,
+                // which left the height snapping to the new face's. Here a
+                // swipe's transaction gets the resize spring back for the
+                // outline, and the guard on the content inside takes it away
+                // again, so only the outline moves.
+                //
+                // It has to sit here, on the outermost modifier of the notch:
+                // measured, a transaction changed on an inner frame (as the
+                // scoped `transaction(_:body:)` on the height frame did) leaves
+                // the size's animation as the outer transaction had it.
+                .transaction { t in
+                    guard t.isPanelResize else { return }
+                    t.disablesAnimations = false
+                    t.animation = panelResizeAnimation
+                }
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -221,23 +239,21 @@ struct NotchRootView: View {
                 .opacity(expandedContentOpacity)
             }
         }
+        // A swipe's face swap stays instant for everything inside the
+        // outline, though the notch's outermost modifier (in `body`) gives
+        // the swipe's transaction an animation for the outline's sake.
+        .transaction { t in
+            guard t.isPanelResize else { return }
+            t.disablesAnimations = true
+            t.animation = nil
+        }
         // Width and height as separate frames so a collapse can run them on
         // separate springs: the width leads, the height follows. Outside a
         // collapse the channels pass the transaction through untouched and
         // the two move together as one frame would.
         .frame(width: size.width)
         .islandCollapseChannel(.width)
-        // A swipe lands in an untimed transaction (see `FacePager.settle`),
-        // which would snap the height to the new face's. Scoped to this frame
-        // only, it gets the same spring a tile click's height change gets
-        // below; the faces inside keep their instant swap.
-        .transaction { t in
-            guard t.isPanelResize else { return }
-            t.disablesAnimations = false
-            t.animation = panelResizeAnimation
-        } body: { content in
-            content.frame(height: size.height)
-        }
+        .frame(height: size.height)
         .islandCollapseChannel(.height)
         // Clip everything to the notch outline. The expanded content is laid
         // out at its full width the instant the state flips, but the frame
