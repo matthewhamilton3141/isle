@@ -38,6 +38,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         setUpStatusItem()
 
+        // The gear on the island's home grid asks for Settings this way: the
+        // notch views don't hold the app delegate.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(openSettings), name: .isleOpenSettings, object: nil
+        )
+
         // If Isle's hooks were installed by an older build, quietly bring the
         // helper and hook set up to date (e.g. to pick up the SessionEnd hook
         // that clears the island when a session closes). No-op if not installed.
