@@ -83,6 +83,12 @@ struct NotchMetrics {
         panelMaxHeight - contentInsets(bandHeight: bandHeight)
     }
 
+    /// The content's height in the standard panel — Home's, and the height
+    /// its tiles are laid out in (see `HomeTileSlot`).
+    static func standardContentHeight(bandHeight: CGFloat) -> CGFloat {
+        expandedSize.height - contentInsets(bandHeight: bandHeight)
+    }
+
     /// The expanded content's top inset (band + 2) and bottom inset (8), from
     /// NotchRootView.
     private static func contentInsets(bandHeight: CGFloat) -> CGFloat {

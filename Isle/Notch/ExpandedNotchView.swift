@@ -32,16 +32,24 @@ struct ExpandedNotchView: View {
     /// (see `musicBody`'s `onDisappear`).
     @State private var showsOutputs = false
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private static let crossDissolve = Animation.easeInOut(duration: 0.28)
+
     var body: some View {
         // The way home lives in NotchRootView, in the housing band to the
         // right of the physical cutout — see the crumb in NotchRootView.notch.
         content
-            // A clean cross-dissolve: nothing moves, the old place just fades
-            // out as the new one fades in, in place — Home to a face, a face
-            // to Home, and the interrupt-driven switch to Claude, which
-            // doesn't go through a tile. A swipe lands without it: its faces
-            // are already where they belong (see `FacePager.settle`).
-            .animation(.easeInOut(duration: 0.28), value: viewModel.expandedPlace)
+            // Home to a face and back: the tile grows into its face and the
+            // face draws back into it (see `TileMorph`), on its own spring —
+            // the inner of the two, so it wins when both change. Between
+            // faces (the interrupt-driven switch to Claude) and everywhere
+            // under Reduce Motion, a clean cross-dissolve: nothing moves, the
+            // old place fades out as the new one fades in. A swipe lands
+            // without either: its faces are already where they belong (see
+            // `FacePager.settle`).
+            .animation(reduceMotion ? Self.crossDissolve : .tileMorph, value: viewModel.expandedPlace == .home)
+            .animation(Self.crossDissolve, value: viewModel.expandedPlace)
             .animation(.easeInOut(duration: 0.2), value: dropPayload != nil)
             // The waveform is pinned to ONE fixed spot in the panel and drawn
             // outside the face switch, so it holds the exact same real position
@@ -78,7 +86,11 @@ struct ExpandedNotchView: View {
             DropFaceView(viewModel: viewModel, island: island, payload: dropPayload)
                 .transition(.opacity)
         } else {
-            place
+            // A container of its own, so the drop face coming and going
+            // fades the place as one rather than running the tile moves
+            // inside it, which belong to Home and its faces alone.
+            ZStack { place }
+                .transition(.opacity)
         }
     }
 
@@ -87,13 +99,27 @@ struct ExpandedNotchView: View {
         switch viewModel.expandedPlace {
         case .home:
             HomeGridView(viewModel: viewModel, palette: palette)
-                .transition(.opacity)
+                .transition(reduceMotion ? .opacity : .homeGridAway)
         case .face(let tab):
             FaceCarousel(pager: island.pager, face: tab) { face in
                 self.face(face)
             }
-            .transition(.opacity)
+            .transition(faceTransition(tab))
         }
+    }
+
+    /// How a face comes in from Home and goes back: out of its tile and into
+    /// it again. A face with no tile (the only face, so no grid) and Reduce
+    /// Motion just cross-fade.
+    private func faceTransition(_ tab: IsleTab) -> AnyTransition {
+        let tabs = viewModel.availableTabs
+        guard !reduceMotion, tabs.count > 1, let index = tabs.firstIndex(of: tab) else { return .opacity }
+        let band = island.metrics?.notchSize.height ?? NotchMetrics.fallbackNotchSize.height
+        return .faceFromTile(HomeTileSlot(
+            index: index,
+            count: tabs.count,
+            height: NotchMetrics.standardContentHeight(bandHeight: band)
+        ))
     }
 
     @ViewBuilder
