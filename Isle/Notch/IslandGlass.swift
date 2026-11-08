@@ -5,13 +5,21 @@
 //  kept free of AppKit and SwiftUI so they compile on their own and can be
 //  checked without an app (scripts/test-island-glass.sh):
 //
-//  - The blend. The pill is black in every mode, so opening crossfades the
-//    fill from black to glass and closing back again, on the open's progress:
-//    `blackCover` is how much black still lies over the glass.
-//  - The notch glow (a setting of its own, over either glass): black that
-//    grows out of the physical camera housing, solid over it and fading
-//    outward, wider sideways than down.
-//  - The tints laid over the system material, one per mode.
+//  - Which states are glass. The open panel, and the closed island while it
+//    shows something beside the camera (music, Claude, the timer, a toast).
+//    The empty pill, which only fills the camera's own cutout, stays black.
+//  - The blend. Opening from the empty pill crossfades the fill from black
+//    to glass and closing back again, on the open's progress; the closed
+//    island's glass, coming and going with its content, is the blend's
+//    second input. `blackCover` is how much black still lies over the glass.
+//  - The camera cover, on a display with a notch: black over the physical
+//    housing so the cutout doesn't bite into the glass. Closed it is the
+//    camera band, solid just past the housing and gone a few points
+//    further, so the wings are glass up to the camera. Opening, it becomes
+//    the notch glow — solid over the housing, fading outward, wider
+//    sideways than down — or with the glow off, clears.
+//  - The tints laid over the system material, one per mode, with a floor
+//    for the closed island's small coloured content.
 //  - The legibility lifts for content on glass: secondary text a little
 //    brighter, artwork colours held above a lightness floor.
 //
@@ -41,6 +49,24 @@ enum IslandGlass {
         }
     }
 
+    /// The least black over the material while the island is closed. Its
+    /// content is small and coloured — artwork, the equalizer, a status
+    /// word in the artwork's accent — not the open panel's white text, and
+    /// over a bright window `glassTint` left it faint. Smoked is already
+    /// past it. Tune here.
+    static let closedTintFloor: Double = 0.4
+
+    /// The tint at `progress` (0 closed, 1 open): the closed island's
+    /// (`tint(for:)` held at least at `closedTintFloor`) thinning to the
+    /// open panel's on the blend's own curve, so it is the open panel's by
+    /// `blendEnd` and the closed island's below `blendStart`.
+    static func tint(for background: PanelBackground, progress: Double) -> Double {
+        let open = tint(for: background)
+        guard background.isGlass else { return open }
+        let closed = max(open, closedTintFloor)
+        return open + (closed - open) * blackCover(progress: progress)
+    }
+
     // MARK: - The blend
 
     /// Below this much of the open, the fill is all black; the glass is not
@@ -65,6 +91,147 @@ enum IslandGlass {
     /// the black fill it is in Black mode.
     static func showsGlass(progress: Double) -> Bool {
         progress > blendStart
+    }
+
+    // MARK: - The closed island
+
+    /// Whether the closed island is glass: in a glass mode, and only while
+    /// it shows something beside the camera. The empty pill is exactly the
+    /// camera's cutout, so as glass it would be a rim of glass round a black
+    /// hole; black, it disappears into the hardware as it always has.
+    static func closedIsGlass(background: PanelBackground, showsContent: Bool) -> Bool {
+        background.isGlass && showsContent
+    }
+
+    /// How much black covers the glass at `progress` (0 closed, 1 open) with
+    /// the closed island `closedGlass` of the way to glass (0 the empty
+    /// pill's black, 1 glass; animated between the two as content comes and
+    /// goes). A closed island that is glass stays glass all the way open and
+    /// all the way closed again: nothing in an open or a close goes back
+    /// through black.
+    static func blackCover(progress: Double, closedGlass: Double) -> Double {
+        let g = min(max(closedGlass, 0), 1)
+        return blackCover(progress: progress) * (1 - g)
+    }
+
+    /// Whether the glass needs drawing at all: anywhere the black doesn't
+    /// cover it completely.
+    static func showsGlass(progress: Double, closedGlass: Double) -> Bool {
+        blackCover(progress: progress, closedGlass: closedGlass) < 1
+    }
+
+    // MARK: - The camera cover
+
+    /// What lies over the physical camera housing on glass. Closed, it is
+    /// always the camera band — black over the housing and a few points
+    /// past it, so the wings are glass right up to the camera. Opening, the
+    /// band becomes the notch glow if that's on, or clears if it's off.
+    enum CameraCover: Equatable {
+        /// No notch: nothing to cover, the glass runs edge to edge.
+        case none
+        /// Notch, glow on: the band closed, the glow open.
+        case bandToGlow
+        /// Notch, glow off: the band closed, nothing open — the housing
+        /// hangs into the open panel's glass as the setting says.
+        case bandToClear
+    }
+
+    static func cameraCover(hasPhysicalNotch: Bool, glowOn: Bool) -> CameraCover {
+        guard hasPhysicalNotch else { return .none }
+        return glowOn ? .bandToGlow : .bandToClear
+    }
+
+    /// How far solid black reaches past the housing's sides and bottom, so
+    /// the hardware's edge — the housing's measured width is whole points,
+    /// its corners rounded — never meets see-through glass. Tune here.
+    static let cameraClearance: CGFloat = 4
+
+    /// The rect black is solid over: the housing, `cameraClearance` wider
+    /// each side and deeper. Both the band and the glow grow from it.
+    static func coveredHousing(_ housing: CGSize) -> CGSize {
+        CGSize(width: housing.width + 2 * cameraClearance, height: housing.height + cameraClearance)
+    }
+
+    /// How far the cover has gone from the band toward its open form at
+    /// `progress`: 0 closed, 1 from `blendEnd`, on the blend's own curve —
+    /// the curve the tint follows from its closed floor to the open tint.
+    static func coverOpenness(progress: Double) -> Double {
+        1 - blackCover(progress: progress)
+    }
+
+    /// The band layer's opacity. Under the glow it stays whole (the glow
+    /// layer is drawn as what the glow adds over it, so the two together
+    /// are the glow exactly); with nothing to become, it thins away.
+    static func bandOpacity(_ cover: CameraCover, progress: Double) -> Double {
+        switch cover {
+        case .none: return 0
+        case .bandToGlow: return 1
+        case .bandToClear: return 1 - coverOpenness(progress: progress)
+        }
+    }
+
+    /// The glow layer's opacity (`glowOverBandAlpha`): none closed, whole
+    /// open.
+    static func glowLayerOpacity(_ cover: CameraCover, progress: Double) -> Double {
+        cover == .bandToGlow ? coverOpenness(progress: progress) : 0
+    }
+
+    /// How far the band takes to fade out past the covered rect, in points.
+    /// Short, so the Claude glyph 6pt from the camera sits over glass: with
+    /// the 4pt clearance the band is clear 8pt from the housing. Tune here.
+    static let bandFade: CGFloat = 4
+
+    /// The band's opacity `x` points from the housing's centre line and `y`
+    /// from the top of the screen, around a `covered` rect
+    /// (`coveredHousing`): 1 over it, then 1 - smoothstep(d / bandFade) over
+    /// the distance d to it, clear from `bandFade` out.
+    static func bandAlpha(x: CGFloat, y: CGFloat, covered: CGSize) -> Double {
+        let dx = max(abs(x) - covered.width / 2, 0)
+        let dy = max(y - covered.height, 0)
+        let d = (dx * dx + dy * dy).squareRoot()
+        if d <= 0 { return 1 }
+        guard bandFade > 0, d < bandFade else { return 0 }
+        let u = Double(d / bandFade)
+        return 1 - u * u * (3 - 2 * u)
+    }
+
+    static func bandExtent(covered: CGSize) -> CGSize {
+        CGSize(width: covered.width + 2 * bandFade, height: covered.height + bandFade)
+    }
+
+    /// The band sampled like `glowMask`.
+    static func bandMask(covered: CGSize, scale: CGFloat) -> (width: Int, height: Int, alpha: [UInt8]) {
+        sample(extent: bandExtent(covered: covered), scale: scale) { x, y in
+            bandAlpha(x: x, y: y, covered: covered)
+        }
+    }
+
+    /// What the glow adds over the band: the black that, laid over the band
+    /// (`1 - (1 - band)(1 - this)`), makes the glow — so drawing it at
+    /// opacity t over the whole band mixes band to glow by t, pixel for
+    /// pixel, with no dip where the two are both solid. Where the band is
+    /// already the darker (within a fraction of a point of the covered
+    /// rect's edge) it adds nothing.
+    static func glowOverBandAlpha(x: CGFloat, y: CGFloat, covered: CGSize) -> Double {
+        let b = bandAlpha(x: x, y: y, covered: covered)
+        let g = glowAlpha(x: x, y: y, housing: covered)
+        guard b < 1 else { return 0 }
+        return min(max((g - b) / (1 - b), 0), 1)
+    }
+
+    /// `glowOverBandAlpha` sampled over the glow's extent.
+    static func glowOverBandMask(covered: CGSize, scale: CGFloat) -> (width: Int, height: Int, alpha: [UInt8]) {
+        sample(extent: glowExtent(housing: covered), scale: scale) { x, y in
+            glowOverBandAlpha(x: x, y: y, covered: covered)
+        }
+    }
+
+    /// The cover's opacity at a point, band and glow layers composited as
+    /// IslandGlassBlend draws them.
+    static func coverAlpha(_ cover: CameraCover, x: CGFloat, y: CGFloat, covered: CGSize, progress: Double) -> Double {
+        let b = bandAlpha(x: x, y: y, covered: covered) * bandOpacity(cover, progress: progress)
+        let g = glowOverBandAlpha(x: x, y: y, covered: covered) * glowLayerOpacity(cover, progress: progress)
+        return 1 - (1 - b) * (1 - g)
     }
 
     // MARK: - The notch glow
@@ -107,7 +274,16 @@ enum IslandGlass {
     /// major from the top, one 0...255 alpha per pixel, sampled at pixel
     /// centres.
     static func glowMask(housing: CGSize, scale: CGFloat) -> (width: Int, height: Int, alpha: [UInt8]) {
-        let extent = glowExtent(housing: housing)
+        sample(extent: glowExtent(housing: housing), scale: scale) { x, y in
+            glowAlpha(x: x, y: y, housing: housing)
+        }
+    }
+
+    /// `alpha` over `extent`, anchored top-centre, at `scale` pixels per
+    /// point: row major from the top, sampled at pixel centres.
+    private static func sample(
+        extent: CGSize, scale: CGFloat, _ alphaAt: (CGFloat, CGFloat) -> Double
+    ) -> (width: Int, height: Int, alpha: [UInt8]) {
         let w = max(Int((extent.width * scale).rounded(.up)), 1)
         let h = max(Int((extent.height * scale).rounded(.up)), 1)
         var alpha = [UInt8](repeating: 0, count: w * h)
@@ -115,7 +291,7 @@ enum IslandGlass {
             let y = (CGFloat(row) + 0.5) / scale
             for col in 0..<w {
                 let x = (CGFloat(col) + 0.5) / scale - extent.width / 2
-                alpha[row * w + col] = UInt8((glowAlpha(x: x, y: y, housing: housing) * 255).rounded())
+                alpha[row * w + col] = UInt8((alphaAt(x, y) * 255).rounded())
             }
         }
         return (w, h, alpha)

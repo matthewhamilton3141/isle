@@ -17,7 +17,17 @@ import SwiftUI
 struct CollapsedNotchView: View {
     @ObservedObject var viewModel: NotchViewModel
     @ObservedObject var island: IslandPresentation
+    /// The artwork palette, already held above the glass floor when the
+    /// island is glass (NotchRootView).
     var palette: ArtworkPalette
+
+    @Environment(\.islandOnGlass) private var onGlass
+
+    /// The thinking/working tint, off the view model's unfloored palette, so
+    /// held above the floor here on glass like the palette is.
+    private var workingTint: Color? {
+        viewModel.workingTint?.flooredForGlass(onGlass)
+    }
 
     private var cutoutWidth: CGFloat {
         island.metrics?.notchSize.width ?? 0
@@ -198,7 +208,7 @@ struct CollapsedNotchView: View {
             state: viewModel.claudeState,
             kind: viewModel.claudeMarkerKind,
             palette: palette,
-            tint: viewModel.workingTint
+            tint: workingTint
         )
         .frame(width: size, height: size)
     }
@@ -220,7 +230,7 @@ struct CollapsedNotchView: View {
     /// The status text colour, matched to the dots: the warm thinking/working
     /// tint when it applies, else the marker's fixed hue or the artwork accent.
     private var markerColor: Color {
-        if let tint = viewModel.workingTint { return tint }
+        if let tint = workingTint { return tint }
         let design = MarkerStore.shared.design(for: viewModel.claudeMarkerKind)
         return design.colorMode == .fixed ? Color(hex: design.fixedColorHex) : palette.accent
     }
