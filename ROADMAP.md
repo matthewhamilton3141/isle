@@ -1969,7 +1969,8 @@ words (`ClaudeLimit`).
 **Also in v12:** a Bash or Monitor target is the program's name, read from the
 whole command (first 4 KB) with `ClaudeActivity.program(ofCommand:)`'s rules,
 so a long `cd`, a quoted path or a comment line no longer leaves the app
-"Running a command". 37–46 ms a hook, as before.
+"Running a command". It costs about 4 ms a Bash hook over v11 (≈40 ms
+against 36 for a short command; ≈46 ms for a 12 KB heredoc).
 
 **Tests.** `scripts/test-usage-limit.sh` (101), `scripts/test-claude-activity.sh`
 (95), `scripts/test-guarded-commands.sh` (124).
