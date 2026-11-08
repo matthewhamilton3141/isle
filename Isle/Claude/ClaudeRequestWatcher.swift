@@ -65,6 +65,12 @@ struct ClaudeRequest: Equatable, Identifiable {
     /// when the request carries none, or any Isle can't spell out exactly —
     /// the notch offers only what it can name.
     var remember: Remember? = nil
+    /// The guarded-commands pattern this approval is asking because of
+    /// (Milestone 17), when Isle's own guard is what made Claude Code ask —
+    /// read from the guard's record of this very command, never inferred.
+    /// Such an approval offers no "Always…": a rule that stops it asking is
+    /// exactly what the guard exists to refuse.
+    var guardedBy: String? = nil
 
     /// The suggestions, put into words. Only ever a description: the reply
     /// echoes the suggestions verbatim from the request file.
@@ -78,6 +84,15 @@ struct ClaudeRequest: Equatable, Identifiable {
 
     /// The tool as the face titles it.
     var displayTool: String { toolLabel ?? toolName }
+
+    /// Marks this approval as one Isle's guard asked for. A guarded call never
+    /// offers to stop asking: Claude Code itself shows only Yes / No for a
+    /// hook's ask, and saving a rule here would be the guard undoing itself.
+    mutating func guarded(by pattern: String?) {
+        guard let pattern else { return }
+        guardedBy = pattern
+        remember = nil
+    }
 
     /// Leaving plan mode: the subject is the plan, read from the top.
     var isPlan: Bool { toolName == "ExitPlanMode" }
@@ -256,13 +271,21 @@ final class ClaudeRequestWatcher {
     private func request(id: String) -> ClaudeRequest? {
         let url = directoryURL.appendingPathComponent("\(id).json")
         guard let data = try? Data(contentsOf: url),
-              let request = Self.decode(stdin: data, id: id)
+              var request = Self.decode(stdin: data, id: id)
         else { return nil }
         guard Self.isAlive(request) else {
             // Its hook was killed outright and its trap never ran: nothing will
             // ever answer this or clean it up, so do it here.
             try? FileManager.default.removeItem(at: url)
             return nil
+        }
+        if request.kind == .approval, GuardedCommands.guards(tool: request.toolName),
+           let stdin = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let command = (stdin["tool_input"] as? [String: Any])?["command"] as? String {
+            let created = (try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date
+            request.guarded(by: GuardedCommands.pattern(
+                forCommand: command, sessionId: request.sessionId, requestDate: created,
+                in: directoryURL.deletingLastPathComponent().appendingPathComponent("guarded", isDirectory: true)))
         }
         return request
     }

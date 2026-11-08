@@ -5,7 +5,8 @@
     ],
     "PreToolUse": [
       { "hooks": [{ "type": "command", "command": "isle-cli set-state working" }] },
-      { "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": "isle-cli ask-question", "timeout": 60 }] }
+      { "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": "isle-cli ask-question", "timeout": 60 }] },
+      { "matcher": "Bash|Monitor", "hooks": [{ "type": "command", "command": "isle-cli guard", "timeout": 10 }] }
     ],
     "PermissionRequest": [
       { "hooks": [{ "type": "command", "command": "isle-cli ask", "timeout": 330 }] }

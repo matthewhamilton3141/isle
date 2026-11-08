@@ -35,6 +35,8 @@ final class AppSettings: ObservableObject {
     private static let keepAwakeWhileWorkingKey = "isle.keepAwakeWhileWorking"
     private static let answerFromNotchKey = "isle.answerFromNotch"
     private static let optionDescriptionsKey = "isle.optionDescriptions"
+    private static let guardCommandsKey = "isle.guardCommands"
+    private static let guardedCommandsKey = "isle.guardedCommands"
     private static let claudeAccentKey = "isle.claudeAccent"
     private static let claudeAccentHexKey = "isle.claudeAccentHex"
     private static let showBatteryEventsKey = "isle.showBatteryEvents"
@@ -186,6 +188,25 @@ final class AppSettings: ObservableObject {
     /// fallback.
     @Published var answerFromNotch: Bool {
         didSet { defaults.set(answerFromNotch, forKey: Self.answerFromNotchKey) }
+    }
+
+    /// Whether the guarded-commands list is in force (Milestone 17): the
+    /// commands on it always ask, whatever Claude Code would otherwise do.
+    /// Off by default, with an empty list — it changes how every session
+    /// behaves, so it's asked for, never assumed. The file the hook reads is
+    /// kept in step by the app delegate (`GuardedCommands.sync`), not here,
+    /// so a scratch `AppSettings` can never rewrite the real one.
+    @Published var guardCommands: Bool {
+        didSet { defaults.set(guardCommands, forKey: Self.guardCommandsKey) }
+    }
+
+    /// The guarded patterns, in the order they were added, each as the hook
+    /// will read it (`GuardedCommands.normalized`).
+    @Published var guardedCommands: [String] {
+        didSet {
+            guard guardedCommands != oldValue else { return }
+            defaults.set(guardedCommands, forKey: Self.guardedCommandsKey)
+        }
     }
 
     /// How much of each question option's description the notch shows. One
@@ -438,6 +459,8 @@ final class AppSettings: ObservableObject {
         answerFromNotch = defaults.object(forKey: Self.answerFromNotchKey) as? Bool ?? true
         optionDescriptions = OptionDescriptions(rawValue: defaults.string(forKey: Self.optionDescriptionsKey) ?? "")
             ?? .default
+        guardCommands = defaults.object(forKey: Self.guardCommandsKey) as? Bool ?? false
+        guardedCommands = defaults.stringArray(forKey: Self.guardedCommandsKey) ?? []
         claudeAccent = ClaudeAccent(rawValue: defaults.string(forKey: Self.claudeAccentKey) ?? "")
             ?? .system
         claudeAccentHex = defaults.string(forKey: Self.claudeAccentHexKey) ?? "#9438E0"

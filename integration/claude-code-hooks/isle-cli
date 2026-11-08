@@ -10,6 +10,7 @@
 #   isle-cli notify                                        # classify a Notification
 #   isle-cli ask                                           # permission → block for the notch
 #   isle-cli ask-question                                  # AskUserQuestion → block for the notch
+#   isle-cli guard                                         # Bash → ask when it's a guarded command
 #   isle-cli end                                           # session ended — clear the island
 #
 # Kept in sync with Isle's embedded HookInstaller.scriptBody.
@@ -41,6 +42,18 @@ ANSWERING_MARKER="$STATUS_DIR/run/answering"
 # always gives up before Claude Code has to kill it.
 ASK_APPROVAL_SECONDS=300
 ASK_QUESTION_SECONDS=45
+
+# Guarded commands (`guard`): the user's own short list of commands that always
+# ask — in auto mode, under acceptEdits, past an allow rule, with permissions
+# bypassed. Isle writes it, one pattern a line, by rename, and removes it when
+# the feature is off or the list is empty; so with nothing to guard, `guard`
+# is one test and an exit, and no session is slowed down.
+GUARD_LIST="$STATUS_DIR/guarded-commands"
+# The last guarded call of each session: the pattern it matched, and its
+# command as Claude Code escaped it. The PermissionRequest that follows carries
+# neither the reason nor the tool_use_id, so this is how the notch knows the
+# approval in front of it is a guarded one, and why.
+GUARD_DIR="$STATUS_DIR/guarded"
 
 # Writes the status file Isle watches. $1 = state, $2 = request id (empty for
 # every write except a blocked `ask` / `ask-question`). Computes its own
@@ -108,6 +121,486 @@ isle_answering() {
   kill -0 "$pid" 2>/dev/null
 }
 
+# ---- Guarded commands -------------------------------------------------------
+#
+# A speed bump for honest mistakes, not a sandbox. The command is read the way
+# a shell splits it: into words, with the quotes taken off, and into simple
+# commands at `;` `&&` `||` `|` `&`, newlines and parentheses — so
+# `cd x && git push` and `git "push"` are both caught, and `echo "git push"`
+# isn't. `$(…)` and backticks are commands of their own; a script handed to
+# `bash -c` / `sh -c` / `eval`, or a heredoc fed to a shell, is read as one
+# too; `env FOO=1`, `sudo`, `xargs`, `nohup`, `timeout` and the like are seen
+# through. What it can't see it doesn't pretend to: a variable or an alias in
+# command position, a script file, a string built at run time.
+#
+# A pattern is words: the program (by name, so /usr/bin/git is git), then the
+# subcommand words in order, then flags anywhere. Between the program and its
+# subcommand an option's value may stand (`git -C dir push`). A short-flag
+# cluster matches letters in any grouping (`rm -rf` is `rm -fr`, `rm -r -f`),
+# exactly as written: `-R` is not `-r`. Everything else is exact.
+#
+# Builtins only, and bash 3.2: a guarded hook runs on every Bash call.
+
+GUARD_US=$'\037'          # between the words of a simple command
+GUARD_RS=$'\036'          # between pending heredocs
+GUARD_UNKNOWN=$'\034'     # stands in for a $(…) or ${…}: never equal to a word
+GUARD_NL=$'\n'
+GUARD_TAB=$'\t'
+# Longer than this (in characters, once unescaped), a command isn't read
+# word by word: reading 16 KB takes about a second, and the hook has ten.
+GUARD_PARSE_MAX=16384
+# A run of characters with no meaning to the shell, outside and inside "…".
+GUARD_RE_PLAIN="^[^ $GUARD_TAB;&|()<>\`'\"\\\$#]+"
+GUARD_RE_DQ="^[^\"\\\$\`]+"
+GUARD_RE_ASSIGN='^[A-Za-z_][A-Za-z0-9_]*\+?='
+GUARD_RE_COMMAND='"command"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)"'
+GUARD_RE_SESSION='"session_id"[[:space:]]*:[[:space:]]*"([^"]*)"'
+
+# $1 with its JSON escapes undone, into GUARD_TEXT. A `\u` escape is a control
+# character or half a surrogate pair (Claude Code writes everything else raw):
+# a space, which can't join two words into one that matters.
+#
+# Split at the backslashes in one go, so the cost grows with the length: a
+# loop of ${rest#*\\} rescans the rest for every escape, and a big heredoc
+# has thousands. Each piece after the first starts with the escaped
+# character; an empty piece is an escaped backslash, which also takes the
+# next piece whole. The trailing Z keeps a final empty piece from being lost.
+guard_unescape() {
+  local p i=1 n k=1
+  local -a parts out
+  local IFS='\'
+  set -f
+  parts=($1Z)
+  set +f
+  n=${#parts[@]}
+  # Pieces go into an array and are joined once: appending to one growing
+  # string copies it every time.
+  out[0]="${parts[0]}"
+  while [ "$i" -lt "$n" ]; do
+    p="${parts[i]}"; i=$((i + 1))
+    if [ -z "$p" ]; then
+      out[k]="\\"; k=$((k + 1))
+      [ "$i" -lt "$n" ] && { out[k]="${parts[i]}"; k=$((k + 1)); i=$((i + 1)); }
+      continue
+    fi
+    case "${p:0:1}" in
+      n) out[k]="$GUARD_NL${p:1}" ;;
+      t) out[k]="$GUARD_TAB${p:1}" ;;
+      r|b|f) out[k]=" ${p:1}" ;;
+      u) out[k]=" ${p:5}" ;;
+      *) out[k]="$p" ;;
+    esac
+    k=$((k + 1))
+  done
+  IFS=""
+  GUARD_TEXT="${out[*]}"
+  GUARD_TEXT="${GUARD_TEXT%Z}"
+}
+
+# The text with every quote, backslash and newline taken out, into
+# GUARD_FLAT: each word of a command is still in it whole, however it was
+# quoted or continued, so a pattern with a word missing from it can't match.
+# By splitting, like the unescape: ${x//[\"\'\\]/} takes seconds on 10 KB.
+guard_flatten() {
+  local -a parts
+  local IFS=$'"\'\\\n'
+  set -f
+  parts=($1)
+  set +f
+  IFS=""
+  GUARD_FLAT="${parts[*]}"
+}
+
+# The splitter's helpers share its locals (bash scopes dynamically).
+#
+# Ends the word being read: onto the command, or — straight after a
+# redirection — dropped as its target, or kept as a heredoc's delimiter.
+guard_word() {
+  local r w e=0
+  [ "$inword" = 1 ] || return 0
+  if [ "$drop" = 2 ]; then
+    # A heredoc is read as commands only when a shell is what reads it.
+    r="$cur"
+    while [ -n "$r" ]; do
+      w="${r%%$GUARD_US*}"; r="${r#*$GUARD_US}"
+      case "${w##*/}" in bash|sh|zsh|dash|ksh|fish|eval|source|.) e=1 ;; esac
+    done
+    hd="$hd$word$GUARD_US$strip$GUARD_US$e$GUARD_RS"
+  elif [ "$drop" = 0 ]; then
+    cur="$cur$word$GUARD_US"
+  fi
+  drop=0; word=""; inword=0
+}
+
+# Ends the simple command being read.
+guard_end() {
+  guard_word
+  if [ -n "$cur" ]; then GUARD_CMDS+=("$cur"); cur=""; fi
+}
+
+# Opens `$(`, a backtick, `<(` or a subshell: what's inside is commands of its
+# own, and the word around a substitution goes on after it as an unknown.
+# $1 = p (parentheses) or b (backtick); $2 = 1 inside a word.
+guard_open() {
+  if [ "$2" = 1 ]; then
+    word="$word$GUARD_UNKNOWN"; inword=1
+  else
+    guard_end
+  fi
+  scur[sp]="$cur"; sword[sp]="$word"; sinw[sp]="$inword"; sdrop[sp]="$drop"; sp=$((sp + 1))
+  ctx="$ctx$1"; cur=""; word=""; inword=0; drop=0
+}
+
+guard_close() {
+  guard_end
+  sp=$((sp - 1))
+  cur="${scur[sp]}"; word="${sword[sp]}"; inword="${sinw[sp]}"; drop="${sdrop[sp]}"
+  ctx="${ctx%?}"
+}
+
+# Splits shell text into simple commands, appended to GUARD_CMDS as their
+# words joined by \037. Line by line, so a long heredoc or script costs time
+# in proportion to its length; quotes and substitutions carry across lines.
+guard_split() {
+  local line i n c d top word="" inword=0 cur="" drop=0 op strip=0 ctx="" sp=0 hd=""
+  local entry delim e t body cont
+  local -a scur sword sinw sdrop
+  while IFS= read -r line || [ -n "$line" ]; do
+    # Bodies of heredocs opened on the line before: data, unless a shell reads them.
+    if [ -n "$hd" ]; then
+      entry="${hd%%$GUARD_RS*}"
+      delim="${entry%%$GUARD_US*}"; e="${entry#*$GUARD_US}"; strip="${e%%$GUARD_US*}"; e="${e#*$GUARD_US}"
+      t="$line"
+      if [ "$strip" = 1 ]; then while [ "${t:0:1}" = "$GUARD_TAB" ]; do t="${t:1}"; done; fi
+      if [ "$t" = "$delim" ]; then
+        hd="${hd#*$GUARD_RS}"
+        [ "$e" = 1 ] && [ -n "$body" ] && GUARD_SCRIPTS+=("$body")
+        body=""
+      else
+        body="$body$line$GUARD_NL"
+      fi
+      continue
+    fi
+    body=""
+    i=0; n=${#line}; cont=0
+    while [ "$i" -lt "$n" ]; do
+      c="${line:i:1}"
+      top="${ctx:${#ctx}-1}"
+      if [ "$top" = s ]; then
+        # A single-quoted string carried over from a line above.
+        t="${line:i}"
+        case "$t" in
+          *"'"*) d="${t%%\'*}"; word="$word$d"; i=$((i + ${#d} + 1)); ctx="${ctx%?}" ;;
+          *) word="$word$t"; i=$n ;;
+        esac
+        continue
+      fi
+      if [ "$top" = d ]; then
+        case "$c" in
+          '"') ctx="${ctx%?}"; i=$((i + 1)) ;;
+          '\')
+            d="${line:i+1:1}"
+            case "$d" in
+              '$'|'`'|'"'|'\') word="$word$d"; i=$((i + 2)) ;;
+              '') cont=1; i=$((i + 1)) ;;
+              *) word="$word\\"; i=$((i + 1)) ;;
+            esac ;;
+          '$')
+            d="${line:i+1:1}"
+            if [ "$d" = "(" ]; then guard_open p 1; i=$((i + 2))
+            elif [ "$d" = "{" ]; then
+              word="$word$GUARD_UNKNOWN"; t="${line:i}"; t="${t%%\}*}"; i=$((i + ${#t} + 1))
+            else word="$word\$"; i=$((i + 1)); fi ;;
+          '`') guard_open b 1; i=$((i + 1)) ;;
+          *)
+            if [[ ${line:i} =~ $GUARD_RE_DQ ]]; then d="${BASH_REMATCH[0]}"; else d="$c"; fi
+            word="$word$d"; i=$((i + ${#d})) ;;
+        esac
+        [ "$top" = d ] && inword=1
+        continue
+      fi
+      case "$c" in
+        ' '|"$GUARD_TAB") guard_word; i=$((i + 1)) ;;
+        ';'|'&'|'|') guard_end; i=$((i + 1)) ;;
+        '(') guard_open p 0; i=$((i + 1)) ;;
+        ')')
+          if [ "$top" = p ]; then guard_close; else guard_end; fi
+          i=$((i + 1)) ;;
+        '`')
+          if [ "$top" = b ]; then guard_close; else guard_open b 1; fi
+          i=$((i + 1)) ;;
+        '<'|'>')
+          # An fd number in front belongs to the redirection, and the word
+          # after it is a file: neither is part of the command.
+          case "$word" in
+            ''|*[!0-9]*) guard_word ;;
+            *) [ "$inword" = 1 ] && { word=""; inword=0; } ;;
+          esac
+          if [ "${line:i+1:1}" = "(" ]; then
+            guard_open p 1; i=$((i + 2))
+          else
+            op="$c"; i=$((i + 1))
+            while :; do
+              case "${line:i:1}" in '<'|'>'|'&'|'|') op="$op${line:i:1}"; i=$((i + 1)) ;; *) break ;; esac
+            done
+            if [ "$op" = "<<" ] && [ "${line:i:1}" = "-" ]; then op="<<-"; i=$((i + 1)); fi
+            case "$op" in
+              '<<') drop=2; strip=0 ;;
+              '<<-') drop=2; strip=1 ;;
+              *) drop=1 ;;
+            esac
+          fi ;;
+        '#')
+          if [ "$inword" = 1 ]; then word="$word#"; i=$((i + 1)); else i=$n; fi ;;
+        "'")
+          t="${line:i+1}"
+          case "$t" in
+            *"'"*) d="${t%%\'*}"; word="$word$d"; i=$((i + ${#d} + 2)) ;;
+            *) word="$word$t"; ctx="${ctx}s"; i=$n ;;
+          esac
+          inword=1 ;;
+        '"') ctx="${ctx}d"; inword=1; i=$((i + 1)) ;;
+        '\')
+          d="${line:i+1:1}"
+          if [ -z "$d" ]; then cont=1; i=$((i + 1))
+          else word="$word$d"; inword=1; i=$((i + 2)); fi ;;
+        '$')
+          d="${line:i+1:1}"
+          case "$d" in
+            '(') guard_open p 1; i=$((i + 2)) ;;
+            '"') ctx="${ctx}d"; inword=1; i=$((i + 2)) ;;
+            "'")
+              # $'…': its escapes are taken as the character after the backslash.
+              t="${line:i+2}"; d=""
+              while [ -n "$t" ]; do
+                case "${t:0:1}" in
+                  "'") t="${t:1}"; break ;;
+                  '\') d="$d${t:1:1}"; t="${t:2}" ;;
+                  *) d="$d${t:0:1}"; t="${t:1}" ;;
+                esac
+              done
+              word="$word$d"; inword=1; i=$((n - ${#t})) ;;
+            '{')
+              word="$word$GUARD_UNKNOWN"; inword=1
+              t="${line:i}"; t="${t%%\}*}"; i=$((i + ${#t} + 1)) ;;
+            *) word="$word\$"; inword=1; i=$((i + 1)) ;;
+          esac ;;
+        *)
+          if [[ ${line:i} =~ $GUARD_RE_PLAIN ]]; then d="${BASH_REMATCH[0]}"; else d="$c"; fi
+          word="$word$d"; inword=1; i=$((i + ${#d})) ;;
+      esac
+    done
+    # The end of the line: inside quotes it's part of the word; after a
+    # backslash it's nothing; otherwise it ends the command.
+    if [ "$cont" = 1 ]; then continue; fi
+    top="${ctx:${#ctx}-1}"
+    case "$top" in
+      d|s) word="$word$GUARD_NL" ;;
+      *) guard_end ;;
+    esac
+  done <<< "$1"
+  guard_end
+  # A heredoc still open at the end: what there is of it.
+  if [ -n "$hd" ] && [ -n "$body" ]; then
+    case "$hd" in *"$GUARD_US"1"$GUARD_RS"*) GUARD_SCRIPTS+=("$body") ;; esac
+  fi
+}
+
+# True when the pattern ($1, its words joined by \037) matches the simple
+# command in W whose program is at index $2.
+guard_pattern() {
+  local r="$1" j="$2" head w a m pos="" flags="" prevopt=0 endopts=0 opts="$GUARD_US" letters="" f ch
+  head="${r%%$GUARD_US*}"; r="${r#*$GUARD_US}"
+  case "$head" in
+    */*) [ "${W[j]}" = "$head" ] || return 1 ;;
+    *) [ "${W[j]##*/}" = "$head" ] || return 1 ;;
+  esac
+  while [ -n "$r" ]; do
+    w="${r%%$GUARD_US*}"; r="${r#*$GUARD_US}"
+    case "$w" in -?*) flags="$flags$w$GUARD_US" ;; *) pos="$pos$w$GUARD_US" ;; esac
+  done
+  m=$((j + 1))
+  while [ "$m" -lt "$n" ]; do
+    a="${W[m]}"; m=$((m + 1))
+    if [ "$endopts" = 0 ]; then
+      case "$a" in
+        --) endopts=1; prevopt=0; continue ;;
+        -?*)
+          opts="$opts$a$GUARD_US"
+          case "$a" in --*|*=*) ;; *) letters="$letters${a#-}" ;; esac
+          case "$a" in *=*) prevopt=0 ;; *) prevopt=1 ;; esac
+          continue ;;
+      esac
+    fi
+    [ -n "$pos" ] || continue
+    if [ "$a" = "${pos%%$GUARD_US*}" ]; then
+      pos="${pos#*$GUARD_US}"; prevopt=0
+    elif [ "$prevopt" = 1 ]; then
+      # Perhaps the value of the option before it (`git -C dir push`).
+      prevopt=0
+    else
+      return 1
+    fi
+  done
+  [ -z "$pos" ] || return 1
+  while [ -n "$flags" ]; do
+    w="${flags%%$GUARD_US*}"; flags="${flags#*$GUARD_US}"
+    case "$opts" in *"$GUARD_US$w$GUARD_US"*|*"$GUARD_US$w="*) continue ;; esac
+    f="${w#-}"
+    case "$f" in -*|*[!A-Za-z0-9]*) return 1 ;; esac
+    while [ -n "$f" ]; do
+      ch="${f:0:1}"; f="${f:1}"
+      case "$letters" in *"$ch"*) ;; *) return 1 ;; esac
+    done
+  done
+  return 0
+}
+
+# The command at W[$1] against every pattern; then, for a shell with -c or an
+# eval, the script it runs.
+guard_at() {
+  local j="$1" k=0 a sawc=0 joined=""
+  while [ "$k" -lt "${#GUARD_PW[@]}" ]; do
+    if guard_pattern "${GUARD_PW[k]}" "$j"; then GUARD_HIT="${GUARD_PN[k]}"; return 0; fi
+    k=$((k + 1))
+  done
+  k=$((j + 1))
+  case "${W[j]##*/}" in
+    eval)
+      while [ "$k" -lt "$n" ]; do joined="$joined ${W[k]}"; k=$((k + 1)); done
+      guard_check "$joined" $((depth + 1)) && return 0 ;;
+    bash|sh|zsh|dash|ksh|fish)
+      while [ "$k" -lt "$n" ]; do
+        a="${W[k]}"; k=$((k + 1))
+        case "$a" in
+          --*) ;;
+          -*c*) sawc=1 ;;
+          -*) ;;
+          *) [ "$sawc" = 1 ] && guard_check "$a" $((depth + 1)) && return 0 ;;
+        esac
+      done ;;
+  esac
+  return 1
+}
+
+# One simple command ($1, words joined by \037): past any assignments and
+# reserved words to the program; past a wrapper (`env`, `sudo`, `xargs`…) to
+# whatever it runs, tried at every word after it.
+guard_command() {
+  local r="$1" depth="$2" n=0 k=0
+  local -a W
+  while [ -n "$r" ]; do W[n]="${r%%$GUARD_US*}"; r="${r#*$GUARD_US}"; n=$((n + 1)); done
+  while [ "$k" -lt "$n" ]; do
+    case "${W[k]}" in
+      if|then|else|elif|do|while|until|'!'|'{'|'}') k=$((k + 1)) ;;
+      *) if [[ ${W[k]} =~ $GUARD_RE_ASSIGN ]]; then k=$((k + 1)); else break; fi ;;
+    esac
+  done
+  [ "$k" -lt "$n" ] || return 1
+  case "${W[k]##*/}" in
+    env|command|builtin|exec|nohup|time|sudo|doas|nice|timeout|gtimeout|xargs|find|caffeinate|stdbuf|unbuffer)
+      k=$((k + 1))
+      while [ "$k" -lt "$n" ]; do guard_at "$k" && return 0; k=$((k + 1)); done
+      return 1 ;;
+  esac
+  guard_at "$k"
+}
+
+# Every simple command in the shell text $1, and every script one of them hands
+# to a shell. $2 is how deep in such scripts this is; four levels is plenty
+# for an honest command.
+guard_check() {
+  local depth="$2" k c0 c1 s0 s1
+  [ "$depth" -le 3 ] || return 1
+  c0=${#GUARD_CMDS[@]}; s0=${#GUARD_SCRIPTS[@]}
+  guard_split "$1"
+  c1=${#GUARD_CMDS[@]}; s1=${#GUARD_SCRIPTS[@]}
+  k=$c0
+  while [ "$k" -lt "$c1" ]; do
+    guard_command "${GUARD_CMDS[k]}" "$depth" && return 0
+    k=$((k + 1))
+  done
+  k=$s0
+  while [ "$k" -lt "$s1" ]; do
+    guard_check "${GUARD_SCRIPTS[k]}" $((depth + 1)) && return 0
+    k=$((k + 1))
+  done
+  return 1
+}
+
+# True when the hook payload $1 carries a command on the list. The pattern it
+# matched is left in GUARD_HIT, and the command as Claude Code escaped it in
+# GUARD_RAW. Needs `set +eu` and LC_ALL=C, which its callers set.
+guard_matches() {
+  local flat line w joined
+  local -a words
+  GUARD_HIT=""; GUARD_RAW=""; GUARD_LONG=0
+  [ -s "$GUARD_LIST" ] || return 1
+  [[ $1 =~ $GUARD_RE_COMMAND ]] || return 1
+  GUARD_RAW="${BASH_REMATCH[1]}"
+  guard_unescape "$GUARD_RAW"
+
+  # Only the patterns whose every word is somewhere in the text, quotes and
+  # backslashes aside, can match it: most calls end here.
+  guard_flatten "$GUARD_TEXT"
+  flat="$GUARD_FLAT"
+  GUARD_PW=(); GUARD_PN=()
+  set -f
+  while IFS= read -r line || [ -n "$line" ]; do
+    words=($line)
+    [ "${#words[@]}" -gt 0 ] || continue
+    joined=""
+    for w in "${words[@]}"; do
+      case "$w" in
+        -*) ;;
+        *) case "$flat" in *"${w##*/}"*) ;; *) continue 2 ;; esac ;;
+      esac
+      joined="$joined$w$GUARD_US"
+    done
+    GUARD_PW+=("$joined"); GUARD_PN+=("${words[*]}")
+  done < "$GUARD_LIST"
+  set +f
+  [ "${#GUARD_PW[@]}" -gt 0 ] || return 1
+
+  # Too long to read inside the hook's 10s, and it mentions every word of a
+  # pattern: ask. A speed bump errs toward asking; a timeout would let the
+  # call through unasked.
+  if [ "${#GUARD_TEXT}" -gt "$GUARD_PARSE_MAX" ]; then
+    GUARD_HIT="${GUARD_PN[0]}"; GUARD_LONG=1
+    return 0
+  fi
+  GUARD_CMDS=(); GUARD_SCRIPTS=()
+  guard_check "$GUARD_TEXT" 0
+}
+
+# `guard` (PreToolUse on Bash and Monitor): ask when the command is on the
+# list. Says nothing otherwise, and on anything it can't read: a guard that
+# fails must never break the call it was only meant to slow down.
+guard_main() {
+  local sid safe esc rec reason
+  set +eu
+  export LC_ALL=C
+  IFS= read -r -d '' GUARD_JSON
+  guard_matches "$GUARD_JSON" || return 0
+
+  # Asked: leave the notch the reason, then tell Claude Code to ask.
+  sid=""
+  [[ $GUARD_JSON =~ $GUARD_RE_SESSION ]] && sid="${BASH_REMATCH[1]}"
+  safe="${sid//[!A-Za-z0-9_-]/}"
+  esc="$(json_escape "$GUARD_HIT")"
+  rec="$GUARD_DIR/${safe:-unknown}.json"
+  [ -d "$GUARD_DIR" ] || mkdir -p "$GUARD_DIR"
+  printf '{"pattern": "%s", "command": "%s"}\n' "$esc" "$GUARD_RAW" > "$rec.tmp.$$" \
+    && mv -f "$rec.tmp.$$" "$rec"
+  if [ "$GUARD_LONG" = 1 ]; then
+    reason="Guarded in Isle: too long to read, and it mentions \`$esc\`, which always asks."
+  else
+    reason="Guarded in Isle: matches \`$esc\`, which always asks."
+  fi
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"%s"}}\n' \
+    "$reason"
+}
+
 CMD="${1:-}"
 case "$CMD" in
   set-state)
@@ -126,11 +619,18 @@ case "$CMD" in
   ask|ask-question)
     STATE=""   # handled entirely in the `ask` block below
     ;;
+  guard)
+    # Before anything else is read or forked: off, or an empty list, and the
+    # call goes on as if there were no hook at all.
+    [ -s "$GUARD_LIST" ] || exit 0
+    guard_main
+    exit 0
+    ;;
   end)
     STATE="disconnected"   # SessionEnd — clear the island (guarded below)
     ;;
   *)
-    echo "Usage: isle-cli <set-state <state> | notify | fail | ask | ask-question | end>" >&2
+    echo "Usage: isle-cli <set-state <state> | notify | fail | ask | ask-question | guard | end>" >&2
     exit 1
     ;;
 esac
@@ -301,6 +801,16 @@ if [ "$CMD" = "ask" ] || [ "$CMD" = "ask-question" ]; then
             *'"behavior":"allow"'*|*'"permissionDecision":"allow"'*) TOOL_ACTIVE=true ;;
             *) TOOL_ACTIVE=false ;;
           esac
+          # "Always…" never covers a guarded command. The notch doesn't offer
+          # it for one, and Claude Code sends no suggestions to save after a
+          # hook's ask; this is the last word, in case either ever changes:
+          # the call is allowed once, and no rule or mode is saved.
+          case "$ACTION:$RESPONSE" in
+            Bash:*'"updatedPermissions"'*|Monitor:*'"updatedPermissions"'*)
+              if ( set +eu; export LC_ALL=C; guard_matches "$STDIN_JSON" ); then
+                RESPONSE='{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
+              fi ;;
+          esac
           write_status "working" ""
           printf '%s\n' "$RESPONSE"
           ;;
@@ -418,7 +928,8 @@ fi
 # record can't affect anyone else's. (The old shared-file version had to
 # check whether it still owned the island before clearing it.)
 if [ "$CMD" = "end" ]; then
-  rm -f "$SESSION_DIR/${SESSION_ID:-unknown}.json"
+  rm -f "$SESSION_DIR/${SESSION_ID:-unknown}.json" \
+    "$GUARD_DIR/$(printf '%s' "${SESSION_ID:-unknown}" | tr -cd 'A-Za-z0-9_-').json"
   exit 0
 fi
 

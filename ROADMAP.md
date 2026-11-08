@@ -1438,6 +1438,146 @@ approaching, and iPhone's collapses with a genie-like motion. Built on
   dark menu bar, and whether sweeping along the menu bar beside the notch
   pulses it too often.
 
+## Milestone 17 — Guarded commands
+
+From Field scan 2 ("every git push waits for your click, even in auto
+mode"). A short list, the user's own, of commands that always ask: in auto
+mode, with edits accepted, past an allow rule, with permissions bypassed.
+**A speed bump for honest mistakes, not a sandbox**, and the UI says so.
+
+### How it works
+
+- **The hook.** A third PreToolUse entry, matched to `Bash|Monitor`, runs
+  `isle-cli guard` (timeout 10s). With no list file it exits before reading
+  stdin. Otherwise it reads the command the way a shell splits it (words,
+  quotes off, simple commands at `;` `&&` `||` `|` `&`, newlines, parens,
+  `$(…)`, backticks, `bash -c`, `eval`, a heredoc fed to a shell, through
+  `env`, `sudo`, `xargs`, `nohup`, `timeout`…), and on a match answers
+  `permissionDecision: "ask"` with the reason "Guarded in Isle: matches
+  `git push`, which always asks." It can't see through an alias, a variable
+  in command position, a script file, or a name built at run time.
+- **Patterns** are words: the program (by name, so `/usr/bin/git` is git),
+  its subcommand words in order, flags anywhere. An option's value may sit
+  between program and subcommand (`git -C dir push`). Short-flag clusters
+  match in any grouping (`rm -rf` = `rm -fr` = `rm -r -f`), exactly as
+  written (`-R` isn't `-r`).
+- **Over 16 KB** (unescaped), a command isn't read word by word: if every
+  word of a pattern appears in it, it asks ("too long to read, and it
+  mentions `git push`"). Reading 16 KB in bash takes up to ~1.3s, and a hook
+  that hits its 10s timeout lets the call through unasked, so the guard errs
+  toward asking.
+- **The list** lives at `~/.isle/guarded-commands`, written by rename from
+  Settings (`GuardedCommands.sync`) only while the toggle is on and the list
+  isn't empty. Off by default.
+- **The notch's reason.** The PermissionRequest that follows a hook's ask
+  carries no reason and no `tool_use_id`, so the guard leaves
+  `~/.isle/guarded/<session>.json` (pattern + command). The watcher reads it
+  from beside its own requests folder and marks the approval guarded only
+  when the record names this exact command and was written within 60s
+  before the request. A "Guarded" chip sits beside the headline; the pattern
+  and the speed-bump line are its tooltip. The record goes at SessionEnd.
+
+### Always… never covers a guarded command
+
+Three layers, each tested:
+
+1. **Claude Code sends no `permission_suggestions`** with the
+   PermissionRequest after a hook's ask (every guarded run below; 2.1.318
+   and 2.1.319). The notch only offers Always… when there are suggestions,
+   and its terminal dialog shows only Yes / No.
+2. **The app** clears `remember` on an approval it marks guarded, so even
+   with suggestions the face shows no Always…, and `respond(.allowRemembering)`
+   writes nothing.
+3. **The hook** is the last word: `ask` re-runs the matcher on a Bash or
+   Monitor request and, when the notch's answer carries `updatedPermissions`
+   for a guarded command, replaces it with a plain allow. Verified live: an
+   auto-mode session where the stand-in for Isle answered Always… with a
+   `localSettings` rule ran the command once and wrote no
+   `settings.local.json`. The control (an unguarded `python3 -c`, same
+   answer) did write the rules, so the strip is what stopped it.
+
+The guard also holds against a rule saved some other way: a hook's ask
+beats an allow rule (row "manual + allow rule" below).
+
+### Permission modes vs the guard (Claude Code 2.1.319, 2026-11-06)
+
+Nested `env -u CLAUDECODE claude` sessions (haiku), `--setting-sources
+project,local` plus a scratch `--settings` whose hooks ran the real
+`isle-cli guard` and `isle-cli ask` from this branch under a scratch HOME.
+"Isle" was a stand-in: a live pid in `run/answering` and a script that
+answered each request file as the app would. Harness:
+`scratchpad/m17/matrix/` (`run.sh`, `drive.exp`, `responder.py`,
+`matrix-summary.txt`).
+
+| Mode | Command / pattern | Answered by | Guard asked | Prompt | Outcome |
+|---|---|---|---|---|---|
+| `manual` | `echo GUARDED-1` | notch: allow | yes | Yes / No | ran |
+| `default` (reported as `default`, shown as "manual mode") | same | notch: allow | yes | Yes / No | ran |
+| `acceptEdits` + allow rules | same | notch: allow | yes | Yes / No | ran |
+| `plan` | same | notch: allow | yes | Yes / No | ran |
+| `auto` | same | notch: **Always…** | yes | Yes / No | ran once; answer stripped to allow; no rule saved |
+| `auto`, Monitor tool | same | notch: allow | yes | Yes / No | ran |
+| `bypassPermissions` | same | notch: allow | yes | Yes / No | ran |
+| `bypassPermissions` | `cd repo && git push origin main` / `git push` | notch: deny | yes | Yes / No | denied; the scratch remote got nothing |
+| `bypassPermissions`, Isle not running | `echo GUARDED-1` | terminal (Enter) | yes | Claude Code's own Yes / No | ran after Yes |
+| `dontAsk` | same | notch: allow | yes | Yes / No | ran |
+| `manual` + `Bash(python3:*)` allowed | `python3 -c …` / `python3 -c` | notch: allow | yes | Yes / No | ran (the rule alone runs it unasked) |
+| `claude -p`, `bypassPermissions` | `echo GUARDED-1` | nobody can | yes | none (no PermissionRequest) | refused: the tool error is the guard's reason |
+| control: `-p`, bypass, guard off | `echo GUARDED-1` | — | no | none | ran unasked |
+| control: `-p`, default, unguarded | `python3 -c …` | notch: Always… | no | — | suggestions sent; rules written to `settings.local.json` |
+
+In every guarded run the PermissionRequest carried no
+`permission_suggestions`, and the record matched the request's command
+(lead 0.08–0.13s), so the notch would have shown the chip. 2.1.319's modes
+are `acceptEdits`, `auto`, `bypassPermissions`, `manual`, `dontAsk`, `plan`;
+`default` is still accepted and is the same mode as `manual`.
+
+### Cost per Bash call
+
+`isle-cli guard` (bash 3.2, builtins on the common path): off 5ms (the bash
+process floor is 3ms); on with five patterns, `ls -la` 6ms; a near miss 9ms;
+a match 21ms; an 11 KB heredoc 36–52ms; 85 KB 0.2s; 350 KB 1.1s; the worst
+case under the 16 KB cap (16 KB on one line) 1.3s. The WIP used
+`${x//[…]/}` and a rescanning unescape, which took 11s at 11 KB and over an
+hour at 85 KB; both now split once with IFS.
+
+### Tests
+
+- `scripts/test-guarded-commands.sh`: 124 checks of the real `isle-cli`
+  under a scratch HOME (nothing is executed; every command is text in a
+  payload): the matcher (compound commands, quoting, prefixes, shells and
+  eval, heredocs, flags, what it can't see), JSON unescaping, the 16 KB
+  path, the record and its removal at SessionEnd, the exact ask payload,
+  and `ask` stripping Always… for guarded Bash and Monitor commands while
+  passing every other answer through.
+- A harness compiled with every Isle source (`scratchpad/m17/tests`), 35
+  checks: pattern normalizing; `sync` writing and removing the list, read
+  back by the real hook; the record lookup on real 2.1.319 bytes; and a
+  real `ClaudeRequestWatcher` on a scratch folder — guarded marks, no
+  Always…, an Always… reply refused, the controls offering and writing it,
+  stale and mismatched records ignored, other tools never marked.
+
+### Renders
+
+`scratchpad/m17/render/png/{before,after}_*.png` (before = c2c38e8, after =
+this branch), sheets `sheet_faces_{before,after}.png` and
+`settings_strip.png`: guarded approvals (git push, a long chain, rm, a long
+pattern, Monitor, a crowded eyebrow, Both mode), the ordinary approvals
+unchanged (Always… still there with suggestions), and Settings (off, on and
+empty, a list, every suggestion used, the hook not installed).
+
+### Decisions to confirm
+
+- **Off by default, empty list**; the five suggestions are one click each.
+- **The chip says "Guarded", not the pattern.** "Guarded · git push" never
+  fit beside "Needs your approval"; the pattern is in the tooltip.
+- **Over 16 KB, a mention is enough to ask.** The alternative is reading it
+  and risking the 10s timeout, which lets it through.
+- **`claude -p` refuses a guarded command** rather than running it: Claude
+  Code's own behaviour for a hook's ask with nobody to answer.
+- **Monitor is guarded too**, since it runs a shell command and never asks on
+  its own.
+
 ## Milestone 8 — Multi-Display  ✅
 
 The spec scoped v1 to the built-in display ("non-goal: multi-display sync"), and
