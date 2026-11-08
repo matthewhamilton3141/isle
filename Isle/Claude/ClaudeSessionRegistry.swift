@@ -73,12 +73,27 @@ struct ClaudeSession: Equatable, Identifiable {
     let statusUpdatedAt: Date?
     let startedAt: Date?
     let cliVersion: String?
+    /// A background session's job id (agent view, Milestone 21): the short id
+    /// `claude attach` takes. Only on a `kind: "bg"` record.
+    var jobId: String? = nil
 
     var id: pid_t { pid }
 
     /// Interactive sessions are the ones the island is about; an SDK or print
     /// run isn't something the user is sitting in front of.
     var isInteractive: Bool { kind == nil || kind == "interactive" }
+
+    /// A session agent view hosts — `claude --bg`, or one sent to the
+    /// background — whose process is alive. It writes this record and runs
+    /// the user's hooks like any other (verified on 2.1.319), with `kind`
+    /// "bg" and its `jobId`.
+    var isBackground: Bool { kind == "bg" || kind == "background" }
+
+    /// `jobId`, when it's safe to put on a command line.
+    var attachId: String? {
+        guard let jobId else { return nil }
+        return ClaudeAgent(id: jobId, cwd: cwd, kind: "background").attachId
+    }
 }
 
 @MainActor
@@ -194,7 +209,8 @@ final class ClaudeSessionRegistry {
             waitingFor: payload.waitingFor.flatMap { $0.isEmpty ? nil : $0 },
             statusUpdatedAt: payload.statusUpdatedAt.map(date(fromMillis:)),
             startedAt: payload.startedAt.map(date(fromMillis:)),
-            cliVersion: payload.version
+            cliVersion: payload.version,
+            jobId: payload.jobId.flatMap { $0.isEmpty ? nil : $0 }
         )
     }
 
@@ -227,4 +243,5 @@ private struct RecordPayload: Decodable {
     let statusUpdatedAt: Double?
     let startedAt: Double?
     let version: String?
+    let jobId: String?
 }

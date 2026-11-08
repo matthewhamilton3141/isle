@@ -67,6 +67,11 @@ struct ClaudeStatus: Equatable {
     /// takes its first sentence (see `ClaudeDoneLine`). Nil when there was
     /// nothing to quote, or on a helper older than v10.
     var lastMessage: String?
+    /// The state is Claude Code's own, from `claude agents` (Milestone 21),
+    /// rather than this record's: a background session no hook writes for,
+    /// or one Claude Code says is blocked after the hooks saw its turn end.
+    /// Never set on a record read from disk.
+    var fromAgent = false
 
     static let disconnected = ClaudeStatus(state: .disconnected, project: nil, sessionId: nil)
 }
