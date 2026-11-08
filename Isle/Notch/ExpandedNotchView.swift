@@ -576,7 +576,7 @@ private struct OutputList: View {
     var close: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 0) {
                 Button(action: close) {
                     HStack(spacing: 4) {
@@ -609,8 +609,13 @@ private struct OutputList: View {
             // the housing band, and a slider there runs beneath the camera
             // cutout, where the hardware hides it.
             OutputVolumeSlider(volume: devices.volume)
-                .padding(.bottom, 2)
         }
+        // The header runs under the camera cutout: down far enough that its
+        // chevron and caps clear the hardware edge, level with the Claude
+        // face's eyebrow. The column box rides 5pt up with the album it's
+        // centred against, so this is measured, not the band's 2. The gaps
+        // above give the three rows back the room.
+        .padding(.top, 5)
         // Clear of the waveform pinned at the panel's top-right, the same
         // inset the title keeps.
         .padding(.trailing, 36)
