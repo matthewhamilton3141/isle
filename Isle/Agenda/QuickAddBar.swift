@@ -61,13 +61,13 @@ struct QuickAddBar: View {
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(Color(hex: "#30D158"))
                     Text("Added \u{201C}\(added)\u{201D}")
-                        .foregroundStyle(.white.opacity(0.75))
+                        .foregroundStyle(.islandSecondary(0.75))
                         .lineLimit(1)
                         .truncationMode(.middle)
                 } else {
                     Image(systemName: "plus")
                         .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.45))
+                        .foregroundStyle(.islandSecondary(0.45))
                     Text(agenda.draft.isEmpty ? "Add event or reminder…" : agenda.draft)
                         .foregroundStyle(.white.opacity(agenda.draft.isEmpty ? 0.4 : 0.7))
                         .lineLimit(1)
@@ -102,7 +102,7 @@ private struct QuickAddField: View {
         HStack(spacing: 6) {
             Image(systemName: "plus")
                 .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.white.opacity(0.6))
+                .foregroundStyle(.islandSecondary(0.6))
             TextField(text: $text, prompt: Text("Lunch with Sam tomorrow 1pm").foregroundStyle(.white.opacity(0.35))) {
                 Text("Add event or reminder")
             }
@@ -169,7 +169,7 @@ private struct ReviewLine: View {
                 }
                 Text(Self.detail(draft, destination))
                     .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.6))
+                    .foregroundStyle(.islandSecondary(0.6))
                     .lineLimit(1)
                     .truncationMode(.middle)
             }

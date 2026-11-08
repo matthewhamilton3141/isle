@@ -235,7 +235,7 @@ struct ExpandedNotchView: View {
                 .overlay {
                     Image(systemName: "music.note")
                         .font(.system(size: 22, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.75))
+                        .foregroundStyle(.islandSecondary(0.75))
                 }
             }
         }
@@ -292,7 +292,7 @@ struct ExpandedNotchView: View {
 
             Text("Start something in Spotify or Music")
                 .font(.system(size: 12.5, weight: .regular))
-                .foregroundStyle(.white.opacity(0.72))
+                .foregroundStyle(.islandSecondary(0.72))
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
                 .truncationMode(.middle)
@@ -348,7 +348,7 @@ struct ExpandedNotchView: View {
                     Text("-" + TimeFormatter.string(from: max(0, media.duration - elapsed)))
                 }
                 .font(.system(size: 9, weight: .medium).monospacedDigit())
-                .foregroundStyle(.white.opacity(0.55))
+                .foregroundStyle(.islandSecondary(0.55))
             }
         }
         .opacity(viewModel.canSeek && media.duration > 0 ? 1 : 0.4)
@@ -523,7 +523,7 @@ private struct OutputButton: View {
                     // plain speaker stands in rather than a guessed kind.
                     Image(systemName: devices.current?.symbolName ?? "speaker.wave.2")
                         .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.5))
+                        .foregroundStyle(.islandSecondary(0.5))
                         // Leading-aligned so the glyph lines up with the
                         // title and the elapsed time above it.
                         .frame(width: 22, height: 22, alignment: .leading)
@@ -559,7 +559,7 @@ private struct OutputList: View {
                         Text("Output")
                             .font(.system(size: 11, weight: .semibold))
                     }
-                    .foregroundStyle(.white.opacity(0.55))
+                    .foregroundStyle(.islandSecondary(0.55))
                     .frame(height: 16)
                     .contentShape(Rectangle())
                 }
@@ -657,7 +657,7 @@ private struct OutputVolumeSlider: View {
     private func muteKey(_ state: OutputVolume.State) -> some View {
         let glyph = Image(systemName: symbol(state))
             .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(.white.opacity(0.55))
+            .foregroundStyle(.islandSecondary(0.55))
             // Leading-aligned in a fixed slot: the wave glyphs differ in
             // width, and the track mustn't shift as the level crosses them.
             .frame(width: 18, height: 16, alignment: .leading)

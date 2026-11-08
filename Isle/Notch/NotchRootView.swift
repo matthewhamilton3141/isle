@@ -39,6 +39,20 @@ struct NotchRootView: View {
     @State private var collapseOrigin: CGSize?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    /// What the open panel is drawn on. Reduce Transparency takes the glass
+    /// modes back to black.
+    private var panelBackground: PanelBackground {
+        reduceTransparency ? .black : viewModel.panelBackground
+    }
+
+    /// The camera housing the notch glow grows from: with the glow on, and
+    /// only on a screen with a real notch.
+    private var glowHousing: CGSize? {
+        guard viewModel.panelNotchGlow, let metrics = island.metrics, metrics.hasPhysicalNotch else { return nil }
+        return metrics.notchSize
+    }
 
     /// Horizontal padding inside the collapsed shape: 10 (root) + 4 (collapsed
     /// view), each side. Used to turn content widths into a shape width.
@@ -265,7 +279,8 @@ struct NotchRootView: View {
         // the content spills out of a still-growing notch.
         .clipShape(outline)
         // Flat black on both tabs — the ambient artwork/Claude wash was
-        // removed, so nothing tints the panel behind the content. Drawn
+        // removed, so nothing tints the panel behind the content — or, in a
+        // glass mode, black that blends to glass while open. Drawn
         // outside the clip so the collapsed island can swell a few points as
         // the pointer nears; never part of the hit rect below.
         .background(alignment: .top) {
@@ -273,7 +288,11 @@ struct NotchRootView: View {
                 proximity: island.proximity,
                 shape: outline,
                 size: size,
-                active: state == .collapsed
+                active: state == .collapsed,
+                background: panelBackground,
+                opened: state.isExpanded,
+                housing: glowHousing,
+                housingShift: collapsedShift
             )
         }
         // The corners lead the collapse: the clip's and the fill's radii.
@@ -334,7 +353,9 @@ struct NotchRootView: View {
     @ViewBuilder
     private var content: some View {
         if state.isExpanded {
-            ExpandedNotchView(viewModel: viewModel, island: island, palette: palette)
+            let glass = panelBackground.isGlass
+            ExpandedNotchView(viewModel: viewModel, island: island, palette: glass ? palette.flooredForGlass : palette)
+                .environment(\.islandOnGlass, glass)
                 // Opacity gated on how far the notch has actually opened; the
                 // transition still handles the fade-out on collapse.
                 .opacity(expandedContentOpacity)

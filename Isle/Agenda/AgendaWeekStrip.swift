@@ -61,7 +61,7 @@ struct AgendaWeekStrip: View {
             VStack(spacing: 2) {
                 Text(day.formatted(.dateTime.weekday(.narrow)))
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.45))
+                    .foregroundStyle(.islandSecondary(0.45))
                 Text(day.formatted(.dateTime.day()))
                     .font(.system(size: 13, weight: isToday ? .bold : .semibold).monospacedDigit())
                     .foregroundStyle(isToday ? palette.accent : .white.opacity(isPast ? 0.5 : 0.95))

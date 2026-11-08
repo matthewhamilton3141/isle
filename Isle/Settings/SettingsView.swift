@@ -45,6 +45,7 @@ private enum SettingsPage: String, Identifiable {
 
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     /// The capture behind the waveform, so the Music section can say why it
     /// isn't running. Nil in previews and before the island exists.
@@ -265,6 +266,27 @@ struct SettingsView: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
+                Picker("Panel background", selection: $settings.panelBackground) {
+                    ForEach(PanelBackground.allCases) { background in
+                        Text(background.title).tag(background)
+                    }
+                }
+                Text(panelBackgroundCaption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Glow from the notch", isOn: $settings.panelNotchGlow)
+                    .disabled(!settings.panelBackground.isGlass)
+                Text(notchGlowCaption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
                 Toggle("Haptic feedback", isOn: $settings.haptics)
                 Text("A soft tap from the trackpad each time the notch opens or closes. Macs without a Force Touch trackpad feel nothing either way.")
                     .font(.caption)
@@ -272,6 +294,25 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    /// The background's subtitle, plus why it isn't showing when Reduce
+    /// Transparency is holding the panel black.
+    private var panelBackgroundCaption: String {
+        let subtitle = settings.panelBackground.subtitle
+        guard settings.panelBackground.isGlass, reduceTransparency else { return subtitle }
+        return subtitle + " Reduce Transparency is on in System Settings, so the panel stays black."
+    }
+
+    /// Why the glow does nothing, when it can't — Black, or no notch to
+    /// grow from on any screen attached.
+    private var notchGlowCaption: String {
+        let what = "Black fades out of the camera into the glass, so the notch melts into the panel instead of biting into it."
+        if !settings.panelBackground.isGlass { return what + " Glass and Smoked only." }
+        if !NSScreen.screens.contains(where: { $0.safeAreaInsets.top > 0 }) {
+            return what + " Only on a display with a notch — none attached has one."
+        }
+        return what + " Only on a display with a notch."
     }
 
     // MARK: - Power

@@ -173,7 +173,9 @@ final class IslandProximityModel: ObservableObject {
     @Published var reading: IslandProximity = .rest
 }
 
-/// The island's black fill, swollen and leaning by the proximity reading.
+/// The island's fill, swollen and leaning by the proximity reading: flat
+/// black, or in a glass mode (`PanelBackground`) black that blends to glass
+/// while the island is open.
 ///
 /// It's the only fill: drawn behind the clipped content, outside the clip,
 /// so it can reach a few points past the outline the content and the hit
@@ -188,14 +190,23 @@ struct IslandFill: View {
     var size: CGSize
     /// Collapsed and allowed to swell. False takes the swell back to rest.
     var active: Bool
+    /// What the open panel is drawn on. Black is the plain black fill; the
+    /// glass modes draw `IslandGlassFill`, which is that same black while
+    /// closed and blends to glass as the island opens.
+    var background: PanelBackground = .black
+    /// Whether the island is open, for the glass blend.
+    var opened: Bool = false
+    /// The physical camera housing to grow the notch glow from (nil for no
+    /// glow), and how far right of it the outline is drawn.
+    var housing: CGSize? = nil
+    var housingShift: CGFloat = 0
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let reading = active && !reduceMotion ? proximity.reading : .rest
         let swell = reading.swell
-        shape
-            .fill(.black)
+        surface
             .animation(.islandSwell) { fill in
                 fill
                     .scaleEffect(
@@ -205,5 +216,20 @@ struct IslandFill: View {
                     )
                     .offset(x: reading.leanOffset)
             }
+    }
+
+    @ViewBuilder
+    private var surface: some View {
+        if background.isGlass {
+            IslandGlassFill(
+                background: background,
+                shape: shape,
+                opened: opened,
+                housing: housing,
+                housingShift: housingShift
+            )
+        } else {
+            shape.fill(.black)
+        }
     }
 }

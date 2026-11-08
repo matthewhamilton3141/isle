@@ -182,7 +182,7 @@ struct AgendaExpandedView: View {
                 .padding(.vertical, -4)
             Text(date.formatted(.dateTime.month(.wide)))
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.white.opacity(0.6))
+                .foregroundStyle(.islandSecondary(0.6))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
@@ -268,7 +268,7 @@ struct AgendaExpandedView: View {
         if compact {
             Text(isToday ? emptyHeadline : "Nothing on \(day.formatted(.dateTime.weekday(.wide)))")
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.white.opacity(0.55))
+                .foregroundStyle(.islandSecondary(0.55))
                 .padding(.top, 6)
                 .padding(.leading, 2)
         } else {
@@ -283,7 +283,7 @@ struct AgendaExpandedView: View {
 
                 Text(isToday ? emptyDetail : "No events or reminders on \(day.formatted(.dateTime.day().month(.wide))).")
                     .font(.system(size: 12.5, weight: .regular))
-                    .foregroundStyle(.white.opacity(0.72))
+                    .foregroundStyle(.islandSecondary(0.72))
                     .lineLimit(2)
                     .minimumScaleFactor(0.8)
                     .fixedSize(horizontal: false, vertical: true)
@@ -436,7 +436,7 @@ struct AgendaRow: View {
                 Button { NSWorkspace.shared.open(url) } label: {
                     Image(systemName: "video.fill")
                         .font(.system(size: 9.5, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.45))
+                        .foregroundStyle(.islandSecondary(0.45))
                         .frame(width: 22, height: AgendaLayout.rowHeight)
                         .contentShape(Rectangle())
                 }

@@ -314,7 +314,7 @@ struct HomeTile<Lead: View>: View {
             Spacer(minLength: 0)
             Text(title)
                 .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.5))
+                .foregroundStyle(.islandSecondary(0.5))
                 .lineLimit(1)
             if let glance {
                 Text(glance.line1)
@@ -325,7 +325,7 @@ struct HomeTile<Lead: View>: View {
                 if let line2 = glance.line2 {
                     Text(line2)
                         .font(.system(size: 10.5))
-                        .foregroundStyle(.white.opacity(0.65))
+                        .foregroundStyle(.islandSecondary(0.65))
                         .lineLimit(1)
                         .minimumScaleFactor(glance.shrinksToFit ? 0.8 : 1)
                         .truncationMode(.tail)

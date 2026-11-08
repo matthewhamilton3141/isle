@@ -1340,6 +1340,13 @@ final class NotchViewModel: ObservableObject {
     /// isn't running, which EqualizerView reads as "use the procedural fallback".
     var audioLevelSource: SystemAudioLevels { audio }
 
+    /// What the open panel is drawn on, as chosen in Settings — read here so
+    /// a change re-renders the island through this model.
+    var panelBackground: PanelBackground { settings.panelBackground }
+
+    /// Whether glass grows black out of the notch — see `AppSettings`.
+    var panelNotchGlow: Bool { settings.panelNotchGlow }
+
     /// The waveform source as chosen in Settings. The views read it here rather
     /// than from `AppSettings` so a change re-renders them through this model.
     var waveformSource: WaveformSource { settings.waveformSource }
