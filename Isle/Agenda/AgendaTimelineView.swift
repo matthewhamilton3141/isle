@@ -45,7 +45,7 @@ struct AgendaTimelineView: View {
 
             Text(AgendaLayout.summary(for: items, day: day, now: now))
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.white.opacity(0.72))
+                .foregroundStyle(.islandSecondary(0.72))
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .padding(.top, 8)
@@ -71,7 +71,7 @@ struct AgendaTimelineView: View {
             if events.count > 3 {
                 Text("+\(events.count - 3)")
                     .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.55))
+                    .foregroundStyle(.islandSecondary(0.55))
             }
         }
         .fixedSize(horizontal: false, vertical: true)
@@ -177,7 +177,7 @@ struct AgendaTimelineView: View {
                 let position = x(hour, in: window, width: width)
                 Text(hour.formatted(.dateTime.hour(.defaultDigits(amPM: .narrow))))
                     .font(.system(size: 9, weight: .medium).monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.45))
+                    .foregroundStyle(.islandSecondary(0.45))
                     .fixedSize()
                     // Centred on its tick, but kept inside the bar's ends.
                     .frame(width: 30)

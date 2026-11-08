@@ -54,7 +54,7 @@ struct ShelfExpandedView: View {
                 if rows == 1 {
                     Text(headline)
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.5))
+                        .foregroundStyle(.islandSecondary(0.5))
                         .lineLimit(1)
                         .frame(height: ShelfLayout.headlineHeight, alignment: .top)
                         .padding(.bottom, ShelfLayout.headlineGap)
@@ -226,7 +226,7 @@ private struct ShelfCount: View {
                 .contentTransition(.numericText())
             Text(shelf.isFull ? "· full" : shelf.items.count == 1 ? "item" : "items")
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.6))
+                .foregroundStyle(.islandSecondary(0.6))
         }
         .animation(.easeInOut(duration: 0.2), value: shelf.items.count)
     }

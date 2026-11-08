@@ -165,7 +165,7 @@ struct ClaudeExpandedView: View {
                 // the tail. Never shrunk — it's prose, not a filename.
                 Text(said)
                     .font(L.detailFont)
-                    .foregroundStyle(.white.opacity(0.72))
+                    .foregroundStyle(.islandSecondary(0.72))
                     .lineLimit(L.saidLines)
                     .truncationMode(.tail)
                     .fixedSize(horizontal: false, vertical: true)
@@ -175,7 +175,7 @@ struct ClaudeExpandedView: View {
             } else {
                 Text(detail)
                     .font(L.detailFont)
-                    .foregroundStyle(.white.opacity(0.72))
+                    .foregroundStyle(.islandSecondary(0.72))
                     .lineLimit(1)
                     // Shrink a long filename to fit before resorting to an
                     // ellipsis, so "Editing SomeLongComponentName.swift" stays
@@ -228,7 +228,7 @@ struct ClaudeExpandedView: View {
         }
         .font(L.eyebrowFont)
         .labelStyle(EyebrowLabelStyle())
-        .foregroundStyle(.white.opacity(0.5))
+        .foregroundStyle(.islandSecondary(0.5))
         .lineLimit(1)
         .frame(height: L.eyebrowHeight)
         // Level with the waveform at the top-right; clear it.
@@ -435,7 +435,7 @@ struct ClaudeExpandedView: View {
             }
             .font(L.eyebrowFont)
             .labelStyle(EyebrowLabelStyle())
-            .foregroundStyle(.white.opacity(0.5))
+            .foregroundStyle(.islandSecondary(0.5))
             .lineLimit(1)
             .frame(height: L.eyebrowHeight)
 
@@ -523,7 +523,7 @@ struct ClaudeExpandedView: View {
                         .fixedSize()
                     Text(row.detail)
                         .font(L.sessionDetailFont)
-                        .foregroundStyle(.white.opacity(0.55))
+                        .foregroundStyle(.islandSecondary(0.55))
                         .lineLimit(1)
                         .truncationMode(.tail)
                     Spacer(minLength: 4)
@@ -623,7 +623,7 @@ struct ClaudeExpandedView: View {
             }
         }
         .font(L.commandFont)
-        .foregroundStyle(.white.opacity(0.72))
+        .foregroundStyle(.islandSecondary(0.72))
         .frame(minHeight: CGFloat(Self.commandBoxLines(request)) * L.commandLine, alignment: .topLeading)
         .padding(.trailing, switcherClearance)
     }
@@ -868,7 +868,7 @@ struct ClaudeExpandedView: View {
             HStack(spacing: 6) {
                 Image(systemName: "arrowshape.turn.up.left.fill")
                     .font(.system(size: 9.5, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.55))
+                    .foregroundStyle(.islandSecondary(0.55))
                 Text(draft.isEmpty ? "Reply to Claude…" : draft)
                     .foregroundStyle(.white.opacity(draft.isEmpty ? 0.55 : 0.9))
                     .lineLimit(1)
@@ -897,7 +897,7 @@ struct ClaudeExpandedView: View {
                 .fixedSize()
             if let detail {
                 Text(detail)
-                    .foregroundStyle(.white.opacity(0.5))
+                    .foregroundStyle(.islandSecondary(0.5))
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
@@ -1015,7 +1015,7 @@ struct ClaudeExpandedView: View {
                         Label("\(question.options.count) options", systemImage: "arrow.up.and.down")
                             .font(L.eyebrowFont)
                             .labelStyle(EyebrowLabelStyle())
-                            .foregroundStyle(.white.opacity(0.5))
+                            .foregroundStyle(.islandSecondary(0.5))
                             .fixedSize()
                     }
                     Spacer(minLength: 0)
@@ -1086,7 +1086,7 @@ struct ClaudeExpandedView: View {
                             .frame(height: L.optionLabelLine)
                         Text(option.description ?? "")
                             .font(L.optionDescriptionFont)
-                            .foregroundStyle(.white.opacity(0.55))
+                            .foregroundStyle(.islandSecondary(0.55))
                             .lineLimit(lines)
                             .truncationMode(.tail)
                             .frame(height: CGFloat(lines) * L.optionDescriptionLine, alignment: .topLeading)
@@ -1097,7 +1097,7 @@ struct ClaudeExpandedView: View {
                     if style == .oneLine, let description = option.description {
                         Text(description)
                             .font(L.optionDescriptionFont)
-                            .foregroundStyle(.white.opacity(0.55))
+                            .foregroundStyle(.islandSecondary(0.55))
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }

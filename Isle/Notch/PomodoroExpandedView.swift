@@ -39,7 +39,7 @@ struct PomodoroExpandedView: View {
 
                 Text(detail)
                     .font(.system(size: 12.5, weight: .regular))
-                    .foregroundStyle(.white.opacity(0.72))
+                    .foregroundStyle(.islandSecondary(0.72))
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                     .contentTransition(.opacity)

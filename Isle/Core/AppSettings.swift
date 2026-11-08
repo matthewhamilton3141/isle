@@ -29,6 +29,8 @@ final class AppSettings: ObservableObject {
     private static let doneToastKey = "isle.doneToastSeconds"
     private static let hapticsKey = "isle.haptics"
     private static let displayScopeKey = "isle.displayScope"
+    private static let panelBackgroundKey = "isle.panelBackground"
+    private static let panelNotchGlowKey = "isle.panelNotchGlow"
     private static let expandOnAlertKey = "isle.expandOnAlert"
     private static let dismissAlertPanelKey = "isle.dismissAlertPanel"
     private static let showWaitingKey = "isle.showWaiting"
@@ -110,6 +112,23 @@ final class AppSettings: ObservableObject {
             guard displayScope != oldValue else { return }
             defaults.set(displayScope.rawValue, forKey: Self.displayScopeKey)
         }
+    }
+
+    /// What the opened panel is drawn on. Black by default — the look Isle
+    /// has always had. See `PanelBackground`.
+    @Published var panelBackground: PanelBackground {
+        didSet {
+            guard panelBackground != oldValue else { return }
+            defaults.set(panelBackground.rawValue, forKey: Self.panelBackgroundKey)
+        }
+    }
+
+    /// With a glass background, black grows out of the camera housing and
+    /// fades into the glass, so the notch melts into the panel instead of
+    /// biting into it. On by default; only drawn on a screen with a notch,
+    /// and Black ignores it.
+    @Published var panelNotchGlow: Bool {
+        didSet { defaults.set(panelNotchGlow, forKey: Self.panelNotchGlowKey) }
     }
 
     // MARK: - Media controls (spec 3.4)
@@ -447,6 +466,8 @@ final class AppSettings: ObservableObject {
         haptics = defaults.object(forKey: Self.hapticsKey) as? Bool ?? true
         displayScope = DisplayScope(rawValue: defaults.string(forKey: Self.displayScopeKey) ?? "")
             ?? .builtIn
+        panelBackground = PanelBackground.stored(defaults.string(forKey: Self.panelBackgroundKey))
+        panelNotchGlow = defaults.object(forKey: Self.panelNotchGlowKey) as? Bool ?? true
         showScrubber = defaults.object(forKey: Self.showScrubberKey) as? Bool ?? true
         showShuffleRepeat = defaults.object(forKey: Self.showShuffleRepeatKey) as? Bool ?? true
         waveformSource = WaveformSource(rawValue: defaults.string(forKey: Self.waveformSourceKey) ?? "")
