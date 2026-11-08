@@ -80,6 +80,9 @@ final class NotchWindowController {
     /// as the hover — see `FileDrop.swift`.
     private let fileDrag = FileDragWatch()
 
+    /// The global keyboard shortcuts. Made in `init`: it needs `self`.
+    private var shortcuts: NotchShortcuts!
+
     /// Between `show()` and `hide()`. Screen and settings changes only re-place
     /// panels while this is true.
     private var isRunning = false
@@ -98,6 +101,7 @@ final class NotchWindowController {
         }
         observeComposing()
         observeReduceMotion()
+        shortcuts = NotchShortcuts(viewModel: viewModel, host: self)
     }
 
     deinit {
@@ -123,6 +127,7 @@ final class NotchWindowController {
         guard !islands.isEmpty else { return }
         observePointer()
         viewModel.start()
+        shortcuts.refresh()
     }
 
     /// Quit path. Hides as usual, then waits briefly for the audio tap to come
@@ -155,6 +160,8 @@ final class NotchWindowController {
         }
         cancelSweepRecheck()
         viewModel.stop()
+        // Not running: every shortcut let go.
+        shortcuts.refresh()
     }
 
     // MARK: - Placement
@@ -213,6 +220,11 @@ final class NotchWindowController {
     private func makeIsland(id: CGDirectDisplayID, screen: NSScreen, metrics: NotchMetrics) {
         let presentation = IslandPresentation(content: viewModel)
         presentation.metrics = metrics
+        // A shortcut's hold takes Esc while it lasts.
+        presentation.$isHeldOpen
+            .removeDuplicates()
+            .sink { [weak self] _ in self?.shortcuts.refresh() }
+            .store(in: &cancellables)
 
         let window = NotchWindow(contentRect: metrics.maximumFrame)
         // A two-finger swipe across an open face moves between faces.
@@ -349,6 +361,11 @@ final class NotchWindowController {
                     self.handlePointerMove(event)
                 case .leftMouseDragged:
                     self.handleDragMove()
+                case .leftMouseDown:
+                    // A click in another app — never on an island, which
+                    // would have been Isle's own — puts away an island a
+                    // shortcut is holding open, as it would a popover.
+                    self.closeHeldIsland()
                 default:
                     break
                 }
@@ -410,7 +427,7 @@ final class NotchWindowController {
         // the pointer goes.
         for other in islands.values where other !== active {
             other.presentation.relaxProximity()
-            if other !== keyIsland { other.presentation.setHovering(false) }
+            if other !== keyIsland, !other.presentation.isHeldOpen { other.presentation.setHovering(false) }
         }
 
         // The swell, before the hover rule and independent of it: it never
@@ -430,7 +447,11 @@ final class NotchWindowController {
             // here — it's the only place that knows about the pad. A field
             // taking keys holds it: moving the pointer off to read the
             // terminal mustn't throw away what's being written.
-            if !zones.stayOpen.contains(pointer), active !== keyIsland {
+            // A shortcut's hold ends the first time the pointer comes in;
+            // until then a pointer that was never there can't leave.
+            if zones.stayOpen.contains(pointer) {
+                active.presentation.notePointerInside()
+            } else if active !== keyIsland, !active.presentation.isHeldOpen {
                 cancelSweepRecheck()
                 active.presentation.setHovering(false)
                 runDeferredSync()
@@ -470,7 +491,7 @@ final class NotchWindowController {
 
     private func collapseAll() {
         relaxAllProximity()
-        for island in islands.values where island !== keyIsland {
+        for island in islands.values where island !== keyIsland && !island.presentation.isHeldOpen {
             island.presentation.setHovering(false)
         }
         cancelSweepRecheck()
@@ -794,6 +815,65 @@ final class NotchWindowController {
                 self?.syncIslands()
             }
             .store(in: &cancellables)
+    }
+}
+
+// MARK: - Keyboard shortcuts
+
+extension NotchWindowController: ShortcutIslandHost {
+    var shortcutsRunning: Bool { isRunning && !islands.isEmpty }
+
+    var isAnyIslandExpanded: Bool {
+        islands.values.contains { $0.presentation.state.isExpanded && !$0.presentation.isDropTarget }
+    }
+
+    var isIslandHeldOpen: Bool {
+        islands.values.contains { $0.presentation.isHeldOpen }
+    }
+
+    /// Open the island if none is open; otherwise put it away — whatever is
+    /// holding it, as far as Settings allows: a hover or a shortcut's hold
+    /// ends, a field's draft is kept, and an alert's auto-open is dismissed
+    /// as a click on it would be (only when "Dismiss alert panel" is on).
+    func toggleIslandFromShortcut() {
+        guard isAnyIslandExpanded else {
+            openIslandFromShortcut()
+            return
+        }
+        viewModel.endCompose()
+        for island in islands.values where island.presentation.isHovering {
+            island.presentation.setHovering(false)
+        }
+        if viewModel.autoExpandsForActivity { viewModel.dismissAlert() }
+        cancelSweepRecheck()
+        runDeferredSync()
+    }
+
+    /// Opens, held, the island on the pointer's screen — else the built-in
+    /// display's, else any. An island already open by hover stays as it is.
+    func openIslandFromShortcut() {
+        guard isRunning, !islands.values.contains(where: { $0.presentation.isHovering }) else { return }
+        let pointer = NSEvent.mouseLocation
+        let preferred = NotchMetrics.preferredScreen().flatMap(Self.displayID(of:))
+        guard let target = island(containing: pointer)
+                ?? preferred.flatMap({ islands[$0] })
+                ?? islands.values.first
+        else { return }
+        cancelSweepRecheck()
+        target.presentation.openFromShortcut()
+        // The pointer is already there: that's an arrival, not a hold.
+        if let zones = hoverZones(for: target), zones.stayOpen.contains(pointer) {
+            target.presentation.notePointerInside()
+        }
+    }
+
+    func closeHeldIsland() {
+        var closed = false
+        for island in islands.values where island.presentation.isHeldOpen && island !== keyIsland {
+            island.presentation.setHovering(false)
+            closed = true
+        }
+        if closed { runDeferredSync() }
     }
 }
 

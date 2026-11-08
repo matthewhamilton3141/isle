@@ -55,6 +55,8 @@ struct IslandToast: Equatable, Identifiable {
         /// see `ClaudeToast.swift`. Keyed by session, so two finishing
         /// together each get their say.
         case sessionDone(session: String)
+        /// What a keyboard shortcut just did — see `ClaudeToast.swift`.
+        case shortcut
     }
 
     /// Which Settings switch governs a message. The split is by what is being

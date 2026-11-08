@@ -63,6 +63,7 @@ final class AppSettings: ObservableObject {
     private static let agendaSoundEnabledKey = "isle.agendaSoundEnabled"
     private static let agendaSoundKey = "isle.agendaSound"
     private static let shelfPathsKey = "isle.shelf.paths"
+    private static let shortcutsKey = "isle.shortcuts"
 
     /// The user's chosen mode, or `nil` until onboarding sets one
     /// (Milestone 2). Persisted on change.
@@ -443,6 +444,22 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    // MARK: - Shortcuts
+
+    /// The global keyboard shortcuts — their keys and whether each is on.
+    /// Only what differs from the defaults is stored. See `Shortcuts.swift`.
+    @Published var shortcuts: ShortcutBindings {
+        didSet {
+            guard shortcuts != oldValue else { return }
+            // A JSON string, not data, so `defaults read` shows it as text.
+            if let data = shortcuts.encoded(), let json = String(data: data, encoding: .utf8) {
+                defaults.set(json, forKey: Self.shortcutsKey)
+            } else {
+                defaults.removeObject(forKey: Self.shortcutsKey)
+            }
+        }
+    }
+
     /// Whether the user has ever picked a mode. Onboarding keys off this.
     var hasChosenMode: Bool { mode != nil }
 
@@ -511,6 +528,7 @@ final class AppSettings: ObservableObject {
         pomodoroSound = NotificationSound(rawValue: defaults.string(forKey: Self.pomodoroSoundKey) ?? "")
             ?? .fanfare
         shelfPaths = defaults.stringArray(forKey: Self.shelfPathsKey) ?? []
+        shortcuts = ShortcutBindings.decode(defaults.string(forKey: Self.shortcutsKey).map { Data($0.utf8) })
 
         // A change to the system accent in System Settings changes what
         // `.system` resolves to without either cache key moving. Drop the cache
