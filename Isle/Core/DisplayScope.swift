@@ -34,9 +34,9 @@ enum DisplayScope: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .builtIn:
-            return "The island lives on the Mac's own screen, in the notch. On a Mac with no built-in display it uses the main one."
+            return "The Mac’s own screen, in the notch, or the main display if there’s none."
         case .all:
-            return "An island at the top of every attached display, all showing the same thing. Displays without a notch get the rounded pill instead."
+            return "Every attached display, all showing the same; ones without a notch get a pill."
         }
     }
 }

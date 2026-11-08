@@ -46,11 +46,11 @@ enum WaveformSource: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .live:
-            return "The bars move with the music. Needs Audio Recording permission — macOS asks the first time something plays. Audio is analysed in memory and never recorded."
+            return "Moves with the music. Needs Audio Recording permission; nothing is recorded."
         case .animated:
-            return "The bars move on their own whenever something is playing. Isle never listens, so macOS never asks."
+            return "Moves on its own while something plays. Isle never listens."
         case .off:
-            return "No waveform. Music mode keeps the island's shape and shows just the album cover; alongside Claude the island narrows."
+            return "No waveform: just the album cover, or a narrower island beside Claude."
         }
     }
 }

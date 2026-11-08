@@ -1,10 +1,15 @@
 //
 //  SettingsView.swift
 //
-//  The Settings window. A native sidebar separates General, optional feature
-//  pages, and Updates; feature entries follow the active mode, so a music-only
-//  user never sees Claude options and vice versa. Changes restart only the
-//  affected subsystems live — no relaunch.
+//  The Settings window. A native sidebar separates General, Appearance and
+//  Shortcuts, the optional feature pages, and Updates; feature entries follow
+//  the active mode, so a music-only user never sees Claude options and vice
+//  versa. Changes restart only the affected subsystems live — no relaunch.
+//
+//  Layout rules, so the pages read alike: every row is a native grouped-Form
+//  control whose caption, when it earns one, is the label's second line; a
+//  setting that only matters while another is on appears under it only then;
+//  and the long explanations live behind a disclosure, not in every row.
 //
 
 import SwiftUI
@@ -12,6 +17,7 @@ import EventKit
 
 private enum SettingsPage: String, Identifiable {
     case general
+    case appearance
     case shortcuts
     case music
     case claude
@@ -21,21 +27,29 @@ private enum SettingsPage: String, Identifiable {
 
     var id: String { rawValue }
 
+    /// The sidebar's name — short enough for its fixed column.
     var title: String {
         switch self {
         case .general: return "General"
+        case .appearance: return "Appearance"
         case .shortcuts: return "Shortcuts"
         case .music: return "Music"
         case .claude: return "Claude Code"
-        case .agenda: return "Calendar & Reminders"
+        case .agenda: return "Calendar"
         case .pomodoro: return "Pomodoro"
         case .updates: return "Updates"
         }
     }
 
+    /// The window title, where there's room for the full name.
+    var windowTitle: String {
+        self == .agenda ? "Calendar & Reminders" : title
+    }
+
     var symbol: String {
         switch self {
         case .general: return "gearshape"
+        case .appearance: return "paintbrush"
         case .shortcuts: return "keyboard"
         case .music: return "music.note"
         case .claude: return "sparkles"
@@ -50,7 +64,7 @@ struct SettingsView: View {
     @ObservedObject var settings: AppSettings
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
-    /// The capture behind the waveform, so the Music section can say why it
+    /// The capture behind the waveform, so the Music page can say why it
     /// isn't running. Nil in previews and before the island exists.
     var audio: SystemAudioLevels?
 
@@ -63,9 +77,8 @@ struct SettingsView: View {
     @State private var selectedPage: SettingsPage? = .general
 
     /// Bumped when Isle comes back to the front, which is what happens after
-    /// the Calendar or Reminders prompt is answered — so the access text in
-    /// the agenda section re-reads EventKit instead of showing the state from
-    /// before the prompt.
+    /// the Calendar or Reminders prompt is answered — so the access rows
+    /// re-read EventKit instead of showing the state from before the prompt.
     @State private var accessRefresh = 0
 
     var body: some View {
@@ -77,21 +90,22 @@ struct SettingsView: View {
             List(selection: $selectedPage) {
                 Section {
                     sidebarRow(.general)
+                    sidebarRow(.appearance)
                     sidebarRow(.shortcuts)
                 }
 
                 Section("Features") {
-                    if settings.effectiveMode.showsMusic {
-                        sidebarRow(.music)
-                    }
                     if settings.effectiveMode.showsClaude {
                         sidebarRow(.claude)
+                    }
+                    if settings.effectiveMode.showsMusic {
+                        sidebarRow(.music)
                     }
                     sidebarRow(.agenda)
                     sidebarRow(.pomodoro)
                 }
 
-                Section("About") {
+                Section {
                     sidebarRow(.updates)
                 }
             }
@@ -103,7 +117,7 @@ struct SettingsView: View {
             .toolbar(removing: .sidebarToggle)
         } detail: {
             selectedContent
-                .navigationTitle((selectedPage ?? .general).title)
+                .navigationTitle((selectedPage ?? .general).windowTitle)
         }
         .navigationSplitViewStyle(.balanced)
         .frame(width: 720, height: 500)
@@ -114,9 +128,9 @@ struct SettingsView: View {
     }
 
     private var availablePages: [SettingsPage] {
-        var pages: [SettingsPage] = [.general, .shortcuts]
-        if settings.effectiveMode.showsMusic { pages.append(.music) }
+        var pages: [SettingsPage] = [.general, .appearance, .shortcuts]
         if settings.effectiveMode.showsClaude { pages.append(.claude) }
+        if settings.effectiveMode.showsMusic { pages.append(.music) }
         pages += [.agenda, .pomodoro, .updates]
         return pages
     }
@@ -131,17 +145,26 @@ struct SettingsView: View {
         Form {
             switch selectedPage ?? .general {
             case .general:
-                modeSection
-                notchSection
-                powerSection
+                islandSection
+                batterySection
+            case .appearance:
+                appearanceSection
+                if settings.effectiveMode.showsClaude {
+                    accentSection
+                }
             case .shortcuts:
                 ShortcutsSettingsSection(settings: settings)
             case .music:
                 musicSection
             case .claude:
-                claudeSection
+                claudeHookSection
+                claudeNotchSection
+                claudeSoundSection
+                guardedCommandsSection
             case .agenda:
-                agendaSection
+                calendarSection
+                remindersSection
+                agendaSoundSection
             case .pomodoro:
                 pomodoroSection
             case .updates:
@@ -155,84 +178,90 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Updates
+    // MARK: - Row building blocks
 
-    /// Mirrors Retermina's Version tab: the app version, a "Check for Updates"
-    /// button whose errors surface here (unlike the silent launch check), and
-    /// the live download/ready states off the shared `Updater` phase.
+    /// A row's label: its title, and — when it earns one — a one-line
+    /// caption, which a grouped Form sets as the title's subtitle.
     @ViewBuilder
-    private var updatesSection: some View {
-        Section("Updates") {
-            LabeledContent("Version", value: appVersion)
+    private func rowLabel(_ title: String, _ caption: String? = nil) -> some View {
+        Text(title)
+        if let caption {
+            Text(caption)
+        }
+    }
 
-            switch updater.phase {
-            case .downloading(let pct):
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Downloading update…").font(.caption)
-                    ProgressView(value: Double(pct), total: 100)
-                }
-            case .ready:
-                Text("Update installed — relaunching…")
-                    .font(.caption)
-                    .foregroundStyle(Color.accentColor)
-            default:
-                HStack(spacing: 10) {
-                    Button {
-                        Task { await updater.check() }
-                    } label: {
-                        if case .checking = updater.phase {
-                            Label("Checking…", systemImage: "arrow.triangle.2.circlepath")
-                        } else {
-                            Text("Check for Updates")
-                        }
+    private func toggleRow(_ title: String, _ caption: String? = nil, isOn: Binding<Bool>) -> some View {
+        Toggle(isOn: isOn) { rowLabel(title, caption) }
+    }
+
+    /// A sound: one row, its switch and — only while on — a menu of the
+    /// bundled sounds beside it. Switching on plays the current pick and
+    /// choosing another plays that, so the choice is made by ear rather than
+    /// by name.
+    private func soundRow(
+        _ title: String, _ caption: String? = nil,
+        enabled: Binding<Bool>, sound: Binding<NotificationSound>
+    ) -> some View {
+        LabeledContent {
+            HStack(spacing: 10) {
+                if enabled.wrappedValue {
+                    Picker(title, selection: sound) {
+                        ForEach(NotificationSound.allCases) { Text($0.title).tag($0) }
                     }
-                    .disabled(updaterIsBusy)
-
-                    if case let .available(version, _) = updater.phase {
-                        Button("Install \(version)") {
-                            Task { await updater.install() }
-                        }
-                        .buttonStyle(.borderedProminent)
+                    .labelsHidden()
+                    .fixedSize()
+                    .onChange(of: sound.wrappedValue) { _, picked in
+                        picked.play()
                     }
                 }
-
-                if case .upToDate = updater.phase {
-                    Text("You're on the latest version.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if case let .available(_, notes) = updater.phase,
-                   let notes, !notes.isEmpty {
-                    Text(notes)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if case let .error(message) = updater.phase {
-                    Text(message)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Toggle(title, isOn: enabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .onChange(of: enabled.wrappedValue) { _, on in
+                        if on { sound.wrappedValue.play() }
+                    }
             }
+        } label: {
+            rowLabel(title, caption)
         }
     }
 
-    private var appVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
-    }
-
-    private var updaterIsBusy: Bool {
-        switch updater.phase {
-        case .checking, .downloading: return true
-        default: return false
+    /// A number with its unit and a stepper, for the lengths and counts.
+    private func stepperRow(
+        _ title: String, _ caption: String? = nil,
+        value: Binding<Int>, range: ClosedRange<Int>, unit: String
+    ) -> some View {
+        LabeledContent {
+            HStack(spacing: 8) {
+                Text(unit.isEmpty ? "\(value.wrappedValue)" : "\(value.wrappedValue) \(unit)")
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                Stepper(title, value: value, in: range, step: 1)
+                    .labelsHidden()
+            }
+        } label: {
+            rowLabel(title, caption)
         }
     }
 
-    // MARK: - Mode
+    /// A macOS permission the row above needs, with a way to its Privacy
+    /// pane. Orange only when the system says it was declined.
+    private func permissionRow(_ text: String, declined: Bool = false, pane: PrivacyPane) -> some View {
+        LabeledContent {
+            Button("Open Privacy Settings…") { pane.open() }
+                .controlSize(.small)
+        } label: {
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(declined ? .orange : .secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
 
-    private var modeSection: some View {
-        Section("Mode") {
+    // MARK: - General
+
+    private var islandSection: some View {
+        Section("Island") {
             Picker("Isle shows", selection: modeBinding) {
                 ForEach(IsleMode.allCases) { mode in
                     Text(mode.title).tag(mode)
@@ -240,9 +269,17 @@ struct SettingsView: View {
             }
             .pickerStyle(.segmented)
 
-            Text(settings.effectiveMode.subtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Picker(selection: $settings.displayScope) {
+                ForEach(DisplayScope.allCases) { scope in
+                    Text(scope.title).tag(scope)
+                }
+            } label: {
+                rowLabel("Show on", settings.displayScope.subtitle)
+            }
+
+            toggleRow("Haptic feedback",
+                      "A trackpad tap as the notch opens or closes.",
+                      isOn: $settings.haptics)
         }
     }
 
@@ -255,74 +292,6 @@ struct SettingsView: View {
         )
     }
 
-    // MARK: - Notch
-
-    private var notchSection: some View {
-        Section("Notch") {
-            VStack(alignment: .leading, spacing: 4) {
-                Picker("Show island on", selection: $settings.displayScope) {
-                    ForEach(DisplayScope.allCases) { scope in
-                        Text(scope.title).tag(scope)
-                    }
-                }
-                Text(settings.displayScope.subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Picker("Panel background", selection: $settings.panelBackground) {
-                    ForEach(PanelBackground.allCases) { background in
-                        Text(background.title).tag(background)
-                    }
-                }
-                Text(panelBackgroundCaption)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle("Glow from the notch", isOn: $settings.panelNotchGlow)
-                    .disabled(!settings.panelBackground.isGlass)
-                Text(notchGlowCaption)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle("Haptic feedback", isOn: $settings.haptics)
-                Text("A soft tap from the trackpad each time the notch opens or closes. Macs without a Force Touch trackpad feel nothing either way.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    /// The background's subtitle, plus why it isn't showing when Reduce
-    /// Transparency is holding the panel black.
-    private var panelBackgroundCaption: String {
-        let subtitle = settings.panelBackground.subtitle
-        guard settings.panelBackground.isGlass, reduceTransparency else { return subtitle }
-        return subtitle + " Reduce Transparency is on in System Settings, so the panel stays black."
-    }
-
-    /// Why the glow does nothing, when it can't — Black, or no notch to
-    /// grow from on any screen attached.
-    private var notchGlowCaption: String {
-        let what = "In the opened panel, black fades out of the camera into the glass, so the notch melts into the panel instead of biting into it. Closed, only the camera itself is kept black."
-        if !settings.panelBackground.isGlass { return what + " Glass and Smoked only." }
-        if !NSScreen.screens.contains(where: { $0.safeAreaInsets.top > 0 }) {
-            return what + " Only on a display with a notch — none attached has one."
-        }
-        return what + " Only on a display with a notch."
-    }
-
-    // MARK: - Power
-
     /// Unconditional, unlike Music and Claude: power isn't a mode, it's
     /// ambient. A charger going in matters whichever source the island is
     /// running.
@@ -330,459 +299,63 @@ struct SettingsView: View {
     /// Two independent switches, neither nested under the other. They are
     /// different questions about different hardware — this Mac's battery, and
     /// the batteries of things attached to it — and someone who only wants to
-    /// hear about their headphones should be able to say so.
-    private var powerSection: some View {
-        Section("Power") {
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle("Show battery updates", isOn: $settings.showBatteryEvents)
-                Text("Plugging in, unplugging, a full charge, a low battery and Low Power Mode appear briefly in the notch, then hand it back to whatever was there.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+    /// hear about their headphones should be able to say so. Switching one off
+    /// stops Isle watching for it; macOS's own alerts are untouched either way.
+    private var batterySection: some View {
+        Section("Battery") {
+            toggleRow("This Mac",
+                      "Charging, full, low battery and Low Power Mode, briefly in the island.",
+                      isOn: $settings.showBatteryEvents)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle("Show device updates", isOn: $settings.showDeviceBattery)
-                Text("A Bluetooth device's battery level appears when it connects — and when you plug the Mac in, if battery updates are on. Devices that don't report a level show nothing.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if settings.showDeviceBattery {
-                    HStack(spacing: 8) {
-                        Text("Needs Bluetooth access, which macOS asks for when this is switched on. If it was declined, no device will ever show.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 0)
-                        Button("Bluetooth Privacy…") {
-                            PrivacyPane.bluetooth.open()
-                        }
-                        .controlSize(.small)
-                    }
-                    .padding(.top, 2)
-                }
-            }
+            toggleRow("Bluetooth devices",
+                      "A device’s battery level when it connects.",
+                      isOn: $settings.showDeviceBattery)
 
-            Text("Switching one off stops Isle watching for it, so it costs nothing. Either way macOS keeps its own battery behaviour, alerts and Bluetooth exactly as they are.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    // MARK: - Agenda
-
-    /// Ambient like Power, and split the same way: calendar events and
-    /// reminders are separate data behind separate macOS permissions, so each
-    /// gets its own switch and its own pointer at the Privacy pane.
-    ///
-    /// Unlike audio capture, EventKit *does* say when it was declined, so
-    /// that is stated outright rather than hedged — see `AgendaMonitor.Access`.
-    private var agendaSection: some View {
-        Section("Calendar & Reminders") {
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle("Show upcoming events", isOn: $settings.showCalendarEvents)
-                Text("Today's events are listed on the Agenda face of the expanded notch, with a timeline and the week a click away, and one appears briefly in the island shortly before it starts, in its calendar's colour. A Zoom, Meet, Teams, FaceTime or Webex link in an event gets a Join button. Invitations you've declined are left out.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if settings.showCalendarEvents {
-                    accessRow(
-                        for: .event,
-                        needs: "Needs Calendar access, which macOS asks for when this is switched on.",
-                        declined: "Calendar access was declined, so no event will show until it's allowed in System Settings.",
-                        pane: .calendars,
-                        button: "Calendars Privacy…"
-                    )
-                    Picker("Events appear", selection: leadBinding) {
-                        ForEach(EventLead.allCases) { lead in
-                            Text(lead.title).tag(lead)
-                        }
-                    }
-                    .padding(.top, 2)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle("Show reminders", isOn: $settings.showReminders)
-                Text("Reminders due today are listed on the Agenda face, where clicking one's circle completes it (with a few seconds to undo), and one appears in the island as it comes due. A reminder with a date but no time is listed under Today but never announced — the hour Reminders picks for those is its own setting.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if settings.showReminders {
-                    accessRow(
-                        for: .reminder,
-                        needs: "Needs Reminders access, which macOS asks for when this is switched on.",
-                        declined: "Reminders access was declined, so no reminder will show until it's allowed in System Settings.",
-                        pane: .reminders,
-                        button: "Reminders Privacy…"
-                    )
-                }
-            }
-
-            if settings.showCalendarEvents || settings.showReminders {
-                soundRow("Sound when one appears",
-                         enabled: $settings.agendaSoundEnabled, sound: $settings.agendaSound)
-            }
-
-            Text("With either on, hovering the notch gains an Agenda face. Its field adds an event or a reminder from a line like \u{201C}Lunch with Sam tomorrow 1pm\u{201D}: Isle shows what it read and where it will go, and saves only when you click Add. Switching both off removes the face and stops Isle reading. Calendar and Reminders keep their own alerts either way; Isle adds a glance, not a replacement.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func accessRow(
-        for type: EKEntityType, needs: String, declined: String,
-        pane: PrivacyPane, button: String
-    ) -> some View {
-        let isDeclined = AgendaMonitor.Access.to(type) == .declined
-        return HStack(spacing: 8) {
-            Text(isDeclined ? declined : needs)
-                .font(.caption)
-                .foregroundStyle(isDeclined ? .orange : .secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-            Button(button) { pane.open() }
-                .controlSize(.small)
-        }
-        .padding(.top, 2)
-        .id(accessRefresh)
-    }
-
-    /// The picker works in `EventLead`; the setting stores plain minutes so a
-    /// value from a future ladder still round-trips through defaults.
-    private var leadBinding: Binding<EventLead> {
-        Binding(
-            get: { EventLead(rawValue: settings.eventLeadMinutes) ?? .default },
-            set: { settings.eventLeadMinutes = $0.rawValue }
-        )
-    }
-
-    // MARK: - Pomodoro
-
-    /// Opt-in, and only from here: the timer adds a tab to the expanded panel
-    /// and a seat in the collapsed island, so it stays out of the way until
-    /// somebody asks for it. The interval controls only appear once it's on.
-    private var pomodoroSection: some View {
-        Section("Pomodoro") {
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle("Enable Pomodoro timer", isOn: $settings.pomodoroEnabled)
-                Text(settings.pomodoroEnabled
-                     ? "A focus timer lives in the expanded panel; while it runs, the remaining time sits in the island."
-                     : "Off — the timer is hidden from the notch entirely.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if settings.pomodoroEnabled {
-                minutesRow("Focus", value: $settings.pomodoroFocusMinutes, range: 1...90)
-                minutesRow("Short break", value: $settings.pomodoroShortBreakMinutes, range: 1...30)
-                minutesRow("Long break", value: $settings.pomodoroLongBreakMinutes, range: 1...60)
-
-                LabeledContent("Focus sessions per cycle") {
-                    HStack(spacing: 8) {
-                        Text("\(settings.pomodoroSessionsPerCycle)")
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                        Stepper("", value: $settings.pomodoroSessionsPerCycle, in: 1...8, step: 1)
-                            .labelsHidden()
-                    }
-                }
-
-                soundRow("Sound when an interval ends",
-                         enabled: $settings.pomodoroSoundEnabled, sound: $settings.pomodoroSound)
-
-                Text("Changes to the lengths apply from the next interval; the one that's running keeps its time.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            if settings.showDeviceBattery {
+                // Bluetooth won't say whether it was declined, so this is a
+                // pointer, not a status.
+                permissionRow("Needs Bluetooth access. If it was declined, no device will show.",
+                              pane: .bluetooth)
             }
         }
     }
 
-    /// A switch, and beneath it — only while on — a menu of the bundled
-    /// sounds. Switching on plays the current pick and choosing another plays
-    /// that, so the choice is made by ear rather than by name.
-    private func soundRow(
-        _ title: String, enabled: Binding<Bool>, sound: Binding<NotificationSound>
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Toggle(title, isOn: enabled)
-                .onChange(of: enabled.wrappedValue) { _, on in
-                    if on { sound.wrappedValue.play() }
+    // MARK: - Appearance
+
+    private var appearanceSection: some View {
+        Section("Island") {
+            Picker(selection: $settings.panelBackground) {
+                ForEach(PanelBackground.allCases) { background in
+                    Text(background.title).tag(background)
                 }
-            if enabled.wrappedValue {
-                Picker("Sound", selection: sound) {
-                    ForEach(NotificationSound.allCases) { Text($0.title).tag($0) }
-                }
-                .onChange(of: sound.wrappedValue) { _, picked in
-                    picked.play()
-                }
-                .padding(.leading, 20)
+            } label: {
+                rowLabel("Background", panelBackgroundCaption)
+            }
+            .pickerStyle(.segmented)
+
+            // Only glass has anything to glow into.
+            if settings.panelBackground.isGlass {
+                toggleRow("Glow from the notch", notchGlowCaption, isOn: $settings.panelNotchGlow)
             }
         }
     }
 
-    private func minutesRow(_ title: String, value: Binding<Int>, range: ClosedRange<Int>) -> some View {
-        LabeledContent(title) {
-            HStack(spacing: 8) {
-                Text("\(value.wrappedValue) min")
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                Stepper("", value: value, in: range, step: 1)
-                    .labelsHidden()
-            }
+    /// The background's subtitle, or why it isn't showing when Reduce
+    /// Transparency is holding the panel black.
+    private var panelBackgroundCaption: String {
+        guard settings.panelBackground.isGlass, reduceTransparency else {
+            return settings.panelBackground.subtitle
         }
+        return "Reduce Transparency is on in System Settings, so the island stays black."
     }
 
-    // MARK: - Music
-
-    /// The waveform picker is the one control here that costs a permission:
-    /// only Live builds the audio tap, and building the tap is what makes
-    /// macOS ask. Animated and Off never do — see `WaveformSource`.
-    private var musicSection: some View {
-        Section("Music") {
-            VStack(alignment: .leading, spacing: 4) {
-                Picker("Waveform", selection: $settings.waveformSource) {
-                    ForEach(WaveformSource.allCases) { source in
-                        Text(source.title).tag(source)
-                    }
-                }
-                .pickerStyle(.segmented)
-                Text(settings.waveformSource.subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if settings.waveformSource.capturesAudio, let audio {
-                AudioCaptureStatus(audio: audio)
-            }
-
-            Toggle("Show scrubber", isOn: $settings.showScrubber)
-            Toggle("Show shuffle & repeat", isOn: $settings.showShuffleRepeat)
+    /// What the glow does, and why it can't when no screen has a notch.
+    private var notchGlowCaption: String {
+        if !NSScreen.screens.contains(where: { $0.safeAreaInsets.top > 0 }) {
+            return "Black fades from the camera into the open panel. No display attached has a notch."
         }
+        return "Black fades from the camera into the open panel, on displays with a notch."
     }
-
-    // MARK: - Claude
-
-    private var claudeSection: some View {
-        Section("Claude Code") {
-            HStack {
-                Label(
-                    hookInstalled ? "Hook installed" : "Hook not installed",
-                    systemImage: hookInstalled ? "checkmark.circle.fill" : "circle"
-                )
-                .foregroundStyle(hookInstalled ? .green : .secondary)
-
-                Spacer()
-
-                if hookInstalled {
-                    Button("Remove", role: .destructive) { removeHook() }
-                } else {
-                    Button("Install") { installHook() }
-                }
-            }
-
-            if let hookMessage {
-                Text(hookMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle("Answer questions and approvals from the notch", isOn: $settings.answerFromNotch)
-                Text(settings.answerFromNotch
-                     ? "Approve, deny or pick an answer right in the notch. Whatever the notch doesn’t answer falls back to the terminal prompt."
-                     : "Questions and approvals show in the notch, but you answer them in the terminal.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Picker("Option descriptions", selection: $settings.optionDescriptions) {
-                    ForEach(OptionDescriptions.allCases) { option in
-                        Text(option.title).tag(option)
-                    }
-                }
-                .pickerStyle(.segmented)
-                Text(optionDescriptionsCaption)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            // Options only appear in the notch when it's answering.
-            .disabled(!settings.answerFromNotch)
-
-            guardedCommandsSettings
-
-            accentPicker
-
-            LabeledContent("Keep “done” checkmark for") {
-                HStack(spacing: 8) {
-                    Text("\(Int(settings.doneToastSeconds))s")
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                    Stepper(
-                        "",
-                        value: $settings.doneToastSeconds,
-                        in: 1...15,
-                        step: 1
-                    )
-                    .labelsHidden()
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                soundRow("Sound for alerts",
-                         enabled: $settings.claudeAlertSoundEnabled, sound: $settings.claudeAlertSound)
-                Text("Plays when Claude needs an approval, asks a question, or hits an error.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            soundRow("Sound when a turn finishes",
-                     enabled: $settings.claudeDoneSoundEnabled, sound: $settings.claudeDoneSound)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle("Keep Mac awake while Claude works", isOn: $settings.keepAwakeWhileWorking)
-                Text("Prevents idle sleep while any session is working. The display can still sleep. While it’s held, the Claude panel shows ☕ Mac awake.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle("Show “Waiting” in the island", isOn: $settings.showWaitingStatus)
-                Text(settings.showWaitingStatus
-                     ? "The island shows when Claude has handed the turn back to you."
-                     : "Waiting stays out of the island; the expanded panel still shows it.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle("Expand notch for alerts", isOn: $settings.expandOnAlert)
-                Text(settings.expandOnAlert
-                     ? "Questions and errors pop the notch open."
-                     : "Delivered minimized — the collapsed island shows the alert; hover to open.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle("Dismiss alert panel on hover-out / click", isOn: $settings.dismissAlertPanel)
-                Text(settings.dismissAlertPanel
-                     ? "Hover away or click to retract the panel; the alert stays in the island until resolved."
-                     : "The panel stays open until the alert resolves (e.g. you answer).")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .disabled(!settings.expandOnAlert)
-        }
-    }
-
-    // MARK: - Guarded commands
-
-    /// The guarded-commands list (Milestone 17). Every claim in the captions
-    /// was checked against Claude Code 2.1.319 with the real hook (ROADMAP,
-    /// Milestone 17): its ask forced a prompt in all six permission modes and
-    /// past a matching allow rule, the terminal asked with Isle gone, and in
-    /// `claude -p`, where nothing can ask, it refused the call.
-    @ViewBuilder
-    private var guardedCommandsSettings: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Toggle("Always ask before guarded commands", isOn: $settings.guardCommands)
-            Text("A command on this list asks every time, in every permission mode (auto and bypass included) and past any allow rule, and the notch never offers Always… for it. With Isle closed, the terminal asks; in claude -p, where nothing can ask, the command is refused. A speed bump for honest mistakes, not a sandbox.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            if settings.guardCommands, !hookInstalled {
-                // The guard is the hook: without it the list is only a list.
-                Text("Install the hook above for the guard to hold.")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-        }
-
-        if settings.guardCommands {
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(settings.guardedCommands, id: \.self) { pattern in
-                    HStack {
-                        Image(systemName: "shield.lefthalf.filled")
-                            .foregroundStyle(.orange)
-                        Text(pattern)
-                            .font(.system(.body, design: .monospaced))
-                            .textSelection(.enabled)
-                        Spacer()
-                        Button {
-                            settings.guardedCommands.removeAll { $0 == pattern }
-                        } label: {
-                            Image(systemName: "minus.circle")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Stop guarding \(pattern)")
-                        .accessibilityLabel("Stop guarding \(pattern)")
-                    }
-                }
-
-                HStack {
-                    // Unlabelled: in a Form a field's title becomes a label
-                    // column, which squeezed the field to half the row.
-                    TextField("Add a command", text: $newGuardedCommand, prompt: Text("Add a command, like git push"))
-                        .labelsHidden()
-                        .font(.system(.body, design: .monospaced))
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { addGuardedCommand(newGuardedCommand) }
-                    Button("Add") { addGuardedCommand(newGuardedCommand) }
-                        .disabled(GuardedCommands.normalized(newGuardedCommand) == nil)
-                }
-
-                let unused = GuardedCommands.suggestions.filter { !settings.guardedCommands.contains($0) }
-                if !unused.isEmpty {
-                    // Wraps, so five suggestions never cut the last one off.
-                    SuggestionFlow(spacing: 6) {
-                        Text("Suggestions")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        ForEach(unused, id: \.self) { suggestion in
-                            Button {
-                                addGuardedCommand(suggestion)
-                            } label: {
-                                Label(suggestion, systemImage: "plus")
-                                    .font(.system(.caption, design: .monospaced))
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                        }
-                    }
-                }
-
-                Text("Write the program, then its subcommand words; flags can sit anywhere. Isle reads the command as a shell splits it, so cd x && git push and git \"push\" are caught, but an alias, a variable or a script file can still hide one. A command over 16 KB that mentions every word of a pattern asks without being read.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    private func addGuardedCommand(_ text: String) {
-        guard let pattern = GuardedCommands.normalized(text) else { return }
-        if !settings.guardedCommands.contains(pattern) {
-            settings.guardedCommands.append(pattern)
-        }
-        if text == newGuardedCommand { newGuardedCommand = "" }
-    }
-
-    // MARK: - Accent
 
     /// A swatch row plus a custom well, rather than a bare colour picker.
     ///
@@ -796,10 +369,9 @@ struct SettingsView: View {
     /// which is exactly what holding the semantic markers fixed is meant to
     /// prevent. The swatches are measured against those; a custom colour is
     /// floored by `ClaudeAccent.derive` but carries no such guarantee.
-    @ViewBuilder
-    private var accentPicker: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            LabeledContent("Accent") {
+    private var accentSection: some View {
+        Section("Claude Code") {
+            LabeledContent {
                 HStack(spacing: 6) {
                     ForEach(ClaudeAccent.swatches) { swatch in
                         swatchChip(swatch)
@@ -812,6 +384,8 @@ struct SettingsView: View {
                         settings.claudeAccent = .custom
                     }
                 }
+            } label: {
+                rowLabel("Accent")
             }
 
             Text(accentCaption)
@@ -854,38 +428,253 @@ struct SettingsView: View {
     /// art whenever there is any, and only falls through to the accent when
     /// nothing is playing. Saying so is better than hiding the control, which
     /// would leave a Both-mode user watching a colour they can't change.
-    private var optionDescriptionsCaption: String {
-        switch settings.optionDescriptions {
-        case .full:
-            return "Each option’s description wraps under it, up to three lines. When they don’t all fit, they’re shortened so every option stays in view."
-        case .oneLine:
-            return "Each option’s description follows its label on the same line, cut off where the row ends."
-        case .hidden:
-            return "Labels only, in the shortest rows."
-        }
-    }
-
     private var accentCaption: String {
         guard settings.effectiveMode == .both else { return familyCaption }
-        return familyCaption
-            + " While music is playing the island takes its colour from the album art instead — this applies when nothing is."
+        return familyCaption + " While music plays, the album art sets the colour instead."
     }
 
     private var familyCaption: String {
         switch settings.claudeAccent.family {
         case .chromatic:
-            return "\(settings.claudeAccent.title). Questions, errors and the done checkmark keep their own colours — those mean something."
+            return "The island’s colour when it shows Claude. \(settings.claudeAccent.title); questions, errors and Done keep their own colours."
         case .muted:
-            return "\(settings.claudeAccent.title) — muted rather than grey. A true grey can't be told apart from the disconnected and paused states, which already use it."
+            return "\(settings.claudeAccent.title): muted rather than grey, since grey already means disconnected or paused."
         case .snapped:
             let name = ClaudeAccent.nearestSwatch(to: .controlAccentColor).title
-            return "Follows your system accent, snapped to the nearest colour Isle can use — \(name). Five of the eight macOS accents are colours that already mean something here."
+            return "Follows your system accent, as the nearest colour Isle can use: \(name)."
         case .derived:
             if let clash = ClaudeAccent.collision(forCustom: settings.claudeAccentHex) {
-                return "This is close to the colour Isle uses for \(clash), so a working island may read as one. Still applied — it's your choice."
+                return "Close to the colour Isle uses for \(clash), so the island may read as one. Still applied."
             }
-            return "A custom colour. Clear of the colours Isle uses for questions, errors and success."
+            return "A custom colour, clear of the colours Isle uses for questions, errors and success."
         }
+    }
+
+    // MARK: - Music
+
+    /// The waveform picker is the one control here that costs a permission:
+    /// only Live builds the audio tap, and building the tap is what makes
+    /// macOS ask. Animated and Off never do — see `WaveformSource`.
+    @ViewBuilder
+    private var musicSection: some View {
+        Section {
+            Picker(selection: $settings.waveformSource) {
+                ForEach(WaveformSource.allCases) { source in
+                    Text(source.title).tag(source)
+                }
+            } label: {
+                rowLabel("Waveform", settings.waveformSource.subtitle)
+            }
+            .pickerStyle(.segmented)
+
+            if settings.waveformSource.capturesAudio, let audio {
+                AudioCaptureStatus(audio: audio)
+            }
+        }
+
+        Section("Controls") {
+            toggleRow("Scrubber", isOn: $settings.showScrubber)
+            toggleRow("Shuffle and repeat", isOn: $settings.showShuffleRepeat)
+        }
+    }
+
+    // MARK: - Claude
+
+    @ViewBuilder
+    private var claudeHookSection: some View {
+        Section {
+            LabeledContent {
+                if hookInstalled {
+                    Button("Remove", role: .destructive) { removeHook() }
+                } else {
+                    Button("Install") { installHook() }
+                        .buttonStyle(.borderedProminent)
+                }
+            } label: {
+                Label {
+                    Text(hookInstalled ? "Hook installed" : "Hook not installed")
+                } icon: {
+                    Image(systemName: hookInstalled ? "checkmark.circle.fill" : "exclamationmark.circle")
+                        .foregroundStyle(hookInstalled ? .green : .orange)
+                }
+                Text(hookMessage ?? (hookInstalled
+                     ? "Claude Code reports to Isle through it."
+                     : "Isle sees no sessions until it’s installed."))
+            }
+
+            toggleRow("Keep Mac awake while Claude works",
+                      "No idle sleep while a session works; the display can still sleep.",
+                      isOn: $settings.keepAwakeWhileWorking)
+        }
+    }
+
+    @ViewBuilder
+    private var claudeNotchSection: some View {
+        Section("In the notch") {
+            toggleRow("Answer from the notch",
+                      settings.answerFromNotch
+                        ? "Approve, deny or answer there; the terminal prompt stays as a fallback."
+                        : "Questions and approvals show there; you answer in the terminal.",
+                      isOn: $settings.answerFromNotch)
+
+            // Options only appear in the notch when it's answering.
+            if settings.answerFromNotch {
+                Picker(selection: $settings.optionDescriptions) {
+                    ForEach(OptionDescriptions.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                } label: {
+                    rowLabel("Option descriptions", optionDescriptionsCaption)
+                }
+                .pickerStyle(.segmented)
+            }
+
+            toggleRow("Open for alerts",
+                      settings.expandOnAlert
+                        ? "Questions and errors open the notch."
+                        : "Alerts wait in the closed island; hover to open it.",
+                      isOn: $settings.expandOnAlert)
+
+            if settings.expandOnAlert {
+                toggleRow("Close on hover-out or click",
+                          settings.dismissAlertPanel
+                            ? "The alert stays in the island until it’s resolved."
+                            : "The panel stays open until the alert is resolved.",
+                          isOn: $settings.dismissAlertPanel)
+            }
+
+            toggleRow("Show “Waiting” in the island",
+                      settings.showWaitingStatus
+                        ? "When Claude hands the turn back to you."
+                        : "Waiting shows only in the open panel.",
+                      isOn: $settings.showWaitingStatus)
+
+            LabeledContent {
+                HStack(spacing: 8) {
+                    Text("\(Int(settings.doneToastSeconds)) s")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                    Stepper("Show “Done” for", value: $settings.doneToastSeconds, in: 1...15, step: 1)
+                        .labelsHidden()
+                }
+            } label: {
+                rowLabel("Show “Done” for")
+            }
+        }
+    }
+
+    private var optionDescriptionsCaption: String {
+        switch settings.optionDescriptions {
+        case .full: return "Up to three lines each, shortened if they don’t all fit."
+        case .oneLine: return "Beside each label, cut off at the row’s end."
+        case .hidden: return "Labels only."
+        }
+    }
+
+    private var claudeSoundSection: some View {
+        Section("Sounds") {
+            soundRow("Alerts", "Approvals, questions and errors.",
+                     enabled: $settings.claudeAlertSoundEnabled, sound: $settings.claudeAlertSound)
+            soundRow("Turn finished",
+                     enabled: $settings.claudeDoneSoundEnabled, sound: $settings.claudeDoneSound)
+        }
+    }
+
+    // MARK: - Guarded commands
+
+    /// The guarded-commands list (Milestone 17). Every claim in the copy was
+    /// checked against Claude Code 2.1.319 with the real hook (ROADMAP,
+    /// Milestone 17): its ask forced a prompt in all six permission modes and
+    /// past a matching allow rule, the terminal asked with Isle gone, and in
+    /// `claude -p`, where nothing can ask, it refused the call.
+    @ViewBuilder
+    private var guardedCommandsSection: some View {
+        Section {
+            toggleRow("Always ask before guarded commands",
+                      "Every time, in every permission mode. A speed bump, not a sandbox.",
+                      isOn: $settings.guardCommands)
+
+            if settings.guardCommands {
+                if !hookInstalled {
+                    // The guard is the hook: without it the list is only a list.
+                    Label("Install the hook above for the guard to hold.", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+
+                ForEach(settings.guardedCommands, id: \.self) { pattern in
+                    HStack {
+                        Image(systemName: "shield.lefthalf.filled")
+                            .foregroundStyle(.orange)
+                        Text(pattern)
+                            .font(.system(.body, design: .monospaced))
+                            .textSelection(.enabled)
+                        Spacer()
+                        Button {
+                            settings.guardedCommands.removeAll { $0 == pattern }
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Stop guarding \(pattern)")
+                        .accessibilityLabel("Stop guarding \(pattern)")
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        // Unlabelled: in a Form a field's title becomes a label
+                        // column, which squeezed the field to half the row.
+                        TextField("Add a command", text: $newGuardedCommand, prompt: Text("Add a command, like git push"))
+                            .labelsHidden()
+                            .font(.system(.body, design: .monospaced))
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { addGuardedCommand(newGuardedCommand) }
+                        Button("Add") { addGuardedCommand(newGuardedCommand) }
+                            .disabled(GuardedCommands.normalized(newGuardedCommand) == nil)
+                    }
+
+                    let unused = GuardedCommands.suggestions.filter { !settings.guardedCommands.contains($0) }
+                    if !unused.isEmpty {
+                        // Wraps, so five suggestions never cut the last one off.
+                        SuggestionFlow(spacing: 6) {
+                            ForEach(unused, id: \.self) { suggestion in
+                                Button {
+                                    addGuardedCommand(suggestion)
+                                } label: {
+                                    Label(suggestion, systemImage: "plus")
+                                        .font(.system(.caption, design: .monospaced))
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .help("Guard \(suggestion)")
+                            }
+                        }
+                    }
+                }
+
+                DisclosureGroup("How guarding works") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("A guarded command asks even in auto and bypass modes and past any allow rule, and the notch never offers Always… for it. With Isle closed, the terminal asks; in claude -p, where nothing can ask, it’s refused.")
+                        Text("Write the program, then its subcommand words; flags can sit anywhere. Isle reads the command as a shell splits it, so cd x && git push and git \"push\" are caught, but an alias, a variable or a script can still hide one. A command over 16 KB that mentions every word of a pattern asks without being read.")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 4)
+                }
+            }
+        } header: {
+            Text("Guarded commands")
+        }
+    }
+
+    private func addGuardedCommand(_ text: String) {
+        guard let pattern = GuardedCommands.normalized(text) else { return }
+        if !settings.guardedCommands.contains(pattern) {
+            settings.guardedCommands.append(pattern)
+        }
+        if text == newGuardedCommand { newGuardedCommand = "" }
     }
 
     // MARK: - Hook actions
@@ -894,7 +683,7 @@ struct SettingsView: View {
         do {
             try HookInstaller.install()
             hookInstalled = true
-            hookMessage = "Installed to ~/.isle/bin and wired into ~/.claude/settings.json."
+            hookMessage = "Installed to ~/.isle/bin and added to ~/.claude/settings.json."
         } catch {
             hookMessage = error.localizedDescription
         }
@@ -904,12 +693,200 @@ struct SettingsView: View {
         do {
             try HookInstaller.uninstall()
             hookInstalled = false
-            hookMessage = "Removed. Your other Claude Code hooks were left untouched."
+            hookMessage = "Removed. Your other Claude Code hooks were left alone."
         } catch {
             hookMessage = error.localizedDescription
         }
     }
+
+    // MARK: - Calendar & Reminders
+
+    /// Ambient like Battery, and split the same way: calendar events and
+    /// reminders are separate data behind separate macOS permissions, so each
+    /// gets its own switch and its own pointer at the Privacy pane.
+    ///
+    /// Unlike audio capture, EventKit *does* say when it was declined, so
+    /// that is stated outright rather than hedged — see `AgendaMonitor.Access`
+    /// — and once access is granted there's nothing to say at all.
+    @ViewBuilder
+    private var calendarSection: some View {
+        Section("Calendar") {
+            toggleRow("Upcoming events",
+                      "Today’s events on the Agenda face, each shown in the island before it starts.",
+                      isOn: $settings.showCalendarEvents)
+
+            if settings.showCalendarEvents {
+                accessRow(for: .event, name: "Calendar", pane: .calendars)
+                Picker("Show in the island", selection: leadBinding) {
+                    ForEach(EventLead.allCases) { lead in
+                        Text(lead.title).tag(lead)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var remindersSection: some View {
+        Section("Reminders") {
+            toggleRow("Reminders due today",
+                      "On the Agenda face, and in the island as each comes due. Ones with no time are listed but not announced.",
+                      isOn: $settings.showReminders)
+
+            if settings.showReminders {
+                accessRow(for: .reminder, name: "Reminders", pane: .reminders)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var agendaSoundSection: some View {
+        Section {
+            if settings.showCalendarEvents || settings.showReminders {
+                soundRow("Sound", "When an event or reminder appears in the island.",
+                         enabled: $settings.agendaSoundEnabled, sound: $settings.agendaSound)
+            }
+        } footer: {
+            Text("The Agenda face can add an event or reminder from a line like \u{201C}Lunch with Sam tomorrow 1pm\u{201D}; nothing is saved until you click Add. Calendar and Reminders keep their own alerts.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Nothing once access is granted; otherwise what's needed, or — when
+    /// EventKit says so — that it was declined.
+    @ViewBuilder
+    private func accessRow(for type: EKEntityType, name: String, pane: PrivacyPane) -> some View {
+        let access = AgendaMonitor.Access.to(type)
+        if access != .granted {
+            Group {
+                if access == .declined {
+                    permissionRow("\(name) access was declined, so nothing will show until it’s allowed.",
+                                  declined: true, pane: pane)
+                } else {
+                    permissionRow("Needs \(name) access, which macOS asks for when this is switched on.",
+                                  pane: pane)
+                }
+            }
+            .id(accessRefresh)
+        }
+    }
+
+    /// The picker works in `EventLead`; the setting stores plain minutes so a
+    /// value from a future ladder still round-trips through defaults.
+    private var leadBinding: Binding<EventLead> {
+        Binding(
+            get: { EventLead(rawValue: settings.eventLeadMinutes) ?? .default },
+            set: { settings.eventLeadMinutes = $0.rawValue }
+        )
+    }
+
+    // MARK: - Pomodoro
+
+    /// Opt-in, and only from here: the timer adds a tab to the expanded panel
+    /// and a seat in the collapsed island, so it stays out of the way until
+    /// somebody asks for it. The interval controls only appear once it's on.
+    @ViewBuilder
+    private var pomodoroSection: some View {
+        Section {
+            toggleRow("Pomodoro timer",
+                      "A focus timer in the open panel; while it runs, the time left sits in the island.",
+                      isOn: $settings.pomodoroEnabled)
+        }
+
+        if settings.pomodoroEnabled {
+            Section {
+                stepperRow("Focus", value: $settings.pomodoroFocusMinutes, range: 1...90, unit: "min")
+                stepperRow("Short break", value: $settings.pomodoroShortBreakMinutes, range: 1...30, unit: "min")
+                stepperRow("Long break", value: $settings.pomodoroLongBreakMinutes, range: 1...60, unit: "min")
+                stepperRow("Focus sessions before a long break",
+                           value: $settings.pomodoroSessionsPerCycle, range: 1...8, unit: "")
+                soundRow("Sound when an interval ends",
+                         enabled: $settings.pomodoroSoundEnabled, sound: $settings.pomodoroSound)
+            } header: {
+                Text("Intervals")
+            } footer: {
+                Text("New lengths apply from the next interval.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: - Updates
+
+    /// Mirrors Retermina's Version tab: the app version, a "Check for Updates"
+    /// button whose errors surface here (unlike the silent launch check), and
+    /// the live download/ready states off the shared `Updater` phase.
+    @ViewBuilder
+    private var updatesSection: some View {
+        Section {
+            LabeledContent {
+                switch updater.phase {
+                case .downloading, .ready:
+                    EmptyView()
+                default:
+                    HStack(spacing: 8) {
+                        if case let .available(version, _) = updater.phase {
+                            Button("Install \(version)") {
+                                Task { await updater.install() }
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                        Button(isChecking ? "Checking…" : "Check for Updates") {
+                            Task { await updater.check() }
+                        }
+                        .disabled(updaterIsBusy)
+                    }
+                }
+            } label: {
+                rowLabel("Isle \(appVersion)", updateStatus)
+            }
+
+            if case .downloading(let pct) = updater.phase {
+                ProgressView(value: Double(pct), total: 100)
+            }
+
+            if case let .available(_, notes) = updater.phase, let notes, !notes.isEmpty {
+                Text(notes)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// What the last check came to, as the version row's caption.
+    private var updateStatus: String? {
+        switch updater.phase {
+        case .idle: return nil
+        case .checking: return "Checking for updates…"
+        case .upToDate: return "You’re on the latest version."
+        case let .available(version, _): return "Version \(version) is available."
+        case .downloading: return "Downloading update…"
+        case .ready: return "Update installed — relaunching…"
+        case let .error(message): return message
+        }
+    }
+
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+    }
+
+    private var isChecking: Bool {
+        if case .checking = updater.phase { return true }
+        return false
+    }
+
+    private var updaterIsBusy: Bool {
+        switch updater.phase {
+        case .checking, .downloading: return true
+        default: return false
+        }
+    }
 }
+
 
 // MARK: - Audio capture status
 
@@ -931,16 +908,16 @@ private struct AudioCaptureStatus: View {
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            HStack(spacing: 8) {
-                Text("If the bars don't move while music plays, Audio Recording may be switched off for Isle.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-                Button("Audio Recording Privacy…") {
+            LabeledContent {
+                Button("Open Privacy Settings…") {
                     PrivacyPane.audioCapture.open()
                 }
                 .controlSize(.small)
+            } label: {
+                Text("If the bars don’t move while music plays, Audio Recording may be off for Isle.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
