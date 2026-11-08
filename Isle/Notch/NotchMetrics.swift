@@ -77,6 +77,13 @@ struct NotchMetrics {
         min(panelMaxHeight, max(expandedSize.height, contentInsets(bandHeight: bandHeight) + ceil(contentHeight)))
     }
 
+    /// The content area a face wanting `contentHeight` (nil: the standard
+    /// panel) is laid out in: its panel's height less the content's insets.
+    static func contentAreaHeight(contentHeight: CGFloat?, bandHeight: CGFloat) -> CGFloat {
+        let panel = contentHeight.map { panelHeight(contentHeight: $0, bandHeight: bandHeight) } ?? expandedSize.height
+        return panel - contentInsets(bandHeight: bandHeight)
+    }
+
     /// The most a face's content can have: the cap, less the expanded
     /// content's insets.
     static func contentRoom(bandHeight: CGFloat) -> CGFloat {

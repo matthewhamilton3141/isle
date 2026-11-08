@@ -2937,11 +2937,19 @@ final class NotchViewModel: ObservableObject {
     /// face that grows is one more case here and nothing else: the window is
     /// already sized for the cap.
     func faceContentHeight(room: CGFloat) -> CGFloat? {
-        switch expandedPlace {
-        case .face(.claude): return questionContentHeight(room: room)
-        case .face(.agenda): return min(room, AgendaLayout.contentHeight)
-        case .face(.shelf): return min(room, ShelfLayout.contentHeight(rows: shelfRows))
-        case .home, .face: return nil
+        guard let face = expandedPlace.face else { return nil }
+        return faceContentHeight(of: face, room: room)
+    }
+
+    /// The content height `face` wants, whether or not it's the face on
+    /// screen — for the pager, which lays the face coming in beside the
+    /// current one out at its own height (see `FaceCarousel`).
+    func faceContentHeight(of face: IsleTab, room: CGFloat) -> CGFloat? {
+        switch face {
+        case .claude: return face == expandedPlace.face ? questionContentHeight(room: room) : nil
+        case .agenda: return min(room, AgendaLayout.contentHeight)
+        case .shelf: return min(room, ShelfLayout.contentHeight(rows: shelfRows))
+        case .music, .pomodoro: return nil
         }
     }
 

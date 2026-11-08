@@ -96,7 +96,16 @@ struct AgendaExpandedView: View {
                 }
                 .frame(width: AgendaLayout.columnWidth, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Laid out at its own height and pinned to the top, whatever the
+            // panel's height is at the moment, as the shelf is. Centred in a
+            // shorter panel — the neighbour's, mid-swipe — the face rode 20pt
+            // up under the camera, and jumped back down the frame the swipe
+            // landed and the content area took this face's height (and up
+            // again leaving). Now the panel's edge cuts the field off instead.
+            // `minHeight: 0`, or the flexible frame takes the child's 144 as
+            // its least height and the pager centres that instead.
+            .frame(height: AgendaLayout.contentHeight, alignment: .top)
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
             .foregroundStyle(.white)
         }
     }

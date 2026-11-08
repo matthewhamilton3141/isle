@@ -101,11 +101,20 @@ struct ExpandedNotchView: View {
             HomeGridView(viewModel: viewModel, palette: palette)
                 .transition(reduceMotion ? .opacity : .homeGridAway)
         case .face(let tab):
-            FaceCarousel(pager: island.pager, face: tab) { face in
+            FaceCarousel(pager: island.pager, face: tab, height: neighborHeight) { face in
                 self.face(face)
             }
             .transition(faceTransition(tab))
         }
+    }
+
+    /// The content area `tab` has when it's the face on screen, for the
+    /// pager to lay it out at while it's the neighbour coming in.
+    private func neighborHeight(_ tab: IsleTab) -> CGFloat {
+        let band = island.metrics?.notchSize.height ?? NotchMetrics.fallbackNotchSize.height
+        let room = NotchMetrics.contentRoom(bandHeight: band)
+        return NotchMetrics.contentAreaHeight(
+            contentHeight: viewModel.faceContentHeight(of: tab, room: room), bandHeight: band)
     }
 
     /// How a face comes in from Home and goes back: out of its tile and into
@@ -480,6 +489,12 @@ private let faceSwipeDrift: CGFloat = 0.1
 private struct FaceCarousel<Face: View>: View {
     @ObservedObject var pager: FacePager
     var face: IsleTab
+    /// The content area a face has when it's the one on screen. The face on
+    /// screen has the panel's; the neighbour coming in is laid out at its
+    /// own, top-pinned, so it's drawn where it will land — not centred in a
+    /// box of the current face's height (a 104pt face beside the 144pt
+    /// agenda sat 20pt low, and jumped up the frame the swipe landed).
+    var height: (IsleTab) -> CGFloat
     @ViewBuilder var content: (IsleTab) -> Face
 
     private struct Slot: Identifiable {
@@ -505,7 +520,9 @@ private struct FaceCarousel<Face: View>: View {
                 ForEach(slots) { slot in
                     let progress = min(1, abs(slot.x) / pager.page)
                     content(slot.tab)
-                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .frame(width: proxy.size.width,
+                               height: slot.tab == face ? proxy.size.height : height(slot.tab))
+                        .frame(height: proxy.size.height, alignment: .top)
                         // A short drift and a cross-fade, not a full page of
                         // travel: a face sliding the panel's width would run
                         // its raised artwork under the camera housing and its
