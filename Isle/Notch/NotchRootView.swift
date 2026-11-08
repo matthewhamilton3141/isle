@@ -229,15 +229,22 @@ struct NotchRootView: View {
             // below it. Inside the ZStack so it clips to the notch outline;
             // opacity-gated so it fades in with the rest of the expanded
             // content instead of popping mid-animation.
-            if state.isExpanded, viewModel.showsHome, !island.isDropTarget, let face = viewModel.expandedPlace.face {
-                NotchCrumb(face: face, attention: viewModel.needsYouElsewhere) {
-                    viewModel.selectHome()
+            //
+            // It comes and goes with the tile moves under it, on their spring
+            // (see `TileMorph`), rather than popping as the face starts.
+            ZStack {
+                if state.isExpanded, viewModel.showsHome, !island.isDropTarget, let face = viewModel.expandedPlace.face {
+                    NotchCrumb(face: face, attention: viewModel.needsYouElsewhere) {
+                        viewModel.selectHome()
+                    }
+                    .frame(height: notchBandHeight)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .padding(.trailing, Self.crumbTrailing)
+                    .opacity(expandedContentOpacity)
+                    .transition(.opacity)
                 }
-                .frame(height: notchBandHeight)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                .padding(.trailing, Self.crumbTrailing)
-                .opacity(expandedContentOpacity)
             }
+            .animation(reduceMotion ? .easeInOut(duration: 0.28) : .tileMorph, value: viewModel.expandedPlace == .home)
         }
         // A swipe's face swap stays instant for everything inside the
         // outline, though the notch's outermost modifier (in `body`) gives

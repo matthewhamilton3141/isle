@@ -28,13 +28,16 @@ struct HomeGridView: View {
     var palette: ArtworkPalette
 
     static let tileGap: CGFloat = 8
+    /// The grid's inset above and below the tiles (see `body`).
+    static let tileInset: CGFloat = 2
 
     var body: some View {
         HStack(spacing: Self.tileGap) {
             ForEach(viewModel.availableTabs) { tab in
                 Button {
-                    // No withAnimation: ExpandedNotchView cross-fades on
-                    // `expandedPlace` itself.
+                    // No withAnimation: ExpandedNotchView animates on
+                    // `expandedPlace` itself — the tile grows into its face
+                    // (see `TileMorph`).
                     viewModel.selectTab(tab)
                 } label: {
                     tile(for: tab)
@@ -48,8 +51,9 @@ struct HomeGridView: View {
         // top edges keep 4pt clear of the band — the same room the shelf's
         // top row keeps. The album can sit up in the band; it has no
         // hardware above it.
-        .padding(.top, 2)
-        .padding(.bottom, 2)
+        // `HomeTileSlot` lays the tiles out the same way, for the faces
+        // that grow out of them.
+        .padding(.vertical, Self.tileInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .foregroundStyle(.white)
     }
@@ -292,6 +296,13 @@ struct TileGlance {
 /// The side of a tile's mark: the album thumbnail, the marker, an icon.
 private let homeTileLead: CGFloat = 22
 
+/// A tile's plate: its corners and its fill when nothing needs you. Shared
+/// with the plate a face grows out of (see `TileMorph`).
+enum HomeTileStyle {
+    static let cornerRadius: CGFloat = 14
+    static let restingFill: Double = 0.07
+}
+
 /// One face on the home grid: its mark at the top, its name and glance at the
 /// bottom, an amber dot when it needs you.
 struct HomeTile<Lead: View>: View {
@@ -335,10 +346,10 @@ struct HomeTile<Lead: View>: View {
         .padding(9)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(.white.opacity(attention ? 0.12 : 0.07))
+            RoundedRectangle(cornerRadius: HomeTileStyle.cornerRadius, style: .continuous)
+                .fill(.white.opacity(attention ? 0.12 : HomeTileStyle.restingFill))
         )
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: HomeTileStyle.cornerRadius, style: .continuous))
         .animation(.easeInOut(duration: 0.2), value: attention)
     }
 }
