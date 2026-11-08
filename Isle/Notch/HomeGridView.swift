@@ -352,7 +352,7 @@ struct HomeTile<Lead: View>: View {
                         }
                     }
                     .font(.system(size: 10.5))
-                    .foregroundStyle(.white.opacity(0.65))
+                    .foregroundStyle(.islandSecondary(0.65))
                 } else if let line2 = glance.line2 {
                     Text(line2)
                         .font(.system(size: 10.5))

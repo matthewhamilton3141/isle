@@ -220,7 +220,7 @@ struct ClaudeExpandedView: View {
                 }
             }
             .font(L.detailFont)
-            .foregroundStyle(.white.opacity(0.5))
+            .foregroundStyle(.islandSecondary(0.5))
             .frame(height: L.detailLine, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.trailing, switcherClearance)
