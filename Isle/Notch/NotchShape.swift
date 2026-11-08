@@ -20,8 +20,9 @@ struct NotchShape: Shape {
     /// and to. The shape reads its taper (side walls drawing in toward the
     /// bottom) off how far its rect's width has come ahead of its height
     /// (`IslandMotion.taper`), so the taper exists only while the width
-    /// leads and is gone once both have settled. Not animatable: the frame's
-    /// own springs are what move it.
+    /// leads and is gone once both have settled. Not animatable: the
+    /// outline's width and height, each on its own spring
+    /// (`IslandOutlineLength`), are what move it.
     var genie: Genie?
 
     struct Genie: Equatable {
@@ -37,6 +38,15 @@ struct NotchShape: Shape {
         /// where the band really is.
         var bandShift: CGFloat = 0
     }
+
+    /// How much clearance over the camera band the pinched wall needs
+    /// before its taper may start right at the flare; below it the start
+    /// slides toward the band's bottom edge.
+    private static let clearanceRamp: CGFloat = 24
+
+    /// How much straight wall the taper needs below its start to draw at
+    /// full depth; on a shorter wall it draws in proportionally less.
+    private static let taperRamp: CGFloat = 20
 
     init(topCornerRadius: CGFloat = 8, bottomCornerRadius: CGFloat = 14, genie: Genie? = nil) {
         self.topCornerRadius = topCornerRadius
@@ -83,19 +93,25 @@ struct NotchShape: Shape {
         // With a taper the wall is an S-curve rather than a line: vertical
         // where it leaves the flare and vertical where it meets the corner,
         // so the outline stays smooth at both joins and only the waist moves.
-        // The pinch starts at the flare when the pinched wall still clears
-        // the camera band (where it really sits, with the pill's off-centre
-        // shift and 2pt to spare); otherwise only below the band, so nothing
-        // draws in under the cutout.
+        // The pinch starts at the flare while the pinched wall clears the
+        // camera band by a margin (where the band really sits, with the
+        // pill's off-centre shift and 2pt to spare), and only below the band
+        // once it doesn't, so nothing draws in under the cutout. Between the
+        // two the start slides down, and the pinch shrinks to nothing as the
+        // wall below its start does: every frame of a collapse draws this
+        // shape, so neither change may happen all at once.
         let wallTop = rect.minY + top
         let wallBottom = rect.maxY - bottom
         let taperTop: CGFloat = {
             guard let genie else { return wallTop }
-            let clear = rect.width - 2 * (top + pinch) >= genie.band.width + 2 * (abs(genie.bandShift) + 2)
-            return clear ? wallTop : max(wallTop, rect.minY + genie.band.height)
+            let bandBottom = max(wallTop, rect.minY + genie.band.height)
+            let clearance = rect.width - 2 * (top + pinch) - (genie.band.width + 2 * (abs(genie.bandShift) + 2))
+            let below = min(max(1 - clearance / Self.clearanceRamp, 0), 1)
+            return wallTop + (bandBottom - wallTop) * below
         }()
-        let taper = taperTop < wallBottom ? pinch : 0
-        let ease = (wallBottom - taperTop) * 0.45
+        let room = wallBottom - taperTop
+        let taper = room > 0 ? pinch * min(1, room / Self.taperRamp) : 0
+        let ease = room * 0.45
 
         path.move(to: CGPoint(x: rect.minX, y: rect.minY))
 

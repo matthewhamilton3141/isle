@@ -10,11 +10,20 @@
 //    visual: the hover zones, the hit rect and the open timing all ignore it.
 //  - The collapse. Closing, the panel's corners and width lead and its height
 //    follows, so it draws back into the notch with a shape rather than
-//    shrinking evenly. Width settles with a little overshoot; height never
-//    does (see `Animation.notchClose` for why it mustn't).
+//    shrinking evenly: while the width is ahead the side walls taper in
+//    toward the bottom, a genie that is gone again once both have arrived.
+//    Width settles with a little overshoot; height never does (see
+//    `Animation.notchClose` for why it mustn't).
 //
 //  The SwiftUI side — the springs as `Animation`s, the transaction plumbing
-//  and the swell's fill — is in IslandMotion+SwiftUI.swift.
+//  and the swell's fill — is in IslandMotion+SwiftUI.swift. There each
+//  channel really runs on its own spring: the outline's width and height are
+//  separate animatable lengths (`IslandOutlineLength`) and its radii the
+//  shape's own animatable data, each given its spring by its own transaction.
+//  (Two plain `.frame`s, which it used to be, are animated by the layout as
+//  one size and drew width and height in lockstep.) Measured on the drawn
+//  outline, offscreen: the width reaches 90% of its travel ~75ms before the
+//  height, the corners first of all, and the height is monotonic.
 //
 
 import CoreGraphics
@@ -121,9 +130,11 @@ enum IslandMotion {
     static let collapseDuration: Double = 0.32
 
     /// The collapse at `t` seconds, from an open panel `expanded` big to a
-    /// pill `collapsed` big. What SwiftUI draws, frame for frame, when each
-    /// channel runs its own spring from rest; the renders and tests evaluate
-    /// it directly.
+    /// pill `collapsed` big: what NotchRootView draws, frame for frame, for a
+    /// collapse from a settled panel, since each channel runs its own spring
+    /// from rest there. The tests evaluate it directly. (A collapse that
+    /// interrupts an open still in flight starts from the open's motion
+    /// rather than from rest, so it only approaches this.)
     static func collapse(at t: Double, from expanded: CGSize, to collapsed: CGSize) -> CollapseFrame {
         let w = CGFloat(collapseWidth.value(at: t))
         let h = CGFloat(collapseHeight.value(at: t))
