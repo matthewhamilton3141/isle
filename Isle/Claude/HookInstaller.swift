@@ -194,14 +194,25 @@ enum HookInstaller {
         try? install()
     }
 
-    private static func writeScript() throws {
+    /// Executable before it's in place: written beside the old one, made
+    /// 0755, then renamed over it. A hook firing mid-install runs either the
+    /// old helper or the new one, never a 0644 file it can't execute.
+    /// `url` is for the tests, which never touch ~/.isle.
+    static func writeScript(to url: URL = scriptURL) throws {
         let fm = FileManager.default
-        try fm.createDirectory(
-            at: scriptURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try scriptBody.write(to: scriptURL, atomically: true, encoding: .utf8)
-        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+        let dir = url.deletingLastPathComponent()
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let temp = dir.appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
+        do {
+            try Data(scriptBody.utf8).write(to: temp)
+            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: temp.path)
+            guard rename(temp.path, url.path) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+        } catch {
+            try? fm.removeItem(at: temp)
+            throw error
+        }
     }
 
     private static func mergeHooks() throws {

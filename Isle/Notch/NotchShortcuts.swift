@@ -5,6 +5,10 @@
 //  model, tells `HotKeyCenter` what to hold (`ShortcutPlan.active`), and
 //  turns a press into the face's own call (`ShortcutPlan.command`).
 //
+//  Whether it's in front of the user: `ShortcutFaceTracker`, fed on every
+//  look at the moment — a refresh (any change to the view model, an
+//  island's hover, the pointer changing displays) and every press.
+//
 //  Which request a press answers: `pendingRequest`, the one on the island's
 //  session — the same one the face's Approve answers. With several sessions
 //  waiting, selection already puts the most pressing on the island; the
@@ -22,12 +26,11 @@ protocol ShortcutIslandHost: AnyObject {
     var shortcutsRunning: Bool { get }
     /// Some island's panel is open.
     var isAnyIslandExpanded: Bool { get }
-    /// A shortcut is holding an island open (`IslandPresentation.isHeldOpen`).
-    var isIslandHeldOpen: Bool { get }
+    /// Where the open island is, as far as the user goes.
+    var islandPresence: ShortcutIslandPresence { get }
     func toggleIslandFromShortcut()
     /// Open an island, held, if none is open.
     func openIslandFromShortcut()
-    func closeHeldIsland()
 }
 
 @MainActor
@@ -43,6 +46,9 @@ final class NotchShortcuts {
     /// `ShortcutPlan.armDelay` counts from.
     private var seenRequest: (id: String, at: Date)?
     private var armWork: DispatchWorkItem?
+
+    /// Whether, and since when, the request's face is in front of the user.
+    private var faceTracker = ShortcutFaceTracker()
 
     init(viewModel: NotchViewModel, settings: AppSettings? = nil, center: HotKeyCenter? = nil,
          host: ShortcutIslandHost) {
@@ -75,6 +81,7 @@ final class NotchShortcuts {
             guard let self else { return }
             self.refreshQueued = false
             self.center.apply(ShortcutPlan.active(self.context(), bindings: self.settings.shortcuts))
+            _ = self.face()
         }
     }
 
@@ -82,7 +89,6 @@ final class NotchShortcuts {
     func context(now: Date = Date()) -> ShortcutContext {
         var context = ShortcutContext()
         context.running = host?.shortcutsRunning ?? false
-        context.heldOpen = host?.isIslandHeldOpen ?? false
         context.composing = viewModel.composing != nil
         context.answering = viewModel.isAnsweringRequest
 
@@ -119,14 +125,23 @@ final class NotchShortcuts {
         return context
     }
 
+    /// The request's face, as a press sees it — and the tracker brought up
+    /// to date.
+    func face(now: Date = Date()) -> ShortcutFace {
+        faceTracker.update(request: viewModel.pendingRequest?.id,
+                           showsFace: viewModel.showsPendingRequestFace,
+                           presence: host?.islandPresence ?? .closed,
+                           now: now)
+    }
+
     // MARK: - A press
 
     private func perform(_ action: ShortcutAction) {
         let context = context()
-        let visible = (host?.isAnyIslandExpanded ?? false) && viewModel.showsPendingRequestFace
+        let face = face()
         let project = viewModel.claudeProject.flatMap { $0.isEmpty ? nil : $0 }
 
-        switch ShortcutPlan.command(for: action, context: context, faceVisible: visible) {
+        switch ShortcutPlan.command(for: action, context: context, face: face) {
         case .approve:
             notice(viewModel.decide(allow: true) ? .approved : .notSent, project: project)
         case .deny:
@@ -145,10 +160,10 @@ final class NotchShortcuts {
         case .reveal:
             viewModel.revealPendingRequest()
             host?.openIslandFromShortcut()
+            // Revealed where the user is: the look starts now.
+            faceTracker.restart(now: Date())
         case .toggleIsland:
             host?.toggleIslandFromShortcut()
-        case .closeHeld:
-            host?.closeHeldIsland()
         case .none:
             break
         }

@@ -45,6 +45,9 @@ final class FakeRegistrar: HotKeyRegistrar {
     func register(_ combo: KeyCombo, id: UInt32) -> OSStatus {
         log.append("+\(id)")
         if taken.contains(combo) { return OSStatus(eventHotKeyExistsErr) }
+        // As Carbon: a combo this process already holds under another id
+        // is refused like anyone else's.
+        if held.contains(where: { $0.key != id && $0.value == combo }) { return OSStatus(eventHotKeyExistsErr) }
         held[id] = combo
         return noErr
     }
@@ -61,12 +64,11 @@ final class FakeRegistrar: HotKeyRegistrar {
 @MainActor
 final class FakeHost: ShortcutIslandHost {
     var shortcutsRunning = true
-    var isAnyIslandExpanded = false
-    var isIslandHeldOpen = false
+    var islandPresence: ShortcutIslandPresence = .closed
+    var isAnyIslandExpanded: Bool { islandPresence != .closed }
     var calls: [String] = []
     func toggleIslandFromShortcut() { calls.append("toggle") }
     func openIslandFromShortcut() { calls.append("open") }
-    func closeHeldIsland() { calls.append("close") }
 }
 
 let o = KeyCombo.option, c = KeyCombo.control, s = KeyCombo.shift, cmd = KeyCombo.command
@@ -96,8 +98,8 @@ func questionCtx(_ options: Int, multi: Bool = false) -> Ctx {
     Ctx(running: true, request: .question(options: options, multiSelect: multi), armed: true)
 }
 
-func cmdFor(_ action: A, _ ctx: Ctx, visible: Bool) -> ShortcutCommand {
-    ShortcutPlan.command(for: action, context: ctx, faceVisible: visible)
+func cmdFor(_ action: A, _ ctx: Ctx, _ face: ShortcutFace) -> ShortcutCommand {
+    ShortcutPlan.command(for: action, context: ctx, face: face)
 }
 
 @main
@@ -110,6 +112,7 @@ enum ShortcutsTests {
         notes()
         heldWhile()
         commands()
+        faceTracking()
         center()
         endToEnd()
         persistence()
@@ -155,12 +158,14 @@ enum ShortcutsTests {
         check(!KeyCombo(kVK_ANSI_A, s).isValidShortcut, "⇧A isn't: that's a capital")
         check(!KeyCombo(kVK_Option, o).isValidShortcut, "a modifier alone isn't")
         check(!KeyCombo(kVK_CapsLock, cmd).isValidShortcut, "Caps Lock isn't")
-        check(!A.dismiss.defaultCombo.hasCommandingModifier, "the island's own Esc is bare — and never a user's combo")
+        check(A.allCases.allSatisfy { $0.defaultCombo.hasCommandingModifier }, "no shortcut is a bare key — Esc included")
 
         print("Key combos: display")
         let us: (UInt32) -> String? = { _ in nil }
         equal(optReturn.display(character: us), "⌥⏎", "⌥⏎")
-        equal(A.deny.defaultCombo.display(character: us), "⌥⎋", "⌥⎋")
+        equal(A.deny.defaultCombo.display(character: us), "⌃⎋", "⌃⎋")
+        equal(A.approve.defaultCombo.display(character: us), "⌃'", "⌃'")
+        equal(A.approve.defaultCombo.spoken, "Control-'", "spoken, ⌃'")
         equal(A.toggleIsland.defaultCombo.display(character: us), "⌥⇥", "⌥⇥")
         equal(A.option3.defaultCombo.display(character: us), "⌥3", "⌥3")
         equal(KeyCombo(kVK_Space, o).display(character: us), "⌥Space", "⌥Space")
@@ -180,8 +185,13 @@ enum ShortcutsTests {
     static func bindings() {
         print("Bindings: defaults")
         equal(defaults[.toggleIsland].combo, KeyCombo(kVK_Tab, o), "open/close is ⌥⇥")
-        equal(defaults[.approve].combo, KeyCombo(kVK_Return, o), "Approve is ⌥⏎")
-        equal(defaults[.deny].combo, KeyCombo(kVK_Escape, o), "Deny is ⌥⎋")
+        equal(defaults[.approve].combo, KeyCombo(kVK_ANSI_Quote, c), "Approve is ⌃' (the key beside Return)")
+        equal(defaults[.deny].combo, KeyCombo(kVK_Escape, c), "Deny is ⌃⎋")
+        for a in [A.approve, .deny] {
+            check(defaults[a].combo != KeyCombo(kVK_Return, o), "\(a.title) isn't ⌥⏎: Claude Code's newline")
+            check(defaults[a].combo != KeyCombo(kVK_Return, c), "\(a.title) isn't ⌃⏎: Claude Code's send-now")
+            check(defaults[a].combo.modifiers.nonzeroBitCount == 1, "\(a.title) is one modifier and a key")
+        }
         equal(A.options.map { defaults[$0].combo }, [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4].map { KeyCombo($0, o) },
               "options are ⌥1…⌥4")
         check(A.configurable.allSatisfy { defaults[$0].isOn }, "all on out of the box")
@@ -191,7 +201,8 @@ enum ShortcutsTests {
         equal(Set(A.allCases.map(\.hotKeyID)).count, A.allCases.count, "hot key ids are distinct")
         check(A.allCases.allSatisfy { $0.hotKeyID > 0 && A(hotKeyID: $0.hotKeyID) == $0 }, "ids are nonzero and round-trip")
         check(A(hotKeyID: 0) == nil && A(hotKeyID: 99) == nil, "unknown ids are no action")
-        check(!A.configurable.contains(.dismiss), "Esc isn't in Settings")
+        equal(A.configurable, A.allCases, "Settings lists every shortcut: there's no hidden one")
+        check(!A.allCases.contains { $0.defaultCombo == KeyCombo(kVK_Escape, 0) }, "and none is bare Esc")
 
         print("Bindings: storage")
         var b = defaults
@@ -199,8 +210,8 @@ enum ShortcutsTests {
         b[.toggleIsland].isOn = false
         let data = b.encoded()!
         let text = String(decoding: data, as: UTF8.self)
-        equal(text, #"{"approve":{"combo":{"key":16,"mods":["option"]},"on":true},"toggleIsland":{"combo":{"key":48,"mods":["option"]},"on":false}}"#,
-              "only what differs is stored, as JSON")
+        equal(text, #"{"approve":{"combo":{"key":16,"mods":["option"]},"on":true},"toggleIsland":{"combo":{"key":48,"mods":["option"]},"on":false},"v":2}"#,
+              "only what differs is stored, as JSON, with the store's version")
         equal(ShortcutBindings.decode(data), b, "and reads back the same")
         b[.approve] = ShortcutBinding(combo: A.approve.defaultCombo)
         check(!(String(decoding: b.encoded()!, as: UTF8.self).contains("approve")), "set back to its default, an entry goes")
@@ -217,10 +228,35 @@ enum ShortcutsTests {
         equal(mixed[.approve], ShortcutBinding(combo: KeyCombo(kVK_ANSI_Y, o), isOn: true), "a missing \"on\" reads as on")
         equal(mixed[.deny].combo, A.deny.defaultCombo, "a stored combo that isn't a shortcut (⇧⏎) reads as the default")
         equal(mixed[.option2].combo, A.option2.defaultCombo, "an unreadable entry reads as the default, alone")
-        equal(mixed.combo(for: .dismiss), KeyCombo(kVK_Escape, 0), "Esc can't be rebound from the plist")
-        let dupes = ShortcutBindings.decode(Data(#"{"deny":{"combo":{"key":36,"mods":["option"]},"on":true}}"#.utf8))
-        check(dupes[.approve].combo != dupes[.deny].combo, "an edited plist putting Deny on ⌥⏎ never makes one press mean two")
-        equal(dupes[.approve].combo, A.approve.defaultCombo, "the earlier action in Settings order keeps it")
+        check(!A.allCases.contains { mixed.combo(for: $0)?.keyCode == UInt32(kVK_Escape) && mixed.combo(for: $0)?.modifiers == o },
+              "an old plist's \"dismiss\" entry is ignored")
+        let dupes = ShortcutBindings.decode(Data(#"{"approve":{"combo":{"key":16,"mods":["option"]},"on":true},"deny":{"combo":{"key":16,"mods":["option"]},"on":true},"v":2}"#.utf8))
+        check(dupes[.approve].combo != dupes[.deny].combo, "an edited plist putting Deny on Approve's ⌥Y never makes one press mean two")
+        equal(dupes[.approve].combo, KeyCombo(kVK_ANSI_Y, o), "the earlier action in Settings order keeps it")
+        equal(dupes[.deny].combo, A.deny.defaultCombo, "the later goes back to its default")
+        let onDefault = ShortcutBindings.decode(Data(#"{"deny":{"combo":{"key":39,"mods":["control"]},"on":true},"v":2}"#.utf8))
+        equal(onDefault[.deny].combo, KeyCombo(kVK_ANSI_Quote, c), "keys someone chose win over another action's default")
+        check(!onDefault[.approve].isOn && onDefault.combo(for: .approve) == nil, "and that action goes off rather than share them")
+
+        print("Bindings: the move off ⌥⏎ and ⌥⎋ (store version 1 to 2)")
+        let untouched = ShortcutBindings.decode(Data(#"{"toggleIsland":{"combo":{"key":34,"mods":["option"]},"on":true}}"#.utf8))
+        equal(untouched[.approve].combo, A.approve.defaultCombo, "never customised: the new Approve")
+        equal(untouched[.deny].combo, A.deny.defaultCombo, "and the new Deny")
+        equal(untouched[.toggleIsland].combo, KeyCombo(kVK_ANSI_I, o), "what they did record stays")
+        let switchedOff = ShortcutBindings.decode(Data(#"{"approve":{"combo":{"key":36,"mods":["option"]},"on":false},"deny":{"combo":{"key":53,"mods":["option"]},"on":false}}"#.utf8))
+        equal(switchedOff[.approve], ShortcutBinding(combo: A.approve.defaultCombo, isOn: false),
+              "only switched off (version 1 stored the old default then): the new keys, still off")
+        equal(switchedOff[.deny], ShortcutBinding(combo: A.deny.defaultCombo, isOn: false), "Deny the same")
+        check(switchedOff.encoded().map { String(decoding: $0, as: UTF8.self) }?.contains(#""v":2"#) == true,
+              "written back as version 2")
+        let recordedV1 = ShortcutBindings.decode(Data(#"{"approve":{"combo":{"key":16,"mods":["option"]},"on":true},"deny":{"combo":{"key":45,"mods":["control"]},"on":true}}"#.utf8))
+        equal(recordedV1[.approve].combo, KeyCombo(kVK_ANSI_Y, o), "recorded their own Approve: kept")
+        equal(recordedV1[.deny].combo, KeyCombo(kVK_ANSI_N, c), "and their own Deny")
+        let recordedV2 = ShortcutBindings.decode(Data(#"{"approve":{"combo":{"key":36,"mods":["option"]},"on":true},"v":2}"#.utf8))
+        equal(recordedV2[.approve].combo, KeyCombo(kVK_Return, o), "⌥⏎ recorded after the move is theirs: kept")
+        var roundTrip = defaults
+        roundTrip.assign(KeyCombo(kVK_Return, o), to: .approve)
+        equal(ShortcutBindings.decode(roundTrip.encoded()), roundTrip, "and survives a relaunch")
 
         print("Bindings: recording")
         var r = defaults
@@ -234,7 +270,7 @@ enum ShortcutsTests {
         equal(r.assign(KeyCombo(kVK_Tab, o), to: .approve), .clashes(.toggleIsland),
               "an off shortcut still owns its keys (turning it on can't make a clash)")
         equal(r.assign(KeyCombo(kVK_ANSI_Y, o), to: .approve), .assigned, "an action may take its own keys again")
-        equal(r.assign(KeyCombo(kVK_Escape, 0), to: .dismiss), .needsModifier, "Esc isn't recordable")
+        equal(r.assign(KeyCombo(kVK_Escape, 0), to: .deny), .needsModifier, "bare Esc isn't recordable")
         r[.deny].isOn = false
         r.assign(KeyCombo(kVK_ANSI_N, o), to: .deny)
         check(!r[.deny].isOn, "recording keeps a shortcut's on/off")
@@ -253,8 +289,13 @@ enum ShortcutsTests {
         check(ShortcutNotes.note(for: KeyCombo(kVK_Space, cmd))?.contains("Spotlight") == true, "⌘Space is Spotlight")
         check(ShortcutNotes.note(for: KeyCombo(kVK_Space, c))?.contains("input") == true, "⌃Space is input sources")
         check(ShortcutNotes.note(for: A.toggleIsland.defaultCombo)?.contains("AltTab") == true, "⌥⇥ says AltTab, honestly")
-        check(ShortcutNotes.note(for: A.deny.defaultCombo)?.contains("Speak Selection") == true, "⌥⎋ says Speak Selection")
-        check(ShortcutNotes.note(for: A.approve.defaultCombo)?.contains("newline") == true, "⌥⏎ says the terminal newline")
+        check(ShortcutNotes.note(for: KeyCombo(kVK_Escape, o))?.contains("Speak Selection") == true, "⌥⎋ says Speak Selection")
+        check(ShortcutNotes.note(for: KeyCombo(kVK_Return, o))?.contains("Claude Code uses ⌥⏎ for a newline") == true,
+              "recording ⌥⏎ says it's Claude Code's newline")
+        check(ShortcutNotes.note(for: KeyCombo(kVK_Return, c))?.contains("send a message now") == true,
+              "recording ⌃⏎ says it's Claude Code's send-now")
+        check(ShortcutNotes.note(for: A.approve.defaultCombo)?.contains("left of Return") == true, "⌃' says which key it is")
+        check(ShortcutNotes.note(for: A.deny.defaultCombo) == nil, "⌃⎋ has nothing to say")
         check(ShortcutNotes.note(for: KeyCombo(kVK_ANSI_K, cmd)) != nil, "⌘K is every app's menus")
         check(ShortcutNotes.note(for: A.option1.defaultCombo) == nil, "⌥1 has nothing to say")
         check(ShortcutNotes.note(for: KeyCombo(kVK_ANSI_I, c | o)) == nil, "⌃⌥I has nothing to say")
@@ -293,11 +334,11 @@ enum ShortcutsTests {
               "multi-select: the options and ⌥⏎ for Done")
         check(!plan(questionCtx(3)).contains(.deny), "a question has no Deny")
 
-        print("Held: the island's own Esc")
-        equal(plan(Ctx(running: true, heldOpen: true)), [.toggleIsland, .dismiss], "held open by a shortcut: Esc")
-        equal(plan(Ctx(running: true, composing: true, heldOpen: true)), [.toggleIsland], "not while a field takes keys")
-        equal(ShortcutPlan.active(Ctx(running: true, heldOpen: true), bindings: defaults)[.dismiss], KeyCombo(kVK_Escape, 0),
-              "it's bare Esc")
+        print("Held: never a bare key")
+        for ctx in [Ctx(running: true), approvalCtx(), approvalCtx(guarded: true), questionCtx(4, multi: true)] {
+            check(ShortcutPlan.active(ctx, bindings: defaults).values.allSatisfy(\.hasCommandingModifier),
+                  "\(ctx.request.map { "\($0)" } ?? "idle"): every held key has ⌥, ⌃ or ⌘ — Esc stays vim's and Claude Code's")
+        }
 
         print("Held: on/off")
         var b = defaults
@@ -316,50 +357,133 @@ enum ShortcutsTests {
     @MainActor
     static func commands() {
         print("Press: an approval")
-        equal(cmdFor(.approve, approvalCtx(), visible: true), .approve, "Approve, on screen")
-        equal(cmdFor(.approve, approvalCtx(), visible: false), .approve, "Approve, island closed: one press, as the button")
-        equal(cmdFor(.deny, approvalCtx(), visible: false), .deny, "Deny, island closed")
-        equal(cmdFor(.option1, approvalCtx(), visible: true), .none, "an option key on an approval: nothing")
+        equal(cmdFor(.approve, approvalCtx(), .shown), .approve, "Approve, in front of you: one press, as the button")
+        equal(cmdFor(.approve, approvalCtx(), .seen), .approve, "and once looked at")
+        equal(cmdFor(.approve, approvalCtx(), .hidden), .reveal,
+              "closed, or auto-opened on another display: the first press opens it where you are, approves nothing")
+        equal(cmdFor(.deny, approvalCtx(), .hidden), .deny, "Deny, unseen: one press (refusing is safe)")
+        equal(cmdFor(.option1, approvalCtx(), .seen), .none, "an option key on an approval: nothing")
 
         print("Press: a guarded command (M17)")
-        equal(cmdFor(.approve, approvalCtx(guarded: true), visible: false), .reveal,
+        equal(cmdFor(.approve, approvalCtx(guarded: true), .hidden), .reveal,
               "island closed: the first press opens it to the command, and approves nothing")
-        equal(cmdFor(.approve, approvalCtx(guarded: true), visible: true), .approve, "in view: the next press approves")
-        equal(cmdFor(.deny, approvalCtx(guarded: true), visible: false), .deny, "Deny stays one press: refusing is safe")
+        equal(cmdFor(.approve, approvalCtx(guarded: true), .shown), .reveal,
+              "just come up (a fast double-tap, or an alert's auto-open): still nothing")
+        equal(cmdFor(.approve, approvalCtx(guarded: true), .seen), .approve, "in front of you for half a second: approves")
+        equal(cmdFor(.deny, approvalCtx(guarded: true), .hidden), .deny, "Deny stays one press: refusing is safe")
 
         print("Press: Always…'s review")
-        equal(cmdFor(.approve, approvalCtx(reviewing: true), visible: true), .confirmRemember, "Approve is the review's Confirm")
-        equal(cmdFor(.deny, approvalCtx(reviewing: true), visible: true), .cancelRemember, "Deny is the review's Back")
-        equal(cmdFor(.approve, approvalCtx(reviewing: true), visible: false), .reveal,
+        equal(cmdFor(.approve, approvalCtx(reviewing: true), .seen), .confirmRemember, "Approve is the review's Confirm")
+        equal(cmdFor(.deny, approvalCtx(reviewing: true), .seen), .cancelRemember, "Deny is the review's Back")
+        equal(cmdFor(.approve, approvalCtx(reviewing: true), .hidden), .reveal,
               "out of view, saving a rule is never a blind press: reveal")
-        equal(cmdFor(.deny, approvalCtx(reviewing: true), visible: false), .reveal, "nor Back")
+        equal(cmdFor(.approve, approvalCtx(reviewing: true), .shown), .reveal, "nor a moment after it comes up")
+        equal(cmdFor(.deny, approvalCtx(reviewing: true), .hidden), .reveal, "nor Back")
 
         print("Press: a question")
-        equal(cmdFor(.option2, questionCtx(3), visible: true), .pick(1), "⌥2 on screen picks the second option")
-        equal(cmdFor(.option2, questionCtx(3), visible: false), .reveal, "⌥2 unseen opens the island to the question")
-        equal(cmdFor(.option4, questionCtx(3), visible: true), .none, "⌥4 with three options: nothing")
-        equal(cmdFor(.approve, questionCtx(3), visible: true), .none, "⌥⏎ on a single-select: nothing (picking sends)")
-        equal(cmdFor(.approve, questionCtx(3, multi: true), visible: true), .submit, "⌥⏎ on a multi-select: Done")
-        equal(cmdFor(.approve, questionCtx(3, multi: true), visible: false), .reveal, "unseen: reveal")
-        equal(cmdFor(.option1, questionCtx(3, multi: true), visible: true), .pick(0), "multi-select: ⌥1 toggles")
-        equal(cmdFor(.deny, questionCtx(3), visible: true), .none, "⌥⎋ on a question: nothing")
+        equal(cmdFor(.option2, questionCtx(3), .seen), .pick(1), "⌥2 on screen picks the second option")
+        equal(cmdFor(.option2, questionCtx(3), .hidden), .reveal, "⌥2 unseen opens the island to the question")
+        equal(cmdFor(.option2, questionCtx(3), .shown), .reveal, "⌥2 the instant it's up: not yet")
+        equal(cmdFor(.option4, questionCtx(3), .seen), .none, "⌥4 with three options: nothing")
+        equal(cmdFor(.approve, questionCtx(3), .seen), .none, "Approve on a single-select: nothing (picking sends)")
+        equal(cmdFor(.approve, questionCtx(3, multi: true), .seen), .submit, "Approve on a multi-select: Done")
+        equal(cmdFor(.approve, questionCtx(3, multi: true), .shown), .reveal, "only once looked at")
+        equal(cmdFor(.option1, questionCtx(3, multi: true), .seen), .pick(0), "multi-select: ⌥1 toggles")
+        equal(cmdFor(.deny, questionCtx(3), .seen), .none, "Deny on a question: nothing")
 
         print("Press: a press that arrives late")
         var late = approvalCtx()
         late.answering = true
-        equal(cmdFor(.approve, late, visible: true), .none, "already answered: nothing (never twice)")
+        equal(cmdFor(.approve, late, .seen), .none, "already answered: nothing (never twice)")
         late = approvalCtx(); late.armed = false
-        equal(cmdFor(.approve, late, visible: true), .none, "not armed: nothing")
+        equal(cmdFor(.approve, late, .seen), .none, "not armed: nothing")
         late = approvalCtx(); late.composing = true
-        equal(cmdFor(.approve, late, visible: true), .none, "a field has the keys: nothing")
-        equal(cmdFor(.approve, Ctx(running: true), visible: true), .none, "the request is gone: nothing")
+        equal(cmdFor(.approve, late, .seen), .none, "a field has the keys: nothing")
+        equal(cmdFor(.approve, Ctx(running: true), .seen), .none, "the request is gone: nothing")
 
         print("Press: the island")
-        equal(cmdFor(.toggleIsland, Ctx(running: true), visible: false), .toggleIsland, "open/close")
-        equal(cmdFor(.toggleIsland, approvalCtx(), visible: true), .toggleIsland, "open/close, a request or not")
-        equal(cmdFor(.toggleIsland, Ctx(), visible: false), .none, "not running: nothing")
-        equal(cmdFor(.dismiss, Ctx(running: true, heldOpen: true), visible: false), .closeHeld, "Esc closes a held island")
-        equal(cmdFor(.dismiss, Ctx(running: true), visible: false), .none, "Esc does nothing once the hold has ended")
+        equal(cmdFor(.toggleIsland, Ctx(running: true), .hidden), .toggleIsland, "open/close")
+        equal(cmdFor(.toggleIsland, approvalCtx(), .seen), .toggleIsland, "open/close, a request or not")
+        equal(cmdFor(.toggleIsland, Ctx(), .hidden), .none, "not running: nothing")
+    }
+
+    // MARK: - In front of the user
+
+    @MainActor
+    static func faceTracking() {
+        print("Seen: when the face is in front of the user")
+        let t0 = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        func at(_ s: TimeInterval) -> Date { t0.addingTimeInterval(s) }
+        let half = ShortcutPlan.seenDelay
+
+        var f = ShortcutFaceTracker()
+        equal(f.update(request: nil, showsFace: true, presence: .pointerScreen, now: at(0)), .hidden, "no request: hidden")
+        equal(f.update(request: "r1", showsFace: false, presence: .closed, now: at(0)), .hidden, "closed: hidden")
+        equal(f.update(request: "r1", showsFace: true, presence: .pointerScreen, now: at(1)), .shown,
+              "open on the pointer's display: shown, from now")
+        equal(f.update(request: "r1", showsFace: true, presence: .pointerScreen, now: at(1 + half - 0.01)), .shown,
+              "not yet half a second")
+        equal(f.update(request: "r1", showsFace: true, presence: .pointerScreen, now: at(1 + half)), .seen, "half a second: seen")
+        equal(f.update(request: "r1", showsFace: false, presence: .pointerScreen, now: at(2)), .hidden,
+              "switched to another face: hidden")
+        equal(f.update(request: "r1", showsFace: true, presence: .pointerScreen, now: at(2.1)), .shown,
+              "back on it: the half second starts over")
+
+        print("Seen: an alert's auto-open on another display")
+        f = ShortcutFaceTracker()
+        equal(f.update(request: "r2", showsFace: true, presence: .elsewhere, now: at(0)), .hidden,
+              "auto-opened where the pointer isn't: hidden — nobody may be looking")
+        equal(f.update(request: "r2", showsFace: true, presence: .elsewhere, now: at(5)), .hidden,
+              "however long it's been up there")
+        equal(f.update(request: "r2", showsFace: true, presence: .pointerScreen, now: at(6)), .shown,
+              "the pointer comes to its display: shown, from then")
+        equal(f.update(request: "r2", showsFace: true, presence: .pointerScreen, now: at(6 + half)), .seen, "and seen after")
+        equal(f.update(request: "r2", showsFace: true, presence: .elsewhere, now: at(7)), .hidden,
+              "pointer away again, never having gone to it: hidden")
+
+        print("Seen: visited")
+        f = ShortcutFaceTracker()
+        equal(f.update(request: "r3", showsFace: true, presence: .visited, now: at(0)), .shown, "hovered: shown")
+        equal(f.update(request: "r3", showsFace: true, presence: .elsewhere, now: at(0.3)), .shown,
+              "then the pointer goes to another display: still in front of them (they went to it)")
+        equal(f.update(request: "r3", showsFace: true, presence: .elsewhere, now: at(0 + half)), .seen,
+              "and the half second runs on")
+        equal(f.update(request: "r3", showsFace: false, presence: .closed, now: at(1)), .hidden, "closed: hidden")
+        equal(f.update(request: "r4", showsFace: true, presence: .elsewhere, now: at(2)), .hidden,
+              "a new request: the visit was to the old one")
+
+        print("Seen: a reveal starts the look over")
+        f = ShortcutFaceTracker()
+        _ = f.update(request: "r5", showsFace: true, presence: .pointerScreen, now: at(0))
+        f.restart(now: at(0.4))
+        equal(f.update(request: "r5", showsFace: true, presence: .pointerScreen, now: at(0.6)), .shown,
+              "a press that revealed at 0.4s: not seen at 0.6s")
+        equal(f.update(request: "r5", showsFace: true, presence: .pointerScreen, now: at(0.4 + half)), .seen,
+              "seen half a second after the reveal")
+        var closed = ShortcutFaceTracker()
+        closed.restart(now: at(0))
+        equal(closed.update(request: "r6", showsFace: true, presence: .visited, now: at(0.1)), .shown,
+              "a reveal of a closed island: the look starts when it's up")
+
+        print("Seen: the two holes this closes")
+        // (A) expandOnAlert: an approval opens itself; a press 0.5s later
+        // (the arm delay) mustn't approve a guarded command unread.
+        f = ShortcutFaceTracker()
+        let autoOpen = f.update(request: "g", showsFace: true, presence: .elsewhere, now: at(0.5))
+        equal(cmdFor(.approve, approvalCtx(guarded: true), autoOpen), .reveal,
+              "(A) guarded, auto-opened on a display you aren't on: the press reveals, approves nothing")
+        let plainElsewhere = f.update(request: "g", showsFace: true, presence: .elsewhere, now: at(0.6))
+        equal(cmdFor(.approve, approvalCtx(), plainElsewhere), .reveal, "(A) a plain approval there: the same")
+        // (B) island closed: a fast double-tap.
+        f = ShortcutFaceTracker()
+        let first = f.update(request: "g", showsFace: false, presence: .closed, now: at(1))
+        equal(cmdFor(.approve, approvalCtx(guarded: true), first), .reveal, "(B) first tap: reveal")
+        f.restart(now: at(1))
+        let second = f.update(request: "g", showsFace: true, presence: .visited, now: at(1.12))
+        equal(cmdFor(.approve, approvalCtx(guarded: true), second), .reveal,
+              "(B) second tap 120ms later, panel still opening: still nothing")
+        let third = f.update(request: "g", showsFace: true, presence: .visited, now: at(1.12 + half))
+        equal(cmdFor(.approve, approvalCtx(guarded: true), third), .approve, "a press after a real look approves")
     }
 
     // MARK: - HotKeyCenter
@@ -441,6 +565,37 @@ enum ShortcutsTests {
         reg.taken = []
         center.isSuspended = false
         equal(reg.heldActions, [.toggleIsland, .deny, .approve], "done: what's wanted now is held")
+
+        print("Recording: onto its own keys")
+        reg.taken = []
+        center.apply([.toggleIsland: toggle, .approve: approve, .deny: deny])
+        var bindings = defaults
+        equal(center.probe(approve), OSStatus(eventHotKeyExistsErr),
+              "(why it mattered: a probe of a combo Isle holds reads as taken)")
+        reg.log = []
+        equal(ShortcutRecording.record(approve, for: .approve, into: &bindings, center: center), .unchanged,
+              "re-recording Approve's own keys: no change, no false conflict")
+        check(!reg.log.contains("+\(A.allCases.count + 1)"), "and no probe at all")
+        // The recorder's order: still suspended when it records.
+        center.isSuspended = true
+        equal(ShortcutRecording.record(approve, for: .approve, into: &bindings, center: center), .unchanged,
+              "while recording (suspended): the same")
+        equal(ShortcutRecording.record(KeyCombo(kVK_ANSI_J, c), for: .approve, into: &bindings, center: center), .recorded,
+              "new keys, suspended: probed and recorded")
+        equal(bindings[.approve].combo, KeyCombo(kVK_ANSI_J, c), "and stored")
+        equal(ShortcutRecording.record(toggle, for: .approve, into: &bindings, center: center),
+              .refused("\(toggle.display()) is already \(A.toggleIsland.title)’s."), "another action's keys: said so")
+        reg.taken = [KeyCombo(kVK_ANSI_K, c)]
+        if case .refused(let why) = ShortcutRecording.record(KeyCombo(kVK_ANSI_K, c), for: .deny, into: &bindings, center: center) {
+            check(why.contains("Another app"), "keys another app holds: refused, by the probe")
+        } else {
+            check(false, "keys another app holds: refused, by the probe")
+        }
+        equal(ShortcutRecording.record(KeyCombo(kVK_ANSI_K, 0), for: .deny, into: &bindings, center: center),
+              .refused("Hold ⌥, ⌃ or ⌘ with the key — a bare key is typing."), "a bare key: refused")
+        center.isSuspended = false
+        reg.taken = []
+        center.apply([:])
     }
 
     // MARK: - End to end
@@ -508,13 +663,19 @@ enum ShortcutsTests {
         equal(reg.heldActions, Set([.toggleIsland, .approve] + A.options.prefix(multi)), "multi-select: and ⌥⏎ for Done")
 
         print("End to end: presses that only reveal")
-        host.isAnyIslandExpanded = false
+        host.islandPresence = .closed
         reg.press(.option1); spin()
         equal(host.calls, ["open"], "⌥1 with the island closed opens it")
         equal(vm.questionPicks.first ?? [], [], "and picks nothing")
-        host.isAnyIslandExpanded = true
+        host.islandPresence = .visited
+        shortcuts.refresh(); spin()
         reg.press(.option1); spin()
-        equal(vm.questionPicks.first ?? [], [ClaudePanelFixture.multiSelect.options[0].label], "in view, ⌥1 toggles option 1")
+        equal(vm.questionPicks.first ?? [], [], "⌥1 again at once, the panel just up: still nothing")
+        equal(host.calls, ["open", "open"], "it reveals again")
+        spin(ShortcutPlan.seenDelay + 0.1)
+        reg.press(.option1); spin()
+        equal(vm.questionPicks.first ?? [], [ClaudePanelFixture.multiSelect.options[0].label],
+              "after half a second in view, ⌥1 toggles option 1")
         reg.press(.option1); spin()
         equal(vm.questionPicks.first ?? [], [], "and again, off")
 
@@ -522,24 +683,45 @@ enum ShortcutsTests {
                                                   request: guarded))
         spin(ShortcutPlan.armDelay + 0.15)
         host.calls = []
-        host.isAnyIslandExpanded = false
+        host.islandPresence = .closed
+        shortcuts.refresh(); spin()
         reg.press(.approve); spin()
-        equal(host.calls, ["open"], "⌥⏎ on a guarded command, island closed: opens it")
+        equal(host.calls, ["open"], "Approve on a guarded command, island closed: opens it")
         check(!vm.isAnsweringRequest, "and sends nothing")
         check(vm.shortcutNotice == nil, "and claims nothing")
+        host.islandPresence = .visited
+        reg.press(.approve); spin()
+        check(!vm.isAnsweringRequest, "a fast second press, panel just open: sends nothing")
+        equal(host.calls, ["open", "open"], "it reveals again, and the look starts over")
+
+        // That request was visited; a fresh one, auto-opened elsewhere.
+        vm.applyPreviewFixture(ClaudePanelFixture(name: "w2", state: .working, action: "Bash", target: "ls"))
+        spin()
+        host.islandPresence = .elsewhere
+        vm.applyPreviewFixture(ClaudePanelFixture(name: "g3", state: .needsApproval, action: "Bash", target: "git",
+                                                  request: guarded))
+        spin(max(ShortcutPlan.armDelay, ShortcutPlan.seenDelay) + 0.15)
+        host.calls = []
+        reg.press(.approve); spin()
+        equal(host.calls, ["open"], "auto-opened on another display, however long: the press reveals it where you are")
+        check(!vm.isAnsweringRequest, "and sends nothing")
+        check(shortcuts.face() != .seen, "not seen")
+        host.islandPresence = .pointerScreen
+        shortcuts.refresh(); spin()
+        equal(shortcuts.face(), .shown, "on the pointer's display: shown")
+        spin(ShortcutPlan.seenDelay + 0.1)
+        equal(shortcuts.face(), .seen, "and seen half a second on, with no press to ask")
 
         print("End to end: the island")
         host.calls = []
         reg.press(.toggleIsland); spin()
         equal(host.calls, ["toggle"], "⌥⇥ toggles")
-        host.isIslandHeldOpen = true
+        host.islandPresence = .visited
         shortcuts.refresh(); spin()
-        check(reg.heldActions.contains(.dismiss), "held open: Esc taken")
-        reg.press(.dismiss); spin()
-        equal(host.calls.last, "close", "Esc closes it")
-        host.isIslandHeldOpen = false
-        shortcuts.refresh(); spin()
-        check(!reg.heldActions.contains(.dismiss), "hold over: Esc given back")
+        check(!reg.held.values.contains { $0.keyCode == UInt32(kVK_Escape) && $0.modifiers == 0 },
+              "open by shortcut: bare Esc is never taken")
+        reg.press(.toggleIsland); spin()
+        equal(host.calls.last, "toggle", "the open shortcut is what puts it away")
         host.shortcutsRunning = false
         shortcuts.refresh(); spin()
         equal(reg.held, [:], "islands hidden: everything let go")

@@ -1722,10 +1722,9 @@ and open the island. Built 2026-11-08.
 | Default | What | Held |
 |---|---|---|
 | ⌥⇥ | Open or close the island | always |
-| ⌥⏎ | Approve · Always…'s Confirm · Done on a multi-select | only while a request waits |
-| ⌥⎋ | Deny · Always…'s Back | only while an approval waits |
+| ⌃' | Approve · Always…'s Confirm · Done on a multi-select | only while a request waits |
+| ⌃⎋ | Deny · Always…'s Back | only while an approval waits |
 | ⌥1…⌥4 | Pick (single-select) or toggle (multi-select) an option | only while a question waits, one per option |
-| ⎋ | Put away an island a shortcut opened | only while that hold lasts |
 
 - **Carbon `RegisterEventHotKey`**, no permission at all (a global key-down
   monitor would need Input Monitoring). Registered exclusive, so an app that
@@ -1735,14 +1734,24 @@ and open the island. Built 2026-11-08.
 - **Pending-only keys** are held only while the island's request is
   unanswered and no field is taking keys, and let go the moment it's
   answered, withdrawn or gone. They're taken **0.5s after the request
-  appears**, so a ⌥⏎ already on its way to another app as an approval lands
-  (Claude Code's newline in some terminals) reaches that app instead of
-  approving something unseen. A safety arm, not hover: hover stays timer-free.
+  appears**, so a keystroke already on its way to another app as an approval
+  lands reaches that app instead of approving something unseen. A safety
+  arm, not hover: hover stays timer-free.
+- **⌃' and ⌃⎋, not ⌥⏎ and ⌥⎋** (the first defaults). A request waits up to
+  300s with Approve held system-wide, so the keys must be ones nobody types
+  for their meaning — ⌥⏎ is Claude Code's newline, and one typed in another
+  session's terminal approved the waiting request instead. Every
+  one-modifier Return is someone's: ⌃⏎ is Claude Code's `chat:sendNow`, ⌘⏎
+  submits on the web and toggles full screen in iTerm2 and Ghostty. ⌃' is
+  the key beside Return; ⌃⎋ sits with Esc as Deny. Neither types anything,
+  neither is a macOS or Claude Code binding. Recording ⌥⏎ or ⌃⏎ shows a note
+  saying whose they are. The store is versioned (`"v":2`): anyone who never
+  recorded Approve or Deny gets the new keys, anyone who did keeps theirs.
 - **⌥⇥, not ⌥Space.** ⌥Space is ChatGPT's default (installed here), and
   Claude's, Raycast's and Alfred's usual pick. Option-Tab types nothing and
   macOS doesn't use it; AltTab users would clash, and Settings says so.
-- **⌥⎋ registers fine** (probed); macOS's Speak Selection also uses it when
-  that's switched on, which Settings notes.
+- **⌥⎋**, if recorded, registers fine (probed); macOS's Speak Selection also
+  uses it when that's switched on, which Settings notes.
 
 ### Mirrors the face
 
@@ -1750,15 +1759,27 @@ A press calls the face's own method (`decide(allow:)`, `allowRemembering`,
 `pickOption`, `advanceQuestion`) and does what the face would, or opens the
 island to it where the face needs a look first (`ShortcutPlan.command`):
 
-- **Plain approval**: ⌥⏎ approves, island open or closed (one tap on the face).
-- **Guarded command (M17)**: with the island closed, the first ⌥⏎ only opens
-  it to the command; the next, with it in view, approves. A guard exists so
-  someone looks. ⌥⎋ stays one press.
-- **Always…'s review**: ⌥⏎ is Confirm and ⌥⎋ is Back, only while the review
-  is on screen; out of view either just reveals it. Saving a rule is never a
-  blind press.
-- **Questions**: a number key picks only with the question on screen; out of
-  view it opens the island to it.
+- **In front of the user** (`ShortcutFaceTracker`): an island is open on
+  the Claude face with this request on it, and it's on the pointer's
+  display — or the user went to it (hovered it, or opened it by shortcut),
+  after which its auto-opened panel stays "in front" when the pointer moves
+  to another display. An alert's auto-open on a display the pointer isn't
+  on, never visited, is not. **Seen** is in front for 0.5s; the clock starts
+  when it comes up and again when it goes down, a new request takes its
+  place, or a press had to reveal it.
+- **Plain approval**: ⌃' approves in one press when the request is in front
+  of the user. Closed, or auto-opened elsewhere: the first press opens it
+  where the pointer is and approves nothing.
+- **Guarded command (M17)**: ⌃' approves only once it's been seen; before
+  that a press reveals it and restarts the half second. So neither
+  expandOnAlert's auto-open nor a fast double-tap on a closed island (the
+  panel is "open" synchronously, long before it's legible) approves it
+  unread. A guard exists so someone looks. ⌃⎋ stays one press.
+- **Always…'s review**: ⌃' is Confirm and ⌃⎋ is Back, only once the review
+  has been seen; before that either just reveals it. Saving a rule is never
+  a blind press.
+- **Questions**: a number key picks only once the question has been seen;
+  before that it opens the island to it.
 - **Which request**: always `pendingRequest`, the one on the island's
   session, the same one the face's Approve answers. With several sessions
   waiting, selection already puts the most pressing on the island; the rest
@@ -1774,8 +1795,9 @@ the live alert it answered. A reveal is its own feedback: the island opens.
 ### Open by shortcut
 
 ⌥⇥ opens the island on the pointer's screen (else the built-in display's),
-**held**: it stays wherever the pointer is, until ⌥⇥ again, Esc, or a click
-in another app. The first time the pointer enters the panel's stay-open zone
+**held**: it stays wherever the pointer is, until ⌥⇥ again or a click in
+another app. No Esc: it was held with no timeout while the hold lasted,
+taking it from vim and from Claude Code's interrupt. The first time the pointer enters the panel's stay-open zone
 the hold ends and it's an ordinary hover — leaving closes it. ⌥⇥ on an open
 island closes it: a hover ends, a field's draft is kept, and an alert's
 auto-open is dismissed as a click would (if "Dismiss alert panel" is on).
@@ -1787,7 +1809,7 @@ and an on/off; the four option keys share a row. The recorder refuses a key
 without ⌥, ⌃ or ⌘, a combo another Isle shortcut has, and one a probe
 registration says another app holds. A pending-only key refused the last
 time a request waited shows in orange under its row, as does a known owner
-(⌥Space, ⌘Space, ⌥⇥, ⌥⎋, ⌥⏎). Stored as JSON in `isle.shortcuts`, only what
+(⌥Space, ⌘Space, ⌥⇥, ⌥⎋, ⌥⏎, ⌃⏎, ⌃⌫). Stored as JSON in `isle.shortcuts`, only what
 differs from the defaults.
 
 ### Tests and renders
@@ -1808,11 +1830,16 @@ differs from the defaults.
 ### Decisions to confirm
 
 - ⌥⇥ for the island (vs ⌥Space, or ⌥\`).
-- A guarded command needing a second press when the island is closed (the
-  face itself approves it in one tap).
-- Esc taken while a shortcut holds the island open — it can't interrupt
-  Claude in the terminal until the island is put away.
-- No hint on the face's buttons (e.g. "⌥⏎" on Approve); Settings is the only
+- A guarded command needing a second press, half a second after it's in
+  view (the face itself approves it in one tap), and a plain approval
+  needing one when the island is closed or open on another display.
+- The pointer's display as the proxy for where Matthew is looking.
+- No Esc for a held island (it was taken system-wide while the hold lasted,
+  so it couldn't interrupt Claude in the terminal); ⌥⇥, a click elsewhere or
+  a visit and leaving put it away.
+- ⌃' and ⌃⎋ for Approve and Deny (⌃⏎ was the first pick, but it's Claude
+  Code's send-now).
+- No hint on the face's buttons (e.g. "⌃'" on Approve); Settings is the only
   place the keys are written.
 
 ## Milestone 8 — Multi-Display  ✅

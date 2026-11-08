@@ -31,7 +31,7 @@ struct ShortcutsSettingsSection: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            row(.toggleIsland, subtitle: "Opens on the pointer’s screen and stays until you press it again, press Esc, click elsewhere, or visit it and leave.")
+            row(.toggleIsland, subtitle: "Opens on the pointer’s screen and stays until you press it again, click elsewhere, or visit it and leave. Esc stays your other apps’.")
         } header: {
             Text("Shortcuts")
         }
@@ -41,7 +41,7 @@ struct ShortcutsSettingsSection: View {
                 row(.approve, subtitle: "Also Always…’s Confirm, and Done on a question that takes several answers.")
                 row(.deny, subtitle: "Also Always…’s Back.")
                 optionsRow
-                Text("A press does what the button does, on the request the island is showing. A guarded command takes two presses: the first opens the island to it, the second approves. A number key picks only once the question is on screen; the first press opens it. Keys are taken half a second after a request appears, so a keystroke already on its way to another app stays there.")
+                Text("A press does what the button does, on the request the island is showing — once it’s open on the screen your pointer is on. Until then the first press opens it there. A guarded command, Always…’s Confirm and the number keys also wait until it’s been in view for half a second: press, read, press again. Deny is always one press. Keys are taken half a second after a request appears, so a keystroke already on its way to another app stays there.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -195,13 +195,45 @@ struct ShortcutsSettingsSection: View {
 
     private func record(_ combo: KeyCombo, for action: ShortcutAction) {
         var next = settings.shortcuts
+        switch ShortcutRecording.record(combo, for: action, into: &next, center: center) {
+        case .unchanged:
+            messages[action] = nil
+        case .refused(let message):
+            messages[action] = message
+        case .recorded:
+            settings.shortcuts = next
+            center.clearStatus(action)
+            messages[action] = nil
+        }
+    }
+}
+
+/// What a recording comes to, out of the view so the tests can run it.
+@MainActor
+enum ShortcutRecording {
+    enum Outcome: Equatable {
+        /// The keys it already had: nothing to change, nothing to ask.
+        case unchanged
+        case recorded
+        /// Said under the row.
+        case refused(String)
+    }
+
+    /// Records `combo` for `action` into `bindings`, or says why not.
+    ///
+    /// Call it while the center is still suspended (the recorder does): the
+    /// probe then can't meet Isle's own registration. And an action given
+    /// its own keys back is no change at all — never probed, since Isle
+    /// itself may hold them, which would read as another app's.
+    static func record(_ combo: KeyCombo, for action: ShortcutAction,
+                       into bindings: inout ShortcutBindings, center: HotKeyCenter) -> Outcome {
+        if combo.isValidShortcut, bindings[action].combo == combo { return .unchanged }
+        var next = bindings
         switch next.assign(combo, to: action) {
         case .needsModifier:
-            messages[action] = "Hold ⌥, ⌃ or ⌘ with the key — a bare key is typing."
-            return
+            return .refused("Hold ⌥, ⌃ or ⌘ with the key — a bare key is typing.")
         case .clashes(let other):
-            messages[action] = "\(combo.display()) is already \(other.title)’s."
-            return
+            return .refused("\(combo.display()) is already \(other.title)’s.")
         case .assigned:
             break
         }
@@ -209,12 +241,10 @@ struct ShortcutsSettingsSection: View {
         // holds the keys exclusively says so to the probe.
         let probe = center.probe(combo)
         guard probe == noErr else {
-            messages[action] = "\(combo.display()): " + HotKeyCenter.describe(probe)
-            return
+            return .refused("\(combo.display()): " + HotKeyCenter.describe(probe))
         }
-        settings.shortcuts = next
-        center.clearStatus(action)
-        messages[action] = nil
+        bindings = next
+        return .recorded
     }
 }
 
@@ -288,8 +318,11 @@ struct ShortcutRecorder: View {
                     stop()
                     return nil
                 }
-                stop()
+                // Recorded before `stop` lets the center go again, so its
+                // probe runs with nothing of Isle's held.
+                removeMonitor()
                 onRecord(pressed)
+                onEnd()
                 return nil
             default:
                 // A click anywhere ends it, and still lands where it was aimed.

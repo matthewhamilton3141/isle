@@ -83,6 +83,10 @@ final class NotchWindowController {
     /// The global keyboard shortcuts. Made in `init`: it needs `self`.
     private var shortcuts: NotchShortcuts!
 
+    /// The island whose display the pointer was last on, to tell the
+    /// shortcuts when that changes.
+    private var lastPointerIsland: ObjectIdentifier?
+
     /// Between `show()` and `hide()`. Screen and settings changes only re-place
     /// panels while this is true.
     private var isRunning = false
@@ -220,8 +224,9 @@ final class NotchWindowController {
     private func makeIsland(id: CGDirectDisplayID, screen: NSScreen, metrics: NotchMetrics) {
         let presentation = IslandPresentation(content: viewModel)
         presentation.metrics = metrics
-        // A shortcut's hold takes Esc while it lasts.
-        presentation.$isHeldOpen
+        // A hover (or a shortcut's hold) is the user going to the island,
+        // which the shortcuts read (`islandPresence`).
+        presentation.$isHovering
             .removeDuplicates()
             .sink { [weak self] _ in self?.shortcuts.refresh() }
             .store(in: &cancellables)
@@ -416,7 +421,15 @@ final class NotchWindowController {
         let sweeping = isSweep(event)
 
         let pointer = NSEvent.mouseLocation
-        guard let active = island(containing: pointer) else {
+        let pointerIsland = island(containing: pointer)
+        // Onto another display: whether an open island is in front of the
+        // user changed, which the shortcuts read (`islandPresence`).
+        let pointerDisplay = pointerIsland.map(ObjectIdentifier.init)
+        if pointerDisplay != lastPointerIsland {
+            lastPointerIsland = pointerDisplay
+            shortcuts.refresh()
+        }
+        guard let active = pointerIsland else {
             collapseAll()
             return
         }
@@ -827,8 +840,17 @@ extension NotchWindowController: ShortcutIslandHost {
         islands.values.contains { $0.presentation.state.isExpanded && !$0.presentation.isDropTarget }
     }
 
-    var isIslandHeldOpen: Bool {
-        islands.values.contains { $0.presentation.isHeldOpen }
+    /// An open island is in front of the user if the pointer is in it (or a
+    /// shortcut opened it — `isHovering` covers both) or on its display.
+    /// One open only by an alert, on another display, isn't.
+    var islandPresence: ShortcutIslandPresence {
+        let open = islands.values.filter { $0.presentation.state.isExpanded && !$0.presentation.isDropTarget }
+        guard !open.isEmpty else { return .closed }
+        if open.contains(where: { $0.presentation.isHovering }) { return .visited }
+        if let here = island(containing: NSEvent.mouseLocation), open.contains(where: { $0 === here }) {
+            return .pointerScreen
+        }
+        return .elsewhere
     }
 
     /// Open the island if none is open; otherwise put it away — whatever is
@@ -867,6 +889,8 @@ extension NotchWindowController: ShortcutIslandHost {
         }
     }
 
+    /// A click in another app: put away an island a shortcut is holding.
+    /// (There's no Esc for it — Esc is vim's and Claude Code's interrupt.)
     func closeHeldIsland() {
         var closed = false
         for island in islands.values where island.presentation.isHeldOpen && island !== keyIsland {

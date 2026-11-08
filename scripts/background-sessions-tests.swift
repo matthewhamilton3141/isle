@@ -66,8 +66,93 @@ enum Tests {
         rowTests()
         attachTests()
         viewModelTests()
+        runnerTests()
         print("\n\(passes) passed, \(failures) failed")
         exit(failures == 0 ? 0 : 1)
+    }
+
+    // MARK: - Running the CLI
+
+    /// `ClaudeCLI.run`, on fake commands: never wedged by a child that
+    /// leaves something holding its stdout, never past its timeout.
+    static func runnerTests() {
+        print("Running the CLI, bounded")
+        let sh = URL(fileURLWithPath: "/bin/sh")
+        let scratch = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("isle-runner-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        func timed(_ body: () -> Data?) -> (Data?, TimeInterval) {
+            let start = Date()
+            let out = body()
+            return (out, Date().timeIntervalSince(start))
+        }
+        func text(_ data: Data?) -> String? { data.map { String(decoding: $0, as: UTF8.self) } }
+        func alive(_ pid: pid_t) -> Bool { kill(pid, 0) == 0 || errno == EPERM }
+        func pid(in file: URL) -> pid_t? {
+            (try? String(contentsOf: file, encoding: .utf8))
+                .flatMap { pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        }
+        func gone(_ pid: pid_t, within seconds: TimeInterval) -> Bool {
+            let until = Date().addingTimeInterval(seconds)
+            while Date() < until {
+                if !alive(pid) { return true }
+                usleep(20_000)
+            }
+            return !alive(pid)
+        }
+
+        var (out, took) = timed { ClaudeCLI.run(sh, ["-c", "echo '[]'"], timeout: 5) }
+        equal(text(out), "[]\n", "a plain run: its stdout")
+        check(took < 1, "promptly", "\(took)s")
+        (out, _) = timed { ClaudeCLI.run(sh, ["-c", "echo nope; exit 3"], timeout: 5) }
+        check(out == nil, "a non-zero exit: nil")
+        (out, _) = timed { ClaudeCLI.run(sh, ["-c", "head -c 300000 /dev/zero"], timeout: 5) }
+        equal(out?.count, 300000, "more than a pipe's buffer, all of it")
+
+        // The wedge: the child exits 0, but a grandchild it left behind
+        // still has its stdout. Reading to EOF waited the grandchild out.
+        let lingering = scratch.appendingPathComponent("lingering.pid")
+        (out, took) = timed {
+            ClaudeCLI.run(sh, ["-c", "echo '[]'; sleep 30 & echo $! > '\(lingering.path)'; exit 0"], timeout: 8)
+        }
+        equal(text(out), "[]\n", "a grandchild holding stdout after the child exits: the child's output")
+        check(took < 1.5, "without waiting the grandchild out", "\(took)s")
+        if let grandchild = pid(in: lingering) { kill(grandchild, SIGKILL) }
+
+        // A child that never finishes, with a grandchild on the pipe too:
+        // the timeout ends the lot.
+        let hung = scratch.appendingPathComponent("hung.pid")
+        (out, took) = timed {
+            ClaudeCLI.run(sh, ["-c", "sleep 30 & echo $! > '\(hung.path)'; echo partial; sleep 30"], timeout: 1)
+        }
+        check(out == nil, "a run that outlives its timeout: nil")
+        check(took < 2, "returns at the timeout, not when the children finish", "\(took)s")
+        if let grandchild = pid(in: hung) {
+            check(gone(grandchild, within: 1), "and the grandchild is killed with it (its process group)")
+        } else {
+            check(false, "the grandchild wrote its pid")
+        }
+
+        // Ignores SIGTERM: SIGKILL follows.
+        (out, took) = timed { ClaudeCLI.run(sh, ["-c", "trap '' TERM; sleep 30"], timeout: 0.5) }
+        check(out == nil && took < 2, "a child that ignores SIGTERM is killed all the same", "\(took)s")
+
+        // The serial queue the monitor reads on keeps moving.
+        let queue = DispatchQueue(label: "isle.runner-test")
+        let done = DispatchSemaphore(value: 0)
+        let stray = scratch.appendingPathComponent("stray.pid")
+        queue.async { _ = ClaudeCLI.run(sh, ["-c", "sleep 30 & echo $! > '\(stray.path)'; exit 0"], timeout: 8) }
+        queue.async { done.signal() }
+        check(done.wait(timeout: .now() + 2) == .success, "the next read on the same serial queue isn't stuck behind it")
+        if let grandchild = pid(in: stray) { kill(grandchild, SIGKILL) }
+
+        setenv("CLAUDECODE", "1", 1)
+        (out, _) = timed { ClaudeCLI.run(sh, ["-c", "echo ${CLAUDECODE-unset}"], timeout: 5) }
+        unsetenv("CLAUDECODE")
+        equal(text(out), "unset\n", "CLAUDECODE isn't passed on")
+        (out, _) = timed { ClaudeCLI.run(URL(fileURLWithPath: "/nonexistent/claude"), [], timeout: 5) }
+        check(out == nil, "no such binary: nil")
     }
 
     // MARK: - Parsing

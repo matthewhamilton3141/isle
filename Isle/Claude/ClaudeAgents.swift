@@ -489,8 +489,10 @@ final class ClaudeAgentsMonitor {
     }
 
     private func finish(_ read: [ClaudeAgent]?, generation: Int) {
+        // Whatever else, this read is over: a stale one must never leave
+        // the next cue waiting on it.
+        if generation == self.generation { inFlight = false }
         guard generation == self.generation, isRunning else { return }
-        inFlight = false
         let next = read ?? []
         watchJobs(next.filter(\.isBackground).compactMap(\.attachId))
         if next != agents {
@@ -635,30 +637,129 @@ enum ClaudeCLI {
         return ClaudeAgentsParser.parse(output)
     }
 
-    /// Runs `binary` to completion, or kills it at `timeout`. Its stdout,
-    /// when it exited 0. Never on the main thread.
+    /// Runs `binary` and returns its stdout, when it exited 0 — or nil, and
+    /// never later than `timeout` (plus a moment to reap). Never on the main
+    /// thread.
+    ///
+    /// Bounded however the child behaves. Its stdout isn't read to EOF —
+    /// EOF waits for every writer, and anything it spawned (a login shell's
+    /// profile, the CLI's own helpers) can hold the pipe open long after it
+    /// exits. The pipe is polled against the deadline instead: once the
+    /// child itself has exited, what's buffered is taken and the pipe is
+    /// abandoned; at the deadline the child's whole process group — it's
+    /// started in one of its own — is killed and the pipe abandoned too.
+    /// Either way the serial queue this runs on moves on.
     static func run(_ binary: URL, _ arguments: [String], timeout: TimeInterval) -> Data? {
-        let process = Process()
-        process.executableURL = binary
-        process.arguments = arguments
         // Isle isn't run from a Claude session, but if it ever is, the CLI
         // mustn't think it's nested in one.
         var environment = ProcessInfo.processInfo.environment
         for key in environment.keys where key == "CLAUDECODE" || key == "CLAUDE_PID" || key.hasPrefix("CLAUDE_CODE_") {
             environment[key] = nil
         }
-        process.environment = environment
-        process.standardInput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        do { try process.run() } catch { return nil }
-        let killer = DispatchWorkItem { if process.isRunning { process.terminate() } }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout, execute: killer)
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        killer.cancel()
-        guard process.terminationReason == .exit, process.terminationStatus == 0 else { return nil }
+        var fds: [Int32] = [-1, -1]
+        guard pipe(&fds) == 0 else { return nil }
+        let readFD = fds[0], writeFD = fds[1]
+        // Close-on-exec at once, so no other spawn Isle makes meanwhile
+        // inherits a writer and holds this pipe open.
+        _ = fcntl(readFD, F_SETFD, FD_CLOEXEC)
+        _ = fcntl(writeFD, F_SETFD, FD_CLOEXEC)
+        defer { close(readFD) }
+
+        var actions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&actions)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
+        posix_spawn_file_actions_adddup2(&actions, writeFD, 1)
+        posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0)
+
+        var attributes: posix_spawnattr_t?
+        posix_spawnattr_init(&attributes)
+        defer { posix_spawnattr_destroy(&attributes) }
+        // Its own process group (pgid = its pid), so a timeout can take
+        // down everything it started; only stdin/out/err inherited; signals
+        // as a fresh process has them, whatever Isle ignores or blocks.
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT
+                                                     | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
+        posix_spawnattr_setpgroup(&attributes, 0)
+        var all = sigset_t(), none = sigset_t()
+        sigfillset(&all)
+        sigemptyset(&none)
+        posix_spawnattr_setsigdefault(&attributes, &all)
+        posix_spawnattr_setsigmask(&attributes, &none)
+
+        let argv = ([binary.path] + arguments).map { strdup($0) } + [nil]
+        let envp = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
+        defer {
+            argv.forEach { free($0) }
+            envp.forEach { free($0) }
+        }
+        var pid: pid_t = 0
+        let spawned = posix_spawn(&pid, binary.path, &actions, &attributes, argv, envp)
+        close(writeFD)
+        guard spawned == 0 else { return nil }
+        _ = fcntl(readFD, F_SETFL, fcntl(readFD, F_GETFL) | O_NONBLOCK)
+
+        let deadline = Date().addingTimeInterval(timeout)
+        /// How long after the child exits its stdout may still reach EOF —
+        /// past that, whoever still holds it isn't the child.
+        let drainAfterExit: TimeInterval = 0.25
+        var data = Data()
+        var status: Int32 = 0
+        var exitedAt: Date?
+        var statusKnown = false
+        var eof = false
+        var buffer = [UInt8](repeating: 0, count: 65536)
+
+        while true {
+            if exitedAt == nil {
+                let reaped = waitpid(pid, &status, WNOHANG)
+                if reaped == pid {
+                    exitedAt = Date()
+                    statusKnown = true
+                } else if reaped < 0, errno != EINTR {
+                    exitedAt = Date()   // not ours to reap any more: no status
+                }
+            }
+            let now = Date()
+            if let exitedAt, eof || now.timeIntervalSince(exitedAt) >= drainAfterExit { break }
+            if now >= deadline { break }
+            if eof {
+                // Nothing more to read; the child hasn't exited yet.
+                usleep(10_000)
+                continue
+            }
+            var pfd = pollfd(fd: readFD, events: Int16(POLLIN), revents: 0)
+            let slice = Int32(max(1, min(50, deadline.timeIntervalSince(now) * 1000)))
+            guard poll(&pfd, 1, slice) > 0 else { continue }
+            while true {
+                let n = buffer.withUnsafeMutableBytes { read(readFD, $0.baseAddress, $0.count) }
+                if n > 0 {
+                    data.append(buffer, count: n)
+                } else if n == 0 {
+                    eof = true
+                    break
+                } else if errno == EINTR {
+                    continue
+                } else {
+                    break   // EAGAIN: all there is for now
+                }
+            }
+        }
+
+        guard exitedAt != nil else {
+            // Out of time: the child and everything it started, then reap.
+            killpg(pid, SIGTERM)
+            let grace = Date().addingTimeInterval(0.5)
+            while Date() < grace {
+                if waitpid(pid, &status, WNOHANG) != 0 { return nil }
+                usleep(10_000)
+            }
+            killpg(pid, SIGKILL)
+            while waitpid(pid, &status, 0) < 0, errno == EINTR {}
+            return nil
+        }
+        // Exited normally, with 0.
+        guard statusKnown, status & 0x7f == 0, (status >> 8) & 0xff == 0 else { return nil }
         return data
     }
 }
