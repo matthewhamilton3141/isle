@@ -1778,9 +1778,37 @@ moves the island while you are reaching for it.
 
 ## Milestone 9 — Power & Charging Activities
 
+**Status: built and on main (September 2026, eeb78d0 / 5ce9646).** Everything
+is in `Isle/Power/`:
+
+- `PowerMonitor` — the Mac's battery from `IOPSCopyPowerSourcesInfo`, driven by
+  the `IOPSNotificationCreateRunLoopSource` callback plus the Low Power Mode
+  notification; no polling, no permission prompt. A pure
+  `events(from:to:)` diff turns two snapshots into toasts: plugged in (with
+  time to full when IOKit has one), unplugged (with time left), fully charged,
+  low battery on the way down past 20% and 10% (battery only), and Low Power
+  Mode on/off. Nothing for the first reading after `start()`.
+- `BluetoothBatteryMonitor` — IOBluetooth connect notifications, then
+  `system_profiler SPBluetoothDataType -json` off the main thread (5s
+  timeout), 2s after a connect so the levels have arrived; a 3s launch grace
+  swallows the notifications IOBluetooth fires for devices already connected.
+  A device's level is the lower of its left/right (the case excluded). A
+  connect reports the device; a charger plug-in re-reads them all and reports
+  only the lowest at or below 20%.
+- `PowerToast` — the toast factories, their copy and colours (charge green,
+  warning orange, alarm red; a device in warning orange at or below 20%), the
+  device glyph from its model (`DeviceSymbol`) or `device_minorType`;
+  `BluetoothRune` draws the Bluetooth mark SF Symbols lacks for a device
+  macOS won't name; `GlyphInk` centres each symbol on its measured ink.
+- Two Settings switches, both on by default: `showBatteryEvents` (the Mac) and
+  `showDeviceBattery` (peripherals — the half that costs a subprocess, and
+  that stops being watched when off). Toasts last `toastSeconds` (4s) in the
+  collapsed island and coalesce by kind.
+
+The rest of this section is the plan as written, then what shipped.
+
 *Plugged in. 42%.* A third thing worth reporting, alongside music and Claude:
 the Mac's own power state, and the batteries of the devices attached to it.
-Nothing exists today — there is no `IOPowerSources` use anywhere in `Isle/`.
 
 ### Goal
 Connecting a charger, crossing a low-battery threshold, or connecting a device
