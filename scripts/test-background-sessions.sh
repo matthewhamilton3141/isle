@@ -4,7 +4,8 @@
 # scripts/background-sessions-tests.swift with every Isle source (the merge
 # runs through the real view model) and runs it against the fixtures in
 # scripts/fixtures — real `claude agents --json --all` output from 2.1.319.
-# Runs no `claude` and touches nothing under ~/.claude.
+# Runs no `claude` and touches nothing under ~/.claude; the CLI runner is
+# checked on /bin/sh fakes (a grandchild holding stdout, a hang, a timeout).
 #
 # Usage: scripts/test-background-sessions.sh
 #
