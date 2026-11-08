@@ -47,6 +47,22 @@ extension Transaction {
     }
 }
 
+/// Marks a face change made inside an otherwise untimed transaction — a
+/// swipe landing, which swaps the face and re-bases the pager's offset in
+/// one frame so nothing on screen jumps. The panel's height still has to
+/// move to the new face's (Agenda is taller than Music), and only the
+/// height frame reads this flag, so it alone gets a spring.
+private struct PanelResizeKey: TransactionKey {
+    static let defaultValue = false
+}
+
+extension Transaction {
+    var isPanelResize: Bool {
+        get { self[PanelResizeKey.self] }
+        set { self[PanelResizeKey.self] = newValue }
+    }
+}
+
 enum IslandCollapseChannel {
     case width, height, corners
 

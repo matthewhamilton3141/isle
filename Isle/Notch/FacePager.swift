@@ -115,6 +115,9 @@ final class FacePager: ObservableObject {
             // new face so nothing on screen moves in this frame.
             var instant = Transaction()
             instant.disablesAnimations = true
+            // The panel's height is the one thing that should still move:
+            // NotchRootView springs its height frame on this flag.
+            instant.isPanelResize = true
             withTransaction(instant) {
                 content.selectTab(target)
                 current = target
