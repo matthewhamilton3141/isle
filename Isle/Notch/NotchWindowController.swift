@@ -970,7 +970,11 @@ extension NotchWindowController {
         context.settingsInFront = NSApp.isActive && window.isVisible && (window.isKeyWindow || colourPanelKey)
         context.dropInProgress = fileDrag.isDraggingFiles || islands.values.contains { $0.presentation.isDropTarget }
         context.composing = viewModel.composing != nil || keyIsland != nil
-        context.requestShowing = viewModel.pendingRequest != nil && viewModel.expandedPlace == .face(.claude)
+        // Any live Claude alert on its face, not only one with a request
+        // file: an approval without "Answer from the notch", a failure, a
+        // limit waiting for Enter. Moving off it would mark the alert's
+        // face as overridden until the alert cleared.
+        context.requestShowing = viewModel.hasLiveActivity && viewModel.expandedPlace == .face(.claude)
         context.availableTabs = viewModel.availableTabs
 
         guard case .open(let face) = SettingsPreviewPlan.decide(change, context: context) else { return }

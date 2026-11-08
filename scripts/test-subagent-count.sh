@@ -179,6 +179,9 @@ expect "a Stop without background_tasks (an older Claude Code) lets them go, as 
 prompt; start f5 Explore
 printf '{"session_id":"s1","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Done.","background_tasks": [ ],"session_crons":[]}' | hook set-state done
 expect "an empty list written with spaces: none" "[]" state=done
+prompt; start f6 Explore
+printf '{"session_id":"s1","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Done.","session_crons":[{"id":"c1","schedule":"0 9 * * *","recurring":true,"prompt":"check"}]}' | hook set-state done
+expect "wake-ups but no task list: none, as with no list at all" "[]" state=done
 LONG=a123456789012345678901234567890123456789012345678901234567890123456789
 prompt; start "$LONG" Explore
 end_turn s1 "$LONG:Explore"

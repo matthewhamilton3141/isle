@@ -515,12 +515,13 @@ final class NotchViewModel: ObservableObject {
             return claudeSessions.contains { $0.sessionId == id }
         }
         // A record's agents only while its process lives: one killed outright
-        // fires no SessionEnd to clear them (Milestone 22). Like `live`, only
-        // against a registry that has been read: checked against nothing,
-        // every agent would go.
+        // fires no SessionEnd to clear them (Milestone 22). Only against a
+        // registry that has been read: before the first pass, or with no
+        // registry directory at all, nothing says a process is gone. An
+        // empty registry that was read says every process is.
         let liveIds = Set(claudeSessions.map(\.sessionId))
         let pool = (live.isEmpty ? statuses : live).map(reconciled).map(backgroundMerge.resolve).map { status in
-            guard !claudeSessions.isEmpty else { return status }
+            guard claudeRegistryRead else { return status }
             var status = status
             status.subagents = ClaudeSubagents.counted(status.subagents, sessionId: status.sessionId, live: liveIds)
             return status
@@ -707,7 +708,16 @@ final class NotchViewModel: ObservableObject {
     private struct ClaudeReading {
         let sessions: [ClaudeSession]
         let tails: [String: TranscriptTail]
+        /// The registry's directory was there to read: an empty `sessions`
+        /// then means no Claude Code process is alive, not that there was
+        /// nothing to look at.
+        var registryRead = true
     }
+
+    /// Whether the last pass read a registry directory — see
+    /// `ClaudeReading.registryRead`. Until one has, a session's agents can't
+    /// be checked against its process.
+    private var claudeRegistryRead = false
 
     /// Each live session's transcript tail, as the last background pass read
     /// it. Only for the sessions `reconciled` consults — working, or showing a
@@ -759,6 +769,8 @@ final class NotchViewModel: ObservableObject {
     nonisolated private static func readClaude(statuses: [ClaudeStatus], waitingRequests: Set<String>,
                                                registryURL: URL) -> ClaudeReading {
         let sessions = ClaudeSessionRegistry.scan(registryURL)
+        var isDirectory: ObjCBool = false
+        let registryRead = FileManager.default.fileExists(atPath: registryURL.path, isDirectory: &isDirectory) && isDirectory.boolValue
         var tails: [String: TranscriptTail] = [:]
         for status in statuses where status.state == .working || status.state.isAttention {
             guard let id = status.sessionId, tails[id] == nil,
@@ -771,7 +783,7 @@ final class NotchViewModel: ObservableObject {
             }
             tails[id] = transcriptTail(cwd: session.cwd, sessionId: id)
         }
-        return ClaudeReading(sessions: sessions, tails: tails)
+        return ClaudeReading(sessions: sessions, tails: tails, registryRead: registryRead)
     }
 
     private func applyClaudeReading(_ reading: ClaudeReading, generation: Int) {
@@ -787,6 +799,7 @@ final class NotchViewModel: ObservableObject {
             agentsMonitor.cue()
         }
         claudeSessions = reading.sessions
+        claudeRegistryRead = reading.registryRead
         transcriptTails = reading.tails
         updateBackgroundMerge()
 
@@ -1848,6 +1861,7 @@ final class NotchViewModel: ObservableObject {
             claudeReadWantsApply = false
             transcriptTails = [:]
             claudeSessions = []
+            claudeRegistryRead = false
             claudeStatuses = []
             claudeRequests = []
             claudeRequestId = nil
