@@ -312,6 +312,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         if let settingsWindow {
+            notchController?.watchSettingsWindow(settingsWindow)
             settingsWindow.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -328,6 +329,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.center()
         window.isReleasedWhenClosed = false
         settingsWindow = window
+        // While it's in front, a change made in it opens the island to show
+        // it — no hovering the notch after every click.
+        notchController?.watchSettingsWindow(window)
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

@@ -163,11 +163,26 @@ enum ShortcutsTests {
 
         print("Key combos: display")
         let us: (UInt32) -> String? = { _ in nil }
-        equal(optReturn.display(character: us), "⌥⏎", "⌥⏎")
-        equal(A.deny.defaultCombo.display(character: us), "⌃⎋", "⌃⎋")
+        equal(optReturn.display(character: us), "⌥Return", "Return by name: ⌥Return, not ⌥⏎")
+        equal(A.deny.defaultCombo.display(character: us), "⌃Esc", "Deny's default: ⌃Esc, not ⌃⎋")
         equal(A.approve.defaultCombo.display(character: us), "⌃'", "⌃'")
         equal(A.approve.defaultCombo.spoken, "Control-'", "spoken, ⌃'")
-        equal(A.toggleIsland.defaultCombo.display(character: us), "⌥⇥", "⌥⇥")
+        equal(A.toggleIsland.defaultCombo.display(character: us), "⌥Tab", "the island's default: ⌥Tab, not ⌥⇥")
+        equal(KeyCombo(kVK_Delete, c).display(character: us), "⌃Delete", "Delete by name")
+        equal(KeyCombo(kVK_ForwardDelete, o).display(character: us), "⌥Fwd Del", "forward delete, short")
+        equal(KeyCombo(kVK_ANSI_KeypadEnter, cmd).display(character: us), "⌘Enter", "the keypad's Enter")
+        equal(KeyCombo(kVK_Home, o).display(character: us), "⌥Home", "Home by name")
+        equal(KeyCombo(kVK_PageDown, o).display(character: us), "⌥Pg Dn", "Page Down, short")
+        equal(KeyCombo(kVK_LeftArrow, c | o).display(character: us), "⌃⌥←", "the arrows keep their arrows")
+        equal(KeyCombo(kVK_Escape, c | o | s | cmd).display(character: us), "⌃⌥⇧⌘Esc",
+              "the modifiers keep their glyphs, in menu order")
+        for code in [kVK_Return, kVK_Escape, kVK_Tab, kVK_Space, kVK_Delete, kVK_ForwardDelete, kVK_ANSI_KeypadEnter,
+                     kVK_Home, kVK_End, kVK_PageUp, kVK_PageDown] {
+            let name = KeyCombo.keyName(UInt32(code), character: { _ in "x" })
+            check(!name.unicodeScalars.contains { "⏎⌤⎋⇥⌫⌦↖↘⇞⇟".unicodeScalars.contains($0) },
+                  "key \(code) is a word (\(name)), whatever the layout says")
+        }
+        equal(KeyCombo(kVK_Escape, c).spoken, "Control-Escape", "spoken in full: Control-Escape")
         equal(A.option3.defaultCombo.display(character: us), "⌥3", "⌥3")
         equal(KeyCombo(kVK_Space, o).display(character: us), "⌥Space", "⌥Space")
         equal(KeyCombo(kVK_ANSI_K, c | o | s | cmd).display(character: us), "⌃⌥⇧⌘K", "modifiers in menu order")
@@ -291,7 +306,11 @@ enum ShortcutsTests {
         check(ShortcutNotes.note(for: KeyCombo(kVK_Space, c))?.contains("input") == true, "⌃Space is input sources")
         check(ShortcutNotes.note(for: A.toggleIsland.defaultCombo)?.contains("AltTab") == true, "⌥⇥ says AltTab, honestly")
         check(ShortcutNotes.note(for: KeyCombo(kVK_Escape, o))?.contains("Speak Selection") == true, "⌥⎋ says Speak Selection")
-        check(ShortcutNotes.note(for: KeyCombo(kVK_Return, o))?.contains("Claude Code uses ⌥⏎ for a newline") == true,
+        check(ShortcutNotes.note(for: A.toggleIsland.defaultCombo)?.contains("use ⌥Tab,") == true,
+              "the note writes the keys as Settings does: ⌥Tab")
+        check(ShortcutNotes.note(for: KeyCombo(kVK_Escape, o | cmd))?.contains("⌥⌘Esc") == true, "⌥⌘Esc is Force Quit")
+        check(ShortcutNotes.note(for: KeyCombo(kVK_Delete, c))?.contains("⌃Delete") == true, "⌃Delete deletes a word")
+        check(ShortcutNotes.note(for: KeyCombo(kVK_Return, o))?.contains("Claude Code uses ⌥Return for a newline") == true,
               "recording ⌥⏎ says it's Claude Code's newline")
         check(ShortcutNotes.note(for: KeyCombo(kVK_Return, c))?.contains("send a message now") == true,
               "recording ⌃⏎ says it's Claude Code's send-now")
@@ -747,7 +766,7 @@ enum ShortcutsTests {
         let plain: (KeyCombo) -> String = { $0.display(character: { _ in nil }) }
         let keys = ShortcutHints.keys(defaults, display: plain)
         equal(keys[.approve], "⌃'", "Approve's hint is its key: ⌃'")
-        equal(keys[.deny], "⌃⎋", "Deny's: ⌃⎋")
+        equal(keys[.deny], "⌃Esc", "Deny's: ⌃Esc")
         equal(keys[.option1], "⌥1", "option 1's: ⌥1")
         check(keys[.toggleIsland] == nil, "open/close has no button, so no hint")
         var rebound = defaults
@@ -809,6 +828,13 @@ enum ShortcutsTests {
         equal(vm.shortcutHints.live, [], "but not live: a press would reach another app")
         spin(ShortcutPlan.armDelay + 0.15)
         equal(vm.shortcutHints.live, [.approve, .deny], "armed: live, with nothing to refresh it")
+        center.isSuspended = true
+        spin()
+        equal(vm.shortcutHints.live, [], "the recorder took the keys: no hint says a press would act")
+        check(vm.shortcutHints.key(.approve) != nil, "but their room is kept: nothing moves")
+        center.isSuspended = false
+        spin()
+        equal(vm.shortcutHints.live, [.approve, .deny], "recorder done: live again, with nothing else to refresh it")
 
         settings.shortcuts.assign(KeyCombo(kVK_ANSI_Y, c | o), to: .approve)
         spin()
@@ -849,6 +875,8 @@ enum ShortcutsTests {
                                                   request: ClaudePanelFixture.question([ClaudePanelFixture.threeOptions])))
         spin(max(ShortcutPlan.armDelay, ShortcutPlan.seenDelay) + 0.2)
         equal(vm.shortcutHints.live, [.option1, .option3], "⌥2 held by another app: no hint on option 2")
+        check(vm.shortcutHints.key(.option2) == nil && vm.shortcutHints.key(.option1) != nil,
+              "refused: no room kept for its hint either (the button is as it would be unbound)")
         UserDefaults.standard.removePersistentDomain(forName: suite)
     }
 

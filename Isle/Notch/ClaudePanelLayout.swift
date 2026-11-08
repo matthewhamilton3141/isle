@@ -93,8 +93,16 @@ enum ClaudePanelLayout {
     static let pillSize: CGFloat = 11.5
     /// A shortcut's keys on a button (`ShortcutHints`).
     static let keyHintSize: CGFloat = 10
-    /// Kept clear for a key over a stacked option's top corner.
+    /// Kept clear for a key over a stacked option's top corner, at the
+    /// least — what ⌥1 takes, so the default keys' rows are as they were.
     static let keyHintClearance: CGFloat = 26
+    /// The widest key a stacked option row carries over its corner: three
+    /// modifiers and a word ("⌃⌥⇧Space", 60pt) fit. A longer chord
+    /// ("⌃⌥⇧⌘Space") would take a fifth of the label; the row drops it
+    /// instead, and the key still works.
+    static let keyHintMaxWidth: CGFloat = 64
+    /// Between a stacked option's label and the key over its corner.
+    static let keyHintGap: CGFloat = 10
 
     static var eyebrowFont: Font { .system(size: eyebrowSize, weight: .semibold) }
     static var headlineFont: Font { .system(size: headlineSize, weight: .bold) }
@@ -330,6 +338,26 @@ enum ClaudePanelLayout {
         lineCache[key] = count
         return count
     }
+
+    /// How wide a key hint draws — measured by SwiftUI, like the lines.
+    static func keyHintWidth(_ key: String) -> CGFloat {
+        if let cached = keyWidthCache[key] { return cached }
+        let width = ceil(NSHostingView(rootView: Text(key).font(keyHintFont).fixedSize()).fittingSize.width)
+        if keyWidthCache.count > 64 { keyWidthCache.removeAll() }
+        keyWidthCache[key] = width
+        return width
+    }
+
+    /// What a stacked option's label keeps clear for `key` over its corner:
+    /// the key's own width and a gap, never less than the default keys
+    /// take. Nil when the key is too long for an option row to carry.
+    static func keyHintClearance(for key: String) -> CGFloat? {
+        let width = keyHintWidth(key)
+        guard width <= keyHintMaxWidth else { return nil }
+        return max(keyHintClearance, width + keyHintGap)
+    }
+
+    private static var keyWidthCache: [String: CGFloat] = [:]
 
     /// The height SwiftUI lays `text` out at, unwrapped or wrapped to `width`.
     private static func textHeight(_ text: String, font: Font, width: CGFloat?) -> CGFloat {

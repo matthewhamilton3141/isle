@@ -57,8 +57,9 @@ final class HotKeyCenter: ObservableObject {
     private var wanted: [ShortcutAction: KeyCombo] = [:]
 
     /// Everything let go while true — the Settings recorder sets it, so the
-    /// combo being typed reaches the recorder instead of firing.
-    var isSuspended = false {
+    /// combo being typed reaches the recorder instead of firing. Published
+    /// so the island's key hints go faint with the keys (`NotchShortcuts`).
+    @Published var isSuspended = false {
         didSet {
             guard isSuspended != oldValue else { return }
             reconcile()

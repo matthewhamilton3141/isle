@@ -91,6 +91,12 @@ final class NotchWindowController {
     /// panels while this is true.
     private var isRunning = false
 
+    /// The Settings window, while the island previews what it changes (see
+    /// `SettingsPreview.swift`), and the island the preview holds open.
+    private weak var settingsWindow: NSWindow?
+    private var settingsPreview = SettingsPreviewHold<CGDirectDisplayID>()
+    private var settingsPreviewObservers: [any NSObjectProtocol] = []
+
     var isVisible: Bool { islands.values.contains { $0.window.isVisible } }
 
     /// The capture behind the waveform, for Settings to report on. The view
@@ -105,6 +111,7 @@ final class NotchWindowController {
         }
         observeComposing()
         observeReduceMotion()
+        observeSettingsChanges()
         shortcuts = NotchShortcuts(viewModel: viewModel, host: self)
     }
 
@@ -120,6 +127,9 @@ final class NotchWindowController {
         }
         if let localPointerMonitor {
             NSEvent.removeMonitor(localPointerMonitor)
+        }
+        for observer in settingsPreviewObservers {
+            NotificationCenter.default.removeObserver(observer)
         }
     }
 
@@ -229,6 +239,14 @@ final class NotchWindowController {
         presentation.$isHovering
             .removeDuplicates()
             .sink { [weak self] _ in self?.shortcuts.refresh() }
+            .store(in: &cancellables)
+        // A hold that ended any way but the preview's own end — the pointer
+        // visited, the shortcut, a click in another app — isn't the
+        // preview's to close any more.
+        presentation.$isHeldOpen
+            .removeDuplicates()
+            .filter { !$0 }
+            .sink { [weak self] _ in self?.settingsPreview.released(id) }
             .store(in: &cancellables)
 
         let window = NotchWindow(contentRect: metrics.maximumFrame)
@@ -905,6 +923,91 @@ extension NotchWindowController: ShortcutIslandHost {
             closed = true
         }
         if closed { runDeferredSync() }
+    }
+}
+
+// MARK: - Settings preview
+
+extension NotchWindowController {
+    /// Settings is open in `window`: from now on a change made in it opens
+    /// the island to show it (see `SettingsPreview.swift`), until the window
+    /// closes or Isle stops being the active app. Called each time Settings
+    /// is brought up; the same window again changes nothing.
+    func watchSettingsWindow(_ window: NSWindow) {
+        guard window !== settingsWindow else { return }
+        for observer in settingsPreviewObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        settingsWindow = window
+        let center = NotificationCenter.default
+        settingsPreviewObservers = [
+            center.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.endSettingsPreview(.settingsClosed) }
+            },
+            center.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.endSettingsPreview(.appResignedActive) }
+            },
+        ]
+    }
+
+    /// Every change to a setting the island shows. A turn later, like the
+    /// other settings observers: `@Published` fires before the value lands,
+    /// and the faces on offer (Pomodoro switched on) follow from it.
+    private func observeSettingsChanges() {
+        settings.previewChanges
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] change in self?.settingChanged(change) }
+            .store(in: &cancellables)
+    }
+
+    private func settingChanged(_ change: SettingsPreviewChange) {
+        guard let window = settingsWindow else { return }
+        var context = SettingsPreviewPlan.Context()
+        context.running = isRunning && !islands.isEmpty
+        // The window in front, or the colour panel the accent well opened
+        // from it — read now, never polled.
+        let colourPanelKey = NSColorPanel.sharedColorPanelExists && NSColorPanel.shared.isKeyWindow
+        context.settingsInFront = NSApp.isActive && window.isVisible && (window.isKeyWindow || colourPanelKey)
+        context.dropInProgress = fileDrag.isDraggingFiles || islands.values.contains { $0.presentation.isDropTarget }
+        context.composing = viewModel.composing != nil || keyIsland != nil
+        context.requestShowing = viewModel.pendingRequest != nil && viewModel.expandedPlace == .face(.claude)
+        context.availableTabs = viewModel.availableTabs
+
+        guard case .open(let face) = SettingsPreviewPlan.decide(change, context: context) else { return }
+        if let face, viewModel.expandedPlace != .face(face) {
+            viewModel.selectTab(face)
+        }
+        openIslandForSettingsPreview(near: window)
+    }
+
+    /// Opens, held, the built-in display's island — the one with the notch,
+    /// else the one Settings is on, else any. An island already open by
+    /// the pointer, or held by the shortcut, is left as it is and not
+    /// claimed: it isn't the preview's to close.
+    private func openIslandForSettingsPreview(near window: NSWindow) {
+        guard !islands.values.contains(where: { $0.presentation.isHovering }) else { return }
+        let notched = NSScreen.screens.first { $0.safeAreaInsets.top > 0 }
+        let candidates = [notched, window.screen, NotchMetrics.preferredScreen()]
+            .compactMap { $0.flatMap(Self.displayID(of:)) }
+        guard let id = candidates.first(where: { islands[$0] != nil }) ?? islands.keys.first,
+              let target = islands[id]
+        else { return }
+        cancelSweepRecheck()
+        target.presentation.openFromShortcut()
+        settingsPreview.opened(id)
+        // The pointer is already there: that's a visit, not a hold.
+        if let zones = hoverZones(for: target), zones.stayOpen.contains(NSEvent.mouseLocation) {
+            target.presentation.notePointerInside()
+        }
+    }
+
+    /// Settings closed, or Isle went to the back: put away the island the
+    /// preview is holding — and only that, only while it still holds it.
+    private func endSettingsPreview(_ reason: SettingsPreviewEnd) {
+        guard let id = settingsPreview.end(reason), let island = islands[id],
+              island.presentation.isHeldOpen, island !== keyIsland else { return }
+        island.presentation.setHovering(false)
+        runDeferredSync()
     }
 }
 

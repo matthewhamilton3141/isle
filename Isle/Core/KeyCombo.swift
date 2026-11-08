@@ -106,8 +106,8 @@ struct KeyCombo: Hashable, Codable {
 
     // MARK: - Display
 
-    /// "⌥⏎", "⌃⌥⇧⌘K": the modifiers in the order macOS menus write them,
-    /// then the key. `character` names a printing key by what the current
+    /// "⌥Tab", "⌃Esc", "⌃⌥⇧⌘K": the modifiers' glyphs in the order macOS
+    /// menus write them, then the key — a special key by its name. `character` names a printing key by what the current
     /// layout types there; nil falls back to the US layout's keycap.
     func display(character: (UInt32) -> String? = KeyCombo.layoutCharacter) -> String {
         modifierSymbols + Self.keyName(keyCode, character: character)
@@ -146,16 +146,18 @@ struct KeyCombo: Hashable, Codable {
         return usKeycaps[Int(keyCode)]?.uppercased() ?? "#\(keyCode)"
     }
 
-    /// Keys that type nothing, or whitespace, by their symbol.
+    /// Keys that type nothing, or whitespace, by name: "Tab", "Esc",
+    /// "Return" rather than ⇥ ⎋ ⏎, which few people read at a glance. The
+    /// arrows keep their arrows, and the F keys are already words.
     private static let specialNames: [Int: (symbol: String, spoken: String)] = {
         var names: [Int: (String, String)] = [
-            kVK_Return: ("⏎", "Return"), kVK_ANSI_KeypadEnter: ("⌤", "Enter"),
-            kVK_Escape: ("⎋", "Escape"), kVK_Tab: ("⇥", "Tab"), kVK_Space: ("Space", "Space"),
-            kVK_Delete: ("⌫", "Delete"), kVK_ForwardDelete: ("⌦", "Forward Delete"),
+            kVK_Return: ("Return", "Return"), kVK_ANSI_KeypadEnter: ("Enter", "Enter"),
+            kVK_Escape: ("Esc", "Escape"), kVK_Tab: ("Tab", "Tab"), kVK_Space: ("Space", "Space"),
+            kVK_Delete: ("Delete", "Delete"), kVK_ForwardDelete: ("Fwd Del", "Forward Delete"),
             kVK_LeftArrow: ("←", "Left Arrow"), kVK_RightArrow: ("→", "Right Arrow"),
             kVK_UpArrow: ("↑", "Up Arrow"), kVK_DownArrow: ("↓", "Down Arrow"),
-            kVK_Home: ("↖", "Home"), kVK_End: ("↘", "End"),
-            kVK_PageUp: ("⇞", "Page Up"), kVK_PageDown: ("⇟", "Page Down"),
+            kVK_Home: ("Home", "Home"), kVK_End: ("End", "End"),
+            kVK_PageUp: ("Pg Up", "Page Up"), kVK_PageDown: ("Pg Dn", "Page Down"),
         ]
         let fKeys = [kVK_F1, kVK_F2, kVK_F3, kVK_F4, kVK_F5, kVK_F6, kVK_F7, kVK_F8, kVK_F9, kVK_F10,
                      kVK_F11, kVK_F12, kVK_F13, kVK_F14, kVK_F15, kVK_F16, kVK_F17, kVK_F18, kVK_F19, kVK_F20]
