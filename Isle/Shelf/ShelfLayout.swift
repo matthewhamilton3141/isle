@@ -32,8 +32,10 @@ enum ShelfLayout {
     static let stackSide: CGFloat = 114
 
     /// Lifted into the housing band, as the album is. Safe: the square is
-    /// left of the camera cutout, on ordinary screen.
-    static let stackRaise: CGFloat = 11
+    /// left of the camera cutout, on ordinary screen. The album is centred
+    /// in the 104pt content area and raised 11, which lands its top 16 above
+    /// the content's; this face is pinned to the top, so it's raised the 16.
+    static let stackRaise: CGFloat = 16
 
     /// One fanned thumbnail in the square.
     static let fanSide: CGFloat = 60

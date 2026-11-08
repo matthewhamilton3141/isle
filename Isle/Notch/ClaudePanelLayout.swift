@@ -45,8 +45,10 @@ enum ClaudePanelLayout {
     /// same distance into the housing band (safe there — no hardware left of
     /// the cutout). Top-aligned, so it lands on one spot on every face, and
     /// its top-left corner stays put when the question face shrinks it.
+    /// The album is centred in the 104pt content area and raised 11, so its
+    /// top is 16 above the content's: the glyph is raised that far to match.
     static let glyphSize: CGFloat = 114
-    static let glyphRaise: CGFloat = 15
+    static let glyphRaise: CGFloat = 16
     static let glyphGap: CGFloat = 14
 
     /// The text column, fixed so the glyph + column pair centres in the panel
