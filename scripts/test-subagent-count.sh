@@ -3,7 +3,10 @@
 # Tests for subagents, counted (Milestone 22): isle-cli's `subagent-start` and
 # `subagent-stop` (SubagentStart / SubagentStop) keeping the running agents,
 # a stop without a start changing nothing, and the turn's end, the next prompt
-# and the session's end clearing them; then the app's side, built from
+# and the session's end clearing them; one agent's approval waiting through
+# another agent's tool calls, and let go by its own call's end, the turn's end
+# or the next prompt (v16); the record's rewrites racing the session's end and
+# newer writes (v16, with a fake `stat` / `ls`); then the app's side, built from
 # scripts/subagent-count-tests.swift with every Isle source: the record
 # parser on the files this run wrote, and the line the face shows. Payloads
 # are in the shape Claude Code 2.1.319 sent them (agent ids and types from a
@@ -180,6 +183,170 @@ start h3 ''
 expect "a plugin's type kept whole, cut at an escaped quote, a missing one empty" \
   '["feature-dev:code-reviewer", "evil", ""]'
 cp "$SF" "$SCRATCH/records/odd.json"
+end_turn
+
+echo "An approval waited on, while other agents work"
+# Isle is "running": the marker names a live pid (this script's). Subagents'
+# hooks carry the parent's session id (2.1.319), so one agent's tool calls land
+# on the record while another agent's approval waits in it.
+mkdir -p "$H/.isle/run"
+echo "$$" > "$H/.isle/run/answering"
+RQ="$H/.isle/requests"
+ASK_PID=""
+# ask_bg <agent_id, or "" for the main agent> <command>: a PermissionRequest
+# that blocks, in the background, until its request is in the record.
+ask_bg() {
+  local agent="" k=0
+  [ -z "$1" ] || agent="\"agent_id\":\"$1\",\"agent_type\":\"general-purpose\","
+  printf '{"session_id":"s1","transcript_path":"/tmp/t.jsonl","cwd":"/tmp/work","prompt_id":"p1","permission_mode":"default",%s"effort":{"level":"medium"},"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"%s","description":"Run it"},"permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"rm:*"}],"behavior":"allow","destination":"localSettings"}]}' \
+    "$agent" "$2" > "$SCRATCH/ask.in"
+  HOME="$H" /bin/bash "$CLI" ask < "$SCRATCH/ask.in" > "$SCRATCH/ask.out" &
+  ASK_PID=$!
+  while [ "$k" -lt 100 ] && ! grep -qE '"request_id": "[^"]+"' "$SF" 2>/dev/null; do sleep 0.05; k=$((k + 1)); done
+}
+# tool_hook <event> <agent_id or ""> <tool> <tool_input JSON> [tool_use_id]
+tool_hook() {
+  local agent="" pre="" post=""
+  [ -z "$2" ] || agent="\"agent_id\":\"$2\",\"agent_type\":\"general-purpose\","
+  # The order 2.1.319 sends: a failure's error after its tool_use_id.
+  case "$1" in
+    PostToolUse) pre=',"tool_response":{"stdout":"","stderr":"","interrupted":false}'; post=',"duration_ms":36' ;;
+    PostToolUseFailure) post=',"error":"Exit code 1\nls: x: No such file or directory","is_interrupt":false,"duration_ms":36' ;;
+  esac
+  printf '{"session_id":"s1","transcript_path":"/tmp/t.jsonl","cwd":"/tmp/work","prompt_id":"p1","permission_mode":"default",%s"effort":{"level":"medium"},"hook_event_name":"%s","tool_name":"%s","tool_input":%s%s,"tool_use_id":"%s"%s}' \
+    "$agent" "$1" "$3" "$4" "$pre" "${5:-toolu_x}" "$post" | hook set-state working
+}
+# held <name>: a moment later the hook still waits and the record still holds
+# its request. gone <name>: the hook let go within 2s and the record moved on.
+held() {
+  local id
+  sleep 0.6
+  id="$(field request_id)"
+  if kill -0 "$ASK_PID" 2>/dev/null && [ "$(field state)" = needs_approval ] && [ -n "$id" ] && [ -e "$RQ/$id.json" ]; then
+    ok "$1"
+  else
+    bad "$1" "state $(field state), request_id '$id', hook $(kill -0 "$ASK_PID" 2>/dev/null && echo waiting || echo gone)"
+  fi
+}
+gone() {
+  local k=0 want="$2"
+  while [ "$k" -lt 20 ] && kill -0 "$ASK_PID" 2>/dev/null; do sleep 0.1; k=$((k + 1)); done
+  if ! kill -0 "$ASK_PID" 2>/dev/null && [ -z "$(field request_id)" ] && [ "$(field state)" = "$want" ] \
+     && [ -z "$(ls "$RQ" 2>/dev/null)" ] && [ ! -s "$SCRATCH/ask.out" ]; then
+    ok "$1"
+  else
+    bad "$1" "state $(field state), request_id '$(field request_id)', hook $(kill -0 "$ASK_PID" 2>/dev/null && echo waiting || echo gone), out '$(cat "$SCRATCH/ask.out")'"
+    kill "$ASK_PID" 2>/dev/null; wait "$ASK_PID" 2>/dev/null
+  fi
+}
+RM='{"command":"rm -rf build","description":"Run it"}'
+prompt; start a1 general-purpose; start a2 general-purpose
+ask_bg a1 'rm -rf build'
+tool_hook PreToolUse a2 Grep '{"pattern":"TODO","path":"/tmp/work"}' toolu_g1
+held "another agent's PreToolUse leaves the approval waiting"
+tool_hook PostToolUse a2 Grep '{"pattern":"TODO","path":"/tmp/work"}' toolu_g1
+held "and its PostToolUse"
+tool_hook PreToolUse "" Read '{"file_path":"/tmp/work/a.txt"}' toolu_r1
+tool_hook PostToolUse "" Read '{"file_path":"/tmp/work/a.txt"}' toolu_r1
+held "the main agent's parallel tools too"
+tool_hook PostToolUse a1 Bash '{"command":"rm -rf dist","description":"Run it"}' toolu_b0
+held "the same agent finishing another command"
+printf '{"session_id":"s1","hook_event_name":"Notification","message":"Claude is waiting for your input","notification_type":"idle_prompt"}' | hook notify
+printf '{"session_id":"s1","hook_event_name":"PreCompact","trigger":"auto"}' | hook set-state compacting
+held "a notification, a compaction"
+stop a2 general-purpose
+held "a subagent stopping"
+[ "$(agents)" = '["general-purpose"]' ] && ok "  (and is counted out)" || bad "  counted out" "$(agents)"
+tool_hook PostToolUse a1 Bash "$RM" toolu_b1
+gone "Yes in the terminal: the call's own PostToolUse lets the hook go" working
+ask_bg a1 'rm -rf build'
+tool_hook PostToolUseFailure a1 Bash "$RM" toolu_b2
+gone "Yes in the terminal, and the command failed: its PostToolUseFailure" working
+ask_bg "" 'rm -rf build'
+tool_hook PostToolUse a1 Bash "$RM" toolu_b3
+held "the same command from another agent is not this call"
+tool_hook PostToolUse "" Bash "$RM" toolu_b3
+gone "the main agent's own call, the same way" working
+ask_bg a1 'rm -rf build'
+prompt
+gone "a new prompt (Esc, then typing) lets it go" working
+ask_bg a1 'rm -rf build'
+end_turn
+gone "the turn's end lets it go" done
+prompt
+# A hook killed outright (its trap never ran): the request file is left, its
+# pid is dead, and nothing is waiting behind the record any more.
+/usr/bin/true & dead=$!; wait "$dead"
+mkdir -p "$RQ"; cp "$SCRATCH/ask.in" "$RQ/s1-1794121762-$dead.json"
+sed -i '' -e 's/^  "state": .*/  "state": "needs_approval",/' -e "s/^  \"request_id\": .*/  \"request_id\": \"s1-1794121762-$dead\",/" "$SF"
+tool_hook PreToolUse a2 Grep '{"pattern":"x"}' toolu_g2
+[ "$(field state)" = working ] && [ -z "$(field request_id)" ] && ok "a request whose hook is dead holds nothing" \
+  || bad "a request whose hook is dead holds nothing" "state $(field state), request_id '$(field request_id)'"
+rm -f "$RQ"/*.json
+# The question (`ask-question`, a PreToolUse with its own tool_use_id).
+QI='{"questions":[{"question":"Which?","header":"Pick","multiSelect":false,"options":[{"label":"A","description":"a"},{"label":"B","description":"b"}]}]}'
+printf '{"session_id":"s1","transcript_path":"/tmp/t.jsonl","cwd":"/tmp/work","prompt_id":"p1","permission_mode":"default","agent_id":"a1","agent_type":"general-purpose","effort":{"level":"medium"},"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_input":%s,"tool_use_id":"toolu_q1"}' "$QI" \
+  | HOME="$H" /bin/bash "$CLI" ask-question > "$SCRATCH/ask.out" &
+ASK_PID=$!
+k=0; while [ "$k" -lt 100 ] && ! grep -qE '"request_id": "[^"]+"' "$SF" 2>/dev/null; do sleep 0.05; k=$((k + 1)); done
+tool_hook PreToolUse a2 Grep '{"pattern":"TODO"}' toolu_g3
+sleep 0.6
+kill -0 "$ASK_PID" 2>/dev/null && [ "$(field state)" = needs_question ] && [ -n "$(field request_id)" ] \
+  && ok "a question waited on: another agent's tool leaves it" || bad "a question waited on" "state $(field state), request_id '$(field request_id)'"
+tool_hook PostToolUse a1 AskUserQuestion "$QI" toolu_q1
+gone "its own PostToolUse lets it go" working
+rm -f "$H/.isle/run/answering"
+end_turn
+
+echo "Rewrites racing the session's end"
+# A fake `stat` / `ls` in front of the real one, counting its calls in the hook
+# under test: before its call N it runs FAKE_DO_N, landing another hook
+# mid-rewrite, and leaves FB/landed.N to say so.
+FB="$SCRATCH/fakebin"; mkdir -p "$FB"
+for tool in stat:/usr/bin/stat ls:/bin/ls; do
+  cat > "$FB/${tool%%:*}" <<EOF
+#!/bin/bash
+c="$FB/count.\$(basename "\$0")"
+n=\$(( \$(cat "\$c" 2>/dev/null || echo 0) + 1 )); echo "\$n" > "\$c"
+v="FAKE_DO_\$n"
+if [ "\$(basename "\$0")" = "\${FAKE_TOOL:-}" ] && [ -n "\${!v:-}" ]; then
+  ( d="\${!v}"; unset FAKE_TOOL; PATH=/usr/bin:/bin:/usr/sbin:/sbin; eval "\$d" )
+  : > "$FB/landed.\$n"
+fi
+exec ${tool#*:} "\$@"
+EOF
+  chmod +x "$FB/${tool%%:*}"
+done
+# raced <tool> <what lands before its call 1, or ""> <before call 2, or ""> <hook…>
+raced() {
+  local tool="$1" one="$2" two="$3"; shift 3
+  rm -f "$FB"/count.* "$FB"/landed.*
+  FAKE_TOOL="$tool" FAKE_DO_1="$one" FAKE_DO_2="$two" PATH="$FB:$PATH" "$@"
+}
+END_S1="printf '{\"session_id\":\"s1\",\"hook_event_name\":\"SessionEnd\"}' | HOME='$H' /bin/bash '$CLI' end"
+NEWER="printf '{\"session_id\":\"s1\",\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"/tmp/newer.txt\"},\"tool_use_id\":\"t9\"}' | HOME='$H' /bin/bash '$CLI' set-state working"
+# The review's case (v15): `stat` saw a new inode after the read, the pass went
+# round again with nothing to read, and the first pass's temp file went back
+# into place. A rewrite has no `stat` left for it to land in.
+prompt; start r1 Explore
+raced stat "" "$END_S1" start r2 Explore
+if [ -e "$FB/landed.2" ] && [ -e "$SF" ]; then
+  bad "SessionEnd after the inode check's read brought the record back" "state $(field state), subagents $(agents)"
+else
+  ok "SessionEnd after the read, seen as a new inode: stays ended"
+fi
+prompt; start r1 Explore
+raced ls "$END_S1" "" start r2 Explore
+[ -e "$FB/landed.1" ] && [ ! -e "$SF" ] && ok "SessionEnd between the read and the rename: stays ended" \
+  || bad "SessionEnd between the read and the rename" "landed: $(ls "$FB" | grep landed), state $(field state)"
+prompt; start r1 Explore
+raced ls "$NEWER" "$END_S1" start r2 Explore
+[ -e "$FB/landed.2" ] && [ ! -e "$SF" ] && ok "a newer write, then SessionEnd in the pass after it: stays ended" \
+  || bad "a newer write, then SessionEnd" "landed: $(ls "$FB" | grep landed), state $(field state)"
+prompt; start r1 Explore
+raced ls "$NEWER" "" start r2 Explore
+expect "a newer write mid-rewrite is kept, with the count" '["Explore", "Explore"]' state=working action=Read target=newer.txt
+ls "$H/.isle/sessions" | grep -q tmp && bad "no temp file left behind" "$(ls "$H/.isle/sessions")" || ok "no temp file left behind"
 end_turn
 
 echo "Many at once"

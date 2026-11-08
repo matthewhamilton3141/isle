@@ -70,6 +70,11 @@ enum HookInstaller {
         // answered. The `AskUserQuestion → needs_question` conversion is gated
         // to PreToolUse so this can't re-raise it.
         HookEntry(event: "PostToolUse", args: "set-state working"),
+        // A call that ran and failed fires this instead of PostToolUse. It ends
+        // the call all the same: it's how `ask` lets go of an approval answered
+        // Yes in the terminal whose command then failed, now that only the
+        // call's own end (not any agent's next tool) may end the wait.
+        HookEntry(event: "PostToolUseFailure", args: "set-state working"),
         HookEntry(event: "Notification", args: "notify"),
         HookEntry(event: "Stop", args: "set-state done"),
         // Fires only when a turn ends on an API error (rate limit, overloaded,
@@ -152,8 +157,17 @@ enum HookInstaller {
     /// schedules, at most four) at ~/.isle/left/<session>.json; every record
     /// carries it as `left` until the next prompt, a StopFailure or the
     /// session's end. No new hook entry: Stop already runs `set-state done`.
-    /// 15, not 14+1 on another branch: M23 took 14 concurrently.)
-    private static let currentVersion = 15
+    /// 15, not 14+1 on another branch: M23 took 14 concurrently.) v16: a
+    /// request being waited on keeps the record — another agent's tool calls,
+    /// a notification or a compaction no longer end `ask`'s wait (subagents'
+    /// hooks carry the parent's session id); only the call's own end (its
+    /// PostToolUse, or the new PostToolUseFailure entry), the turn's end, the
+    /// next prompt or the session's end do. The record's rewrites never bring
+    /// back a session that ended mid-rewrite; parallel blocks are counted
+    /// under a lock; each guarded call keeps its own record, at
+    /// guarded/<session>/<tool_use_id>.json; and the wait reads the record
+    /// with builtins.
+    private static let currentVersion = 16
     private static let versionKey = "HookInstaller.installedVersion"
 
     private static var home: URL {
@@ -331,7 +345,8 @@ enum HookInstaller {
     #
     # Usage:
     #   isle-cli set-state <disconnected|idle|working|done>   # state comes from the hook
-    #                                                          # (Stop also keeps what the turn left running)
+    #                                                          # (Stop also keeps what the turn left running;
+    #                                                          # a request being waited on keeps the record)
     #   isle-cli notify                                       # route a Notification by its type
     #   isle-cli fail                                          # StopFailure → the error, or the usage limit
     #   isle-cli ask                                           # permission → block for the notch
@@ -378,10 +393,13 @@ enum HookInstaller {
     # the feature is off or the list is empty; so with nothing to guard, `guard`
     # is one test and an exit, and no session is slowed down.
     GUARD_LIST="$STATUS_DIR/guarded-commands"
-    # The last guarded call of each session: the pattern it matched, and its
-    # command as Claude Code escaped it. The PermissionRequest that follows carries
-    # neither the reason nor the tool_use_id, so this is how the notch knows the
-    # approval in front of it is a guarded one, and why.
+    # Each guarded call of a session's turn, at guarded/<session>/<tool_use_id>.json:
+    # the pattern it matched, and its command as Claude Code escaped it. The
+    # PermissionRequest that follows carries neither the reason nor the
+    # tool_use_id, so this is how the notch knows the approval in front of it is a
+    # guarded one, and why: the record whose command it is. One a call, so
+    # parallel guarded calls each keep their own. The next prompt (UserPromptSubmit,
+    # SessionStart other than a compaction) and the session's end clear them.
     GUARD_DIR="$STATUS_DIR/guarded"
 
     # The subagents each session has running (Milestone 22): one file per agent at
@@ -520,18 +538,42 @@ enum HookInstaller {
       [ "$n" -lt 3 ] || break
       subagents_json
       [ "$SA_JSON" != "$seen" ] || break
+      # The session ended meanwhile (SessionEnd took the record): not brought back.
+      [ -f "$sf" ] || break
       done
+    }
+
+    # The record at $1 as it is now, whole, into REC; false when there is none.
+    # Builtins only, so reading it twice costs no fork.
+    read_record() {
+      REC=""
+      { IFS= read -r -d '' REC || [ -n "$REC" ]; } 2>/dev/null < "$1"
+    }
+
+    # Puts the rewrite at $2 in place of the record at $1, unless the record is no
+    # longer $3, what the rewrite was made from: another hook replaced it (the newer
+    # state is the one to keep, so the caller makes the rewrite again from it) or
+    # the session ended (it stays ended). The check is a builtin read right before
+    # the rename, so the window between them is the rename alone. Returns 1 when
+    # the record changed, 2 when it is gone; the rewrite is removed either way.
+    replace_record() {
+      local was="$3"
+      if ! read_record "$1"; then rm -f "$2"; return 2; fi
+      if [ "$REC" != "$was" ]; then rm -f "$2"; return 1; fi
+      mv -f "$2" "$1" 2>/dev/null || { rm -f "$2"; return 2; }
     }
 
     # SubagentStart / SubagentStop: the record exactly as the last hook left it,
     # with `subagents` (and `updated_at`) brought up to date. Line by line, since
     # every record this script writes has one field a line; a record from an older
-    # helper gets the field added above `updated_at`. Re-done if another hook
-    # replaced the record meanwhile (a new inode), so the newer state is the one
-    # kept. With no record yet (the hook installed mid-session), a fresh one: a
-    # subagent starting is Claude working.
+    # helper gets the field added above `updated_at`. Made from the record as read,
+    # never from the file a second time, and re-made if another hook replaced the
+    # record meanwhile, so the newer state is the one kept; never put back once the
+    # session's end has taken it (see `replace_record`). With no record yet (the
+    # hook installed mid-session), a fresh one: a subagent starting is Claude
+    # working.
     rewrite_subagents() {
-      local sf="$SESSION_DIR/${SESSION_ID:-unknown}.json" tmp ts line ino seen n=0
+      local sf="$SESSION_DIR/${SESSION_ID:-unknown}.json" tmp ts line rec seen n=0 rc
       if [ ! -f "$sf" ]; then
         write_status "working" ""
         return 0
@@ -539,7 +581,9 @@ enum HookInstaller {
       ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       tmp="$sf.tmp.$$"
       while :; do
-        ino="$(stat -f %i "$sf" 2>/dev/null || true)"
+        [ ! -e "$tmp" ] || rm -f "$tmp"
+        read_record "$sf" || return 0
+        rec="$REC"
         subagents_json
         seen="$SA_JSON"
         while IFS= read -r line || [ -n "$line" ]; do
@@ -548,14 +592,15 @@ enum HookInstaller {
             *'"updated_at":'*) printf '  "subagents": %s,\n  "updated_at": "%s"\n' "$SA_JSON" "$ts" ;;
             *) printf '%s\n' "$line" ;;
           esac
-        done < "$sf" > "$tmp" 2>/dev/null || true
+        done <<< "${rec%$'\n'}" > "$tmp"
         n=$((n + 1))
-        if [ "$(stat -f %i "$sf" 2>/dev/null || true)" != "$ino" ]; then
+        rc=0
+        replace_record "$sf" "$tmp" "$rec" || rc=$?
+        [ "$rc" != 2 ] || return 0
+        if [ "$rc" = 1 ]; then
           [ "$n" -lt 3 ] && continue
-          rm -f "$tmp"
           return 0
         fi
-        mv -f "$tmp" "$sf"
         [ "$n" -lt 3 ] || break
         subagents_json
         [ "$SA_JSON" != "$seen" ] || break
@@ -570,23 +615,28 @@ enum HookInstaller {
     # `tool_active` goes false; when they're another call's (one in parallel, an
     # approval waiting), they're left alone. The state stays: Claude Code carries
     # the turn on.
-    # Line by line and re-done on a new inode, like `rewrite_subagents`; with no
-    # record yet, a fresh one, since a call was just made.
+    # Line by line from the record as read, like `rewrite_subagents`, and never
+    # put back once the session's end has taken it; with no record yet, a fresh
+    # one, since a call was just made.
     rewrite_blocked() {
-      local sf="$SESSION_DIR/${SESSION_ID:-unknown}.json" tmp ts line ino ours n=0
+      local sf="$SESSION_DIR/${SESSION_ID:-unknown}.json" tmp ts line rec ours n=0 rc
       blocked_json
       if [ ! -f "$sf" ]; then
         ACTION=""; TARGET=""
         write_status "working" ""
         return 0
       fi
-      ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       tmp="$sf.tmp.$$"
       while :; do
-        ino="$(stat -f %i "$sf" 2>/dev/null || true)"
+        [ ! -e "$tmp" ] || rm -f "$tmp"
+        read_record "$sf" || return 0
+        rec="$REC"
+        ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         ours=0
-        grep -qxF "  \"action\": \"$ACTION\"," "$sf" 2>/dev/null \
-          && grep -qxF "  \"target\": \"$TARGET\"," "$sf" 2>/dev/null && ours=1
+        case "$rec" in
+          *$'\n'"  \"action\": \"$ACTION\","$'\n'*)
+            case "$rec" in *$'\n'"  \"target\": \"$TARGET\","$'\n'*) ours=1 ;; esac ;;
+        esac
         while IFS= read -r line || [ -n "$line" ]; do
           case "$line" in
             '  "blocked":'*) ;;
@@ -596,14 +646,11 @@ enum HookInstaller {
             '  "updated_at":'*) printf '  "blocked": %s,\n  "updated_at": "%s"\n' "$BL_JSON" "$ts" ;;
             *) printf '%s\n' "$line" ;;
           esac
-        done < "$sf" > "$tmp" 2>/dev/null || true
+        done <<< "${rec%$'\n'}" > "$tmp"
         n=$((n + 1))
-        if [ "$(stat -f %i "$sf" 2>/dev/null || true)" != "$ino" ]; then
-          [ "$n" -lt 3 ] && continue
-          rm -f "$tmp"
-          return 0
-        fi
-        mv -f "$tmp" "$sf"
+        rc=0
+        replace_record "$sf" "$tmp" "$rec" || rc=$?
+        if [ "$rc" = 1 ] && [ "$n" -lt 3 ]; then continue; fi
         break
       done
     }
@@ -636,6 +683,88 @@ enum HookInstaller {
         ''|*[!0-9]*) return 1 ;;
       esac
       kill -0 "$pid" 2>/dev/null
+    }
+
+    # ---- A request being waited on ----------------------------------------------
+    #
+    # While `ask` or `ask-question` blocks, the record holds its request id, and
+    # the hook takes any write that drops the id to mean the prompt was answered
+    # somewhere else. So only what does mean that may write over it. Subagents'
+    # hooks carry the parent's session id (2.1.319), and the main agent runs
+    # read-only tools in parallel, so one agent's Grep fires PreToolUse and
+    # PostToolUse while another's approval waits in the record. Left to write,
+    # it would end the wait: the notch's buttons gone and the island saying
+    # "working" while Claude Code still waits in the terminal.
+    #
+    # What ends a wait without the hook's own answer: the call itself finishing
+    # (Yes in the terminal: its PostToolUse, or PostToolUseFailure when it ran
+    # and failed, as a command exiting non-zero does in 2.1.319); the turn ending
+    # or a new one starting (Stop, StopFailure, the next prompt); the session
+    # ending. Esc on the terminal's dialog SIGTERMs the hook (its trap takes the
+    # request file), and a hook killed outright leaves a dead pid: either way
+    # nothing is waiting any more, and the record is anyone's to write.
+
+    # The id of the request this session's record holds while its hook still
+    # waits, in LIVE_REQ; false when there is none. Builtins only: nearly every
+    # hook asks.
+    live_request() {
+      local sf="$SESSION_DIR/${SESSION_ID:-unknown}.json" line st="" id="" pid
+      LIVE_REQ=""
+      [ -f "$sf" ] || return 1
+      while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+          '  "state": "needs_'*) st=1 ;;
+          '  "request_id": "'?*'",') id="${line#  \"request_id\": \"}"; id="${id%\",}" ;;
+        esac
+      done 2>/dev/null < "$sf" || return 1
+      [ -n "$st" ] && [ -n "$id" ] || return 1
+      case "$id" in *[!A-Za-z0-9_-]*) return 1 ;; esac
+      [ -f "$REQUEST_DIR/$id.json" ] || return 1
+      pid="${id##*-}"
+      case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+      kill -0 "$pid" 2>/dev/null || return 1
+      LIVE_REQ="$id"
+    }
+
+    RQ_RE_AGENT='"agent_id"[[:space:]]*:[[:space:]]*"([^"]*)"'
+    RQ_RE_TOOL='"tool_name"[[:space:]]*:[[:space:]]*"([^"]*)"'
+    # What follows a `"tool_use_id"` key: its value, when it's a plain id.
+    RQ_RE_USE='^[[:space:]]*:[[:space:]]*"([A-Za-z0-9_-]{1,64})"'
+    RQ_RE_FIRST='"tool_input"[[:space:]]*:[[:space:]]*\{[[:space:]]*("[A-Za-z0-9_]+"[[:space:]]*:[[:space:]]*("([^"\\]|\\.)*"|true|false|null|-?[0-9][0-9.eE+-]*))'
+
+    # True when this hook ends the wait on request $1 (see above). A tool's end is
+    # that call's own: the same tool_use_id for a question (`ask-question` is a
+    # PreToolUse, which has one); for an approval, whose PermissionRequest has
+    # none, the same agent (agent_id, or none for the main agent), the same tool
+    # and the same first field of its input (a Bash call's command, a file's path,
+    # a URL), as Claude Code wrote it.
+    ends_request() {
+      local req="" head here agent="" ragent="" tool="" use
+      case "$CMD:$HOOK_EVENT" in
+        set-state:UserPromptSubmit|set-state:Stop) return 0 ;;
+        set-state:PostToolUse|set-state:PostToolUseFailure) ;;
+        *) return 1 ;;
+      esac
+      { IFS= read -r -d '' req || [ -n "$req" ]; } 2>/dev/null < "$REQUEST_DIR/$1.json" || return 0
+      req="${req:0:65536}"
+      head="${req%%\"tool_input\"*}"
+      case "$head" in
+        *'"hook_event_name":"PreToolUse"'*|*'"hook_event_name": "PreToolUse"'*)
+          [[ ${req##*\"tool_use_id\"} =~ $RQ_RE_USE ]] || return 1
+          use="${BASH_REMATCH[1]}"
+          [[ ${STDIN_JSON##*\"tool_use_id\"} =~ $RQ_RE_USE ]] && [ "${BASH_REMATCH[1]}" = "$use" ]
+          return ;;
+      esac
+      here="${STDIN_JSON%%\"tool_input\"*}"
+      [[ $head =~ $RQ_RE_AGENT ]] && ragent="${BASH_REMATCH[1]}"
+      [[ $here =~ $RQ_RE_AGENT ]] && agent="${BASH_REMATCH[1]}"
+      [ "$agent" = "$ragent" ] || return 1
+      [[ $head =~ $RQ_RE_TOOL ]] && tool="${BASH_REMATCH[1]}"
+      [ -n "$tool" ] && [ "$tool" = "$ACTION" ] || return 1
+      if [[ $req =~ $RQ_RE_FIRST ]]; then
+        [[ $STDIN_JSON == *"${BASH_REMATCH[1]}"* ]] || return 1
+      fi
+      return 0
     }
 
     # ---- Usage limits -----------------------------------------------------------
@@ -1595,19 +1724,24 @@ enum HookInstaller {
     # list. Says nothing otherwise, and on anything it can't read: a guard that
     # fails must never break the call it was only meant to slow down.
     guard_main() {
-      local sid safe esc rec reason
+      local sid safe use dir esc rec reason
       set +eu
       export LC_ALL=C
       IFS= read -r -d '' GUARD_JSON
       guard_matches "$GUARD_JSON" || return 0
 
-      # Asked: leave the notch the reason, then tell Claude Code to ask.
-      sid=""
+      # Asked: leave the notch the reason, then tell Claude Code to ask. One
+      # record a call, under its tool_use_id: parallel guarded calls each raise a
+      # PermissionRequest, and one shared record would leave all but the last
+      # reading as unguarded. The app finds the one whose command it is.
+      sid=""; use=""
       [[ $GUARD_JSON =~ $GUARD_RE_SESSION ]] && sid="${BASH_REMATCH[1]}"
+      [[ ${GUARD_JSON##*\"tool_use_id\"} =~ $RQ_RE_USE ]] && use="${BASH_REMATCH[1]}"
       safe="${sid//[!A-Za-z0-9_-]/}"
       esc="$(json_escape "$GUARD_HIT")"
-      rec="$GUARD_DIR/${safe:-unknown}.json"
-      [ -d "$GUARD_DIR" ] || mkdir -p "$GUARD_DIR"
+      dir="$GUARD_DIR/${safe:-unknown}"
+      rec="$dir/${use:-unknown}.json"
+      [ -d "$dir" ] || mkdir -p "$dir"
       printf '{"pattern": "%s", "command": "%s"}\n' "$esc" "$GUARD_RAW" > "$rec.tmp.$$" \
         && mv -f "$rec.tmp.$$" "$rec"
       if [ "$GUARD_LONG" = 1 ]; then
@@ -1912,19 +2046,43 @@ enum HookInstaller {
       bl_session="${SESSION_ID//[^A-Za-z0-9_-]/}"
       [ -n "$bl_session" ] || exit 0
       bl_file="$BLOCK_DIR/$bl_session.json"
+      mkdir -p "$BLOCK_DIR" 2>/dev/null || true
+      # One at a time per session, from reading the count to the record's
+      # rewrite: blocks in parallel (auto mode judges each call of a batch) would
+      # otherwise each read the same count and add one to it. A directory, since
+      # making one is atomic; a holder that died leaves it, so after two seconds
+      # (the work takes milliseconds) it is taken anyway.
+      bl_lock="$BLOCK_DIR/.$bl_session.lock"
+      bl_wait=0
+      until mkdir "$bl_lock" 2>/dev/null; do
+        bl_wait=$((bl_wait + 1))
+        if [ "$bl_wait" -ge 100 ]; then
+          rm -rf "$bl_lock"; mkdir "$bl_lock" 2>/dev/null || true
+          break
+        fi
+        sleep 0.02
+      done
+      trap 'rmdir "$bl_lock" 2>/dev/null || true' EXIT
       bl_count=1
       if [ -f "$bl_file" ]; then
         bl_old="$(cat "$bl_file" 2>/dev/null || true)"
         if [ -n "$BL_ID" ] && [[ $bl_old == *"\"id\": \"$BL_ID\","* ]]; then exit 0; fi
         if [[ $bl_old =~ \"count\":\ ([0-9]{1,6}) ]]; then bl_count=$((BASH_REMATCH[1] + 1)); fi
       fi
-      mkdir -p "$BLOCK_DIR" 2>/dev/null || true
       if printf '{"id": "%s", "tool": "%s", "target": "%s", "command": "%s", "cut": %s, "reason": "%s", "count": %s, "at": "%s"}\n' \
            "$BL_ID" "$BL_TOOL" "$TARGET" "$BL_CMD" "$BL_CUT" "$BL_REASON" "$bl_count" "$TIMESTAMP" \
            > "$bl_file.tmp.$$" 2>/dev/null && mv -f "$bl_file.tmp.$$" "$bl_file" 2>/dev/null; then
         rewrite_blocked
       fi
       exit 0
+    fi
+
+    # An approval or a question being waited on keeps the record until something
+    # ends the wait (see "A request being waited on"): another agent's tool, a
+    # notification, a compaction leave it exactly as it is. StopFailure and
+    # SessionEnd always end it, and a second `ask` takes the record as before.
+    if [ "$CMD" = "set-state" ] || [ "$CMD" = "notify" ]; then
+      if live_request && ! ends_request "$LIVE_REQ"; then exit 0; fi
     fi
 
     # A new turn, or a new or ended session: the last one's block is history, as it
@@ -1937,6 +2095,16 @@ enum HookInstaller {
           rm -f "$BLOCK_DIR/$bl_session.json" ;;
         set-state:SessionStart)
           [ "$SOURCE" = compact ] || rm -f "$BLOCK_DIR/$bl_session.json" ;;
+      esac
+    fi
+    # The guarded calls' records, the same way: their approvals were the last
+    # turn's. (`end` takes them with the record, below.)
+    if [ -n "$bl_session" ] && [ -d "$GUARD_DIR/$bl_session" ]; then
+      case "$CMD:$HOOK_EVENT" in
+        set-state:UserPromptSubmit)
+          rm -rf "$GUARD_DIR/$bl_session" ;;
+        set-state:SessionStart)
+          [ "$SOURCE" = compact ] || rm -rf "$GUARD_DIR/$bl_session" ;;
       esac
     fi
 
@@ -2059,10 +2227,14 @@ enum HookInstaller {
         # (PostToolUse), the turn ended, a new prompt arrived. That's how an answer
         # given in the terminal shows up: Claude Code doesn't stop a hook whose
         # prompt was answered elsewhere, and ignores what it prints afterwards. So
-        # step aside without a word or a write; the status is already newer.
-        if ! grep -qF "\"request_id\": \"$REQUEST_ID\"" "$STATUS_FILE" 2>/dev/null; then
-          exit 0
-        fi
+        # step aside without a word or a write; the status is already newer. Only
+        # what ends the wait writes over it (see "A request being waited on"), so
+        # another agent's tool calls don't. Read with builtins, five times a second.
+        held=""
+        while IFS= read -r line || [ -n "$line" ]; do
+          case "$line" in *"\"request_id\": \"$REQUEST_ID\""*) held=1; break ;; esac
+        done 2>/dev/null < "$STATUS_FILE" || true
+        [ -n "$held" ] || exit 0
 
         # Out of time, or Isle went away (quit, crash, toggle off): hand the prompt
         # back to Claude. The status keeps its state — the prompt is still up — but
@@ -2085,14 +2257,9 @@ enum HookInstaller {
     # this session needs you, and saying so would be a guess.
     if [ "$CMD" = "notify" ]; then
       sf="$SESSION_DIR/${SESSION_ID:-unknown}.json"
-      # An approval that `ask` is blocked on: the permission_prompt notification
-      # lands a few seconds into the wait, and rewriting the status would drop
-      # the request id the hook is waiting under (which it reads as "answered
-      # elsewhere" and gives up). Nothing may rewrite it.
-      if [ -f "$sf" ] && grep -q '"state": "needs_approval"' "$sf" 2>/dev/null \
-         && grep -qE '"request_id": "[^"]+"' "$sf" 2>/dev/null; then
-        exit 0
-      fi
+      # An approval that `ask` is blocked on is kept above: the permission_prompt
+      # notification lands a few seconds into the wait, and rewriting the status
+      # would drop the request id the hook is waiting under.
       case "$NTYPE" in
         permission_prompt|elicitation_dialog|elicitation_url_dialog|idle_prompt|'')
           # Keep an active question: a question (from the AskUserQuestion tool)
@@ -2172,8 +2339,8 @@ enum HookInstaller {
     # when the question is answered; letting it convert too would re-raise the
     # question forever and the notch would never close. Absent hook_event_name we
     # keep the old behaviour (convert), so a lone PreToolUse still opens.
-    if [ "$CMD" = "set-state" ] && [ "$STATE" = "working" ] \
-       && [ "$ACTION" = "AskUserQuestion" ] && [ "$HOOK_EVENT" != "PostToolUse" ]; then
+    if [ "$CMD" = "set-state" ] && [ "$STATE" = "working" ] && [ "$ACTION" = "AskUserQuestion" ] \
+       && [ "$HOOK_EVENT" != "PostToolUse" ] && [ "$HOOK_EVENT" != "PostToolUseFailure" ]; then
       STATE="needs_question"
     fi
 
@@ -2258,8 +2425,9 @@ enum HookInstaller {
     # record can't affect anyone else's. (The old shared-file version had to
     # check whether it still owned the island before clearing it.)
     if [ "$CMD" = "end" ]; then
-      rm -f "$SESSION_DIR/${SESSION_ID:-unknown}.json" \
-        "$GUARD_DIR/$(printf '%s' "${SESSION_ID:-unknown}" | tr -cd 'A-Za-z0-9_-').json"
+      guard_session="$(printf '%s' "${SESSION_ID:-unknown}" | tr -cd 'A-Za-z0-9_-')"
+      rm -f "$SESSION_DIR/${SESSION_ID:-unknown}.json" "$GUARD_DIR/$guard_session.json"
+      [ -z "$guard_session" ] || rm -rf "$GUARD_DIR/$guard_session"
       exit 0
     fi
 
