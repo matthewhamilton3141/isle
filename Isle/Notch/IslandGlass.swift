@@ -14,7 +14,8 @@
 //    second input. `blackCover` is how much black still lies over the glass.
 //  - The camera cover. Closed, a gradient out of the notch: black over the
 //    physical housing (so the cutout doesn't bite into the glass), then
-//    each wing fading to clear glass at its end; without a notch, nothing.
+//    each wing fading to clear glass at its end, and the top edge darkened
+//    to meet the screen's bezel; without a notch, nothing.
 //    Opening, it becomes the notch glow —
 //    solid over the housing, fading outward, wider sideways than down — or
 //    with the glow off (or no notch), clears.
@@ -125,7 +126,8 @@ enum IslandGlass {
     /// What lies over the camera on glass. Closed, on a notch display, it is
     /// the wing gradient: black over the housing, then each wing fading from
     /// black at the housing to clear (the plain glass tint) at the pill's
-    /// end on that side. Opening, it becomes the notch glow if that's on, or
+    /// end on that side, its top edge darkened to meet the black bezel the
+    /// island hangs from. Opening, it becomes the notch glow if that's on, or
     /// clears. The glow setting never touches the closed island.
     ///
     /// Without a notch there is no cover, closed or open: the pill is plain
@@ -165,6 +167,22 @@ enum IslandGlass {
         pow(1 - min(max(t, 0), 1), wingEase)
     }
 
+    /// How deep the closed cover's top edge darkens, in points: black where
+    /// the island meets the screen's black bezel, eased to nothing this far
+    /// down — half the 32pt pill (picked over 40% from renders: it meets
+    /// the bezel more softly), so each wing's lower half, and its bottom
+    /// edge, is the side gradient alone. Tune here.
+    static let topDepth: CGFloat = 16
+
+    /// The ease of the top edge's fade: (1 - y/topDepth)^this.
+    static let topEase: Double = 1.6
+
+    /// The top edge's darkening `y` points from the top of the screen.
+    static func topAlpha(y: CGFloat) -> Double {
+        guard topDepth > 0, y < topDepth else { return 0 }
+        return pow(Double(1 - max(y, 0) / topDepth), topEase)
+    }
+
     /// Below the core's depth the closed cover fades out over this many
     /// points. The closed pill is no deeper than the housing, so this only
     /// shows while the island opens or collapses. Tune here.
@@ -177,15 +195,22 @@ enum IslandGlass {
         (max(width / 2 - shift - core / 2, 0), max(width / 2 + shift - core / 2, 0))
     }
 
+    /// The side gradient alone at `x` points from the camera's centre line:
+    /// 1 over the core, easing to 0 at each wing's end.
+    static func sideAlpha(x: CGFloat, core: CGSize, runs: (leading: CGFloat, trailing: CGFloat)) -> Double {
+        let side = abs(x) - core.width / 2
+        let run = x < 0 ? runs.leading : runs.trailing
+        return side <= 0 ? 1 : (run > 0 ? wingAlpha(Double(side / run)) : 0)
+    }
+
     /// The closed cover's opacity `x` points from the camera's centre line
-    /// and `y` from the top of the screen.
+    /// and `y` from the top of the screen: the side gradient and the top
+    /// edge's darkening, whichever is darker — not the two compounded, which
+    /// would crush the wings near the top.
     static func closedCoverAlpha(
         x: CGFloat, y: CGFloat, core: CGSize, runs: (leading: CGFloat, trailing: CGFloat)
     ) -> Double {
-        let side = abs(x) - core.width / 2
-        let run = x < 0 ? runs.leading : runs.trailing
-        let across: Double = side <= 0 ? 1 : (run > 0 ? wingAlpha(Double(side / run)) : 0)
-        return across * closedDownAlpha(y: y, core: core)
+        max(sideAlpha(x: x, core: core, runs: runs), topAlpha(y: y)) * closedDownAlpha(y: y, core: core)
     }
 
     /// The closed cover's vertical fade: whole to the core's depth, then

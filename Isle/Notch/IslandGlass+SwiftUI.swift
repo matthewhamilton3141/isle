@@ -159,8 +159,7 @@ private struct CameraCoverCanvas: View {
                             Path(CGRect(x: camera - core.width / 2, y: 0, width: core.width, height: depth)),
                             with: .color(.black)
                         )
-                        Self.wing(&closed, from: camera - core.width / 2, run: -runs.leading, depth: depth)
-                        Self.wing(&closed, from: camera + core.width / 2, run: runs.trailing, depth: depth)
+                        Self.wings(&closed, camera: camera, core: core.width, runs: runs, depth: depth)
                         // The fade below the core's depth.
                         closed.blendMode = .destinationIn
                         let down = core.height / depth
@@ -193,13 +192,43 @@ private struct CameraCoverCanvas: View {
         .allowsHitTesting(false)
     }
 
-    /// One wing: black at `from`, easing to clear `run` points away (negative
-    /// runs to the left).
-    private static func wing(_ context: inout GraphicsContext, from x: CGFloat, run: CGFloat, depth: CGFloat) {
-        guard abs(run) > 0.5 else { return }
-        let rect = CGRect(x: min(x, x + run), y: 0, width: abs(run), height: depth)
+    /// Both wings: black at the core, easing to clear at each end, and
+    /// under the top edge's darkening, whichever is darker at each point
+    /// (`IslandGlass.closedCoverAlpha`). Through the top edge's depth the
+    /// wings are drawn a row a pixel tall at a time, each row's stops raised
+    /// to that row's top alpha; below it, one gradient each.
+    private static func wings(
+        _ context: inout GraphicsContext, camera: CGFloat, core: CGFloat,
+        runs: (leading: CGFloat, trailing: CGFloat), depth: CGFloat
+    ) {
+        // Whole rows, so every edge lands on a pixel boundary: a fractional
+        // row antialiases against its neighbour and shows as a seam.
+        let rows = Int((min(IslandGlass.topDepth, depth) / rowHeight).rounded(.up))
+        let top = CGFloat(rows) * rowHeight
+        for row in 0..<rows {
+            let y = CGFloat(row) * rowHeight
+            let floor = IslandGlass.topAlpha(y: y + rowHeight / 2)
+            wing(&context, from: camera - core / 2, run: -runs.leading, y: y, height: rowHeight, floor: floor)
+            wing(&context, from: camera + core / 2, run: runs.trailing, y: y, height: rowHeight, floor: floor)
+        }
+        wing(&context, from: camera - core / 2, run: -runs.leading, y: top, height: depth - top, floor: 0)
+        wing(&context, from: camera + core / 2, run: runs.trailing, y: top, height: depth - top, floor: 0)
+    }
+
+    /// A row of the top edge: a device pixel at 2x.
+    private static let rowHeight: CGFloat = 0.5
+
+    /// One wing's band from `y`, `height` deep: black at `from`, easing to
+    /// clear `run` points away (negative runs to the left), never lighter
+    /// than `floor`.
+    private static func wing(
+        _ context: inout GraphicsContext, from x: CGFloat, run: CGFloat,
+        y: CGFloat, height: CGFloat, floor: Double
+    ) {
+        guard abs(run) > 0.5, height > 0 else { return }
+        let rect = CGRect(x: min(x, x + run), y: y, width: abs(run), height: height)
         let stops = wingStops.enumerated().map { i, a in
-            Gradient.Stop(color: .black.opacity(a), location: CGFloat(i) / CGFloat(Self.stops))
+            Gradient.Stop(color: .black.opacity(max(a, floor)), location: CGFloat(i) / CGFloat(Self.stops))
         }
         context.fill(
             Path(rect),
