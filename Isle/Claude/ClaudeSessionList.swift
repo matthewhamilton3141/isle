@@ -213,7 +213,10 @@ struct ClaudeSessionRow: Identifiable, Equatable {
         let answerIn = background?.attachId != nil ? "Attach to answer" : "Answer in its terminal"
         switch status.state {
         case .working:
-            detail = activity ?? (status.limitNext == .resumed ? ClaudeLimit.resumedLine(kind: status.limitKind) : "Thinking…")
+            let doing = activity ?? (status.limitNext == .resumed ? ClaudeLimit.resumedLine(kind: status.limitKind) : "Thinking…")
+            // Its subagents (Milestone 22), counted ahead of the tool so a
+            // narrow row cuts the tool rather than the count.
+            detail = status.subagents.isEmpty ? doing : "\(ClaudeSubagents.count(status.subagents)) · \(doing)"
         case .compacting:
             detail = "Compacting the conversation"
         case .needsApproval:

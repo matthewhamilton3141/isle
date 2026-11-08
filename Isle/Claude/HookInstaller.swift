@@ -82,6 +82,13 @@ enum HookInstaller {
         // nothing, so the view model also eases it back to idle on a timeout.
         HookEntry(event: "PreCompact", args: "set-state compacting"),
         HookEntry(event: "SessionStart", args: "set-state idle"),
+        // The subagents a session has running (Milestone 22): each start
+        // counts one in and its stop counts it out, and only a stop whose
+        // start was seen counts — Claude Code's internal agents fire a stop
+        // alone. A Claude Code older than SubagentStart skips the entry with a
+        // warning and simply never shows a count.
+        HookEntry(event: "SubagentStart", args: "subagent-start"),
+        HookEntry(event: "SubagentStop", args: "subagent-stop"),
         // Fires when a session ends (exit, Ctrl-D, terminal closed). Clears the
         // island back to disconnected — otherwise a session closed mid-work
         // leaves the last state (e.g. "working") frozen on the notch, since no
@@ -123,8 +130,12 @@ enum HookInstaller {
     /// sign-in or a finished background session no longer reads as a
     /// question, and the `quota_auto_resume_*` types say what came of the
     /// wait; and a Bash or Monitor target is the program's name, read from
-    /// the whole command rather than its first 48 characters.)
-    private static let currentVersion = 12
+    /// the whole command rather than its first 48 characters. v13: subagents,
+    /// counted — SubagentStart and SubagentStop entries run `subagent-start`
+    /// and `subagent-stop`, which keep a file per running agent, and every
+    /// record carries `subagents`, their types in the order they started;
+    /// the turn's end, the next prompt and the session's end clear them.)
+    private static let currentVersion = 13
     private static let versionKey = "HookInstaller.installedVersion"
 
     private static var home: URL {
@@ -296,6 +307,8 @@ enum HookInstaller {
     #   isle-cli ask                                           # permission → block for the notch
     #   isle-cli ask-question                                  # AskUserQuestion → block for the notch
     #   isle-cli guard                                         # Bash → ask when it's a guarded command
+    #   isle-cli subagent-start                                # SubagentStart → count it as running
+    #   isle-cli subagent-stop                                 # SubagentStop → stop counting it
     #   isle-cli end                                           # session ended — clear the island
     #
     # Kept in sync with Isle's embedded HookInstaller.scriptBody.
@@ -340,11 +353,41 @@ enum HookInstaller {
     # approval in front of it is a guarded one, and why.
     GUARD_DIR="$STATUS_DIR/guarded"
 
+    # The subagents each session has running (Milestone 22): one file per agent at
+    # subagents/<session>/<agent_id>, holding its type, made by its SubagentStart
+    # and removed by its SubagentStop. A file per agent, so parallel agents
+    # starting and stopping at once never rewrite each other's entries; a stop
+    # whose start was never seen (Claude Code's own internal agents fire one) finds
+    # no file and changes nothing. The session's directory goes when the turn ends
+    # (Stop, StopFailure), a new one starts (UserPromptSubmit, SessionStart other
+    # than a compaction) or the session does (SessionEnd), so an agent whose stop
+    # never came (a crash, an interrupt) is never counted past its own turn. The
+    # record carries the types in the order they started, as `subagents`.
+    AGENT_DIR="$STATUS_DIR/subagents"
+
+    # The running subagents of this session as a JSON array of their types, oldest
+    # first, in SA_JSON. One directory test and nothing else for a session with
+    # none, which is nearly every write. Types were made JSON-safe when stored.
+    subagents_json() {
+      local id="${SESSION_ID//[^A-Za-z0-9_-]/}" f t out=""
+      local d="$AGENT_DIR/$id"
+      SA_JSON="[]"
+      [ -n "$id" ] && [ -d "$d" ] || return 0
+      while IFS= read -r f; do
+        case "$f" in ''|*.*) continue ;; esac
+        # Gone between the listing and the read: stopped, so not counted.
+        t=""
+        { IFS= read -r t || [ -n "$t" ]; } 2>/dev/null < "$d/$f" || continue
+        out="$out${out:+, }\"$t\""
+      done < <(ls -1tr "$d" 2>/dev/null)
+      SA_JSON="[$out]"
+    }
+
     # Writes the status file Isle watches. $1 = state, $2 = request id (empty for
     # every write except a blocked `ask` / `ask-question`). Computes its own
     # timestamp so each write carries a fresh "… ago".
     write_status() {
-      local ts sf tmp
+      local ts sf tmp seen n=0
       ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       mkdir -p "$SESSION_DIR"
       # Keyed by session id. Absent one (a hook payload without stdin), fall
@@ -358,6 +401,12 @@ enum HookInstaller {
       # so Isle can never read a half-written record.) The temp name deliberately
       # does not end in .json, so a scan mid-write can't pick it up as a session.
       tmp="$sf.tmp.$$"
+      # The running subagents are read from their files at the moment of writing,
+      # and again after: a SubagentStart or SubagentStop landing in between would
+      # otherwise be lost under this write until the next one. Twice more at most.
+      while :; do
+      subagents_json
+      seen="$SA_JSON"
       cat > "$tmp" <<EOF
     {
       "state": "$1",
@@ -373,11 +422,57 @@ enum HookInstaller {
       "request_id": "$2",
       "request_kind": "${3:-}",
       "last_message": "$LAST_EXCERPT",
+      "subagents": $SA_JSON,
       "updated_at": "$ts"
     }
     EOF
       mv -f "$tmp" "$sf"
+      n=$((n + 1))
+      [ "$n" -lt 3 ] || break
+      subagents_json
+      [ "$SA_JSON" != "$seen" ] || break
+      done
     }
+
+    # SubagentStart / SubagentStop: the record exactly as the last hook left it,
+    # with `subagents` (and `updated_at`) brought up to date. Line by line, since
+    # every record this script writes has one field a line; a record from an older
+    # helper gets the field added above `updated_at`. Re-done if another hook
+    # replaced the record meanwhile (a new inode), so the newer state is the one
+    # kept. With no record yet (the hook installed mid-session), a fresh one: a
+    # subagent starting is Claude working.
+    rewrite_subagents() {
+      local sf="$SESSION_DIR/${SESSION_ID:-unknown}.json" tmp ts line ino seen n=0
+      if [ ! -f "$sf" ]; then
+        write_status "working" ""
+        return 0
+      fi
+      ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      tmp="$sf.tmp.$$"
+      while :; do
+        ino="$(stat -f %i "$sf" 2>/dev/null || true)"
+        subagents_json
+        seen="$SA_JSON"
+        while IFS= read -r line || [ -n "$line" ]; do
+          case "$line" in
+            *'"subagents":'*) ;;
+            *'"updated_at":'*) printf '  "subagents": %s,\n  "updated_at": "%s"\n' "$SA_JSON" "$ts" ;;
+            *) printf '%s\n' "$line" ;;
+          esac
+        done < "$sf" > "$tmp" 2>/dev/null || true
+        n=$((n + 1))
+        if [ "$(stat -f %i "$sf" 2>/dev/null || true)" != "$ino" ]; then
+          [ "$n" -lt 3 ] && continue
+          rm -f "$tmp"
+          return 0
+        fi
+        mv -f "$tmp" "$sf"
+        [ "$n" -lt 3 ] || break
+        subagents_json
+        [ "$SA_JSON" != "$seen" ] || break
+      done
+    }
+
 
     # A value made safe to sit between double quotes in the status file. Only
     # for text this script owns outright (the project's directory name): it can
@@ -1210,11 +1305,14 @@ enum HookInstaller {
         guard_main
         exit 0
         ;;
+      subagent-start|subagent-stop)
+        STATE=""   # the record keeps its state; see the subagent block below
+        ;;
       end)
         STATE="disconnected"   # SessionEnd — clear the island (guarded below)
         ;;
       *)
-        echo "Usage: isle-cli <set-state <state> | notify | fail | ask | ask-question | guard | end>" >&2
+        echo "Usage: isle-cli <set-state <state> | notify | fail | ask | ask-question | guard | subagent-start | subagent-stop | end>" >&2
         exit 1
         ;;
     esac
@@ -1248,6 +1346,11 @@ enum HookInstaller {
     TRANSCRIPT=""
     PROMPT=""
     ERROR_DETAILS=""
+    # A subagent's id and type (SubagentStart / SubagentStop), and SessionStart's
+    # `source` (startup, resume, clear, compact).
+    AGENT_ID=""
+    AGENT_TYPE=""
+    SOURCE=""
     # True only between a PreToolUse and its PostToolUse — i.e. a tool is
     # actually executing right now. A long Bash or a slow MCP call goes minutes
     # with no hook write and no transcript growth, which is indistinguishable
@@ -1368,8 +1471,66 @@ enum HookInstaller {
             PROMPT="$(printf '%s' "$STDIN_JSON" \
               | grep -oE '"prompt"[[:space:]]*:[[:space:]]*"[^"]*"' \
               | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
+          elif [ "$HOOK_EVENT" = "SessionStart" ]; then
+            SOURCE="$(printf '%s' "$STDIN_JSON" \
+              | grep -oE '"source"[[:space:]]*:[[:space:]]*"[^"]*"' \
+              | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)"
           fi
           ;;
+        subagent-start|subagent-stop)
+          # Both fields come before `last_assistant_message` in what 2.1.319
+          # sends, so the first match is the hook's own. The id names a file and
+          # the type sits in the record between quotes: each is cut to what can
+          # do both safely.
+          AGENT_ID="$(printf '%s' "$STDIN_JSON" \
+            | grep -oE '"agent_id"[[:space:]]*:[[:space:]]*"[^"]*"' \
+            | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' | LC_ALL=C tr -cd 'A-Za-z0-9_-' | cut -c1-64 || true)"
+          AGENT_TYPE="$(printf '%s' "$STDIN_JSON" \
+            | grep -oE '"agent_type"[[:space:]]*:[[:space:]]*"[^"]*"' \
+            | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' | LC_ALL=C tr -cd 'A-Za-z0-9 _.:-' | cut -c1-64 || true)"
+          ;;
+      esac
+    fi
+
+    # SubagentStart / SubagentStop (Milestone 22): count the agent in or out, and
+    # leave everything else in the record as it was. A stop for an agent this
+    # script never saw start changes nothing at all, so neither an internal agent
+    # nor a stop arriving after the turn's end can make a count up.
+    if [ "$CMD" = "subagent-start" ] || [ "$CMD" = "subagent-stop" ]; then
+      agent_session="${SESSION_ID//[^A-Za-z0-9_-]/}"
+      [ -n "$agent_session" ] && [ -n "$AGENT_ID" ] || exit 0
+      agent_dir="$AGENT_DIR/$agent_session"
+      if [ "$CMD" = "subagent-start" ]; then
+        [ -e "$agent_dir/$AGENT_ID" ] && exit 0
+        # By rename, so a write's read never sees an empty type. The temp name has
+        # a dot, which the listing skips. Once more if a stop's rmdir took the
+        # directory in between.
+        for _ in 1 2; do
+          mkdir -p "$agent_dir" 2>/dev/null || true
+          if printf '%s\n' "$AGENT_TYPE" > "$agent_dir/$AGENT_ID.tmp.$$" 2>/dev/null \
+             && mv -f "$agent_dir/$AGENT_ID.tmp.$$" "$agent_dir/$AGENT_ID" 2>/dev/null; then
+            break
+          fi
+        done
+      else
+        [ -e "$agent_dir/$AGENT_ID" ] || exit 0
+        rm -f "$agent_dir/$AGENT_ID"
+        rmdir "$agent_dir" 2>/dev/null || true
+      fi
+      rewrite_subagents
+      exit 0
+    fi
+
+    # The turn is over, or another has begun, or the session has: whatever agents
+    # it had running are not counted past it. A compaction (SessionStart with
+    # source=compact) can come mid-turn, while they still run, so it keeps them.
+    agent_session="${SESSION_ID//[^A-Za-z0-9_-]/}"
+    if [ -n "$agent_session" ] && [ -d "$AGENT_DIR/$agent_session" ]; then
+      case "$CMD:$HOOK_EVENT" in
+        set-state:Stop|set-state:UserPromptSubmit|fail:*|end:*)
+          rm -rf "$AGENT_DIR/$agent_session" ;;
+        set-state:SessionStart)
+          [ "$SOURCE" = compact ] || rm -rf "$AGENT_DIR/$agent_session" ;;
       esac
     fi
 

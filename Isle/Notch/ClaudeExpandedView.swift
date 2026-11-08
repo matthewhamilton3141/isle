@@ -184,6 +184,7 @@ struct ClaudeExpandedView: View {
                     .truncationMode(.middle)
                     .frame(height: L.detailLine, alignment: .leading)
                     .padding(.trailing, switcherClearance)
+                subagentLine
             }
 
             // The row follows what's above it at one gap, whatever its
@@ -202,6 +203,30 @@ struct ClaudeExpandedView: View {
             }
 
             Spacer(minLength: 0)
+        }
+    }
+
+    /// The subagents running for this session (Milestone 22), under what
+    /// it's doing: "3 agents · Explore ×2, Plan". Only while the hooks say
+    /// one is; one line, quieter than the detail above it, naming as many
+    /// kinds as fit and counting the rest as "+N".
+    @ViewBuilder
+    private var subagentLine: some View {
+        let lines = ClaudeSubagents.lines(viewModel.claudeSubagents)
+        if !lines.isEmpty {
+            ViewThatFits(in: .horizontal) {
+                ForEach(lines, id: \.self) { line in
+                    Text(line).lineLimit(1)
+                }
+            }
+            .font(L.detailFont)
+            .foregroundStyle(.white.opacity(0.5))
+            .frame(height: L.detailLine, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.trailing, switcherClearance)
+            .contentTransition(.opacity)
+            .transition(.opacity)
+            .accessibilityLabel(lines[0])
         }
     }
 

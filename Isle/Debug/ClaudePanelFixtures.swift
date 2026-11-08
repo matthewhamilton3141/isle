@@ -48,6 +48,9 @@ struct ClaudePanelFixture: Identifiable {
     /// The record's `last_message` (Milestone 15): the start of Claude's
     /// final message, as the helper stores it.
     var lastMessage: String? = nil
+    /// The record's `subagents` (Milestone 22): the running agents' types,
+    /// oldest first.
+    var subagents: [String] = []
     /// Every live session (Milestone 16), the island's own among them under
     /// `preview-session`, and the requests their hooks are blocked on.
     var sessions: [ClaudeStatus] = []
@@ -373,7 +376,7 @@ extension ClaudePanelFixture {
             .init(name: "both_approval", mode: .both, state: .needsApproval, action: "Bash", target: "npm",
                   request: approval("Bash", "npm run lint -- --fix")),
             .init(name: "both_question_4", mode: .both, state: .needsQuestion, request: question([fourOptions])),
-        ] + approvalKinds + descriptionModes + worstCases + liveExtras + jumpAndReply + doneSays + loneJump
+        ] + approvalKinds + descriptionModes + worstCases + liveExtras + jumpAndReply + doneSays + loneJump + subagentCounts
             + sessionLists + guardedApprovals + faceRow + usageLimits
     }
 
@@ -534,6 +537,45 @@ extension ClaudePanelFixture {
                   sessions: [session("preview-session", "isle", .done, ago: 8, said: saidShort), bench], home: true),
             .init(name: "sl_home_1_session", mode: .both, state: .done, lastMessage: saidShort,
                   sessions: [session("preview-session", "isle", .done, ago: 8, said: saidShort)], home: true),
+        ]
+    }
+
+    // MARK: Subagents, counted (Milestone 22)
+
+    /// Types as Claude Code 2.1.319 names them in `SubagentStart`'s
+    /// `agent_type`: the built-ins, a custom agent, a plugin's.
+    static let oneAgent = ["Explore"]
+    static let threeMixed = ["Explore", "Plan", "Explore"]
+    static let manyTypes = ["Explore", "Plan", "general-purpose", "Explore", "statusline-setup",
+                            "claude-code-guide", "Explore", "code-reviewer"]
+    static let longTypes = ["feature-dev:code-architect-with-a-long-name", "pr-review-toolkit:silent-failure-hunter",
+                            "pr-review-toolkit:silent-failure-hunter"]
+
+    static var subagentCounts: [ClaudePanelFixture] {
+        let withAgents = { (agents: [String]) in
+            ClaudeStatus(state: .working, project: "isle", sessionId: "preview-session", action: "Bash",
+                         target: "rg", updatedAt: Date().addingTimeInterval(-4), subagents: agents)
+        }
+        return [
+            .init(name: "m22_one", state: .working, action: "Agent", target: nil, subagents: oneAgent),
+            .init(name: "m22_three_mixed", state: .working, action: "Bash", target: "rg", subagents: threeMixed),
+            .init(name: "m22_many_types", state: .working, action: "Read",
+                  target: "/Users/matthew/Documents/isle/Isle/Notch/ClaudeExpandedView.swift", subagents: manyTypes),
+            .init(name: "m22_long_types", state: .working, action: "Grep", target: "SubagentStart",
+                  subagents: longTypes),
+            .init(name: "m22_terminal_reply", state: .working, action: "Bash", target: "rg", keepAwake: true,
+                  host: terminalHost, subagents: threeMixed),
+            .init(name: "m22_both", mode: .both, state: .working, action: "Bash", target: "rg",
+                  subagents: manyTypes),
+            .init(name: "m22_home_one", mode: .both, state: .working, action: "Agent", subagents: oneAgent,
+                  sessions: [withAgents(oneAgent)], home: true),
+            .init(name: "m22_home_three", mode: .both, state: .working, action: "Bash", target: "rg",
+                  subagents: threeMixed, sessions: [withAgents(threeMixed)], home: true),
+            .init(name: "m22_home_many", mode: .both, state: .working, action: "Bash", target: "rg",
+                  subagents: manyTypes, sessions: [withAgents(manyTypes)], home: true),
+            .init(name: "m22_list", state: .working, subagents: threeMixed,
+                  sessions: [withAgents(threeMixed), website, bench], sessionRequests: [websiteApproval],
+                  listShown: true),
         ]
     }
 

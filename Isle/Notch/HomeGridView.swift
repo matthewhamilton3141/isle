@@ -174,6 +174,12 @@ struct HomeGridView: View {
             return .init("Has a question", vm.currentQuestion?.question ?? project)
         case .working:
             let resumed = vm.claudeLimitNext == .resumed ? ClaudeLimit.resumedLine(kind: vm.claudeLimitKind) : nil
+            // Its subagents (Milestone 22) say more than the one tool running
+            // — which is usually one of theirs. As much of the line as fits.
+            let agents = ClaudeSubagents.lines(vm.claudeSubagents)
+            if othersLine == nil, let first = agents.first {
+                return .init("Working", first, fits: agents)
+            }
             return .init("Working", othersLine ?? vm.claudeActivity?.phrase ?? resumed ?? "Thinking")
         case .compacting:
             return .init("Compacting", othersLine ?? project)
@@ -284,12 +290,18 @@ struct TileGlance {
     /// The second line may shrink a little to fit rather than lose its end
     /// — for a line whose last word is the point ("3 files").
     var shrinksToFit = false
+    /// Shorter forms of the second line, the fullest first: the tile shows
+    /// the first that fits rather than cutting one off ("3 agents · Explore
+    /// ×2, Plan" → "3 agents · Explore ×2, +1" → "3 agents").
+    var fits: [String] = []
 
-    init(_ line1: String, _ line2: String?, monospaced: Bool = false, shrinksToFit: Bool = false) {
+    init(_ line1: String, _ line2: String?, monospaced: Bool = false, shrinksToFit: Bool = false,
+         fits: [String] = []) {
         self.line1 = line1
         self.line2 = line2
         self.monospaced = monospaced
         self.shrinksToFit = shrinksToFit
+        self.fits = fits
     }
 }
 
@@ -333,7 +345,15 @@ struct HomeTile<Lead: View>: View {
                           ? .system(size: 12, weight: .semibold).monospacedDigit()
                           : .system(size: 12, weight: .semibold))
                     .lineLimit(1)
-                if let line2 = glance.line2 {
+                if glance.fits.count > 1 {
+                    ViewThatFits(in: .horizontal) {
+                        ForEach(glance.fits, id: \.self) { line in
+                            Text(line).lineLimit(1)
+                        }
+                    }
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.white.opacity(0.65))
+                } else if let line2 = glance.line2 {
                     Text(line2)
                         .font(.system(size: 10.5))
                         .foregroundStyle(.islandSecondary(0.65))
