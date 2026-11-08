@@ -853,18 +853,38 @@ struct ClaudeExpandedView: View {
         }
     }
 
+    /// The decisions, with their keys (`ShortcutHints`) where the row has
+    /// the room: at the usual spacing, else a little closer (Always…'s five
+    /// pills), else without them (keys rebound to long chords) — never a
+    /// row any wider than before.
     private var decisionPills: some View {
+        ViewThatFits(in: .horizontal) {
+            decisionPillRow(hints: true, spacing: 8)
+            decisionPillRow(hints: true, spacing: 6)
+            decisionPillRow(hints: false, spacing: 8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .disabled(viewModel.isAnsweringRequest)
+        .opacity(viewModel.isAnsweringRequest ? 0.5 : 1)
+    }
+
+    private func decisionPillRow(hints: Bool, spacing: CGFloat) -> some View {
         let offersRemember = approval?.remember != nil
-        return HStack(spacing: 8) {
+        return HStack(spacing: spacing) {
             if offersRemember, viewModel.isReviewingRemember {
-                pill("Confirm", systemImage: "checkmark", fill: .green.opacity(0.85)) {
+                // The review's Confirm and Back are what Approve's and
+                // Deny's keys press there.
+                pill("Confirm", systemImage: "checkmark", fill: .green.opacity(0.85),
+                     hint: hints ? .approve : nil) {
                     viewModel.allowRemembering()
                 }
-                pill("Back", systemImage: "chevron.left", fill: .white.opacity(0.14)) {
+                pill("Back", systemImage: "chevron.left", fill: .white.opacity(0.14),
+                     hint: hints ? .deny : nil) {
                     viewModel.cancelRemember()
                 }
             } else {
-                pill("Approve", systemImage: "checkmark", fill: .green.opacity(0.85), compact: offersRemember) {
+                pill("Approve", systemImage: "checkmark", fill: .green.opacity(0.85), compact: offersRemember,
+                     hint: hints ? .approve : nil) {
                     viewModel.decide(allow: true)
                 }
                 if offersRemember {
@@ -872,7 +892,8 @@ struct ClaudeExpandedView: View {
                         viewModel.reviewRemember()
                     }
                 }
-                pill("Deny", systemImage: "xmark", fill: .red.opacity(0.85), compact: offersRemember) {
+                pill("Deny", systemImage: "xmark", fill: .red.opacity(0.85), compact: offersRemember,
+                     hint: hints ? .deny : nil) {
                     viewModel.decide(allow: false)
                 }
                 // The terminal's "No, and tell Claude what to do differently":
@@ -885,10 +906,11 @@ struct ClaudeExpandedView: View {
                     answerInTerminal()
                 }
             }
-            Spacer(minLength: 0)
         }
-        .disabled(viewModel.isAnsweringRequest)
-        .opacity(viewModel.isAnsweringRequest ? 0.5 : 1)
+        // At its own width: `ViewThatFits` has just checked that fits, and
+        // laid out squeezed instead an HStack shortens Approve to "Appr…"
+        // with room to spare.
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     // MARK: - Jump and reply
@@ -1139,9 +1161,11 @@ struct ClaudeExpandedView: View {
                     }
                     Spacer(minLength: 0)
                     if question.multiSelect {
+                        // Approve's key presses it, once there's a pick to send.
                         pill(isLast ? "Done" : "Next",
                              systemImage: isLast ? "checkmark" : "arrow.right",
-                             fill: .white.opacity(picks.isEmpty ? 0.14 : 0.3)) {
+                             fill: .white.opacity(picks.isEmpty ? 0.14 : 0.3),
+                             hint: .approve, hintLive: !picks.isEmpty) {
                             viewModel.advanceQuestion()
                         }
                         .disabled(picks.isEmpty)
@@ -1176,7 +1200,8 @@ struct ClaudeExpandedView: View {
             ForEach(Array(question.options.enumerated()), id: \.offset) { index, option in
                 optionRow(option, multiSelect: question.multiSelect, picked: picks.contains(option.label),
                           style: fit.style,
-                          descriptionLines: fit.style == .full ? fit.descriptionLines[index] : 0)
+                          descriptionLines: fit.style == .full ? fit.descriptionLines[index] : 0,
+                          hint: ShortcutAction.options.indices.contains(index) ? ShortcutAction.options[index] : nil)
             }
         }
     }
@@ -1186,8 +1211,10 @@ struct ClaudeExpandedView: View {
     /// description on one line under `.oneLine`, the label alone under
     /// `.hidden`.
     private func optionRow(_ option: ClaudeQuestion.Option, multiSelect: Bool, picked: Bool,
-                           style: OptionDescriptions, descriptionLines lines: Int) -> some View {
+                           style: OptionDescriptions, descriptionLines lines: Int,
+                           hint: ShortcutAction?) -> some View {
         let height = L.optionRowHeight(style: style, descriptionLines: lines)
+        let key = hint.flatMap { viewModel.shortcutHints.key($0) }
         return Button {
             viewModel.pickOption(option.label)
         } label: {
@@ -1203,6 +1230,8 @@ struct ClaudeExpandedView: View {
                     VStack(alignment: .leading, spacing: L.optionStackedGap) {
                         optionLabel(option)
                             .frame(height: L.optionLabelLine)
+                            // Clear of the key over the corner.
+                            .padding(.trailing, key == nil ? 0 : L.keyHintClearance)
                         Text(option.description ?? "")
                             .font(L.optionDescriptionFont)
                             .foregroundStyle(.islandSecondary(0.55))
@@ -1222,6 +1251,19 @@ struct ClaudeExpandedView: View {
                     }
                 }
                 Spacer(minLength: 0)
+                // Its key at the row's end. Beside a one-line row's text,
+                // which is cut to fit anyway; over a stacked row's top
+                // corner, level with the label, so a description wraps to
+                // exactly the lines the fit measured.
+                if lines == 0, let key, let hint {
+                    keyHint(key, live: viewModel.shortcutHints.isLive(hint), opacity: 0.45)
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                if lines > 0, let key, let hint {
+                    keyHint(key, live: viewModel.shortcutHints.isLive(hint), opacity: 0.45)
+                        .frame(height: L.optionLabelLine)
+                }
             }
             .padding(.horizontal, L.optionHorizontalPadding)
             .padding(.vertical, lines > 0 ? L.optionStackedPadding : 0)
@@ -1260,28 +1302,58 @@ struct ClaudeExpandedView: View {
 
     /// A capsule button with an icon, for the decisions. Real `Button`s, so
     /// the tap is consumed and doesn't retract the card.
+    ///
+    /// With `hint`, the shortcut's keys follow the word in place of the
+    /// symbol, when it has keys (`ShortcutHints`): the pill's colour already
+    /// says which decision it is, and the swap keeps the pill about as wide.
     private func pill(
         _ title: String,
         systemImage: String,
         fill: Color,
         iconOnly: Bool = false,
         compact: Bool = false,
+        hint: ShortcutAction? = nil,
+        hintLive: Bool = true,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: systemImage)
-                .labelStyle(PillLabelStyle(iconOnly: iconOnly, titleOnly: compact))
-                .font(L.pillFont)
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .padding(.horizontal, compact ? 10 : 12)
-                .frame(maxHeight: .infinity)
-                .background(Capsule().fill(fill))
-                .contentShape(Capsule())
+        let key = iconOnly ? nil : hint.flatMap { viewModel.shortcutHints.key($0) }
+        return Button(action: action) {
+            Group {
+                if let key, let hint {
+                    HStack(spacing: 4) {
+                        Text(title)
+                        keyHint(key, live: hintLive && viewModel.shortcutHints.isLive(hint), opacity: 0.6)
+                    }
+                } else {
+                    Label(title, systemImage: systemImage)
+                        .labelStyle(PillLabelStyle(iconOnly: iconOnly, titleOnly: compact))
+                }
+            }
+            .font(L.pillFont)
+            .foregroundStyle(.white)
+            .lineLimit(1)
+            .padding(.horizontal, compact ? 10 : 12)
+            .frame(maxHeight: .infinity)
+            .background(Capsule().fill(fill))
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .help(iconOnly ? title : "")
         .accessibilityLabel(title)
+    }
+
+    /// A shortcut's keys on its button: faint, and there only while a press
+    /// would do what the button does. Its room is kept when it isn't, so it
+    /// coming or going never moves a thing.
+    private func keyHint(_ key: String, live: Bool, opacity: Double) -> some View {
+        Text(key)
+            .font(L.keyHintFont)
+            .foregroundStyle(.islandSecondary(opacity))
+            .lineLimit(1)
+            .fixedSize()
+            .opacity(live ? 1 : 0)
+            .animation(.easeInOut(duration: 0.2), value: live)
+            .accessibilityHidden(true)
     }
 
     /// Hands the prompt back to the terminal now, and — since that is where

@@ -115,6 +115,7 @@ enum ShortcutsTests {
         faceTracking()
         center()
         endToEnd()
+        hints()
         persistence()
         print("\n\(passes) passed, \(failures) failed")
         exit(failures == 0 ? 0 : 1)
@@ -735,6 +736,119 @@ enum ShortcutsTests {
         settings.shortcuts.assign(KeyCombo(kVK_ANSI_I, o), to: .toggleIsland)
         spin()
         equal(reg.held[A.toggleIsland.hotKeyID], KeyCombo(kVK_ANSI_I, o), "a new combo is held at once")
+        UserDefaults.standard.removePersistentDomain(forName: suite)
+    }
+
+    // MARK: - Hints on the buttons
+
+    @MainActor
+    static func hints() {
+        print("Hints: which keys")
+        let plain: (KeyCombo) -> String = { $0.display(character: { _ in nil }) }
+        let keys = ShortcutHints.keys(defaults, display: plain)
+        equal(keys[.approve], "⌃'", "Approve's hint is its key: ⌃'")
+        equal(keys[.deny], "⌃⎋", "Deny's: ⌃⎋")
+        equal(keys[.option1], "⌥1", "option 1's: ⌥1")
+        check(keys[.toggleIsland] == nil, "open/close has no button, so no hint")
+        var rebound = defaults
+        rebound.assign(KeyCombo(kVK_ANSI_Y, c | o), to: .approve)
+        rebound[.deny].isOn = false
+        let reKeys = ShortcutHints.keys(rebound, display: plain)
+        equal(reKeys[.approve], "⌃⌥Y", "rebound: the user's keys, not the default")
+        check(reKeys[.deny] == nil, "turned off: no hint, and no room kept for one")
+        let h = ShortcutHints(keys: reKeys, live: [.approve, .deny])
+        check(h.isLive(.approve) && !h.isLive(.deny), "an off key is never live, whatever the plan says")
+
+        print("Hints: shown only while a press would do the button's thing")
+        let all = ShortcutPlan.active(questionCtx(4, multi: true), bindings: defaults)
+        let approvalHeld = ShortcutPlan.active(approvalCtx(), bindings: defaults)
+        equal(ShortcutPlan.live(approvalCtx(), face: .shown, held: approvalHeld), [.approve, .deny],
+              "an approval in front of you: Approve and Deny")
+        equal(ShortcutPlan.live(approvalCtx(), face: .hidden, held: approvalHeld), [.deny],
+              "auto-opened where you aren't: Deny only (Approve would only reveal it)")
+        equal(ShortcutPlan.live(approvalCtx(guarded: true), face: .shown, held: approvalHeld), [.deny],
+              "guarded, not yet seen: Approve's hint waits")
+        equal(ShortcutPlan.live(approvalCtx(guarded: true), face: .seen, held: approvalHeld), [.approve, .deny],
+              "guarded, seen: both")
+        equal(ShortcutPlan.live(approvalCtx(reviewing: true), face: .shown, held: approvalHeld), [],
+              "Always…'s review, not yet seen: neither")
+        equal(ShortcutPlan.live(approvalCtx(reviewing: true), face: .seen, held: approvalHeld), [.approve, .deny],
+              "the review, seen: Confirm and Back")
+        equal(ShortcutPlan.live(questionCtx(4, multi: true), face: .shown, held: all), [],
+              "a question not yet seen: no option hints")
+        equal(ShortcutPlan.live(questionCtx(4, multi: true), face: .seen, held: all),
+              [.option1, .option2, .option3, .option4, .approve], "seen: ⌥1…⌥4, and Done's")
+        var unarmed = approvalCtx(); unarmed.armed = false
+        equal(ShortcutPlan.live(unarmed, face: .seen, held: approvalHeld), [], "not armed: none")
+        var refused = approvalHeld; refused[.approve] = nil
+        equal(ShortcutPlan.live(approvalCtx(), face: .seen, held: refused), [.deny],
+              "a key another app holds (refused): no hint for it")
+        var composing = approvalCtx(); composing.composing = true
+        equal(ShortcutPlan.live(composing, face: .seen, held: approvalHeld), [], "a field has the keys: none")
+
+        print("Hints: end to end")
+        let suite = "isle.shortcut-tests.\(UUID().uuidString)"
+        let settings = AppSettings(defaults: UserDefaults(suiteName: suite)!)
+        settings.mode = .claude
+        let vm = NotchViewModel(settings: settings)
+        let reg = FakeRegistrar()
+        let center = HotKeyCenter(registrar: reg)
+        let host = FakeHost()
+        let shortcuts = NotchShortcuts(viewModel: vm, settings: settings, center: center, host: host)
+        func spin(_ seconds: TimeInterval = 0.05) { RunLoop.main.run(until: Date().addingTimeInterval(seconds)) }
+        host.islandPresence = .pointerScreen
+        shortcuts.refresh(); spin()
+        equal(vm.shortcutHints.live, [], "idle: nothing live")
+
+        vm.applyPreviewFixture(ClaudePanelFixture(
+            name: "t", state: .needsApproval, action: "Bash", target: "git",
+            request: ClaudePanelFixture.approval("Bash", "git status")))
+        spin()
+        check(vm.shortcutHints.key(.approve) != nil && vm.shortcutHints.key(.deny) != nil,
+              "the instant it lands: the keys are known, so their room is kept")
+        equal(vm.shortcutHints.live, [], "but not live: a press would reach another app")
+        spin(ShortcutPlan.armDelay + 0.15)
+        equal(vm.shortcutHints.live, [.approve, .deny], "armed: live, with nothing to refresh it")
+
+        settings.shortcuts.assign(KeyCombo(kVK_ANSI_Y, c | o), to: .approve)
+        spin()
+        equal(vm.shortcutHints.key(.approve), KeyCombo(kVK_ANSI_Y, c | o).display(), "rebound: the hint follows at once")
+        settings.shortcuts[.deny].isOn = false
+        spin()
+        check(vm.shortcutHints.key(.deny) == nil && !vm.shortcutHints.isLive(.deny), "Deny turned off: its hint goes")
+        settings.shortcuts[.deny].isOn = true
+        settings.shortcuts.reset(.approve)
+        spin()
+
+        vm.beginCompose(.denial); spin()
+        equal(vm.shortcutHints.live, [], "No, and tell Claude…: the field has the keys, no hint live")
+        vm.endCompose(); spin()
+        equal(vm.shortcutHints.live, [.approve, .deny], "field closed: back")
+
+        let guarded = ClaudePanelFixture.guardedApproval("Bash", command: "git push origin main", pattern: "git push")
+        host.islandPresence = .closed
+        vm.applyPreviewFixture(ClaudePanelFixture(name: "g", state: .needsApproval, action: "Bash", target: "git",
+                                                  request: guarded))
+        spin(ShortcutPlan.armDelay + 0.15)
+        equal(vm.shortcutHints.live, [.deny], "guarded, island closed: Deny only (one press, always)")
+        host.islandPresence = .pointerScreen
+        shortcuts.refresh(); spin()
+        equal(vm.shortcutHints.live, [.deny], "the panel just up: Approve's hint waits for a look")
+        spin(ShortcutPlan.seenDelay + 0.1)
+        equal(vm.shortcutHints.live, [.approve, .deny], "half a second in view: Approve's too, unprompted")
+
+        vm.applyPreviewFixture(ClaudePanelFixture(name: "q", state: .needsQuestion,
+                                                  request: ClaudePanelFixture.question([ClaudePanelFixture.threeOptions])))
+        spin(max(ShortcutPlan.armDelay, ShortcutPlan.seenDelay) + 0.2)
+        equal(vm.shortcutHints.live, [.option1, .option2, .option3], "three options, seen: ⌥1…⌥3")
+        reg.taken = [KeyCombo(kVK_ANSI_2, o)]
+        vm.applyPreviewFixture(ClaudePanelFixture(name: "w", state: .working, action: "Bash", target: "ls"))
+        spin()
+        equal(vm.shortcutHints.live, [], "answered: none")
+        vm.applyPreviewFixture(ClaudePanelFixture(name: "q2", state: .needsQuestion,
+                                                  request: ClaudePanelFixture.question([ClaudePanelFixture.threeOptions])))
+        spin(max(ShortcutPlan.armDelay, ShortcutPlan.seenDelay) + 0.2)
+        equal(vm.shortcutHints.live, [.option1, .option3], "⌥2 held by another app: no hint on option 2")
         UserDefaults.standard.removePersistentDomain(forName: suite)
     }
 

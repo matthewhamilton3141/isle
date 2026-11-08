@@ -40,6 +40,7 @@ enum Tests {
         groupTests()
         lineTests()
         rowTests()
+        livenessTests()
         print("\nswift: \(passes) passed, \(failures) failed")
         exit(failures == 0 ? 0 : 1)
     }
@@ -112,6 +113,38 @@ enum Tests {
             "8 agents",
         ], "every form, fullest first, the count last")
         equal(S.lines(["Explore"]), ["1 agent · Explore", "1 agent"], "one: named, then counted")
+    }
+
+    // MARK: - Liveness (v17)
+
+    /// Agents outlive their turn now, so a session's process is what ends
+    /// them when no SessionEnd came: its registry record, read by the
+    /// registry's own scan (a scratch directory, a dead pid and this one).
+    static func livenessTests() {
+        print("Liveness: a session's agents go with its process")
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("isle-subagent-liveness-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let dead = Process()
+        dead.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try? dead.run()
+        dead.waitUntilExit()
+        let me = ProcessInfo.processInfo.processIdentifier
+        func write(_ pid: Int32, _ session: String) {
+            let json = #"{"pid":\#(pid),"sessionId":"\#(session)","cwd":"/tmp/work","kind":"interactive","status":"idle"}"#
+            try? Data(json.utf8).write(to: dir.appendingPathComponent("\(pid).json"))
+        }
+        write(me, "alive")
+        write(dead.processIdentifier, "killed")
+        let live = Set(ClaudeSessionRegistry.scan(dir).map(\.sessionId))
+        equal(live, ["alive"], "the registry's scan: the dead pid's record left behind, not listed")
+        let agents = ["Explore", "Plan"]
+        equal(S.counted(agents, sessionId: "alive", live: live), agents, "a live session keeps its agents, past its turn")
+        equal(S.counted(agents, sessionId: "killed", live: live), [], "its pid gone (no SessionEnd): none")
+        equal(S.counted(agents, sessionId: nil, live: live), [], "no session id to check: none")
+        equal(S.counted(agents, sessionId: "alive", live: []), [], "a registry listing nobody vouches for nobody")
+        equal(S.counted([], sessionId: "alive", live: live), [], "none running: none")
     }
 
     // MARK: - Session rows

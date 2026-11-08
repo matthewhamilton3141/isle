@@ -496,3 +496,51 @@ enum ShortcutPlan {
         }
     }
 }
+
+// MARK: - Hints on the buttons
+
+/// The keys the face's buttons carry beside their words: "Approve ⌃'",
+/// "Deny ⌃⎋", "⌥1" at an option's end. Faint, and only ever the truth:
+///
+/// - **Which keys** (`keys`) are the user's own bindings, as Settings has
+///   them, for the shortcuts that are on. A shortcut turned off has no hint
+///   and no room kept for one. The room a hint takes is kept whenever its key
+///   is bound, shown or not, so a hint coming or going never moves a button.
+/// - **Shown** (`live`) only while a press would do what the button does:
+///   held (taken from the other apps, not refused), armed, and — for a
+///   guarded command, Always…'s review and a question's options — the face
+///   seen. Until then the hint's room is empty, since a press would only
+///   reveal the request, or reach another app.
+struct ShortcutHints: Equatable {
+    var keys: [ShortcutAction: String] = [:]
+    var live: Set<ShortcutAction> = []
+
+    /// The keys an action's button shows, nil when it has none bound.
+    func key(_ action: ShortcutAction) -> String? { keys[action] }
+
+    func isLive(_ action: ShortcutAction) -> Bool { live.contains(action) && keys[action] != nil }
+
+    /// Every pending-only shortcut that's on, as the face writes its keys.
+    static func keys(_ bindings: ShortcutBindings,
+                     display: (KeyCombo) -> String = { $0.display() }) -> [ShortcutAction: String] {
+        var keys: [ShortcutAction: String] = [:]
+        for action in ShortcutAction.configurable where action.isWhilePending {
+            if let combo = bindings.combo(for: action) { keys[action] = display(combo) }
+        }
+        return keys
+    }
+}
+
+extension ShortcutPlan {
+    /// The held shortcuts a press of which would do its button's own thing
+    /// right now — not reveal the request, not nothing.
+    static func live(_ context: ShortcutContext, face: ShortcutFace,
+                     held: [ShortcutAction: KeyCombo]) -> Set<ShortcutAction> {
+        Set(held.keys.filter { action in
+            switch command(for: action, context: context, face: face) {
+            case .approve, .deny, .confirmRemember, .cancelRemember, .pick, .submit: return true
+            case .reveal, .toggleIsland, .none: return false
+            }
+        })
+    }
+}

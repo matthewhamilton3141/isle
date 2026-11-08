@@ -5,8 +5,10 @@
 //  the record's `subagents` — the types of the agents the session has
 //  running, oldest first, as `isle-cli` kept them from Claude Code's
 //  `SubagentStart` and `SubagentStop`. Only agents a start was seen for are
-//  in it, and the turn's end clears it, so the line says what the hooks
-//  reported and nothing it would have to guess.
+//  in it, and each stays until its own stop — a background agent outlives
+//  its turn — or its session's end. A session whose process is gone has no
+//  agents, whatever its record says (`counted`), so the line says what the
+//  hooks reported and nothing it would have to guess.
 //
 //  Pure, so the wording can be checked without a running bridge
 //  (scripts/test-subagent-count.sh).
@@ -15,6 +17,15 @@
 import Foundation
 
 enum ClaudeSubagents {
+    /// A record's agents, while its session's process is alive: the
+    /// registry's pids are the one word on that, since a session killed
+    /// outright fires no SessionEnd to clear them. None for a record with no
+    /// session id to check, or one the registry doesn't list.
+    static func counted(_ running: [String], sessionId: String?, live: Set<String>) -> [String] {
+        guard !running.isEmpty, let id = sessionId, live.contains(id) else { return [] }
+        return running
+    }
+
     /// One type and how many of it are running.
     struct Group: Equatable {
         let type: String

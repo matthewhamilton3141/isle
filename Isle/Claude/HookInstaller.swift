@@ -166,8 +166,11 @@ enum HookInstaller {
     /// back a session that ended mid-rewrite; parallel blocks are counted
     /// under a lock; each guarded call keeps its own record, at
     /// guarded/<session>/<tool_use_id>.json; and the wait reads the record
-    /// with builtins.
-    private static let currentVersion = 16
+    /// with builtins. v17: a subagent is counted until its own SubagentStop
+    /// — no longer dropped at the turn's end or the next prompt, so a
+    /// background agent stays in "2 agents" while it runs; the session's end,
+    /// or a new process taking up its id, still clears them.
+    private static let currentVersion = 17
     private static let versionKey = "HookInstaller.installedVersion"
 
     private static var home: URL {
@@ -407,10 +410,13 @@ enum HookInstaller {
     # and removed by its SubagentStop. A file per agent, so parallel agents
     # starting and stopping at once never rewrite each other's entries; a stop
     # whose start was never seen (Claude Code's own internal agents fire one) finds
-    # no file and changes nothing. The session's directory goes when the turn ends
-    # (Stop, StopFailure), a new one starts (UserPromptSubmit, SessionStart other
-    # than a compaction) or the session does (SessionEnd), so an agent whose stop
-    # never came (a crash, an interrupt) is never counted past its own turn. The
+    # no file and changes nothing. An agent is counted until its own stop, across
+    # turns: a background agent still running when the turn ends (Stop,
+    # StopFailure) or the next prompt starts (UserPromptSubmit) is still running.
+    # The session's directory goes only with the session: its end (SessionEnd), or
+    # a new process taking up its id (SessionStart other than a compaction, as a
+    # resume does), since the agents of a process that's gone are gone too. One
+    # killed outside any hook is Isle's to see: it knows the session's pid. The
     # record carries the types in the order they started, as `subagents`.
     AGENT_DIR="$STATUS_DIR/subagents"
 
@@ -2123,13 +2129,15 @@ enum HookInstaller {
       esac
     fi
 
-    # The turn is over, or another has begun, or the session has: whatever agents
-    # it had running are not counted past it. A compaction (SessionStart with
-    # source=compact) can come mid-turn, while they still run, so it keeps them.
+    # The session is over, or a new process has its id: whatever agents it had
+    # running are not counted past it. Not the turn's end or the next prompt: an
+    # agent sent to the background outlives its turn, and its own SubagentStop
+    # says when it's done. A compaction (SessionStart with source=compact) comes
+    # mid-session, while they still run, so it keeps them.
     agent_session="${SESSION_ID//[^A-Za-z0-9_-]/}"
     if [ -n "$agent_session" ] && [ -d "$AGENT_DIR/$agent_session" ]; then
       case "$CMD:$HOOK_EVENT" in
-        set-state:Stop|set-state:UserPromptSubmit|fail:*|end:*)
+        end:*)
           rm -rf "$AGENT_DIR/$agent_session" ;;
         set-state:SessionStart)
           [ "$SOURCE" = compact ] || rm -rf "$AGENT_DIR/$agent_session" ;;
