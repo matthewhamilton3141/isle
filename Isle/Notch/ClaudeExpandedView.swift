@@ -254,14 +254,15 @@ struct ClaudeExpandedView: View {
     /// The session's project. On a session picked from the list it's the way
     /// back up — a chevron where the folder was — so the face says it's
     /// holding this session by choice, not by urgency.
+    ///
+    /// A background session goes by its own name (Milestone 21).
     @ViewBuilder
     private var projectLabel: some View {
         if isPinned {
             Button {
                 viewModel.showSessionList()
             } label: {
-                Label(viewModel.claudeProject.flatMap { $0.isEmpty ? nil : $0 } ?? "Sessions",
-                      systemImage: "chevron.left")
+                Label(sessionLabel ?? "Sessions", systemImage: "chevron.left")
                     .foregroundStyle(.white.opacity(0.8))
                     .truncationMode(.tail)
                     .contentShape(Rectangle())
@@ -270,6 +271,12 @@ struct ClaudeExpandedView: View {
             .layoutPriority(-1)
             .help("Back to every session")
             .accessibilityLabel("Back to every session")
+        } else if let name = viewModel.claudeBackground?.name {
+            Label(name, systemImage: "rectangle.stack.fill")
+                .foregroundStyle(.white.opacity(0.8))
+                .truncationMode(.tail)
+                .layoutPriority(-1)
+                .help("A background session")
         } else if let project = viewModel.claudeProject, !project.isEmpty {
             Label(project, systemImage: "folder.fill")
                 .foregroundStyle(.white.opacity(0.8))
@@ -277,6 +284,12 @@ struct ClaudeExpandedView: View {
                 // The first thing to give way when the marks need the room.
                 .layoutPriority(-1)
         }
+    }
+
+    /// The session's name in the eyebrow: a background session's own, else
+    /// its project.
+    private var sessionLabel: String? {
+        viewModel.claudeBackground?.name ?? viewModel.claudeProject.flatMap { $0.isEmpty ? nil : $0 }
     }
 
     /// The face is holding a session the user picked from the list.
@@ -312,11 +325,16 @@ struct ClaudeExpandedView: View {
     /// the face to the list. With nothing busy elsewhere but another session
     /// alive, a quiet count of the rest stands in, so the list is always
     /// reachable when there's more than one session to list.
+    ///
+    /// "More than one" counts the rows other than the island's own, so the
+    /// list is reachable too when the island has nothing live and the only
+    /// sessions are background ones agent view lists (Milestone 21).
     @ViewBuilder
     private var sessionMarks: some View {
         let others = viewModel.otherSessions
-        let quiet = viewModel.sessionList.count - 1 - others.needYou - others.working
-        if viewModel.sessionList.count > 1 {
+        let elsewhere = viewModel.sessionList.filter { $0.id != viewModel.claudeSessionId }.count
+        let quiet = elsewhere - others.needYou - others.working
+        if elsewhere > 0 {
             Button {
                 viewModel.showSessionList()
             } label: {
@@ -390,7 +408,10 @@ struct ClaudeExpandedView: View {
                 .fixedSize()
                 .accessibilityLabel("Back")
                 separator
-                Text("\(rows.count) live")
+                // "live" only while it's true of every row: a background
+                // session agent view lists may have no process at all.
+                Text(rows.allSatisfy { $0.background?.hasHookRecord ?? true }
+                     ? "\(rows.count) live" : "\(rows.count) \(rows.count == 1 ? "session" : "sessions")")
                     .monospacedDigit()
                 if scrolls {
                     // More than fit: the rest are a scroll away.
@@ -467,6 +488,10 @@ struct ClaudeExpandedView: View {
     private func sessionRow(_ row: ClaudeSessionRow, now: Date, holdsJump: Bool) -> some View {
         let onIsland = row.id == viewModel.claudeSessionId
         let jump = viewModel.jumpTarget(for: row.id)
+        let attaches = viewModel.jumpAttaches(row.id)
+        // A background session Claude Code says is finished (Milestone 21)
+        // steps back: its words dimmer, its state in grey.
+        let quiet = row.isQuiet
         return HStack(spacing: 4) {
             Button {
                 viewModel.pinSession(row.id)
@@ -474,16 +499,18 @@ struct ClaudeExpandedView: View {
                 HStack(spacing: 6) {
                     ClaudeStatusGlyphView(state: row.state, kind: row.markerKind, palette: palette)
                         .frame(width: L.sessionGlyphSize, height: L.sessionGlyphSize)
-                    Text(row.project ?? "Session")
+                        .opacity(quiet ? 0.6 : 1)
+                    Text(row.label ?? "Session")
                         .font(L.sessionProjectFont)
-                        .foregroundStyle(.white.opacity(0.92))
+                        .foregroundStyle(.white.opacity(quiet ? 0.6 : 0.92))
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .frame(maxWidth: 120, alignment: .leading)
+                        .frame(maxWidth: row.background?.name != nil ? L.sessionNameMaxWidth : 120,
+                               alignment: .leading)
                         .fixedSize(horizontal: true, vertical: false)
                     Text(row.stateTitle)
                         .font(L.sessionStateFont)
-                        .foregroundStyle(stateColor(row.markerKind))
+                        .foregroundStyle(quiet ? Color.white.opacity(0.45) : stateColor(row.markerKind))
                         .lineLimit(1)
                         .fixedSize()
                     Text(row.detail)
@@ -506,14 +533,14 @@ struct ClaudeExpandedView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel([row.project, row.stateTitle, row.detail].compactMap { $0 }.joined(separator: ", "))
+            .accessibilityLabel([row.label, row.stateTitle, row.detail].compactMap { $0 }.joined(separator: ", "))
             .accessibilityAddTraits(onIsland ? [.isSelected] : [])
 
             if let jump {
                 Button {
                     viewModel.jumpToSession(row.id)
                 } label: {
-                    Image(systemName: "arrow.up.forward.app")
+                    Image(systemName: attaches ? "terminal" : "arrow.up.forward.app")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.85))
                         .frame(width: L.sessionJumpWidth, height: 16)
@@ -522,8 +549,9 @@ struct ClaudeExpandedView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.trailing, 2)
-                .help("Show this session in \(jump)")
-                .accessibilityLabel("Show \(row.project ?? "this session") in \(jump)")
+                .help(attaches ? "Attach in \(jump)" : "Show this session in \(jump)")
+                .accessibilityLabel(attaches ? "Attach to \(row.label ?? "this session") in \(jump)"
+                                             : "Show \(row.label ?? "this session") in \(jump)")
             } else if holdsJump {
                 Color.clear
                     .frame(width: L.sessionJumpWidth)
@@ -758,11 +786,18 @@ struct ClaudeExpandedView: View {
         } else {
             // Beside the reply field on a terminal Isle can type into; on
             // any other, Jump is the eyebrow's chip and this row stays empty.
-            if let target = viewModel.jumpTarget, !jumpIsLone {
+            // Attaching to a background session (Milestone 21) is a pill of
+            // its own here: its eyebrow has the session's name to hold.
+            if viewModel.jumpAttaches {
+                pill("Attach in \(ClaudeLauncher.attachApp)", systemImage: "terminal", fill: .white.opacity(0.14)) {
+                    viewModel.jumpToSession()
+                }
+                .help("Open this background session in \(ClaudeLauncher.attachApp) (claude attach)")
+            } else if let target = viewModel.jumpTarget, !jumpIsLone {
                 pill(target, systemImage: "arrow.up.forward.app", fill: .white.opacity(0.14)) {
                     viewModel.jumpToSession()
                 }
-                .help("Show this session in \(target)")
+                .help(viewModel.jumpAttaches ? "Attach in \(target)" : "Show this session in \(target)")
             }
             switch viewModel.replyDelivery {
             case .sending:
@@ -785,7 +820,7 @@ struct ClaudeExpandedView: View {
     /// terminal that does take replies the pill keeps its place in the row
     /// while the reply field comes and goes beside it.
     private var jumpIsLone: Bool {
-        viewModel.jumpTarget != nil && !viewModel.repliesFromNotch
+        viewModel.jumpTarget != nil && !viewModel.repliesFromNotch && !viewModel.jumpAttaches
     }
 
     /// The lone Jump, as a quiet chip: the session's app by name, at the
@@ -810,8 +845,8 @@ struct ClaudeExpandedView: View {
             }
             .buttonStyle(.plain)
             .fixedSize()
-            .help("Show this session in \(target)")
-            .accessibilityLabel("Show this session in \(target)")
+            .help(viewModel.jumpAttaches ? "Attach in \(target)" : "Show this session in \(target)")
+            .accessibilityLabel(viewModel.jumpAttaches ? "Attach to this session in \(target)" : "Show this session in \(target)")
         }
     }
 
@@ -1138,7 +1173,22 @@ struct ClaudeExpandedView: View {
 
     // MARK: - Text
 
+    /// Claude Code's own state for the island's session, when that's where
+    /// the state came from (Milestone 21).
+    private var agentState: ClaudeAgent.State? {
+        viewModel.claudeStateFromAgent ? viewModel.claudeBackground?.state : nil
+    }
+
     private var headline: String {
+        if let agentState, agentState != .working {
+            switch agentState {
+            case .blocked:
+                return viewModel.claudeBackground?.waitingFor == "permission prompt"
+                    ? "Needs your approval" : "Needs you"
+            default:
+                return ClaudeBackground.title(for: agentState, waitingFor: nil)
+            }
+        }
         switch state {
         case .disconnected: return "No active session"
         case .idle: return "Ready"
@@ -1158,7 +1208,11 @@ struct ClaudeExpandedView: View {
     /// What Claude said last, for the states that follow a finished turn:
     /// Done, the "Ready" it eases back to, and "Waiting for you". In place of
     /// the stock line, and only when there are words to quote.
+    ///
+    /// Also on a background session Claude Code says is blocked after the
+    /// hooks saw its turn end: what Claude said is usually what it's asking.
     private var claudeSaid: String? {
+        if agentState != nil { return viewModel.claudeFinalLine }
         switch state {
         case .done, .idle, .waitingInput: return viewModel.claudeFinalLine
         default: return nil
@@ -1167,6 +1221,22 @@ struct ClaudeExpandedView: View {
 
     /// The secondary line under the headline — what's actually happening.
     private var detail: String {
+        if let agentState {
+            // Only what `claude agents` says: where, and what it's waiting
+            // for when it names it.
+            let project = viewModel.claudeBackground?.project ?? viewModel.claudeProject
+            let waiting = ClaudeBackground.waitingPhrase(viewModel.claudeBackground?.waitingFor)
+            switch agentState {
+            case .blocked:
+                let line = [waiting, project].compactMap { $0 }.joined(separator: " · ")
+                return line.isEmpty ? "Waiting on you" : line
+            case .working: return ["In the background", project].compactMap { $0 }.joined(separator: " · ")
+            case .done: return ["Finished", project].compactMap { $0 }.joined(separator: " · ")
+            case .failed: return ["Ended with an error", project].compactMap { $0 }.joined(separator: " · ")
+            case .stopped: return ["Stopped", project].compactMap { $0 }.joined(separator: " · ")
+            case .other: return project ?? "In the background"
+            }
+        }
         switch state {
         case .working:
             // No tool running → Claude is reasoning, not acting.
@@ -1187,6 +1257,12 @@ struct ClaudeExpandedView: View {
         case .compacting:
             return "Compacting the conversation to free up context"
         case .disconnected:
+            // Nothing live, but agent view has sessions (Milestone 21): the
+            // marks above are the way to them.
+            let background = viewModel.sessionList.count
+            if background > 0 {
+                return background == 1 ? "One session in the background" : "\(background) sessions in the background"
+            }
             return "Install the Claude Code hook to connect a session"
         }
     }
