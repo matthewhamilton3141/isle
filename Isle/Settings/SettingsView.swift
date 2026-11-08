@@ -54,6 +54,8 @@ struct SettingsView: View {
 
     @State private var hookInstalled = HookInstaller.isInstalled
     @State private var hookMessage: String?
+    /// The guarded-commands field's draft.
+    @State private var newGuardedCommand = ""
     @State private var selectedPage: SettingsPage? = .general
 
     /// Bumped when Isle comes back to the front, which is what happens after
@@ -569,6 +571,8 @@ struct SettingsView: View {
             // Options only appear in the notch when it's answering.
             .disabled(!settings.answerFromNotch)
 
+            guardedCommandsSettings
+
             accentPicker
 
             LabeledContent("Keep “done” checkmark for") {
@@ -637,6 +641,98 @@ struct SettingsView: View {
             }
             .disabled(!settings.expandOnAlert)
         }
+    }
+
+    // MARK: - Guarded commands
+
+    /// The guarded-commands list (Milestone 17). Every claim in the captions
+    /// was checked against Claude Code 2.1.319 with the real hook (ROADMAP,
+    /// Milestone 17): its ask forced a prompt in all six permission modes and
+    /// past a matching allow rule, the terminal asked with Isle gone, and in
+    /// `claude -p`, where nothing can ask, it refused the call.
+    @ViewBuilder
+    private var guardedCommandsSettings: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("Always ask before guarded commands", isOn: $settings.guardCommands)
+            Text("A command on this list asks every time, in every permission mode (auto and bypass included) and past any allow rule, and the notch never offers Always… for it. With Isle closed, the terminal asks; in claude -p, where nothing can ask, the command is refused. A speed bump for honest mistakes, not a sandbox.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if settings.guardCommands, !hookInstalled {
+                // The guard is the hook: without it the list is only a list.
+                Text("Install the hook above for the guard to hold.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+
+        if settings.guardCommands {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(settings.guardedCommands, id: \.self) { pattern in
+                    HStack {
+                        Image(systemName: "shield.lefthalf.filled")
+                            .foregroundStyle(.orange)
+                        Text(pattern)
+                            .font(.system(.body, design: .monospaced))
+                            .textSelection(.enabled)
+                        Spacer()
+                        Button {
+                            settings.guardedCommands.removeAll { $0 == pattern }
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Stop guarding \(pattern)")
+                        .accessibilityLabel("Stop guarding \(pattern)")
+                    }
+                }
+
+                HStack {
+                    // Unlabelled: in a Form a field's title becomes a label
+                    // column, which squeezed the field to half the row.
+                    TextField("Add a command", text: $newGuardedCommand, prompt: Text("Add a command, like git push"))
+                        .labelsHidden()
+                        .font(.system(.body, design: .monospaced))
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { addGuardedCommand(newGuardedCommand) }
+                    Button("Add") { addGuardedCommand(newGuardedCommand) }
+                        .disabled(GuardedCommands.normalized(newGuardedCommand) == nil)
+                }
+
+                let unused = GuardedCommands.suggestions.filter { !settings.guardedCommands.contains($0) }
+                if !unused.isEmpty {
+                    // Wraps, so five suggestions never cut the last one off.
+                    SuggestionFlow(spacing: 6) {
+                        Text("Suggestions")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ForEach(unused, id: \.self) { suggestion in
+                            Button {
+                                addGuardedCommand(suggestion)
+                            } label: {
+                                Label(suggestion, systemImage: "plus")
+                                    .font(.system(.caption, design: .monospaced))
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                    }
+                }
+
+                Text("Write the program, then its subcommand words; flags can sit anywhere. Isle reads the command as a shell splits it, so cd x && git push and git \"push\" are caught, but an alias, a variable or a script file can still hide one. A command over 16 KB that mentions every word of a pattern asks without being read.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func addGuardedCommand(_ text: String) {
+        guard let pattern = GuardedCommands.normalized(text) else { return }
+        if !settings.guardedCommands.contains(pattern) {
+            settings.guardedCommands.append(pattern)
+        }
+        if text == newGuardedCommand { newGuardedCommand = "" }
     }
 
     // MARK: - Accent
@@ -815,5 +911,52 @@ enum PrivacyPane: String {
     func open() {
         let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(rawValue)")!
         NSWorkspace.shared.open(url)
+    }
+}
+
+/// Lays its views out in rows, wrapping when a row is full: the guarded
+/// commands' suggestion chips, which outgrow one row in a 720pt window.
+private struct SuggestionFlow: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = rows(for: subviews, width: proposal.width ?? .infinity)
+        let width = rows.map { $0.width }.max() ?? 0
+        let height = rows.map { $0.height }.reduce(0, +) + spacing * CGFloat(max(rows.count - 1, 0))
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in rows(for: subviews, width: bounds.width) {
+            var x = bounds.minX
+            for index in row.indices {
+                let size = subviews[index].sizeThatFits(.unspecified)
+                subviews[index].place(at: CGPoint(x: x, y: y + (row.height - size.height) / 2),
+                                      proposal: ProposedViewSize(size))
+                x += size.width + spacing
+            }
+            y += row.height + spacing
+        }
+    }
+
+    private struct Row { var indices: [Int] = []; var width: CGFloat = 0; var height: CGFloat = 0 }
+
+    private func rows(for subviews: Subviews, width: CGFloat) -> [Row] {
+        var rows: [Row] = []
+        var row = Row()
+        for index in subviews.indices {
+            let size = subviews[index].sizeThatFits(.unspecified)
+            let needed = row.indices.isEmpty ? size.width : row.width + spacing + size.width
+            if !row.indices.isEmpty, needed > width {
+                rows.append(row)
+                row = Row()
+            }
+            row.width = row.indices.isEmpty ? size.width : row.width + spacing + size.width
+            row.height = max(row.height, size.height)
+            row.indices.append(index)
+        }
+        if !row.indices.isEmpty { rows.append(row) }
+        return rows
     }
 }

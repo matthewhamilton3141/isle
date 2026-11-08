@@ -48,6 +48,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // write a fresh one, so the file on disk only ever names this process.
         ClaudeAnsweringMarker.remove()
 
+        // The guarded-commands list, where `isle-cli guard` reads it: written
+        // while the feature is on with something on the list, removed
+        // otherwise. Independent of the mode and of Isle running — the guard
+        // lives in Claude Code's hook, and a quit Isle leaves it holding, with
+        // the terminal to answer it.
+        let settings = AppSettings.shared
+        guardSync = settings.$guardCommands
+            .combineLatest(settings.$guardedCommands)
+            .receive(on: RunLoop.main)
+            .sink { enabled, patterns in
+                GuardedCommands.sync(enabled: enabled, patterns: patterns)
+            }
+
         notchController = NotchWindowController()
 
         if AppSettings.shared.hasChosenMode {
@@ -198,6 +211,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Live only on a first launch, until Setup names a mode.
     private var firstModeChoice: AnyCancellable?
+
+    /// Keeps ~/.isle/guarded-commands in step with Settings.
+    private var guardSync: AnyCancellable?
 
     @objc private func openSetup() {
         if let setupWindow {
