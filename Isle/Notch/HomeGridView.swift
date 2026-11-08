@@ -159,7 +159,8 @@ struct HomeGridView: View {
         case .needsQuestion:
             return .init("Has a question", vm.currentQuestion?.question ?? project)
         case .working:
-            return .init("Working", othersLine ?? vm.claudeActivity?.phrase ?? "Thinking")
+            let resumed = vm.claudeLimitNext == .resumed ? ClaudeLimit.resumedLine(kind: vm.claudeLimitKind) : nil
+            return .init("Working", othersLine ?? vm.claudeActivity?.phrase ?? resumed ?? "Thinking")
         case .compacting:
             return .init("Compacting", othersLine ?? project)
         // After a turn, what Claude said last (Milestone 15) says more than
@@ -172,10 +173,9 @@ struct HomeGridView: View {
             return .init("Ready", othersLine ?? vm.claudeFinalLine ?? project)
         case .failed:
             if vm.isUsageLimit {
-                let resets = vm.claudeResetAt.map {
-                    "Resets " + $0.formatted(date: .omitted, time: .shortened)
-                }
-                return .init("Usage limit", othersLine ?? resets ?? project)
+                let says = ClaudeLimit.shortDetail(resetAt: vm.claudeResetAt, next: vm.claudeLimitNext)
+                return .init(ClaudeLimit.headline(kind: vm.claudeLimitKind, next: vm.claudeLimitNext),
+                             othersLine ?? says ?? project)
             }
             return .init("Error", othersLine ?? project)
         }

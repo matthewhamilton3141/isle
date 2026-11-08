@@ -75,6 +75,8 @@ original report, not the report itself.
 | The transcript flushes per *content block*, not per message, and is interleaved with `queue-operation` / `attachment` / `file-history-snapshot` bookkeeping | A tool-free turn still appends every few seconds (so silence is meaningful), but only `user` / `assistant` entries answer "is a turn outstanding" |
 | `~/.claude/sessions/<pid>.json` is written by the CLI itself, hook-free, pid-keyed | Liveness is `kill(pid, 0)` rather than a timeout; survives broken or uninstalled hooks |
 | **An interrupt (ESC) fires no hook at all** — no `Stop`, no `PostToolUse` — and appends a synthetic `user` entry (`[Request interrupted by user]`) to the transcript | Every exit from `working` is hook-driven, so the record froze at `working`; and since that entry parses as a `user` turn, the no-response check read the ended turn as one still owed a response |
+| **A usage limit's StopFailure carries no reset you can compute with** (2.1.318+): `error` is `rate_limit`, no `error_details`, and the words say "resets 6:50pm (America/Toronto)" | The reset is in the transcript (`quotaLimits.resetsAt`) or in those words; see M19 |
+| Notification's `notification_type` has 14 documented values (and five more in the 2.1.319 binary), most of which don't need you | Route by type, and leave the state alone for any other; reading the message made a sign-in a "Question" (M19) |
 
 ### What changed
 
@@ -1871,6 +1873,188 @@ left for the user to delete. The code is in `db371db`, `b22f5fb`, `fb55728`
 and `b1980fb` if it's ever wanted back.
 
 ---
+
+## Field scan 3 — Claude Code moved under the bridge (2026-11-07)
+
+Searched the web, Product Hunt, GitHub, Apple press, and the Claude Code docs
+and changelog (2.1.319). X and Reddit came back thin, and launch dates are
+index estimates.
+
+**Apple.**
+- The OLED MacBook Pro (Oct 28) has a hardware Dynamic Island. It holds
+  Spotlight, Siri, Live Activities, calls, music and AirDrop.
+- macOS 27.3 beta 1 (Nov 3) puts Live Activities in the menu bar on every
+  Apple silicon Mac, and ActivityKit is open to third-party Mac apps. It ships
+  in December.
+- Still unknown: whether that model keeps a notch for Isle to draw around.
+
+**The category keeps converging.** Approvals, reply, folder drop, cost meters,
+pets and phone companions, in Pushary Isle, Drop Notch, CodeIsland, Glint,
+AgentPeek, Buddi, Chimlo and Runnock. **Name collision:** Pushary Isle is a
+notch app for Claude Code, about two weeks old. Worth knowing before a launch
+post.
+
+**Claude Code.**
+- Agent view and background sessions (`claude --bg`, `claude agents --json`).
+- Stop carries `background_tasks` and `session_crons`.
+- Usage limits auto-continue by default, with `quota_auto_resume_*`
+  notification types.
+- New hooks: `SubagentStart`, `PermissionDenied`, `TaskCreated`,
+  `TaskCompleted`.
+- 2.1.319 adds `permissions.denyInsteadOfPrompting`, which may stop approvals
+  ever reaching the notch. Unverified.
+
+### M19 — Usage limit, said straight · S · built (`feature/usage-limit`, helper v12), not yet tested in the app
+
+The limit face gives the exact reset time and says what Claude will do when it
+comes.
+
+**Both suspected bugs were real** (checked by feeding the v11 helper the
+payloads under a scratch HOME, `scratchpad/m19/verify-before.txt`):
+
+- **No reset, ever, on 2.1.318+.** StopFailure says `error: "rate_limit"` and
+  `last_assistant_message: "You've hit your 5-hour limit · resets 3:50am
+  (America/Toronto)"`. The 2.1.319 binary builds that message with no
+  `errorDetails`, so `error_details` is absent, and the words have no epoch.
+  The helper's 10–13 digit search found nothing; the island said "Error".
+- **`notify` never read `notification_type`.** auth_success,
+  auth_storage_failure, elicitation_complete, elicitation_response,
+  agent_needs_input, agent_completed and plugin_notification all became
+  `needs_question` ("Question" on the island). `quota_auto_resume_fired`
+  ("Usage limit reset — Claude is continuing your task") and `_stale` became a
+  fresh usage limit with no reset; `_disabled` became a question.
+
+**Where each field comes from**, best first:
+
+| Field | Source |
+|---|---|
+| Reset | `error_details` epoch (none today) → transcript `quotaLimits.resetsAt` (then `apiErrorParams.rate_limit_info.resetsAt`) on the failed turn's record, if written in the last 2 minutes → an epoch in the message (the old `…reached\|1719849600` form) → the words |
+| Window | transcript `rateLimitType` (`five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet`) → the words ("5-hour", "session", "weekly", "Opus", "Sonnet") |
+| Continues automatically | only the transcript's `system`/`informational` "Usage limit reached · continuing automatically at …" within 10s of the failed turn's record. Not the setting: `autoContinueAtUsageLimit` is necessary but not sufficient (no wait past 24h, Remote Control, model family) |
+| Waiting for Enter / won't continue | `quota_auto_resume_stale` / `_disabled`, keeping the limit's window and reset from its record |
+| Resumed | `quota_auto_resume_fired`, or Claude Code's continuation prompt ("Your claude.ai usage limit has reset. Continue the task…", or "…is available again before the usage-limit reset…") on UserPromptSubmit, carried through the turn's tool calls; dropped at its Stop or your own prompt |
+
+- **The words**: "resets 6:50pm (Zone)" is the next time that wall clock
+  comes round in that zone (within 5 minutes past counts as now; tomorrow's
+  date from today's noon, so DST can't skip a day); "resets Nov 9 at 8pm
+  (Zone)" and "Jan 2, 2027 at 8pm" are that moment. An unknown zone, or
+  anything not a time, gives no reset. Checked against the two real hits:
+  "3:50am (America/Toronto)" at 05:31Z on Nov 5 → 1793868600, and "Nov 9 at
+  8pm" → 1794272400, both equal to the transcript's `resetsAt`.
+- **The transcript race.** Claude Code writes the "continuing automatically"
+  record a few ms either side of the failed turn's (before it on "reached
+  again"). The hook looks again every 0.1s for up to 2s, stopping at that
+  record, the turn's `turn_duration`, or a reset more than a day out. In a
+  `-p` probe the failed turn's record was already in the transcript when
+  StopFailure ran. A hook that wrote meanwhile (your next prompt) wins: the
+  limit is written only if the status file is the same inode and bytes as
+  when it started.
+- **Routing.** permission_prompt, elicitation_dialog and
+  elicitation_url_dialog are questions; idle_prompt is waiting; the three
+  quota types as above; no type at all (an old Claude Code) is the old
+  message rule. Every other type, including ones newer than the helper, leaves
+  the status untouched. "API Error: Rate limit reached" (the transient 429) is
+  no longer read as the usage limit.
+
+**What it says.** Face: "5-hour limit" / "Resets 11:08pm · continues
+automatically", with "in 2h 14m" in the eyebrow where "… ago" was; "Weekly
+limit" / "Resets Tue 9:00am"; "Limit reset" / "Press Enter in Terminal to
+continue" (the host's name, else "its terminal"), which opens the panel and
+rings the alert sound like a question; "Won't continue on its own · resets
+11:08pm"; "Resumed after the 5-hour limit" on the working face until a tool
+runs. Missing parts: "Usage limit" / "Limit reached". Island: "Limit ·
+11:08pm", "Press Enter", "Limit". Home tile and session rows use the same
+words (`ClaudeLimit`).
+
+**Also in v12:** a Bash or Monitor target is the program's name, read from the
+whole command (first 4 KB) with `ClaudeActivity.program(ofCommand:)`'s rules,
+so a long `cd`, a quoted path or a comment line no longer leaves the app
+"Running a command". It costs about 4 ms a Bash hook over v11 (≈40 ms
+against 36 for a short command; ≈46 ms for a 12 KB heredoc).
+
+**Tests.** `scripts/test-usage-limit.sh` (101), `scripts/test-claude-activity.sh`
+(95), `scripts/test-guarded-commands.sh` (124).
+
+**Renders.** `scratchpad/m19/render/png/{before,after}_{face,island}_*.png`
+(before = 435b7d1).
+
+**Decisions to confirm.**
+- **The island names the limit** ("Limit · 11:08pm"), where since 9a0b93e
+  every failure has said "Error". A clock, not a ticking count, so the island
+  keeps one width; the live count is the face's.
+- **Waiting for Enter is a needs-you**: it opens the panel and plays the
+  alert sound if that's on.
+- **The window is shown** ("5-hour limit", "Weekly limit"): it's the
+  transcript's own field.
+- **agent_needs_input leaves the state alone.** It fires for a *background*
+  session in agent view as well as for prompts in this terminal; saying "this
+  session needs you" would be wrong half the time. M21 is the place for it.
+- **The stale face keeps the rate-limited marker**, not the question's.
+
+**Unverified.** No real limit was hit for this; the StopFailure and
+Notification shapes are from a model_not_found and a permission_prompt
+captured from 2.1.319 plus the docs and the binary. Whether UserPromptSubmit
+fires for the continuation prompt, and the hook-vs-transcript timing in an
+interactive session, are untested.
+
+### M20 — Done, unless it isn't (candidate) · S–M
+
+Done says when Claude left work running or a wake-up scheduled.
+
+- **Data.** Stop's `background_tasks` (type, status, description, and command
+  for shells) and `session_crons` (schedule, recurring, prompt).
+- **Shape.** "Left running: npm run dev · Explore agent", or "Wakes 9:00".
+- **Risks.** A shell task ending fires no hook, so the line reads as what was
+  left at finish, not a live count.
+- **Decisions.** Show commands, or counts only? Should keep-awake cover
+  subagents?
+
+### M21 — Background sessions in the list (candidate) · M
+
+`claude --bg` and agent-view sessions in the session list, with their real
+state. Jump opens `claude attach <id>`.
+
+- **Data.** `claude agents --json --all` is the documented interface. It took
+  0.45s and showed a blocked background session that Isle can't see today.
+- **Shape.** Re-poll on a cue (a `~/.claude/jobs` watch, a hook write, the
+  panel opening), never on a fast timer.
+- **Unverified.** Whether bg sessions write `~/.claude/sessions` records, and
+  whether `ask` works with no terminal.
+- **Note.** No competitor handles it. `agent_needs_input` and
+  `agent_completed` notifications (left alone by M19) belong here.
+
+### M22 — Subagents, counted (candidate) · S–M
+
+"Claude · 3 agents: Explore ×2, Plan", from `SubagentStart` and
+`SubagentStop` (which carries `last_assistant_message`).
+
+- Count only agents whose start was seen, since internal agents also fire
+  stop.
+- Clear the count on the parent's Stop.
+- Require 2.1.311+.
+
+### M23 — Auto mode's blocks, shown (candidate) · S
+
+"Auto mode blocked `rm -rf /tmp/build` · Irreversible Local Destruction",
+with Jump, from the `PermissionDenied` hook.
+
+- There's no Approve. The real approval is `/permissions › Recently blocked`.
+- Pairs with M17.
+
+### Seen but not pursued
+
+- **Task checklist.** Task tools are off by default since 2.1.268.
+- **Token and cost meters, context meter.** The status-line slot again, or
+  estimates.
+- **Phone and Watch approvals.** A product of its own.
+- **Publishing as a 27.3 Live Activity.** It lands in Apple's pill, not the
+  notch. Revisit if the OLED MBP has no notch.
+- **PR status per session.** Would be guessed.
+- **Quiet hours.** Fold into a sounds pass.
+- **Pets, voice, dev servers, lyrics.** Off-identity or dropped.
+
+**Order.** M19 first, since it's small and was a live bug. Then M21 as the
+bigger bet.
 
 ## Parked — pending research
 

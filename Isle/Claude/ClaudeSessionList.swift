@@ -109,6 +109,9 @@ struct ClaudeSessionRow: Identifiable, Equatable {
     /// the island makes (see `NotchViewModel.updateSessionList`).
     let state: ClaudeCodeState
     let errorType: String?
+    /// For a usage limit, what Claude Code said comes next (Milestone 19).
+    let limitNext: ClaudeLimitNext?
+    let limitKind: String?
     /// What it's doing, what it's asking, or what Claude said last.
     let detail: String
     /// When the session's hook last wrote.
@@ -131,7 +134,8 @@ struct ClaudeSessionRow: Identifiable, Equatable {
         case .waitingInput: return "Waiting"
         case .done: return "Done"
         case .idle: return "Ready"
-        case .failed: return errorType == "usage_limit" ? "Usage limit" : "Error"
+        case .failed:
+            return errorType == "usage_limit" ? ClaudeLimit.headline(kind: limitKind, next: limitNext) : "Error"
         case .disconnected: return ""
         }
     }
@@ -153,12 +157,14 @@ struct ClaudeSessionRow: Identifiable, Equatable {
         project = status.project.flatMap { $0.isEmpty ? nil : $0 }
         state = status.state
         errorType = status.errorType
+        limitNext = status.limitNext
+        limitKind = status.limitKind
         updatedAt = status.updatedAt
         let activity = ClaudeActivity(action: status.action, target: status.target)?.phrase
         let said = ClaudeDoneLine.line(from: status.lastMessage)
         switch status.state {
         case .working:
-            detail = activity ?? "Thinking…"
+            detail = activity ?? (status.limitNext == .resumed ? ClaudeLimit.resumedLine(kind: status.limitKind) : "Thinking…")
         case .compacting:
             detail = "Compacting the conversation"
         case .needsApproval:
@@ -172,8 +178,8 @@ struct ClaudeSessionRow: Identifiable, Equatable {
         case .idle:
             detail = said ?? "Session ready"
         case .failed:
-            if status.errorType == "usage_limit", let reset = status.resetAt {
-                detail = "Resets " + reset.formatted(date: .omitted, time: .shortened)
+            if status.errorType == "usage_limit" {
+                detail = ClaudeLimit.shortDetail(resetAt: status.resetAt, next: status.limitNext) ?? "Limit reached"
             } else {
                 detail = "The turn stopped on an error"
             }

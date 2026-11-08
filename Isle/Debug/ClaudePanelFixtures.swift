@@ -24,6 +24,10 @@ struct ClaudePanelFixture: Identifiable {
     var target: String? = nil
     var errorType: String? = nil
     var resetAt: Date? = nil
+    /// A usage limit's window and what Claude Code said comes next
+    /// (Milestone 19).
+    var limitKind: String? = nil
+    var limitNext: ClaudeLimitNext? = nil
     var updatedAt: Date = Date().addingTimeInterval(-42)
     var workingWord: String? = "Percolating"
     var request: ClaudeRequest? = nil
@@ -365,7 +369,35 @@ extension ClaudePanelFixture {
                   request: approval("Bash", "npm run lint -- --fix")),
             .init(name: "both_question_4", mode: .both, state: .needsQuestion, request: question([fourOptions])),
         ] + approvalKinds + descriptionModes + worstCases + liveExtras + jumpAndReply + doneSays + loneJump
-            + sessionLists + guardedApprovals + faceRow
+            + sessionLists + guardedApprovals + faceRow + usageLimits
+    }
+
+    // MARK: The usage limit, said straight (Milestone 19)
+
+    /// Every way a limit reads: the window, the reset, what Claude Code said
+    /// comes next, and the parts missing.
+    static var usageLimits: [ClaudePanelFixture] {
+        let in2h = Date().addingTimeInterval(2 * 3600 + 14 * 60)
+        let in3d = Date().addingTimeInterval(3 * 86400 + 5 * 3600)
+        let ago = Date().addingTimeInterval(-40 * 60)
+        return [
+            .init(name: "limit_5h", state: .failed, errorType: "usage_limit", resetAt: in2h, limitKind: "five_hour"),
+            .init(name: "limit_5h_auto", state: .failed, errorType: "usage_limit", resetAt: in2h,
+                  limitKind: "five_hour", limitNext: .auto),
+            .init(name: "limit_weekly", state: .failed, errorType: "usage_limit", resetAt: in3d, limitKind: "seven_day"),
+            .init(name: "limit_stale", state: .failed, errorType: "usage_limit", resetAt: ago,
+                  limitKind: "five_hour", limitNext: .enter, host: terminalHost),
+            .init(name: "limit_stale_nohost", state: .failed, errorType: "usage_limit", resetAt: ago,
+                  limitKind: "five_hour", limitNext: .enter),
+            .init(name: "limit_disabled", state: .failed, errorType: "usage_limit", resetAt: in2h,
+                  limitKind: "five_hour", limitNext: .stopped),
+            .init(name: "limit_disabled_past", state: .failed, errorType: "usage_limit", resetAt: ago,
+                  limitKind: "five_hour", limitNext: .stopped),
+            .init(name: "limit_unknown", state: .failed, errorType: "usage_limit"),
+            .init(name: "limit_resumed", state: .working, limitKind: "five_hour", limitNext: .resumed),
+            .init(name: "both_limit_5h_auto", mode: .both, state: .failed, errorType: "usage_limit", resetAt: in2h,
+                  limitKind: "five_hour", limitNext: .auto),
+        ]
     }
 
     // MARK: The action row's place

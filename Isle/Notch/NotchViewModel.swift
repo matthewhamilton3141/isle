@@ -128,6 +128,12 @@ final class NotchViewModel: ObservableObject {
     /// countdown; the display eases back to idle at this moment. Nil when unknown.
     @Published private(set) var claudeResetAt: Date?
 
+    /// For a usage limit, the window that was hit, and — on the limit or the
+    /// turn Claude Code continued after it — what it said comes next
+    /// (Milestone 19). Nil when the record didn't say.
+    @Published private(set) var claudeLimitKind: String?
+    @Published private(set) var claudeLimitNext: ClaudeLimitNext?
+
     /// The start of what Claude said at the end of its last turn, as the face
     /// and the home tile show it (see `ClaudeDoneLine`). Read from the
     /// session's record, which carries the message from `Stop` until the next
@@ -977,7 +983,7 @@ final class NotchViewModel: ObservableObject {
         switch status.state {
         case .needsQuestion: stale = age > Self.questionRevertSeconds && request(for: status) == nil
         case .compacting: stale = age > Self.compactingRevertSeconds
-        case .failed: stale = status.errorType == "usage_limit" && (status.resetAt.map { $0 <= now } ?? false)
+        case .failed: stale = status.errorType == "usage_limit" && (Self.limitEasesAt(status).map { $0 <= now } ?? false)
         default: stale = false
         }
         guard stale else { return status }
@@ -1650,6 +1656,8 @@ final class NotchViewModel: ObservableObject {
             claudeTarget = nil
             claudeErrorType = nil
             claudeResetAt = nil
+            claudeLimitKind = nil
+            claudeLimitNext = nil
             claudeFinalLine = nil
             claudeUpdatedAt = nil
         }
@@ -1735,7 +1743,7 @@ final class NotchViewModel: ObservableObject {
             // Re-arm the Claude-face auto-jump: a fresh interrupt gets to grab
             // the face once again, even if the user overrode the previous one.
             tabOverriddenDuringAlert = false
-            if announce { playSound(for: status.state, errorType: status.errorType) }
+            if announce { playSound(for: status.state, errorType: status.errorType, limitNext: status.limitNext) }
         }
         withAnimation(.easeInOut(duration: 0.25)) {
             claudeState = status.state
@@ -1756,6 +1764,8 @@ final class NotchViewModel: ObservableObject {
         claudeErrorType = status.errorType
         claudeToolActive = status.toolActive
         claudeResetAt = status.resetAt
+        claudeLimitKind = status.limitKind
+        claudeLimitNext = status.limitNext
         let finalLine = ClaudeDoneLine.line(from: status.lastMessage)
         if claudeFinalLine != finalLine { claudeFinalLine = finalLine }
         claudeUpdatedAt = status.state == .disconnected ? nil : Date()
@@ -1787,8 +1797,10 @@ final class NotchViewModel: ObservableObject {
                 // it stays on the island until it resets. When the reset moment is
                 // known, ease back to idle exactly then (clearing at once if it's
                 // already past); when it isn't, leave it pinned with no timer —
-                // the next real session activity replaces it.
-                guard let reset = status.resetAt else { return }
+                // the next real session activity replaces it. A limit waiting for
+                // Enter, or one that won't continue, can be past its reset and
+                // stays until something moves (see `limitEasesAt`).
+                guard let reset = Self.limitEasesAt(status) else { return }
                 revertDelay = max(0, reset.timeIntervalSinceNow)
             } else {
                 revertDelay = max(settings.doneToastSeconds, 6)
@@ -1843,13 +1855,14 @@ final class NotchViewModel: ObservableObject {
     ///
     /// A usage-limit failure is deliberately silent: it is pinned for as
     /// long as hours, and there is nothing to do about it but wait.
-    private func playSound(for state: ClaudeCodeState, errorType: String?) {
+    private func playSound(for state: ClaudeCodeState, errorType: String?, limitNext: ClaudeLimitNext? = nil) {
         switch state {
         case .needsApproval, .needsQuestion:
             guard settings.claudeAlertSoundEnabled else { return }
             settings.claudeAlertSound.play()
         case .failed:
-            guard settings.claudeAlertSoundEnabled, errorType != "usage_limit" else { return }
+            // …except one waiting for Enter: that one needs you.
+            guard settings.claudeAlertSoundEnabled, errorType != "usage_limit" || limitNext == .enter else { return }
             settings.claudeAlertSound.play()
         case .done:
             guard settings.claudeDoneSoundEnabled else { return }
@@ -2090,8 +2103,28 @@ final class NotchViewModel: ObservableObject {
         // ambient info, shown in the island but never taking over the panel, so
         // it doesn't sit maximized for however long the limit lasts.
         guard settings.effectiveMode.showsClaude else { return false }
-        if claudeState.isAttention { return true }
+        if claudeState.isAttention || isLimitWaitingForEnter { return true }
         return claudeState == .failed && !isUsageLimit
+    }
+
+    /// The limit reset while the Mac slept, and Claude Code is waiting for
+    /// Enter (`quota_auto_resume_stale`): unlike the limit itself, this one
+    /// needs you, so it opens the panel and rings like a question.
+    var isLimitWaitingForEnter: Bool {
+        isUsageLimit && claudeLimitNext == .enter
+    }
+
+    /// When a usage-limit record stops being the island's news: at its reset,
+    /// except a limit waiting for Enter (its reset has passed; that's the
+    /// point), or one that won't continue whose reset had already passed when
+    /// it said so. Those stay until the session moves. Nil: pinned.
+    nonisolated static func limitEasesAt(_ status: ClaudeStatus) -> Date? {
+        guard let reset = status.resetAt else { return nil }
+        switch status.limitNext {
+        case .enter: return nil
+        case .stopped: return reset > (status.updatedAt ?? .distantPast) ? reset : nil
+        default: return reset
+        }
     }
 
     /// The current failure is the Claude usage/subscription limit (pinned, resets
@@ -3013,9 +3046,11 @@ final class NotchViewModel: ObservableObject {
         case .waitingInput: return "Waiting"
         case .done: return "Done"
         case .idle: return "Ready"
-        // Every failure reads as one thing — a usage limit and a transient API
-        // error are indistinguishable to the user, so both just say "Error".
-        case .failed: return "Error"
+        // A usage limit says when it resets (Milestone 19), as a clock rather
+        // than a ticking count, so the island keeps one width for hours; or
+        // "Press Enter" once it waits for that. Any other failure is "Error".
+        case .failed:
+            return isUsageLimit ? ClaudeLimit.islandWord(resetAt: claudeResetAt, next: claudeLimitNext) : "Error"
         case .compacting: return "Compacting"
         case .disconnected: return ""
         }
@@ -3465,6 +3500,8 @@ extension NotchViewModel {
         claudeTarget = fixture.target
         claudeErrorType = fixture.errorType
         claudeResetAt = fixture.resetAt
+        claudeLimitKind = fixture.limitKind
+        claudeLimitNext = fixture.limitNext
         claudeUpdatedAt = fixture.state == .disconnected ? nil : fixture.updatedAt
         claudeRequestId = fixture.request?.id
         pendingRequest = fixture.request
