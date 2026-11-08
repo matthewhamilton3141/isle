@@ -31,7 +31,7 @@ struct ShortcutsSettingsSection: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            row(.toggleIsland, subtitle: "Opens on the pointer’s screen and stays until you press it again, press Esc, click elsewhere, or visit it and leave.")
+            row(.toggleIsland, subtitle: "Opens on the pointer’s screen and stays until you press it again, click elsewhere, or visit it and leave. Esc stays your other apps’.")
         } header: {
             Text("Shortcuts")
         }

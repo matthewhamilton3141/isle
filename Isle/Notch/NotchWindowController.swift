@@ -220,11 +220,6 @@ final class NotchWindowController {
     private func makeIsland(id: CGDirectDisplayID, screen: NSScreen, metrics: NotchMetrics) {
         let presentation = IslandPresentation(content: viewModel)
         presentation.metrics = metrics
-        // A shortcut's hold takes Esc while it lasts.
-        presentation.$isHeldOpen
-            .removeDuplicates()
-            .sink { [weak self] _ in self?.shortcuts.refresh() }
-            .store(in: &cancellables)
 
         let window = NotchWindow(contentRect: metrics.maximumFrame)
         // A two-finger swipe across an open face moves between faces.
@@ -827,10 +822,6 @@ extension NotchWindowController: ShortcutIslandHost {
         islands.values.contains { $0.presentation.state.isExpanded && !$0.presentation.isDropTarget }
     }
 
-    var isIslandHeldOpen: Bool {
-        islands.values.contains { $0.presentation.isHeldOpen }
-    }
-
     /// Open the island if none is open; otherwise put it away — whatever is
     /// holding it, as far as Settings allows: a hover or a shortcut's hold
     /// ends, a field's draft is kept, and an alert's auto-open is dismissed
@@ -867,6 +858,8 @@ extension NotchWindowController: ShortcutIslandHost {
         }
     }
 
+    /// A click in another app: put away an island a shortcut is holding.
+    /// (There's no Esc for it — Esc is vim's and Claude Code's interrupt.)
     func closeHeldIsland() {
         var closed = false
         for island in islands.values where island.presentation.isHeldOpen && island !== keyIsland {

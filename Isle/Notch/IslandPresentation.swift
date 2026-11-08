@@ -40,7 +40,8 @@ final class IslandPresentation: ObservableObject {
     /// A keyboard shortcut opened this island and the pointer hasn't been to
     /// it since. The panel stays up wherever the pointer is — it was asked
     /// for from the keyboard, so a pointer that was never near it can't be
-    /// "leaving" — until Esc, the shortcut again, or a click in another app.
+    /// "leaving" — until the shortcut again or a click in another app (no
+    /// Esc: that's vim's and Claude Code's, and a hold has no timeout).
     /// The first time the pointer comes into the panel's stay-open zone the
     /// hold ends and it's an ordinary hover: leaving closes it, as always.
     /// Nothing here is timed.

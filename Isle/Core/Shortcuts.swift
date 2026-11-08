@@ -36,21 +36,19 @@ enum ShortcutAction: String, CaseIterable, Codable {
     case option2
     case option3
     case option4
-    /// Plain Esc, while a shortcut holds the island open and the pointer
-    /// hasn't been to it yet. Fixed, never a user's binding.
-    case dismiss
+    // No bare Esc to put a held island away: Esc is vim's and Claude Code's
+    // interrupt, and a hold has no timeout. The open shortcut again, a
+    // click elsewhere, or a visit and leaving put it away.
 
-    /// The ones Settings lists, in its order.
+    /// The ones Settings lists, in its order: all of them.
     static let configurable: [ShortcutAction] = [.toggleIsland, .approve, .deny, .option1, .option2, .option3, .option4]
     static let options: [ShortcutAction] = [.option1, .option2, .option3, .option4]
-
-    var isConfigurable: Bool { self != .dismiss }
 
     /// Held only while a request waits — not all the time.
     var isWhilePending: Bool {
         switch self {
         case .approve, .deny, .option1, .option2, .option3, .option4: return true
-        case .toggleIsland, .dismiss: return false
+        case .toggleIsland: return false
         }
     }
 
@@ -74,7 +72,6 @@ enum ShortcutAction: String, CaseIterable, Codable {
         case .option2: return "Option 2"
         case .option3: return "Option 3"
         case .option4: return "Option 4"
-        case .dismiss: return "Close the island"
         }
     }
 
@@ -98,7 +95,6 @@ enum ShortcutAction: String, CaseIterable, Codable {
         case .option2: return KeyCombo(0x13, KeyCombo.option)           // kVK_ANSI_2
         case .option3: return KeyCombo(0x14, KeyCombo.option)           // kVK_ANSI_3
         case .option4: return KeyCombo(0x15, KeyCombo.option)           // kVK_ANSI_4
-        case .dismiss: return KeyCombo(0x35, 0)                         // kVK_Escape, bare
         }
     }
 
@@ -165,14 +161,12 @@ struct ShortcutBindings: Equatable {
     subscript(action: ShortcutAction) -> ShortcutBinding {
         get { entries[action] ?? ShortcutBinding(combo: action.defaultCombo) }
         set {
-            guard action.isConfigurable else { return }
             entries[action] = newValue == ShortcutBinding(combo: action.defaultCombo) ? nil : newValue
         }
     }
 
     /// The keys an action is on, when it's on.
     func combo(for action: ShortcutAction) -> KeyCombo? {
-        if action == .dismiss { return action.defaultCombo }
         let binding = self[action]
         return binding.isOn ? binding.combo : nil
     }
@@ -204,7 +198,7 @@ struct ShortcutBindings: Equatable {
 
     @discardableResult
     mutating func assign(_ combo: KeyCombo, to action: ShortcutAction) -> Assignment {
-        guard action.isConfigurable, combo.isValidShortcut else { return .needsModifier }
+        guard combo.isValidShortcut else { return .needsModifier }
         if let other = clash(for: combo, besides: action) { return .clashes(other) }
         self[action] = ShortcutBinding(combo: combo, isOn: self[action].isOn)
         return .assigned
@@ -235,7 +229,7 @@ struct ShortcutBindings: Equatable {
         else { return bindings }
         let version = (raw["v"] as? Int) ?? 1
         for (key, value) in raw {
-            guard let action = ShortcutAction(rawValue: key), action.isConfigurable,
+            guard let action = ShortcutAction(rawValue: key),
                   let entry = try? JSONSerialization.data(withJSONObject: value),
                   var binding = try? JSONDecoder().decode(ShortcutBinding.self, from: entry),
                   binding.combo.isValidShortcut
@@ -321,8 +315,6 @@ struct ShortcutContext: Equatable {
     var answering = false
     /// A field in the island has the keyboard.
     var composing = false
-    /// A shortcut opened the island and the pointer hasn't been to it yet.
-    var heldOpen = false
 }
 
 /// What a press comes to.
@@ -340,7 +332,6 @@ enum ShortcutCommand: Equatable {
     /// Open the island to the request, and do nothing else yet.
     case reveal
     case toggleIsland
-    case closeHeld
     case none
 }
 
@@ -352,7 +343,6 @@ enum ShortcutPlan {
     static func active(_ context: ShortcutContext, bindings: ShortcutBindings) -> [ShortcutAction: KeyCombo] {
         guard context.running else { return [:] }
         var wanted: [ShortcutAction] = [.toggleIsland]
-        if context.heldOpen, !context.composing { wanted.append(.dismiss) }
         if let request = context.request, context.armed, !context.answering, !context.composing {
             switch request {
             case .approval:
@@ -365,8 +355,7 @@ enum ShortcutPlan {
         var active: [ShortcutAction: KeyCombo] = [:]
         for action in wanted {
             guard let combo = bindings.combo(for: action) else { continue }
-            // Never two actions on one key — the bindings refuse it, and a
-            // fixed Esc can't meet a recorded combo, which needs a modifier.
+            // Never two actions on one key — the bindings refuse it.
             guard !active.values.contains(combo) else { continue }
             active[action] = combo
         }
@@ -391,8 +380,6 @@ enum ShortcutPlan {
         switch action {
         case .toggleIsland:
             return context.running ? .toggleIsland : .none
-        case .dismiss:
-            return context.heldOpen ? .closeHeld : .none
         default:
             break
         }

@@ -1725,7 +1725,6 @@ and open the island. Built 2026-11-08.
 | ⌃' | Approve · Always…'s Confirm · Done on a multi-select | only while a request waits |
 | ⌃⎋ | Deny · Always…'s Back | only while an approval waits |
 | ⌥1…⌥4 | Pick (single-select) or toggle (multi-select) an option | only while a question waits, one per option |
-| ⎋ | Put away an island a shortcut opened | only while that hold lasts |
 
 - **Carbon `RegisterEventHotKey`**, no permission at all (a global key-down
   monitor would need Input Monitoring). Registered exclusive, so an app that
@@ -1784,8 +1783,9 @@ the live alert it answered. A reveal is its own feedback: the island opens.
 ### Open by shortcut
 
 ⌥⇥ opens the island on the pointer's screen (else the built-in display's),
-**held**: it stays wherever the pointer is, until ⌥⇥ again, Esc, or a click
-in another app. The first time the pointer enters the panel's stay-open zone
+**held**: it stays wherever the pointer is, until ⌥⇥ again or a click in
+another app. No Esc: it was held with no timeout while the hold lasted,
+taking it from vim and from Claude Code's interrupt. The first time the pointer enters the panel's stay-open zone
 the hold ends and it's an ordinary hover — leaving closes it. ⌥⇥ on an open
 island closes it: a hover ends, a field's draft is kept, and an alert's
 auto-open is dismissed as a click would (if "Dismiss alert panel" is on).
@@ -1820,8 +1820,9 @@ differs from the defaults.
 - ⌥⇥ for the island (vs ⌥Space, or ⌥\`).
 - A guarded command needing a second press when the island is closed (the
   face itself approves it in one tap).
-- Esc taken while a shortcut holds the island open — it can't interrupt
-  Claude in the terminal until the island is put away.
+- No Esc for a held island (it was taken system-wide while the hold lasted,
+  so it couldn't interrupt Claude in the terminal); ⌥⇥, a click elsewhere or
+  a visit and leaving put it away.
 - ⌃' and ⌃⎋ for Approve and Deny (⌃⏎ was the first pick, but it's Claude
   Code's send-now).
 - No hint on the face's buttons (e.g. "⌃'" on Approve); Settings is the only

@@ -22,12 +22,9 @@ protocol ShortcutIslandHost: AnyObject {
     var shortcutsRunning: Bool { get }
     /// Some island's panel is open.
     var isAnyIslandExpanded: Bool { get }
-    /// A shortcut is holding an island open (`IslandPresentation.isHeldOpen`).
-    var isIslandHeldOpen: Bool { get }
     func toggleIslandFromShortcut()
     /// Open an island, held, if none is open.
     func openIslandFromShortcut()
-    func closeHeldIsland()
 }
 
 @MainActor
@@ -82,7 +79,6 @@ final class NotchShortcuts {
     func context(now: Date = Date()) -> ShortcutContext {
         var context = ShortcutContext()
         context.running = host?.shortcutsRunning ?? false
-        context.heldOpen = host?.isIslandHeldOpen ?? false
         context.composing = viewModel.composing != nil
         context.answering = viewModel.isAnsweringRequest
 
@@ -147,8 +143,6 @@ final class NotchShortcuts {
             host?.openIslandFromShortcut()
         case .toggleIsland:
             host?.toggleIslandFromShortcut()
-        case .closeHeld:
-            host?.closeHeldIsland()
         case .none:
             break
         }

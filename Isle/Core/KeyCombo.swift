@@ -40,8 +40,7 @@ struct KeyCombo: Hashable, Codable {
 
     /// What a global shortcut must hold: ⌥, ⌃ or ⌘. A bare key, or one with
     /// only ⇧, is typing — taking it from every app would break writing.
-    /// (The island's own Esc, taken only while a shortcut holds it open, is
-    /// the one bare key, and it is never a user's combo.)
+    /// Isle never takes a bare key, Esc included.
     var hasCommandingModifier: Bool {
         modifiers & (Self.option | Self.control | Self.command) != 0
     }

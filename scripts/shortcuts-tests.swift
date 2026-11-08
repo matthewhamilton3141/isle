@@ -62,11 +62,9 @@ final class FakeRegistrar: HotKeyRegistrar {
 final class FakeHost: ShortcutIslandHost {
     var shortcutsRunning = true
     var isAnyIslandExpanded = false
-    var isIslandHeldOpen = false
     var calls: [String] = []
     func toggleIslandFromShortcut() { calls.append("toggle") }
     func openIslandFromShortcut() { calls.append("open") }
-    func closeHeldIsland() { calls.append("close") }
 }
 
 let o = KeyCombo.option, c = KeyCombo.control, s = KeyCombo.shift, cmd = KeyCombo.command
@@ -155,7 +153,7 @@ enum ShortcutsTests {
         check(!KeyCombo(kVK_ANSI_A, s).isValidShortcut, "⇧A isn't: that's a capital")
         check(!KeyCombo(kVK_Option, o).isValidShortcut, "a modifier alone isn't")
         check(!KeyCombo(kVK_CapsLock, cmd).isValidShortcut, "Caps Lock isn't")
-        check(!A.dismiss.defaultCombo.hasCommandingModifier, "the island's own Esc is bare — and never a user's combo")
+        check(A.allCases.allSatisfy { $0.defaultCombo.hasCommandingModifier }, "no shortcut is a bare key — Esc included")
 
         print("Key combos: display")
         let us: (UInt32) -> String? = { _ in nil }
@@ -198,7 +196,8 @@ enum ShortcutsTests {
         equal(Set(A.allCases.map(\.hotKeyID)).count, A.allCases.count, "hot key ids are distinct")
         check(A.allCases.allSatisfy { $0.hotKeyID > 0 && A(hotKeyID: $0.hotKeyID) == $0 }, "ids are nonzero and round-trip")
         check(A(hotKeyID: 0) == nil && A(hotKeyID: 99) == nil, "unknown ids are no action")
-        check(!A.configurable.contains(.dismiss), "Esc isn't in Settings")
+        equal(A.configurable, A.allCases, "Settings lists every shortcut: there's no hidden one")
+        check(!A.allCases.contains { $0.defaultCombo == KeyCombo(kVK_Escape, 0) }, "and none is bare Esc")
 
         print("Bindings: storage")
         var b = defaults
@@ -224,7 +223,8 @@ enum ShortcutsTests {
         equal(mixed[.approve], ShortcutBinding(combo: KeyCombo(kVK_ANSI_Y, o), isOn: true), "a missing \"on\" reads as on")
         equal(mixed[.deny].combo, A.deny.defaultCombo, "a stored combo that isn't a shortcut (⇧⏎) reads as the default")
         equal(mixed[.option2].combo, A.option2.defaultCombo, "an unreadable entry reads as the default, alone")
-        equal(mixed.combo(for: .dismiss), KeyCombo(kVK_Escape, 0), "Esc can't be rebound from the plist")
+        check(!A.allCases.contains { mixed.combo(for: $0)?.keyCode == UInt32(kVK_Escape) && mixed.combo(for: $0)?.modifiers == o },
+              "an old plist's \"dismiss\" entry is ignored")
         let dupes = ShortcutBindings.decode(Data(#"{"approve":{"combo":{"key":16,"mods":["option"]},"on":true},"deny":{"combo":{"key":16,"mods":["option"]},"on":true},"v":2}"#.utf8))
         check(dupes[.approve].combo != dupes[.deny].combo, "an edited plist putting Deny on Approve's ⌥Y never makes one press mean two")
         equal(dupes[.approve].combo, KeyCombo(kVK_ANSI_Y, o), "the earlier action in Settings order keeps it")
@@ -265,7 +265,7 @@ enum ShortcutsTests {
         equal(r.assign(KeyCombo(kVK_Tab, o), to: .approve), .clashes(.toggleIsland),
               "an off shortcut still owns its keys (turning it on can't make a clash)")
         equal(r.assign(KeyCombo(kVK_ANSI_Y, o), to: .approve), .assigned, "an action may take its own keys again")
-        equal(r.assign(KeyCombo(kVK_Escape, 0), to: .dismiss), .needsModifier, "Esc isn't recordable")
+        equal(r.assign(KeyCombo(kVK_Escape, 0), to: .deny), .needsModifier, "bare Esc isn't recordable")
         r[.deny].isOn = false
         r.assign(KeyCombo(kVK_ANSI_N, o), to: .deny)
         check(!r[.deny].isOn, "recording keeps a shortcut's on/off")
@@ -329,11 +329,11 @@ enum ShortcutsTests {
               "multi-select: the options and ⌥⏎ for Done")
         check(!plan(questionCtx(3)).contains(.deny), "a question has no Deny")
 
-        print("Held: the island's own Esc")
-        equal(plan(Ctx(running: true, heldOpen: true)), [.toggleIsland, .dismiss], "held open by a shortcut: Esc")
-        equal(plan(Ctx(running: true, composing: true, heldOpen: true)), [.toggleIsland], "not while a field takes keys")
-        equal(ShortcutPlan.active(Ctx(running: true, heldOpen: true), bindings: defaults)[.dismiss], KeyCombo(kVK_Escape, 0),
-              "it's bare Esc")
+        print("Held: never a bare key")
+        for ctx in [Ctx(running: true), approvalCtx(), approvalCtx(guarded: true), questionCtx(4, multi: true)] {
+            check(ShortcutPlan.active(ctx, bindings: defaults).values.allSatisfy(\.hasCommandingModifier),
+                  "\(ctx.request.map { "\($0)" } ?? "idle"): every held key has ⌥, ⌃ or ⌘ — Esc stays vim's and Claude Code's")
+        }
 
         print("Held: on/off")
         var b = defaults
@@ -394,8 +394,6 @@ enum ShortcutsTests {
         equal(cmdFor(.toggleIsland, Ctx(running: true), visible: false), .toggleIsland, "open/close")
         equal(cmdFor(.toggleIsland, approvalCtx(), visible: true), .toggleIsland, "open/close, a request or not")
         equal(cmdFor(.toggleIsland, Ctx(), visible: false), .none, "not running: nothing")
-        equal(cmdFor(.dismiss, Ctx(running: true, heldOpen: true), visible: false), .closeHeld, "Esc closes a held island")
-        equal(cmdFor(.dismiss, Ctx(running: true), visible: false), .none, "Esc does nothing once the hold has ended")
     }
 
     // MARK: - HotKeyCenter
@@ -568,14 +566,12 @@ enum ShortcutsTests {
         host.calls = []
         reg.press(.toggleIsland); spin()
         equal(host.calls, ["toggle"], "⌥⇥ toggles")
-        host.isIslandHeldOpen = true
+        host.isAnyIslandExpanded = true
         shortcuts.refresh(); spin()
-        check(reg.heldActions.contains(.dismiss), "held open: Esc taken")
-        reg.press(.dismiss); spin()
-        equal(host.calls.last, "close", "Esc closes it")
-        host.isIslandHeldOpen = false
-        shortcuts.refresh(); spin()
-        check(!reg.heldActions.contains(.dismiss), "hold over: Esc given back")
+        check(!reg.held.values.contains { $0.keyCode == UInt32(kVK_Escape) && $0.modifiers == 0 },
+              "open by shortcut: bare Esc is never taken")
+        reg.press(.toggleIsland); spin()
+        equal(host.calls.last, "toggle", "the open shortcut is what puts it away")
         host.shortcutsRunning = false
         shortcuts.refresh(); spin()
         equal(reg.held, [:], "islands hidden: everything let go")
