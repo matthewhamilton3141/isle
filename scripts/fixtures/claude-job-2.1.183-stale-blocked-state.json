@@ -1,0 +1,22 @@
+{
+  "state": "blocked",
+  "tempo": "blocked",
+  "inFlight": {
+    "tasks": 0,
+    "queued": 0,
+    "kinds": []
+  },
+  "template": "bg",
+  "bgIsolation": "none",
+  "name": "Redesign grid system and modernize app chrome",
+  "nameSource": "auto",
+  "sessionId": "30d0d02c-03cd-4849-bcfd-5c8c43c49dc9",
+  "resumeSessionId": "84fa003a-099b-46a6-a288-452b1702f8c3",
+  "daemonShort": "30d0d02c",
+  "cliVersion": "2.1.183",
+  "cwd": "/Users/matthew/Documents/retermina",
+  "createdAt": "2026-06-20T17:59:24.057Z",
+  "updatedAt": "2026-06-27T06:23:33.300Z",
+  "firstTerminalAt": "2026-06-20T18:36:38.824Z",
+  "backend": "daemon"
+}

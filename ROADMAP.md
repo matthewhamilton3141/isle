@@ -2154,6 +2154,10 @@ state. Jump opens `claude attach <id>`.
   whether `ask` works with no terminal.
 - **Note.** No competitor handles it. `agent_needs_input` and
   `agent_completed` notifications (left alone by M19) belong here.
+- **Stale rule (decided 2026-11-08).** A background session with no process
+  that hasn't changed in over a day is hidden, working and blocked included;
+  its age is the later of its state file's `updatedAt` and modification date,
+  and with no age to go on it stays listed.
 
 ### M22 — Subagents, counted (candidate) · S–M
 

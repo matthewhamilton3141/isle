@@ -18,8 +18,15 @@
 //  `claude agents --json --all` is the documented way to read all of that
 //  ("the supported way to read session state from outside Claude Code");
 //  the files under ~/.claude/jobs are explicitly not a stable interface, so
-//  they are only ever the *cue* to read it again — a directory watch, never
-//  parsed.
+//  they are mostly the *cue* to read it again — a directory watch. The one
+//  thing read from them is how old a job is, which `claude agents` doesn't
+//  say (see `ClaudeJobs`), and only for a session with no process.
+//
+//  What's listed: a background session with a live process always is. One
+//  with no process is hidden once it hasn't changed in over a day — working
+//  and blocked too, since a job abandoned in June isn't waiting on anyone —
+//  and a finished one an hour after Isle saw it finish. When its age can't
+//  be shown, nothing is hidden for it: no proof, no change from before.
 //
 //  Measured on 2.1.319 with four sessions listed: 0.09–0.15s wall, ~0.12s
 //  CPU, ~150 MB peak RSS for the short-lived process, 1 KB of output. It
@@ -79,6 +86,11 @@ struct ClaudeAgent: Equatable {
     /// "sandbox request", "worker request" or "dialog open".
     var waitingFor: String?
     var startedAt: Date?
+    /// When the job last changed, from its ~/.claude/jobs state file — not
+    /// part of `claude agents` output, filled in by `ClaudeJobs.dated`. Nil
+    /// while the process is alive (it's never needed then) or when the file
+    /// can't vouch for it.
+    var lastChange: Date? = nil
 
     var isBackground: Bool { kind == "background" }
 
@@ -228,6 +240,11 @@ enum ClaudeBackground {
     /// process for about an hour, and while it's alive the row stays anyway.
     static let finishedListing: TimeInterval = 60 * 60
 
+    /// How long a working or blocked background session with no process
+    /// stays listed without changing. Claude Code keeps such a job around
+    /// indefinitely; a day unchanged is abandoned, not waiting.
+    static let staleListing: TimeInterval = 24 * 60 * 60
+
     /// Merges what `claude agents` says with the bridge's own view.
     ///
     /// - `hookSessionIds`: the session ids with a hook record whose process
@@ -292,14 +309,25 @@ enum ClaudeBackground {
     }
 
     /// Whether a background session nothing hooks into is worth a row.
-    /// Working and blocked always are — blocked is waiting on you, however
-    /// long ago it stopped. A finished one is while its process is alive
-    /// (Claude Code keeps it about an hour) or for an hour after Isle saw it
-    /// finish; after that it's agent view's history, not Isle's. A state
-    /// this build has no word for is listed only while its process runs.
+    ///
+    /// - Any state with a live process: yes.
+    /// - Working or blocked with no process: yes, unless it hasn't changed
+    ///   in over a day (`staleListing`, from `lastChange`). With no
+    ///   `lastChange` its age is unknown, and it stays listed.
+    /// - Done, failed or stopped with no process: for an hour after Isle
+    ///   saw it finish (`finishedListing`); after that it's agent view's
+    ///   history, not Isle's.
+    /// - A state this build has no word for: only while its process runs.
+    ///
+    /// Re-checked whenever the merge runs (a reading, a `claude agents`
+    /// read, the panel opening), so a session crosses the day at the next
+    /// cue after it, not on a timer.
     static func isListed(_ agent: ClaudeAgent, state: ClaudeAgent.State, finishedAt: Date?, now: Date) -> Bool {
         switch state {
-        case .working, .blocked: return true
+        case .working, .blocked:
+            if agent.pid != nil { return true }
+            guard let changed = agent.lastChange else { return true }
+            return now.timeIntervalSince(changed) <= staleListing
         case .done, .failed, .stopped:
             if agent.pid != nil { return true }
             guard let finishedAt else { return false }
@@ -453,8 +481,9 @@ final class ClaudeAgentsMonitor {
         inFlight = true
         lastReadAt = Date()
         let generation = self.generation
+        let jobsURL = self.jobsURL
         queue.async { [weak self] in
-            let agents = ClaudeCLI.agents()
+            let agents = ClaudeCLI.agents().map { ClaudeJobs.dated($0, jobsURL: jobsURL) }
             Task { @MainActor in self?.finish(agents, generation: generation) }
         }
     }
@@ -488,6 +517,67 @@ final class ClaudeAgentsMonitor {
             jobWatches[id] = watch
             watch.start()
         }
+    }
+}
+
+/// How old a background job is, read from its ~/.claude/jobs state file —
+/// the one thing `claude agents` doesn't say and the stale rule needs.
+///
+/// Not a stable interface, so it is read defensively and only ever able to
+/// keep a session listed: the age is the *later* of the file's own
+/// `updatedAt` (Claude Code's word for when the job last changed) and the
+/// file's modification date (it's replaced on every change). Both have to
+/// be old for the session to look old. No file, a file for another
+/// session, or nothing readable: no date, and nothing is hidden.
+enum ClaudeJobs {
+    /// `agents` with `lastChange` filled in for each background session
+    /// that has no process. Off the main thread: it reads files.
+    static func dated(_ agents: [ClaudeAgent], jobsURL: URL) -> [ClaudeAgent] {
+        agents.map { agent in
+            guard agent.isBackground, agent.pid == nil else { return agent }
+            var dated = agent
+            dated.lastChange = lastChange(of: agent, jobsURL: jobsURL)
+            return dated
+        }
+    }
+
+    /// When `agent`'s job last changed, or nil when its state file can't say.
+    /// The job's directory is its short id, as `claude agents` gives it.
+    static func lastChange(of agent: ClaudeAgent, jobsURL: URL) -> Date? {
+        guard let id = agent.attachId else { return nil }
+        let url = jobsURL.appendingPathComponent(id, isDirectory: true)
+            .appendingPathComponent("state.json", isDirectory: false)
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey,
+                                                             .contentModificationDateKey]),
+              values.isRegularFile == true
+        else { return nil }
+        var dates: [Date] = []
+        if let modified = values.contentModificationDate { dates.append(modified) }
+        // State files are a few KB; anything far bigger isn't one.
+        if let size = values.fileSize, size <= 1 << 20,
+           let data = try? Data(contentsOf: url),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            // Another session's file under this id says nothing about this one.
+            if let own = object["sessionId"] as? String, let sessionId = agent.sessionId, own != sessionId {
+                return nil
+            }
+            if let updated = date(object["updatedAt"]) { dates.append(updated) }
+        }
+        return dates.max()
+    }
+
+    /// An ISO 8601 string (with or without fractional seconds) or epoch
+    /// milliseconds.
+    static func date(_ value: Any?) -> Date? {
+        if let number = value as? NSNumber {
+            return Date(timeIntervalSince1970: number.doubleValue / 1000)
+        }
+        guard let string = value as? String else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: string) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: string)
     }
 }
 

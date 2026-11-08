@@ -36,10 +36,10 @@ func parse(_ json: String) -> [ClaudeAgent]? {
 
 func agent(_ id: String, _ state: ClaudeAgent.State?, name: String? = nil, cwd: String = "/Users/me/proj",
            pid: pid_t? = nil, waitingFor: String? = nil, sessionId: String? = nil,
-           kind: String = "background") -> ClaudeAgent {
+           kind: String = "background", lastChange: Date? = nil) -> ClaudeAgent {
     ClaudeAgent(id: id, sessionId: sessionId ?? "\(id)-0000-0000-0000-000000000000", name: name, cwd: cwd,
                 kind: kind, state: state, pid: pid, status: pid == nil ? nil : "idle",
-                waitingFor: waitingFor, startedAt: nil)
+                waitingFor: waitingFor, startedAt: nil, lastChange: lastChange)
 }
 
 func hook(_ id: String, _ project: String, _ state: ClaudeCodeState, ago: TimeInterval = 30,
@@ -62,6 +62,7 @@ enum Tests {
         NSApplication.shared.setActivationPolicy(.prohibited)
         parserTests(fixtures)
         mergeTests()
+        staleTests(fixtures)
         rowTests()
         attachTests()
         viewModelTests()
@@ -280,6 +281,96 @@ enum Tests {
         equal(at[d.sessionId!], nil, "working again drops it")
     }
 
+    // MARK: - Stale sessions
+
+    static func staleTests(_ fixtures: URL) {
+        let now = Date()
+        let day: TimeInterval = 24 * 60 * 60
+        print("No process and unchanged for over a day: hidden")
+        func listed(_ agents: [ClaudeAgent], finishedAt: [String: Date] = [:], at: Date = now) -> Set<String> {
+            Set(ClaudeBackground.merge(hookSessionIds: [], registry: [], agents: agents,
+                                       finishedAt: finishedAt, now: at).agentOnly.compactMap(\.sessionId))
+        }
+        let staleBlocked = agent("a1a1a1a1", .blocked, lastChange: now.addingTimeInterval(-2 * day))
+        let staleBlockedLive = agent("a2a2a2a2", .blocked, pid: 4242, lastChange: now.addingTimeInterval(-2 * day))
+        let freshBlocked = agent("a3a3a3a3", .blocked, lastChange: now.addingTimeInterval(-23 * 60 * 60))
+        let staleWorking = agent("a4a4a4a4", .working, lastChange: now.addingTimeInterval(-3 * day))
+        let freshWorking = agent("a5a5a5a5", .working, lastChange: now.addingTimeInterval(-60))
+        let undated = agent("a6a6a6a6", .blocked)
+        let future = agent("a7a7a7a7", .blocked, lastChange: now.addingTimeInterval(day))
+        let staleDoneSeen = agent("a8a8a8a8", .done, lastChange: now.addingTimeInterval(-2 * day))
+        let l = listed([staleBlocked, staleBlockedLive, freshBlocked, staleWorking, freshWorking, undated, future,
+                        staleDoneSeen],
+                       finishedAt: [staleDoneSeen.sessionId!: now.addingTimeInterval(-600)])
+        check(!l.contains(staleBlocked.sessionId!), "stale blocked, no process: hidden")
+        check(l.contains(staleBlockedLive.sessionId!), "stale blocked with a live process: listed")
+        check(l.contains(freshBlocked.sessionId!), "blocked 23 hours ago, no process: listed")
+        check(!l.contains(staleWorking.sessionId!), "stale working, no process: hidden")
+        check(l.contains(freshWorking.sessionId!), "fresh working, no process: listed")
+        check(l.contains(undated.sessionId!), "blocked with no age to go on: listed, as before")
+        check(l.contains(future.sessionId!), "a change dated in the future: listed")
+        check(l.contains(staleDoneSeen.sessionId!), "the finished rule is unchanged: seen finishing, listed")
+
+        print("The job's age, from its state file")
+        let jobs = FileManager.default.temporaryDirectory
+            .appendingPathComponent("isle-jobs-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: jobs) }
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        func write(_ id: String, _ data: Data, modified: Date) {
+            let dir = jobs.appendingPathComponent(id, isDirectory: true)
+            try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let file = dir.appendingPathComponent("state.json")
+            try! data.write(to: file)
+            try! FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: file.path)
+        }
+
+        // The real one: a 2.1.183 job from June, blocked with no process.
+        let fixture = try! Data(contentsOf: fixtures.appendingPathComponent("claude-job-2.1.183-stale-blocked-state.json"))
+        let updatedAt = iso.date(from: "2026-06-27T06:23:33.300Z")!
+        write("30d0d02c", fixture, modified: updatedAt)
+        let real = ClaudeAgentsParser.parse(try! Data(contentsOf: fixtures.appendingPathComponent("claude-agents-2.1.319.json")))!
+        let dated = ClaudeJobs.dated(real, jobsURL: jobs)
+        equal(dated[0].lastChange.map { $0.timeIntervalSince1970.rounded() }, updatedAt.timeIntervalSince1970.rounded(),
+              "the retermina job's lastChange is its updatedAt")
+        check(dated[1...].allSatisfy { $0.lastChange == nil }, "interactive entries aren't dated")
+        check(!listed(dated).contains(dated[0].sessionId!), "the retermina job is hidden")
+        check(listed(dated, at: iso.date(from: "2026-06-27T12:00:00.000Z")!).contains(dated[0].sessionId!),
+              "but was listed the day it changed")
+
+        // The later of updatedAt and the file's date.
+        write("b1b1b1b1", Data("{\"sessionId\":\"b1b1b1b1-0000-0000-0000-000000000000\",\"updatedAt\":\"\(iso.string(from: now.addingTimeInterval(-5 * day)))\"}".utf8),
+              modified: now.addingTimeInterval(-60))
+        let touched = agent("b1b1b1b1", .blocked)
+        equal(ClaudeJobs.lastChange(of: touched, jobsURL: jobs).map { Int($0.timeIntervalSince1970) },
+              Int(now.addingTimeInterval(-60).timeIntervalSince1970), "a file written since its updatedAt: the later")
+        check(listed(ClaudeJobs.dated([touched], jobsURL: jobs)).contains(touched.sessionId!), "and so listed")
+        write("b2b2b2b2", Data("{\"updatedAt\":\"\(iso.string(from: now.addingTimeInterval(-60)))\"}".utf8),
+              modified: now.addingTimeInterval(-5 * day))
+        check(listed(ClaudeJobs.dated([agent("b2b2b2b2", .blocked)], jobsURL: jobs)).count == 1,
+              "an old file whose updatedAt is recent: listed")
+        write("b3b3b3b3", Data("not json".utf8), modified: now.addingTimeInterval(-5 * day))
+        let garbled = ClaudeJobs.dated([agent("b3b3b3b3", .working)], jobsURL: jobs)
+        equal(garbled[0].lastChange.map { Int($0.timeIntervalSince1970) },
+              Int(now.addingTimeInterval(-5 * day).timeIntervalSince1970), "unreadable JSON: the file's date alone")
+        write("b4b4b4b4", Data("{\"sessionId\":\"someone-else\",\"updatedAt\":\"2026-01-01T00:00:00Z\"}".utf8),
+              modified: now.addingTimeInterval(-5 * day))
+        equal(ClaudeJobs.lastChange(of: agent("b4b4b4b4", .blocked), jobsURL: jobs), nil,
+              "a file naming another session: no date")
+        equal(ClaudeJobs.lastChange(of: agent("b5b5b5b5", .blocked), jobsURL: jobs), nil, "no file: no date")
+        let noId = ClaudeAgent(id: nil, sessionId: "x", cwd: "/x", kind: "background", state: .blocked)
+        equal(ClaudeJobs.lastChange(of: noId, jobsURL: jobs), nil, "no short id: no date")
+        let unsafe = ClaudeAgent(id: "../b1b1b1b1", sessionId: "x", cwd: "/x", kind: "background", state: .blocked)
+        equal(ClaudeJobs.lastChange(of: unsafe, jobsURL: jobs), nil, "an id that isn't a plain name: no date")
+        let live = ClaudeJobs.dated([agent("b3b3b3b3", .working, pid: 4243)], jobsURL: jobs)
+        equal(live[0].lastChange, nil, "a live process isn't dated: it's listed regardless")
+        equal(ClaudeJobs.date("2026-06-27T06:23:33Z").map { Int($0.timeIntervalSince1970) },
+              Int(updatedAt.timeIntervalSince1970), "updatedAt without fractional seconds")
+        equal(ClaudeJobs.date(NSNumber(value: 1781978364057)).map { Int($0.timeIntervalSince1970) }, 1781978364,
+              "or as epoch millis")
+        equal(ClaudeJobs.date("yesterday"), nil, "anything else: none")
+    }
+
     // MARK: - Rows
 
     static func rowTests() {
@@ -437,6 +528,11 @@ enum Tests {
         equal(vm.claudeState, .disconnected, "nothing live: the island stays disconnected")
         equal(vm.sessionList.count, 1, "but the list has the background session")
         equal(vm.otherSessions.needYou, 1, "counted as needing you")
+        var stale = blocked
+        stale.lastChange = Date().addingTimeInterval(-3 * 24 * 60 * 60)
+        vm.applyTestAgents([stale])
+        equal(vm.sessionList.count, 0, "unchanged for three days with no process: off the list")
+        equal(vm.otherSessions.needYou, 0, "and not counted")
 
         // A live background session the hooks cover, whose turn ended on a
         // question: Claude Code says blocked.
