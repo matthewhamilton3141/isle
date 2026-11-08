@@ -856,11 +856,17 @@ struct ClaudeExpandedView: View {
     /// The decisions, with their keys (`ShortcutHints`) where the row has
     /// the room: at the usual spacing, else a little closer (Always…'s five
     /// pills), else without them (keys rebound to long chords) — never a
-    /// row any wider than before.
+    /// row any wider than before. A row that fits is drawn at its own width:
+    /// laid out squeezed instead, an HStack shortens Approve to "Appr…" with
+    /// room to spare.
     private var decisionPills: some View {
         ViewThatFits(in: .horizontal) {
-            decisionPillRow(hints: true, spacing: 8)
-            decisionPillRow(hints: true, spacing: 6)
+            decisionPillRow(hints: true, spacing: 8).fixedSize(horizontal: true, vertical: false)
+            decisionPillRow(hints: true, spacing: 6).fixedSize(horizontal: true, vertical: false)
+            decisionPillRow(hints: false, spacing: 8).fixedSize(horizontal: true, vertical: false)
+            // The last resort, taken even when it doesn't fit: squeezed to
+            // the row, so a pill shortens rather than the row spilling out
+            // of the panel.
             decisionPillRow(hints: false, spacing: 8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -907,10 +913,6 @@ struct ClaudeExpandedView: View {
                 }
             }
         }
-        // At its own width: `ViewThatFits` has just checked that fits, and
-        // laid out squeezed instead an HStack shortens Approve to "Appr…"
-        // with room to spare.
-        .fixedSize(horizontal: true, vertical: false)
     }
 
     // MARK: - Jump and reply
@@ -1131,7 +1133,17 @@ struct ClaudeExpandedView: View {
                             onCancel: { viewModel.endCompose() }
                         )
                     } else {
-                        questionActions(question, isLast: isLast, picks: picks, fit: fit)
+                        // Done's key where the row has the room for it; else
+                        // Done as it was, so a long chord never squeezes
+                        // "Answer in terminal" and "Type something".
+                        ViewThatFits(in: .horizontal) {
+                            HStack(spacing: 8) {
+                                questionActions(question, isLast: isLast, picks: picks, fit: fit, hints: true)
+                            }
+                            HStack(spacing: 8) {
+                                questionActions(question, isLast: isLast, picks: picks, fit: fit, hints: false)
+                            }
+                        }
                     }
                 }
             }
@@ -1145,7 +1157,7 @@ struct ClaudeExpandedView: View {
     /// something" as a field here, and Next / Done for a multi-select.
     @ViewBuilder
     private func questionActions(_ question: ClaudeQuestion, isLast: Bool, picks: Set<String>,
-                                 fit: L.OptionsFit) -> some View {
+                                 fit: L.OptionsFit, hints: Bool) -> some View {
                     pill("Answer in terminal", systemImage: "terminal", fill: .white.opacity(0.14)) {
                         answerInTerminal()
                     }
@@ -1165,7 +1177,7 @@ struct ClaudeExpandedView: View {
                         pill(isLast ? "Done" : "Next",
                              systemImage: isLast ? "checkmark" : "arrow.right",
                              fill: .white.opacity(picks.isEmpty ? 0.14 : 0.3),
-                             hint: .approve, hintLive: !picks.isEmpty) {
+                             hint: hints ? .approve : nil, hintLive: !picks.isEmpty) {
                             viewModel.advanceQuestion()
                         }
                         .disabled(picks.isEmpty)
@@ -1214,7 +1226,12 @@ struct ClaudeExpandedView: View {
                            style: OptionDescriptions, descriptionLines lines: Int,
                            hint: ShortcutAction?) -> some View {
         let height = L.optionRowHeight(style: style, descriptionLines: lines)
-        let key = hint.flatMap { viewModel.shortcutHints.key($0) }
+        // A stacked row's label keeps the key's own width clear; a key too
+        // long for that (a rebound chord) is left off the row. A one-line
+        // row has the room: its description gives way instead.
+        let bound = hint.flatMap { viewModel.shortcutHints.key($0) }
+        let clearance = lines > 0 ? bound.flatMap { L.keyHintClearance(for: $0) } : nil
+        let key = lines > 0 && clearance == nil ? nil : bound
         return Button {
             viewModel.pickOption(option.label)
         } label: {
@@ -1231,7 +1248,7 @@ struct ClaudeExpandedView: View {
                         optionLabel(option)
                             .frame(height: L.optionLabelLine)
                             // Clear of the key over the corner.
-                            .padding(.trailing, key == nil ? 0 : L.keyHintClearance)
+                            .padding(.trailing, clearance ?? 0)
                         Text(option.description ?? "")
                             .font(L.optionDescriptionFont)
                             .foregroundStyle(.islandSecondary(0.55))

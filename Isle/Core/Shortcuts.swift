@@ -12,12 +12,12 @@
 //  - **Approve, Deny and the option keys are held only while a request is
 //    waiting on you** — on the session the island is showing, unanswered,
 //    with no field taking keys — and given back the moment it's answered,
-//    withdrawn or gone. So they can be easy keys (⌃', ⌃⎋, ⌥1…⌥4) without
+//    withdrawn or gone. So they can be easy keys (⌃', ⌃Esc, ⌥1…⌥4) without
 //    taking those keys from other apps the rest of the time. Easy, but never
 //    a key anyone types for its meaning: a request waits up to five minutes,
 //    and a keystroke meant for another app — a newline in another session's
-//    terminal — must not answer it. Hence ⌃' and ⌃⎋, not ⌥⏎ (Claude Code's
-//    newline) or ⌃⏎ (its send-now).
+//    terminal — must not answer it. Hence ⌃' and ⌃Esc, not ⌥Return (Claude Code's
+//    newline) or ⌃Return (its send-now).
 //  - They are taken half a second after the request appears, not at once:
 //    a keystroke already on its way to another app as the request lands must reach
 //    that app, not approve something nobody has seen.
@@ -80,11 +80,11 @@ enum ShortcutAction: String, CaseIterable, Codable {
     /// The defaults: one modifier, and keys nobody types for their meaning —
     /// Approve and Deny are held while a request waits, so a keystroke meant
     /// for another app would answer it instead. Every one-modifier Return is
-    /// someone's: ⌥⏎ is Claude Code's newline, ⌃⏎ its send-now, ⌘⏎ submits
+    /// someone's: ⌥Return is Claude Code's newline, ⌃Return its send-now, ⌘Return submits
     /// in half the web and toggles full screen in iTerm2 and Ghostty. So
-    /// Approve is on the key beside Return, ⌃', and Deny on ⌃⎋ — neither
+    /// Approve is on the key beside Return, ⌃', and Deny on ⌃Esc — neither
     /// types anything, and neither macOS nor Claude Code uses them. The
-    /// options on their numbers. The island on ⌥⇥ rather than ⌥Space, which
+    /// options on their numbers. The island on ⌥Tab rather than ⌥Space, which
     /// ChatGPT, Claude, Raycast and Alfred all reach for first (ChatGPT is on
     /// ⌥Space out of the box), where Option-Tab types nothing and no part of
     /// macOS uses it.
@@ -100,8 +100,8 @@ enum ShortcutAction: String, CaseIterable, Codable {
         }
     }
 
-    /// What the defaults were before the version-2 store (Approve on ⌥⏎,
-    /// Deny on ⌥⎋): a version-1 entry on these keys was never recorded —
+    /// What the defaults were before the version-2 store (Approve on ⌥Return,
+    /// Deny on ⌥Esc): a version-1 entry on these keys was never recorded —
     /// they were the defaults then, which aren't stored — only switched
     /// off, so it reads as today's default (see `ShortcutBindings.decode`).
     var legacyDefaultCombo: KeyCombo? {
@@ -208,8 +208,8 @@ struct ShortcutBindings: Equatable {
 
     // MARK: Storage
 
-    /// The store's version. 1 (no `"v"`): Approve and Deny defaulted to ⌥⏎
-    /// and ⌥⎋. 2: ⌃' and ⌃⎋.
+    /// The store's version. 1 (no `"v"`): Approve and Deny defaulted to ⌥Return
+    /// and ⌥Esc. 2: ⌃' and ⌃Esc.
     static let storeVersion = 2
 
     func encoded() -> Data? {
@@ -278,13 +278,13 @@ enum ShortcutNotes {
         case (0x31, cmd): return "macOS uses ⌘Space for Spotlight."
         case (0x31, c): return "macOS uses ⌃Space to switch input sources."
         case (0x31, o | cmd): return "macOS uses ⌥⌘Space for Finder search."
-        case (0x30, cmd): return "macOS uses ⌘⇥ to switch apps."
-        case (0x30, o): return "AltTab and other window switchers use ⌥⇥, if you have one."
+        case (0x30, cmd): return "macOS uses \(combo.display()) to switch apps."
+        case (0x30, o): return "AltTab and other window switchers use \(combo.display()), if you have one."
         case (0x35, o): return "Also macOS’s Speak Selection key, when that’s on (Accessibility › Spoken Content)."
-        case (0x35, o | cmd): return "macOS uses ⌥⌘⎋ for Force Quit."
-        case (0x24, o): return "Claude Code uses ⌥⏎ for a newline: while a request waits, one typed in any terminal would answer it instead."
-        case (0x24, c): return "Claude Code uses ⌃⏎ to send a message now: while a request waits, one typed in any terminal would answer it instead."
-        case (0x33, c): return "Many terminals and editors delete a word on ⌃⌫."
+        case (0x35, o | cmd): return "macOS uses \(combo.display()) for Force Quit."
+        case (0x24, o): return "Claude Code uses \(combo.display()) for a newline: while a request waits, one typed in any terminal would answer it instead."
+        case (0x24, c): return "Claude Code uses \(combo.display()) to send a message now: while a request waits, one typed in any terminal would answer it instead."
+        case (0x33, c): return "Many terminals and editors delete a word on \(combo.display())."
         // Not a clash: the default Approve, whose ' is a speck in the field.
         case (0x27, c): return "Control and the key just left of Return."
         default:
@@ -500,12 +500,17 @@ enum ShortcutPlan {
 // MARK: - Hints on the buttons
 
 /// The keys the face's buttons carry beside their words: "Approve ⌃'",
-/// "Deny ⌃⎋", "⌥1" at an option's end. Faint, and only ever the truth:
+/// "Deny ⌃Esc", "⌥1" at an option's end. Faint, and only ever the truth:
 ///
 /// - **Which keys** (`keys`) are the user's own bindings, as Settings has
 ///   them, for the shortcuts that are on. A shortcut turned off has no hint
 ///   and no room kept for one. The room a hint takes is kept whenever its key
 ///   is bound, shown or not, so a hint coming or going never moves a button.
+/// - **Refused** keys (another app holds them, so macOS turned Isle down)
+///   are left out of `keys` by `NotchShortcuts`: a press there never reaches
+///   Isle, so the button gets its symbol back instead of room kept for a
+///   hint that can't come. The wait before a key is taken (armed, seen)
+///   keeps its room — that hint is on its way.
 /// - **Shown** (`live`) only while a press would do what the button does:
 ///   held (taken from the other apps, not refused), armed, and — for a
 ///   guarded command, Always…'s review and a question's options — the face

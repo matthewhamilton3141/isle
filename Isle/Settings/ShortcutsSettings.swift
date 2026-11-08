@@ -288,6 +288,9 @@ struct ShortcutRecorder: View {
                                       lineWidth: isRecording ? 1.5 : 0.5)
                 )
                 .contentShape(Rectangle())
+                // Whole, never "⌥F…": a key's name is a word now ("⌥Fwd
+                // Del"), and the row's text wraps to make the room.
+                .fixedSize()
         }
         .buttonStyle(.plain)
         .help(isRecording ? "Type the new shortcut; Esc to cancel" : "Click to change")

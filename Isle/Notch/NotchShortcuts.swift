@@ -80,6 +80,12 @@ final class NotchShortcuts {
             .removeDuplicates()
             .sink { [weak self] _ in self?.refresh() }
             .store(in: &cancellables)
+        // The recorder letting every key go (or taking them back): the hints
+        // must stop saying a press would act while nothing is held.
+        center.$isSuspended
+            .removeDuplicates()
+            .sink { [weak self] _ in self?.refresh() }
+            .store(in: &cancellables)
     }
 
     /// Re-read the moment and hold what it calls for, once per turn of the
@@ -109,7 +115,11 @@ final class NotchShortcuts {
             hintKeys = (bindings, request, keys)
         }
         viewModel.setShortcutHints(ShortcutHints(
-            keys: keys, live: ShortcutPlan.live(context, face: face, held: center.held)))
+            keys: keys.filter { action, _ in
+                if case .refused = center.status[action] { return false }
+                return true
+            },
+            live: ShortcutPlan.live(context, face: face, held: center.held)))
 
         // Shown but not yet seen: look again when it will be.
         guard face == .shown, let since = faceTracker.since else {

@@ -1721,9 +1721,9 @@ and open the island. Built 2026-11-08.
 
 | Default | What | Held |
 |---|---|---|
-| ⌥⇥ | Open or close the island | always |
+| ⌥Tab | Open or close the island | always |
 | ⌃' | Approve · Always…'s Confirm · Done on a multi-select | only while a request waits |
-| ⌃⎋ | Deny · Always…'s Back | only while an approval waits |
+| ⌃Esc | Deny · Always…'s Back | only while an approval waits |
 | ⌥1…⌥4 | Pick (single-select) or toggle (multi-select) an option | only while a question waits, one per option |
 
 - **Carbon `RegisterEventHotKey`**, no permission at all (a global key-down
@@ -1737,20 +1737,20 @@ and open the island. Built 2026-11-08.
   appears**, so a keystroke already on its way to another app as an approval
   lands reaches that app instead of approving something unseen. A safety
   arm, not hover: hover stays timer-free.
-- **⌃' and ⌃⎋, not ⌥⏎ and ⌥⎋** (the first defaults). A request waits up to
+- **⌃' and ⌃Esc, not ⌥Return and ⌥Esc** (the first defaults). A request waits up to
   300s with Approve held system-wide, so the keys must be ones nobody types
-  for their meaning — ⌥⏎ is Claude Code's newline, and one typed in another
+  for their meaning — ⌥Return is Claude Code's newline, and one typed in another
   session's terminal approved the waiting request instead. Every
-  one-modifier Return is someone's: ⌃⏎ is Claude Code's `chat:sendNow`, ⌘⏎
+  one-modifier Return is someone's: ⌃Return is Claude Code's `chat:sendNow`, ⌘⏎
   submits on the web and toggles full screen in iTerm2 and Ghostty. ⌃' is
-  the key beside Return; ⌃⎋ sits with Esc as Deny. Neither types anything,
-  neither is a macOS or Claude Code binding. Recording ⌥⏎ or ⌃⏎ shows a note
+  the key beside Return; ⌃Esc sits with Esc as Deny. Neither types anything,
+  neither is a macOS or Claude Code binding. Recording ⌥Return or ⌃Return shows a note
   saying whose they are. The store is versioned (`"v":2`): anyone who never
   recorded Approve or Deny gets the new keys, anyone who did keeps theirs.
-- **⌥⇥, not ⌥Space.** ⌥Space is ChatGPT's default (installed here), and
+- **⌥Tab, not ⌥Space.** ⌥Space is ChatGPT's default (installed here), and
   Claude's, Raycast's and Alfred's usual pick. Option-Tab types nothing and
   macOS doesn't use it; AltTab users would clash, and Settings says so.
-- **⌥⎋**, if recorded, registers fine (probed); macOS's Speak Selection also
+- **⌥Esc**, if recorded, registers fine (probed); macOS's Speak Selection also
   uses it when that's switched on, which Settings notes.
 
 ### Mirrors the face
@@ -1774,8 +1774,8 @@ island to it where the face needs a look first (`ShortcutPlan.command`):
   that a press reveals it and restarts the half second. So neither
   expandOnAlert's auto-open nor a fast double-tap on a closed island (the
   panel is "open" synchronously, long before it's legible) approves it
-  unread. A guard exists so someone looks. ⌃⎋ stays one press.
-- **Always…'s review**: ⌃' is Confirm and ⌃⎋ is Back, only once the review
+  unread. A guard exists so someone looks. ⌃Esc stays one press.
+- **Always…'s review**: ⌃' is Confirm and ⌃Esc is Back, only once the review
   has been seen; before that either just reveals it. Saving a rule is never
   a blind press.
 - **Questions**: a number key picks only once the question has been seen;
@@ -1794,25 +1794,32 @@ the live alert it answered. A reveal is its own feedback: the island opens.
 
 ### Open by shortcut
 
-⌥⇥ opens the island on the pointer's screen (else the built-in display's),
-**held**: it stays wherever the pointer is, until ⌥⇥ again or a click in
+⌥Tab opens the island on the pointer's screen (else the built-in display's),
+**held**: it stays wherever the pointer is, until ⌥Tab again or a click in
 another app. No Esc: it was held with no timeout while the hold lasted,
 taking it from vim and from Claude Code's interrupt. The first time the pointer enters the panel's stay-open zone
-the hold ends and it's an ordinary hover — leaving closes it. ⌥⇥ on an open
+the hold ends and it's an ordinary hover — leaving closes it. ⌥Tab on an open
 island closes it: a hover ends, a field's draft is kept, and an alert's
 auto-open is dismissed as a click would (if "Dismiss alert panel" is on).
 
 ### The keys on the buttons (decided 2026-11-08: "show the hint")
 
 Approve and Deny carry their keys after the word, in place of the ✓ and ✕
-("Approve ⌃'", "Deny ⌃⎋"); the review's Confirm and Back carry Approve's and
+("Approve ⌃'", "Deny ⌃Esc"); the review's Confirm and Back carry Approve's and
 Deny's, a multi-select's Done carries Approve's, and each of the first four
 options has its own at the row's end ("⌥1"). 10pt, `.islandSecondary` (0.6
 on a pill, 0.45 on an option), so it lifts on glass.
 
 - **The user's keys.** From the bindings, live: rebinding in Settings changes
   the hint at once; a shortcut turned off has no hint, and its pill gets its
-  symbol back.
+  symbol back. So does one macOS refused (another app holds the keys): a
+  press there never reaches Isle, so no room is kept for a hint that can't
+  come.
+- **Keys by name** (decided 2026-11-08: "just write tab"). Everywhere a combo
+  is shown — Settings' recorders and notes, the hints, conflict notices —
+  the modifiers keep their glyphs (⌃⌥⇧⌘) and the key is a word: Tab, Esc,
+  Return, Enter, Space, Delete, Fwd Del, Home, End, Pg Up, Pg Dn. Arrows
+  stay arrows; F keys are F1…F20. ⌥Tab, ⌃Esc.
 - **Shown only while a press would do it** (`ShortcutHints`,
   `ShortcutPlan.live`): the key is held (not refused by another app), the
   request is armed, no field has the keys, and for a guarded command,
@@ -1823,10 +1830,15 @@ on a pill, 0.45 on an option), so it lifts on glass.
   moment brings it up, like the arm's; nothing polls.
 - **Never a wider row.** The row tries the hints at 8pt spacing, then 6pt
   (Always…'s five pills fit that way with the default keys), then goes
-  without them (keys rebound to long chords). An option's key sits beside a
-  one-line row's text (which is cut anyway) or over a stacked row's corner,
-  so descriptions wrap to the lines the fit measured. Nothing is near the
-  camera band.
+  without them (keys rebound to long chords), and as a last resort squeezes
+  the pills rather than spill out of the panel. A multi-select's Done drops
+  its key the same way rather than squeeze the row's other pills. An
+  option's key sits beside a one-line row's text (which is cut anyway) or
+  over a stacked row's corner, whose label keeps the key's measured width
+  clear (`ClaudePanelLayout.keyHintClearance(for:)`); a key wider than 64pt
+  (four modifiers and a word) is left off a stacked row. Descriptions wrap
+  to the lines the fit measured. Nothing is near the camera band. The
+  hints go faint while Settings' recorder holds every key.
 - Renders: `scratchpad/key-hints/key-hints-contact-sheet.png`.
 
 ### Settings › Shortcuts
@@ -1836,7 +1848,7 @@ and an on/off; the four option keys share a row. The recorder refuses a key
 without ⌥, ⌃ or ⌘, a combo another Isle shortcut has, and one a probe
 registration says another app holds. A pending-only key refused the last
 time a request waited shows in orange under its row, as does a known owner
-(⌥Space, ⌘Space, ⌥⇥, ⌥⎋, ⌥⏎, ⌃⏎, ⌃⌫). Stored as JSON in `isle.shortcuts`, only what
+(⌥Space, ⌘Space, ⌥Tab, ⌥Esc, ⌥Return, ⌃Return, ⌃⌫). Stored as JSON in `isle.shortcuts`, only what
 differs from the defaults.
 
 ### Tests and renders
@@ -1856,19 +1868,49 @@ differs from the defaults.
 
 ### Decisions to confirm
 
-- ⌥⇥ for the island (vs ⌥Space, or ⌥\`).
+- ⌥Tab for the island (vs ⌥Space, or ⌥\`).
 - A guarded command needing a second press, half a second after it's in
   view (the face itself approves it in one tap), and a plain approval
   needing one when the island is closed or open on another display.
 - The pointer's display as the proxy for where Matthew is looking.
 - No Esc for a held island (it was taken system-wide while the hold lasted,
-  so it couldn't interrupt Claude in the terminal); ⌥⇥, a click elsewhere or
+  so it couldn't interrupt Claude in the terminal); ⌥Tab, a click elsewhere or
   a visit and leaving put it away.
-- ⌃' and ⌃⎋ for Approve and Deny (⌃⏎ was the first pick, but it's Claude
+- ⌃' and ⌃Esc for Approve and Deny (⌃Return was the first pick, but it's Claude
   Code's send-now).
 - Hints on the buttons appear only once a press would act (up to half a
   second after the face is up), rather than from the start. Rebound keys too
   long for Always…'s row show no hints there.
+
+## Settings previews on the island
+
+Matthew asked (2026-11-08): "when ur configuring the settings, it can open
+the isle to show the changes occurring". Built on `feature/settings-live-preview`.
+
+- **A change opens it, nothing else.** Made while Settings is the window in
+  front (Isle active, Settings key — or the colour panel its accent well
+  opened). Opening Settings doesn't. Settings that count: the mode, Panel
+  background, the glow, the accent; Music's waveform, scrubber,
+  shuffle/repeat; Claude's option descriptions and answering from the notch;
+  Pomodoro's switch and lengths; Calendar's switches and lead time. Not:
+  shortcut bindings, updates, sounds, alert behaviour, keep-awake, the guard,
+  which displays, or what the collapsed island says (an open island would
+  hide it). A test reads AppSettings' published properties and fails if a
+  new one is in neither list.
+- **The face it's about**: Music's to Music, Claude's to Claude, Pomodoro's
+  to the timer, Calendar's to the agenda; the look and the mode stay on the
+  face that's up (or Home). A face the change took away leaves it there too.
+- **Never over activity**: a Claude approval or question on screen keeps
+  its face; a drop under way or a field taking keys wins outright.
+- **Held like ⌥Tab's hold**, on the notched display's island (else the one
+  Settings is on). Moving about in Settings can't close it, and a click in
+  Settings is Isle's own, so the global click monitor never sees it. It
+  ends when Settings closes, when Isle stops being the active app, or when
+  the pointer visits it and leaves (an ordinary hover from the visit on).
+  Only a hold the preview made is the preview's to end. Nothing is timed.
+- Pure parts in `Isle/Core/SettingsPreview.swift`, wired in
+  `NotchWindowController` (`watchSettingsWindow`) from `AppDelegate.openSettings`;
+  tests in `scripts/test-settings-preview.sh`.
 
 ## Milestone 8 — Multi-Display  ✅
 
