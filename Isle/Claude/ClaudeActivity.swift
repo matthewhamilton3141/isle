@@ -86,17 +86,161 @@ struct ClaudeActivity: Equatable {
             // A path → just the file name.
             return lastComponent(of: target)
         case .run:
-            // A command → the program name only (first token, de-pathed), so we
-            // never splash a full command line — arguments and all — onto the
-            // screen.
-            guard let token = target.split(whereSeparator: { $0 == " " }).first else { return nil }
-            return lastComponent(of: String(token))
+            // A command → the program name only, so we never splash a full
+            // command line — arguments and all — onto the screen; nil (and
+            // "Running a command") when there's no name it can stand behind.
+            return Self.program(ofCommand: target)
         case .web:
             // A URL → its host; anything else passes through trimmed.
             return host(of: target) ?? target
         case .search, .delegate, .plan, .other:
             return target
         }
+    }
+
+    // MARK: - A command's program
+
+    /// What `isle-cli` cuts a target to. A target this long may have lost
+    /// its end, so a word that runs into the cut may be part of a name.
+    static let hookTargetCap = 48
+
+    /// Words that only set up the command after them: they change the
+    /// directory or the environment, and run nothing worth naming.
+    private static let setupCommands: Set<String> = ["cd", "pushd", "popd", "export", "unset", "set"]
+
+    /// Words that run the command after them: the program is further on.
+    private static let wrappers: Set<String> = ["env", "sudo", "time", "nohup", "command", "exec"]
+
+    /// Reserved words a shell reads before a command.
+    private static let keywords: Set<String> = ["!", "{", "}", "if", "then", "elif", "else", "while", "until", "do"]
+
+    /// The program a command line runs, read roughly the way a shell starts
+    /// it: past `NAME=value` assignments, past whole `cd …` / `export …`
+    /// segments, and through `env` / `sudo` / `time` / `nohup` / `command`
+    /// / `exec`, to the first word of the first segment left — de-pathed,
+    /// so `/usr/bin/git` is `git`. Segments end at `;` `&` `|` `(` `)` and
+    /// newlines; quotes are taken off.
+    ///
+    /// Nil unless that word is a plain name — letters, digits and `._+-@`,
+    /// not starting with `-` — that ends before the text does (when the
+    /// text is at `hookTargetCap`, a word running into the end may be cut
+    /// short). Also nil when there is no such segment. "Running a command"
+    /// is true; "Running -Users-matthew-Documen" was not.
+    ///
+    /// Not a shell parser: `isle-cli` reads the command properly for the
+    /// guard; this only has to name it, or decline to.
+    static func program(ofCommand command: String) -> String? {
+        // `cut -c` may count bytes; either way, no shorter text was cut.
+        let mayBeCut = command.utf8.count >= hookTargetCap
+        for segment in segments(of: command) {
+            var words = segment[...]
+            while let first = words.first {
+                if keywords.contains(first.text) || isAssignment(first.text) {
+                    words = words.dropFirst()
+                } else if wrappers.contains(first.text), !looksUp(words) {
+                    words = words.dropFirst()
+                    // The wrapper's own options, and env's assignments.
+                    while let next = words.first, next.text.hasPrefix("-") || isAssignment(next.text) {
+                        let takesValue = first.text == "sudo" && ["-u", "-g", "-C", "-h", "-p", "-U"].contains(next.text)
+                        words = words.dropFirst(takesValue ? 2 : 1)
+                    }
+                } else {
+                    break
+                }
+            }
+            guard let word = words.first else { continue }
+            if setupCommands.contains(word.text) { continue }
+            guard word.ended || !mayBeCut else { return nil }
+            return plainName(word.text)
+        }
+        return nil
+    }
+
+    /// `command -v name` only looks the name up: it runs `command`, not it.
+    private static func looksUp(_ words: ArraySlice<Word>) -> Bool {
+        words.first?.text == "command" && ["-v", "-V"].contains(words.dropFirst().first?.text ?? "")
+    }
+
+    private struct Word {
+        var text: String
+        /// Something came after it: a space, a separator, a quote closed and
+        /// then more. False for a word that runs into the end of the text.
+        var ended: Bool
+    }
+
+    /// The command's words, segment by segment, with quotes taken off.
+    private static func segments(of command: String) -> [[Word]] {
+        var segments: [[Word]] = []
+        var words: [Word] = []
+        var current = ""
+        var inWord = false
+        var quote: Character?
+        var escaped = false
+        var comment = false
+
+        func endWord() {
+            if inWord { words.append(Word(text: current, ended: true)) }
+            current = ""
+            inWord = false
+        }
+        func endSegment() {
+            endWord()
+            if !words.isEmpty { segments.append(words) }
+            words = []
+        }
+
+        for ch in command {
+            if comment {
+                if ch == "\n" { comment = false; endSegment() }
+                continue
+            }
+            if escaped {
+                current.append(ch); inWord = true; escaped = false
+                continue
+            }
+            if let open = quote {
+                if ch == open { quote = nil } else { current.append(ch) }
+                continue
+            }
+            switch ch {
+            case "\\":
+                escaped = true
+            case "'", "\"":
+                quote = ch; inWord = true
+            case " ", "\t":
+                endWord()
+            case ";", "&", "|", "(", ")", "\n", "\r":
+                endSegment()
+            case "#" where !inWord:
+                comment = true
+            default:
+                current.append(ch); inWord = true
+            }
+        }
+        // The last word ran into the end of the text (or into the end inside
+        // an open quote), so nothing vouches that it's whole.
+        if inWord { words.append(Word(text: current, ended: false)) }
+        if !words.isEmpty { segments.append(words) }
+        return segments
+    }
+
+    /// `NAME=value`, with a shell variable's name.
+    private static func isAssignment(_ word: String) -> Bool {
+        guard let eq = word.firstIndex(of: "="), eq != word.startIndex else { return false }
+        let name = word[..<eq]
+        return name.first.map { $0 == "_" || ($0.isASCII && $0.isLetter) } == true
+            && name.allSatisfy { $0 == "_" || ($0.isASCII && ($0.isLetter || $0.isNumber)) }
+    }
+
+    /// The word's file name, when the word is a plain path or name: never
+    /// an option, an assignment, a variable, a glob or a substitution.
+    private static func plainName(_ word: String) -> String? {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._+-@/~"))
+        guard !word.isEmpty, word.unicodeScalars.allSatisfy(allowed.contains) else { return nil }
+        let name = (word as NSString).lastPathComponent
+        guard !name.isEmpty, name != ".", name != "..", name != "/", name != "~",
+              !name.hasPrefix("-") else { return nil }
+        return name
     }
 
     private func lastComponent(of path: String) -> String {
