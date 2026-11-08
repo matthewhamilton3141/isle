@@ -2497,8 +2497,9 @@ agents and a dump hook):
   came, the agent's stop never did). Stop's `background_tasks` lists each
   agent still running with `type: "subagent"` and `id` equal to its
   SubagentStart's `agent_id`, so v18 drops at Stop every counted agent the
-  list doesn't name. A Stop without the field (older Claude Code) or with a
-  list the parser can't read to the end keeps the count as it was.
+  list doesn't name. A list the parser can't read to the end keeps the
+  count as it was; a Stop with no list at all (older Claude Code) lets them
+  all go, as before v17 (v19).
 - **Background agents.** Counted until their own stop (v17). On Done, M20's
   "Left running: Explore agent" takes the line, so the face says it once.
 - **The action row.** The row moves down one line while agents run, like a

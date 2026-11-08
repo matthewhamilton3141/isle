@@ -169,12 +169,21 @@ end_turn
 expect "a Stop listing nothing running: none" "[]" state=done
 [ ! -d "$AD" ] && ok "and the session's directory goes" || bad "and the session's directory goes" "$(ls -la "$AD")"
 prompt; start f3 Explore
-printf '{"session_id":"s1","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Done."}' | hook set-state done
-expect "a Stop without background_tasks (an older Claude Code) keeps them" '["Explore"]' state=done
 printf '{"session_id":"s1","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Done.","background_tasks":[{"id":"zz","type":"subagent","status":"running","nested":{"x":1}}],"session_crons":[]}' | hook set-state done
 expect "a list it can't read to the end keeps them" '["Explore"]' state=done
 printf '{"session_id":"s1","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Done.","background_tasks":[{"id":"f3","type":"subagent","status":"completed","agent_type":"Explore"}],"session_crons":[]}' | hook set-state done
 expect "listed but completed: gone" "[]" state=done
+prompt; start f4 Explore
+printf '{"session_id":"s1","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"I set \\"background_tasks\\": [] aside."}' | hook set-state done
+expect "a Stop without background_tasks (an older Claude Code) lets them go, as before v17" "[]" state=done
+prompt; start f5 Explore
+printf '{"session_id":"s1","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Done.","background_tasks": [ ],"session_crons":[]}' | hook set-state done
+expect "an empty list written with spaces: none" "[]" state=done
+LONG=a123456789012345678901234567890123456789012345678901234567890123456789
+prompt; start "$LONG" Explore
+end_turn s1 "$LONG:Explore"
+expect "an id past 64 characters, listed as running: kept" '["Explore"]' state=done
+stop "$LONG" Explore
 prompt; start g1 Explore; start g2 Plan
 printf '{"session_id":"s1","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Done.","background_tasks":[{"id":"sh1","type":"shell","status":"running","description":"dev","command":"npm run dev"},{"id":"g2","type":"subagent","status":"running","description":"d","agent_type":"Plan"}],"session_crons":[]}' | hook set-state done
 expect "listed among shells: kept by id, the rest gone" '["Plan"]' state=done
