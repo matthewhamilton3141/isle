@@ -159,8 +159,10 @@ struct NotchRootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         // Open on the open spring. Close on the close spring, marked as a
         // collapse so the outline's width, height and corners each take their
-        // own (see `notch`) — or, with Reduce Motion, on a plain quick ease
-        // with nothing shaped about it.
+        // own (see `notch`; the close spring is the height's, and is what the
+        // content's fade-out runs on) — or, with Reduce Motion, on a plain
+        // quick ease with nothing shaped about it: unmarked, the channels
+        // stand aside and the outline closes as one frame.
         .transaction(value: state) { t in
             guard !t.disablesAnimations else { return }
             if opening {
@@ -247,14 +249,16 @@ struct NotchRootView: View {
             t.disablesAnimations = true
             t.animation = nil
         }
-        // Width and height as separate frames so a collapse can run them on
-        // separate springs: the width leads, the height follows. Outside a
-        // collapse the channels pass the transaction through untouched and
-        // the two move together as one frame would.
-        .frame(width: size.width)
-        .islandCollapseChannel(.width)
-        .frame(height: size.height)
-        .islandCollapseChannel(.height)
+        // Width and height as separate animatable lengths, each under its
+        // own channel, so a collapse runs them on separate springs: the
+        // width leads, the height follows. Not plain `.frame`s — see
+        // `IslandOutlineLength` for why those moved in lockstep. Outside a
+        // collapse both lengths snap and the layout animates the size
+        // change as one frame, as it always did.
+        .modifier(IslandOutlineLength(axis: .horizontal, length: size.width))
+        .islandCollapseChannel(.width, snaps: true)
+        .modifier(IslandOutlineLength(axis: .vertical, length: size.height))
+        .islandCollapseChannel(.height, snaps: true)
         // Clip everything to the notch outline. The expanded content is laid
         // out at its full width the instant the state flips, but the frame
         // only reaches that width at the end of the animation — without this

@@ -7,10 +7,13 @@
 //  IslandMotion.swift.
 //
 //  Nothing here runs on a clock. The collapse is three springs SwiftUI runs
-//  for the length of the close and no longer; the swell is a spring started
-//  by a stepped reading that changes a handful of times per approach (see
-//  `ProximityGate`) and is applied as a render transform, so the island's
-//  layout and hit rect never see it.
+//  for the length of the close and no longer — the outline's width and
+//  height as `IslandOutlineLength`s, so for those ~0.35s the outline is laid
+//  out at each in-between size; every other size change stays a plain frame
+//  change, laid out once and animated by SwiftUI. The swell is a spring
+//  started by a stepped reading that changes a handful of times per approach
+//  (see `ProximityGate`) and is applied as a render transform, so the
+//  island's layout and hit rect never see it.
 //
 
 import SwiftUI
@@ -32,10 +35,11 @@ extension Animation {
 // MARK: - The collapse's channels
 
 /// Marks the transaction of an open-to-collapsed change, so the modifiers
-/// that make up the outline can each swap in their own spring for it. Set
-/// only by NotchRootView's state transaction; every other animated change —
-/// a toast widening the pill, a face growing the panel — passes through
-/// untouched.
+/// that make up the outline can each swap in their own spring for it (see
+/// `islandCollapseChannel`). Set only by NotchRootView's state transaction,
+/// and never with Reduce Motion; every other animated change — a toast
+/// widening the pill, a face growing the panel — animates as it did before
+/// the channels existed.
 private struct IslandCollapseKey: TransactionKey {
     static let defaultValue = false
 }
@@ -77,14 +81,85 @@ enum IslandCollapseChannel {
     }
 }
 
+/// The animation a transaction carried before the first collapse channel
+/// replaced it, so whatever a channel wraps can be given it back (see
+/// `IslandOutlineLength`). Stashed once, by the outermost channel.
+private struct CollapseStashKey: TransactionKey {
+    static let defaultValue: Animation?? = nil
+}
+
+extension Transaction {
+    fileprivate var collapseStash: Animation?? {
+        get { self[CollapseStashKey.self] }
+        set { self[CollapseStashKey.self] = newValue }
+    }
+
+    /// The animation from before any collapse channel touched this
+    /// transaction.
+    fileprivate var animationBeforeChannels: Animation? {
+        collapseStash ?? animation
+    }
+}
+
 extension View {
-    /// During a collapse, animate this modifier (and what it wraps, unless a
-    /// deeper channel says otherwise) on `channel`'s spring.
-    func islandCollapseChannel(_ channel: IslandCollapseChannel) -> some View {
+    /// During a collapse, animate what this wraps on `channel`'s spring.
+    ///
+    /// Outside a collapse: a channel over a render value (the corners, the
+    /// shift) passes the transaction through. A channel over an
+    /// `IslandOutlineLength` (`snaps: true`) takes the animation away
+    /// instead, so that length goes to its new value at once and the size
+    /// change animates the way any frame change does — by the layout's own
+    /// geometry animation, on the transaction outside the notch. That keeps
+    /// the open, a face growing the panel and a toast widening the pill
+    /// exactly as they were.
+    func islandCollapseChannel(_ channel: IslandCollapseChannel, snaps: Bool = false) -> some View {
         transaction { t in
-            guard t.isIslandCollapse, t.animation != nil else { return }
-            t.animation = channel.animation
+            let original = t.animationBeforeChannels
+            if t.collapseStash == nil { t.collapseStash = .some(original) }
+            if t.isIslandCollapse, original != nil {
+                t.animation = channel.animation
+            } else if snaps {
+                t.animation = nil
+            } else {
+                t.animation = original
+            }
         }
+    }
+}
+
+/// One axis of the island's outline frame, as an animatable value.
+///
+/// Why this and not `.frame(width:)`: a frame's size change is animated by
+/// SwiftUI's layout as one geometry — width and height together, on
+/// whichever transaction reaches the layout first — so per-axis
+/// transactions around two `.frame`s still drew them in lockstep (measured:
+/// width and height reached 90% of the collapse in the same frame). An
+/// `Animatable` modifier is interpolated on its own, with the animation of
+/// the transaction its input changed in, and lays out the in-between
+/// lengths itself; two of them, each under its own channel, really do run
+/// on two springs.
+///
+/// What it wraps gets the transaction's original animation back (see
+/// `islandCollapseChannel`), so the content's own transitions run as they
+/// would without the channels.
+struct IslandOutlineLength: ViewModifier, Animatable {
+    var axis: Axis
+    var length: CGFloat
+
+    var animatableData: CGFloat {
+        get { length }
+        set { length = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .transaction { t in
+                if let original = t.collapseStash { t.animation = original }
+            }
+            .frame(
+                width: axis == .horizontal ? length : nil,
+                height: axis == .vertical ? length : nil
+            )
     }
 }
 
