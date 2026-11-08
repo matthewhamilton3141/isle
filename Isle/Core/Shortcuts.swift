@@ -285,6 +285,8 @@ enum ShortcutNotes {
         case (0x24, o): return "Claude Code uses ⌥⏎ for a newline: while a request waits, one typed in any terminal would answer it instead."
         case (0x24, c): return "Claude Code uses ⌃⏎ to send a message now: while a request waits, one typed in any terminal would answer it instead."
         case (0x33, c): return "Many terminals and editors delete a word on ⌃⌫."
+        // Not a clash: the default Approve, whose ' is a speck in the field.
+        case (0x27, c): return "Control and the key just left of Return."
         default:
             if combo.modifiers == cmd || combo.modifiers == cmd | KeyCombo.shift {
                 return "⌘ shortcuts belong to every app’s menus; this one would be Isle’s everywhere."

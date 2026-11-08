@@ -294,7 +294,7 @@ enum ShortcutsTests {
               "recording ⌥⏎ says it's Claude Code's newline")
         check(ShortcutNotes.note(for: KeyCombo(kVK_Return, c))?.contains("send a message now") == true,
               "recording ⌃⏎ says it's Claude Code's send-now")
-        check(ShortcutNotes.note(for: A.approve.defaultCombo) == nil, "⌃' has nothing to say")
+        check(ShortcutNotes.note(for: A.approve.defaultCombo)?.contains("left of Return") == true, "⌃' says which key it is")
         check(ShortcutNotes.note(for: A.deny.defaultCombo) == nil, "⌃⎋ has nothing to say")
         check(ShortcutNotes.note(for: KeyCombo(kVK_ANSI_K, cmd)) != nil, "⌘K is every app's menus")
         check(ShortcutNotes.note(for: A.option1.defaultCombo) == nil, "⌥1 has nothing to say")
