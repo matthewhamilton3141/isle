@@ -155,6 +155,13 @@ final class NotchViewModel: ObservableObject {
     /// own. See `ClaudeBlock`.
     @Published private(set) var claudeBlock: ClaudeBlock?
 
+    /// What the island's session's last turn left running or scheduled when
+    /// it ended (Milestone 20), as its record carries it: the shells and
+    /// agents still in flight at that Stop, and the wake-ups set for later.
+    /// As of the turn's end, never a live count; the next prompt clears it.
+    /// See `ClaudeLeftovers`.
+    @Published private(set) var claudeLeftovers: ClaudeLeftovers?
+
     /// Each session's block as last read, by session id — what tells a new
     /// block from one already announced (see `announceBlocks`).
     private var seenBlocks: [String: String] = [:]
@@ -1854,6 +1861,7 @@ final class NotchViewModel: ObservableObject {
             claudeFinalLine = nil
             claudeSubagents = []
             claudeBlock = nil
+            claudeLeftovers = nil
             seenBlocks = [:]
             claudeUpdatedAt = nil
         }
@@ -1969,6 +1977,9 @@ final class NotchViewModel: ObservableObject {
         if claudeSubagents != status.subagents { claudeSubagents = status.subagents }
         if claudeBlock != status.blocked {
             withAnimation(.easeInOut(duration: 0.22)) { claudeBlock = status.blocked }
+        }
+        if claudeLeftovers != status.left {
+            withAnimation(.easeInOut(duration: 0.22)) { claudeLeftovers = status.left }
         }
         // A background session no hook wrote for has no "when" Isle can
         // vouch for: no "… ago" rather than one counted from the read.
@@ -3821,6 +3832,7 @@ extension NotchViewModel {
         claudeFinalLine = ClaudeDoneLine.line(from: fixture.lastMessage)
         claudeSubagents = fixture.subagents
         claudeBlock = fixture.blocked
+        claudeLeftovers = fixture.left
         if let toast = fixture.toast { pinPreviewToast(toast) }
         // In the face, not on the home grid, whatever the suite last had —
         // unless the fixture is the grid's.

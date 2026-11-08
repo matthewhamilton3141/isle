@@ -2260,17 +2260,101 @@ captured from 2.1.319 plus the docs and the binary. Whether UserPromptSubmit
 fires for the continuation prompt, and the hook-vs-transcript timing in an
 interactive session, are untested.
 
-### M20 — Done, unless it isn't (candidate) · S–M
+### M20 — Done, unless it isn't · S–M · built (`feature/done-leftovers`, helper v15), not yet tested in the app
 
-Done says when Claude left work running or a wake-up scheduled.
+Done says when Claude left work running or a wake-up scheduled: "Left
+running: npm run dev · Explore agent", "Wakes Mon 9:00am, every hour".
 
-- **Data.** Stop's `background_tasks` (type, status, description, and command
-  for shells) and `session_crons` (schedule, recurring, prompt).
-- **Shape.** "Left running: npm run dev · Explore agent", or "Wakes 9:00".
-- **Risks.** A shell task ending fires no hook, so the line reads as what was
-  left at finish, not a live count.
-- **Decisions.** Show commands, or counts only? Should keep-awake cover
-  subagents?
+**The payloads** (2.1.319, two `claude -p` runs with haiku, a scratch project
+and a dump hook; `scratchpad/m20/probe/`):
+
+- `Stop` ends with `background_tasks` and `session_crons`, after
+  `last_assistant_message`. Both are `[]` when there's nothing.
+- A task has `id`, `type`, `status`, `description`, plus `command` for a
+  shell, `agent_type` for an agent, `server` and `tool` for a monitor or an
+  MCP task, and `name` for a workflow. The binary's labels for `type` are
+  shell, subagent, monitor, workflow, MCP task, teammate, cloud session,
+  dream, auto-mode scan and memory import. Only running or pending work that
+  was backgrounded is listed. Seen: `{"type":"shell","status":"running",
+  "description":"Sleep 120 seconds in /tmp in background","command":"cd /tmp
+  && sleep 120"}` and `{"type":"subagent","status":"running","description":
+  "List root directory","agent_type":"Explore"}`.
+- A cron has `id`, `schedule` (five fields, local time), `recurring` and
+  `prompt`. A one-shot CronCreate for 9am tomorrow came as `"0 9 9 11 *"`,
+  `recurring: false`. An hourly one came as `"0 * * * *"`, `recurring: true`.
+  ScheduleWakeup and /loop land here too.
+- `SubagentStop` carries the same two arrays, with the stopping agent still
+  listed as running. Isle ignores them there.
+- **A task's end does wake the session.** When the background shell
+  finished, Claude Code submitted a `<task-notification>` prompt, so
+  UserPromptSubmit fired, then a new turn ran and a new Stop came with the
+  shorter list. The same happened when the background agent finished. So the
+  line goes away when a task ends, and the next Stop says what's left. The
+  risk was smaller than written here before.
+
+**What was built:**
+
+- **isle-cli v15.** No new hook entry. At Stop, `set-state done` reads both
+  arrays without jq. `,"` can't occur inside a JSON string, so the first
+  `,"background_tasks":[` is the key, and the arrays are walked value by
+  value. If any value isn't the flat shape, the turn is said to have left
+  nothing. The result goes to `~/.isle/left/<session>.json`, and every record
+  carries it as `left`. A Stop with both arrays empty costs two pattern
+  tests.
+- **A shell's name.** It's the program and its own words, read from the whole
+  command with M19's `bash_program`, up to a redirection, `&&` or `|`. So
+  `cd ~/web && npm run dev > log` is "npm run dev". The name is cut on a
+  whole word at 48 characters, and `cut` says when words were left off.
+  Claude Code's own clip mark, `… [+N chars]`, counts as a cut. An agent is
+  named by its type, a monitor or MCP task by its tool, a workflow by its
+  name. Claude Code's housekeeping (dream, auto-mode scan, memory import) is
+  left out. At most eight tasks and four wake-ups are kept, and `more` counts
+  the rest.
+- **When it clears.** The next prompt (a task's own notification included),
+  a non-compaction SessionStart, StopFailure (it carries no list) and
+  SessionEnd clear it. The idle nudge and a compaction keep it.
+- **No double show with M22.** Stop clears the subagent count before it
+  writes, so a background agent still running moves from "3 agents · …" to
+  "Left running: Explore agent". Its later SubagentStop finds no file and
+  changes nothing.
+- **App side.** `ClaudeStatus.left` and `ClaudeLeftovers` build the line.
+  Same names are grouped as "×N" in listed order. The view tries all names
+  in full, then programs alone, then fewer names with "+N", then "Left 3
+  tasks running". Wake-ups come after a " · ", in the reset's own style
+  ("9:00am", "Mon 9:00am", "Nov 18 9:00am"). Recurring ones read "every
+  hour", "every 5 min", "every 2 hours", "daily 9:00am", "weekdays 8:30am"
+  or "Fridays 6:00pm", and anything else reads "on a schedule". On the hour,
+  ":00" drops before a name does. A one-shot whose time has passed isn't
+  said.
+- **The face.** On Done, Waiting for you and the Ready it eases to, the line
+  sits under Claude's words at the subagent line's 0.5 `.islandSecondary`.
+  Claude's words then get one line, as with M23's block, so the action row
+  doesn't move: it stays 8pt off the panel's bottom, the same rows as
+  `m23_done`. A block, if there is one, keeps the line. The tooltip has the
+  whole list, says it's as of the turn's end, and says that a task's end
+  wakes the session.
+- **Home tile and session rows.** The Claude tile's second line shows the
+  leftovers in place of Claude's words, as much as fits ("Left running: npm",
+  "Left 8 running", "Wakes Mon 9am"). It doesn't when several sessions are
+  listed. A done, waiting or ready row reads "Left npm running · <words>".
+- **Tests.** `scripts/test-done-leftovers.sh` has 33 isle-cli cases,
+  including both real payloads, and 51 Swift cases.
+
+**Keep-awake.** Not changed. The data could support it: at Stop, Isle knows a
+shell or an agent is still in flight, and the task's own notification ends
+the hold with the next Stop. It can't see a task killed outside Claude Code,
+or a session closed with work left behind. That's fine for a hold that only
+stops idle sleep, but it's Matthew's call. A wake-up hours away shouldn't
+hold the Mac.
+
+**Open:**
+
+- **Tile.** The tile shows the leftovers instead of Claude's words. Is that
+  right, or should the words win?
+- **A block and leftovers both.** The block keeps the face's one spare line,
+  and the leftovers show only on the tile and in the row.
+- **Separators.** Tasks and the wake-up clause are both joined with " · ".
+  Commas between tasks (as M22 does) would keep the clauses apart.
 
 ### M21 — Background sessions in the list (candidate) · M
 
@@ -2349,8 +2433,9 @@ agents and a dump hook):
   no Stop. If Claude Code fires it for a message queued mid-turn, the count
   under-reads for the rest of that turn. That errs toward saying less.
 - **Background agents.** `run_in_background` agents still running at the
-  parent's Stop are dropped from the count. Stop's `background_tasks` could
-  carry them; it's unverified.
+  parent's Stop are dropped from the count. Stop's `background_tasks` does
+  carry them (seen on 2.1.319), and M20 shows them as "Left running:
+  Explore agent".
 - **The action row.** The row moves down one line while agents run, like a
   two-line "said".
 

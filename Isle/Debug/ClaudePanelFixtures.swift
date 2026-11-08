@@ -54,6 +54,9 @@ struct ClaudePanelFixture: Identifiable {
     /// The record's `blocked` (Milestone 23): the last call auto mode
     /// blocked since the last prompt.
     var blocked: ClaudeBlock? = nil
+    /// The record's `left` (Milestone 20): what the last turn left running
+    /// or scheduled when it ended.
+    var left: ClaudeLeftovers? = nil
     /// Every live session (Milestone 16), the island's own among them under
     /// `preview-session`, and the requests their hooks are blocked on.
     var sessions: [ClaudeStatus] = []
@@ -380,6 +383,7 @@ extension ClaudePanelFixture {
                   request: approval("Bash", "npm run lint -- --fix")),
             .init(name: "both_question_4", mode: .both, state: .needsQuestion, request: question([fourOptions])),
         ] + approvalKinds + descriptionModes + worstCases + liveExtras + jumpAndReply + doneSays + loneJump + subagentCounts + autoModeBlocks
+            + doneLeftovers
             + sessionLists + guardedApprovals + faceRow + usageLimits
     }
 
@@ -580,6 +584,93 @@ extension ClaudePanelFixture {
                   sessions: [withAgents(threeMixed), website, bench], sessionRequests: [websiteApproval],
                   listShown: true),
         ]
+    }
+
+    // MARK: Done, unless it isn't (Milestone 20)
+
+    static func shell(_ program: String, _ run: String, cut: Bool = false) -> ClaudeLeftovers.Task {
+        .init(type: "shell", name: program, run: run, cut: cut)
+    }
+    static func agentTask(_ type: String) -> ClaudeLeftovers.Task { .init(type: "subagent", name: type) }
+
+    /// "0 9 <tomorrow> *": a one-shot wake-up for 9am tomorrow, as CronCreate
+    /// wrote one in a real 2.1.319 run ("0 9 9 11 *").
+    static var tomorrowAtNine: ClaudeLeftovers.Wake {
+        let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: Date())!
+        let c = Calendar.current.dateComponents([.month, .day], from: tomorrow)
+        return .init(schedule: "0 9 \(c.day!) \(c.month!) *", recurring: false)
+    }
+    static let hourly = ClaudeLeftovers.Wake(schedule: "0 * * * *", recurring: true)
+    static let weekdays = ClaudeLeftovers.Wake(schedule: "30 8 * * 1-5", recurring: true)
+
+    static func left(_ tasks: [ClaudeLeftovers.Task], more: Int = 0,
+                     wakes: [ClaudeLeftovers.Wake] = []) -> ClaudeLeftovers {
+        ClaudeLeftovers(tasks: tasks, more: more, wakes: wakes, at: Date().addingTimeInterval(-40))
+    }
+
+    /// The two real runs (haiku, `claude -p`, a scratch project), as
+    /// `isle-cli` stored their Stops: a background `sleep 300` and a
+    /// background Explore agent; then `cd /tmp && sleep 120` with a one-shot
+    /// and an hourly CronCreate.
+    static var realShellAgent: ClaudeLeftovers { left([shell("sleep", "sleep 300"), agentTask("Explore")]) }
+    static var realShellCrons: ClaudeLeftovers { left([shell("sleep", "sleep 120")], wakes: [tomorrowAtNine, hourly]) }
+    static var devServer: ClaudeLeftovers { left([shell("npm", "npm run dev")]) }
+    static var manyLeft: ClaudeLeftovers {
+        left([shell("npm", "npm run dev"), agentTask("Explore"), agentTask("Explore"),
+              shell("cargo", "cargo watch -x test"), shell("python3", "python3 -m http.server 8000"),
+              agentTask("feature-dev:code-reviewer")], more: 2)
+    }
+    static var longCommand: ClaudeLeftovers {
+        left([shell("xcodebuild", "xcodebuild -project Isle.xcodeproj -scheme Isle", cut: true)])
+    }
+    static var cronOnly: ClaudeLeftovers { left([], wakes: [tomorrowAtNine]) }
+    static var cronRecurring: ClaudeLeftovers { left([], wakes: [hourly, weekdays]) }
+    static let saidDevServer = "The dev server is up on http://localhost:5173 and I've left it running in the background so you can click through the new settings page."
+
+    static var doneLeftovers: [ClaudePanelFixture] {
+        let withLeft = { (state: ClaudeCodeState, said: String?, left: ClaudeLeftovers) in
+            ClaudeStatus(state: state, project: "isle", sessionId: "preview-session",
+                         updatedAt: Date().addingTimeInterval(-40), lastMessage: said, left: left)
+        }
+        var benchLeft = bench
+        benchLeft.left = cronOnly
+        return [
+            .init(name: "m20_one_shell", state: .done, host: terminalHost, lastMessage: saidDevServer, left: devServer),
+            .init(name: "m20_real_shell_agent", state: .done, host: terminalHost, lastMessage: "ok", left: realShellAgent),
+            .init(name: "m20_shell_agent_said", state: .done, host: terminalHost, lastMessage: saidShort,
+                  left: realShellAgent),
+            .init(name: "m20_many", state: .done, host: terminalHost, lastMessage: saidShort, left: manyLeft),
+            .init(name: "m20_cron_only", state: .done, host: terminalHost, lastMessage: saidShort, left: cronOnly),
+            .init(name: "m20_cron_recurring", state: .done, lastMessage: saidShort, left: cronRecurring),
+            .init(name: "m20_real_both", state: .done, host: terminalHost, lastMessage: saidShort, left: realShellCrons),
+            .init(name: "m20_long_command", state: .done, host: terminalHost, lastMessage: saidShort, left: longCommand),
+            .init(name: "m20_two_line_said", state: .done, keepAwake: true, others: .init(working: 1),
+                  host: terminalHost, lastMessage: saidLong, left: realShellCrons),
+            .init(name: "m20_two_line_said_many", state: .done, host: terminalHost, lastMessage: saidLong, left: manyLeft),
+            .init(name: "m20_no_said", state: .done, host: terminalHost, left: realShellAgent),
+            .init(name: "m20_waiting", state: .waitingInput, host: terminalHost, lastMessage: saidDevServer, left: devServer),
+            .init(name: "m20_ready", state: .idle, lastMessage: saidDevServer, left: devServer),
+            .init(name: "m20_with_block", state: .done, host: terminalHost, lastMessage: saidLong, blocked: realBlock,
+                  left: devServer),
+            .init(name: "m20_both_mode", mode: .both, state: .done, host: terminalHost, lastMessage: saidLong,
+                  left: manyLeft),
+            .init(name: "m20_home_one", mode: .both, state: .done, lastMessage: saidDevServer, left: devServer,
+                  sessions: [withLeft(.done, saidDevServer, devServer)], home: true),
+            .init(name: "m20_home_many", mode: .both, state: .done, lastMessage: saidShort, left: manyLeft,
+                  sessions: [withLeft(.done, saidShort, manyLeft)], home: true),
+            .init(name: "m20_home_cron", mode: .both, state: .done, lastMessage: saidShort, left: cronOnly,
+                  sessions: [withLeft(.done, saidShort, cronOnly)], home: true),
+            .init(name: "m20_list", state: .working, action: "Bash", target: "rg",
+                  sessions: [ownWorking, withLeftSession("website", "isle-website", devServer),
+                             withLeftSession("scratch", "scratch", manyLeft), benchLeft],
+                  listShown: true),
+        ]
+    }
+
+    static func withLeftSession(_ id: String, _ project: String, _ left: ClaudeLeftovers) -> ClaudeStatus {
+        var status = session(id, project, .done, ago: 95, said: saidDevServer)
+        status.left = left
+        return status
     }
 
     // MARK: Auto mode's blocks (Milestone 23)

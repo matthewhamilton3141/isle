@@ -85,6 +85,11 @@ struct ClaudeStatus: Equatable {
     /// event the record carries, never its state. Nil when there's been
     /// none, or on an older helper.
     var blocked: ClaudeBlock? = nil
+    /// What the last turn left running or scheduled when it ended
+    /// (Milestone 20, helper v15): Stop's `background_tasks` and
+    /// `session_crons`, as of that Stop. Nil when it left nothing, after the
+    /// next prompt, or on an older helper.
+    var left: ClaudeLeftovers? = nil
     /// The state is Claude Code's own, from `claude agents` (Milestone 21),
     /// rather than this record's: a background session no hook writes for,
     /// or one Claude Code says is blocked after the hooks saw its turn end.
@@ -229,7 +234,8 @@ final class ClaudeStatusWatcher {
             limitKind: payload.limit_kind.flatMap { $0.isEmpty ? nil : $0 },
             limitNext: payload.limit_next.flatMap(ClaudeLimitNext.init(rawValue:)),
             subagents: payload.subagents ?? [],
-            blocked: payload.blocked?.value?.block
+            blocked: payload.blocked?.value?.block,
+            left: payload.left?.value?.leftovers
         )
     }
 
@@ -266,6 +272,56 @@ private struct StatusPayload: Decodable {
     /// The last call auto mode blocked (helper v14); `null` when none.
     /// Lenient: a block that doesn't read is no block, never a lost record.
     let blocked: Lenient<BlockedPayload>?
+    /// What the turn left running or scheduled (helper v15); `null` when
+    /// nothing. Lenient, like `blocked`.
+    let left: Lenient<LeftPayload>?
+
+    struct LeftPayload: Decodable {
+        struct Task: Decodable {
+            let type: String?
+            let name: String?
+            let run: String?
+            let cut: Bool?
+        }
+        struct Cron: Decodable {
+            let schedule: String?
+            let recurring: Bool?
+        }
+        let tasks: [Lenient<Task>]?
+        let more: Int?
+        let crons: [Lenient<Cron>]?
+        let more_crons: Int?
+        let at: String?
+
+        /// Each field on its own, so one that doesn't read loses only itself.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            tasks = try? c.decode([Lenient<Task>].self, forKey: .tasks)
+            more = try? c.decode(Int.self, forKey: .more)
+            crons = try? c.decode([Lenient<Cron>].self, forKey: .crons)
+            more_crons = try? c.decode(Int.self, forKey: .more_crons)
+            at = try? c.decode(String.self, forKey: .at)
+        }
+
+        private enum CodingKeys: String, CodingKey { case tasks, more, crons, more_crons, at }
+
+        /// Nil when it holds nothing to say.
+        var leftovers: ClaudeLeftovers? {
+            func text(_ s: String?) -> String? { s.flatMap { $0.isEmpty ? nil : $0 } }
+            let tasks = (tasks ?? []).compactMap(\.value).compactMap { task -> ClaudeLeftovers.Task? in
+                guard let type = text(task.type) else { return nil }
+                return .init(type: type, name: text(task.name), run: text(task.run), cut: task.cut ?? false)
+            }
+            let wakes = (crons ?? []).compactMap(\.value).compactMap { cron -> ClaudeLeftovers.Wake? in
+                guard let schedule = text(cron.schedule) else { return nil }
+                return .init(schedule: schedule, recurring: cron.recurring ?? false)
+            }
+            let left = ClaudeLeftovers(
+                tasks: tasks, more: max(0, more ?? 0), wakes: wakes, moreWakes: max(0, more_crons ?? 0),
+                at: text(at).flatMap { ISO8601DateFormatter().date(from: $0) })
+            return left.isEmpty ? nil : left
+        }
+    }
 
     struct Lenient<T: Decodable>: Decodable {
         let value: T?

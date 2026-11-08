@@ -184,12 +184,17 @@ struct HomeGridView: View {
         case .compacting:
             return .init("Compacting", othersLine ?? project)
         // After a turn, what Claude said last (Milestone 15) says more than
-        // the project's name; another session waiting says more still.
+        // the project's name; another session waiting says more still. Work
+        // the turn left running or a wake-up it set (Milestone 20) says more
+        // than Claude's words: it's the part that isn't over.
         case .waitingInput:
+            if othersLine == nil, let left = Self.leftoversGlance("Waiting for you", vm.claudeLeftovers) { return left }
             return .init("Waiting for you", othersLine ?? vm.claudeFinalLine ?? project)
         case .done:
+            if othersLine == nil, let left = Self.leftoversGlance("Done", vm.claudeLeftovers) { return left }
             return .init("Done", othersLine ?? vm.claudeFinalLine ?? project)
         case .idle:
+            if othersLine == nil, let left = Self.leftoversGlance("Ready", vm.claudeLeftovers) { return left }
             return .init("Ready", othersLine ?? vm.claudeFinalLine ?? project)
         case .failed:
             if vm.isUsageLimit {
@@ -199,6 +204,16 @@ struct HomeGridView: View {
             }
             return .init("Error", othersLine ?? project)
         }
+    }
+
+    /// The state, over what the turn left behind in the fullest form the
+    /// tile fits: "Left running: npm run dev" down to "Left 3 running".
+    private static func leftoversGlance(_ state: String, _ left: ClaudeLeftovers?) -> TileGlance? {
+        guard let left = left?.shown() else { return nil }
+        var fits = left.lines()
+        if let row = left.rowPhrase(), !fits.contains(row) { fits.append(row) }
+        guard let first = fits.first else { return nil }
+        return .init(state, first, fits: fits.count > 1 ? fits : [])
     }
 
     /// "Bash · npm test": the tool and what it wants, as the face shows it
