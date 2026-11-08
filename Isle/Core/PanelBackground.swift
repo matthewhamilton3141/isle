@@ -41,11 +41,11 @@ enum PanelBackground: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .black:
-            return "The island is flat black, like the notch it grows out of."
+            return "Flat black, like the notch it grows out of."
         case .glass:
-            return "The opened panel, and the island while it shows something, are frosted glass, darkened over bright windows so text stays readable."
+            return "Frosted glass, darkened over bright windows so text stays readable."
         case .smoked:
-            return "Frosted glass with a heavy dark tint: steadier over busy or bright windows, less see-through."
+            return "Glass with a heavy dark tint: steadier over busy windows, less see-through."
         }
     }
 

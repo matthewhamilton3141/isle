@@ -26,27 +26,27 @@ struct ShortcutsSettingsSection: View {
 
     var body: some View {
         Section {
-            Text("Work the island from the keyboard — no permission to grant. Approve, Deny and the option keys are Isle’s only while a request is waiting on you; the rest of the time those keys are your other apps’ again.")
+            row(.toggleIsland, subtitle: "Opens on the pointer’s screen; press again or click away to close.")
+        } header: {
+            Text("Island")
+        } footer: {
+            Text("No permission needed. Click a shortcut to change it.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            row(.toggleIsland, subtitle: "Opens on the pointer’s screen and stays until you press it again, click elsewhere, or visit it and leave. Esc stays your other apps’.")
-        } header: {
-            Text("Shortcuts")
         }
 
         if settings.effectiveMode.showsClaude {
             Section {
-                row(.approve, subtitle: "Also Always…’s Confirm, and Done on a question that takes several answers.")
+                row(.approve, subtitle: "Also Always…’s Confirm, and Done on a multi-answer question.")
                 row(.deny, subtitle: "Also Always…’s Back.")
                 optionsRow
-                Text("A press does what the button does, on the request the island is showing — once it’s open on the screen your pointer is on. Until then the first press opens it there. A guarded command, Always…’s Confirm and the number keys also wait until it’s been in view for half a second: press, read, press again. Deny is always one press. Keys are taken half a second after a request appears, so a keystroke already on its way to another app stays there.")
+            } header: {
+                Text("While Claude is waiting on you")
+            } footer: {
+                Text("These keys are Isle’s only while a request waits. If the island isn’t open on your pointer’s screen, the first press opens it there. Confirm, guarded commands and the option keys act once it’s been in view for half a second; Deny never waits.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            } header: {
-                Text("While Claude is waiting on you")
             }
         }
     }
@@ -84,7 +84,7 @@ struct ShortcutsSettingsSection: View {
             HStack(alignment: .center, spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Pick option 1–4")
-                    Text("Toggles an option on a question that takes several.")
+                    Text("Picks an answer, or toggles one.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
