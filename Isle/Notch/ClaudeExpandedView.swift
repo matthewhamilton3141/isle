@@ -9,7 +9,7 @@
 //
 //  Every face is one layout (see `ClaudePanelLayout`): an eyebrow naming the
 //  session and what else is going on, a title, a body, and an action row
-//  pinned to the bottom. A status fills it with the state, what Claude is
+//  one gap below the body. A status fills it with the state, what Claude is
 //  doing, and an empty action row; an approval (Milestone 7) puts the exact
 //  command in the body and Approve / Deny / Terminal in the row; a question
 //  puts the question in the title and its options in the body, in a panel
@@ -186,7 +186,12 @@ struct ClaudeExpandedView: View {
                     .padding(.trailing, switcherClearance)
             }
 
+            // The row follows what's above it at one gap, whatever its
+            // height, and the panel's spare room goes below it. Squeezed
+            // toward 2pt, never past, when a taller camera band leaves less.
             Spacer(minLength: 2)
+                .frame(maxHeight: L.bodyGap)
+                .layoutPriority(1)
 
             actionRow {
                 if approval != nil {
@@ -195,6 +200,8 @@ struct ClaudeExpandedView: View {
                     statusActions
                 }
             }
+
+            Spacer(minLength: 0)
         }
     }
 
@@ -553,8 +560,8 @@ struct ClaudeExpandedView: View {
     /// The tool and the exact thing it will act on — the whole command, not
     /// the island's hygienic "Running npm" — because this is what the click
     /// authorises. Monospaced, two lines, cut from the middle so both the
-    /// program and the end of the command survive. A fixed two-line box, so
-    /// the buttons below never move with the command's length.
+    /// program and the end of the command survive. One line or two, as the
+    /// command needs, and the row follows it (see `commandBoxLines`).
     ///
     /// An edit gives its second line to what it changes (`note`), counted from
     /// the input; a plan is read from the top, so it's cut at the end. While
@@ -576,12 +583,22 @@ struct ClaudeExpandedView: View {
                 commandText(request)
                     .lineLimit(L.commandLines)
                     .truncationMode(request.isPlan ? .tail : .middle)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .font(L.commandFont)
         .foregroundStyle(.white.opacity(0.72))
-        .frame(height: CGFloat(L.commandLines) * L.commandLine, alignment: .topLeading)
+        .frame(minHeight: CGFloat(Self.commandBoxLines(request)) * L.commandLine, alignment: .topLeading)
         .padding(.trailing, switcherClearance)
+    }
+
+    /// The fewest lines the command's box keeps: two for a request that can
+    /// show two — an edit and its note, or one with "Always…", whose review
+    /// takes two — so the buttons don't move under the pointer when it opens
+    /// or closes. One otherwise, and the box grows to a second line when the
+    /// command needs it.
+    private static func commandBoxLines(_ request: ClaudeRequest) -> Int {
+        request.note != nil || request.remember != nil ? L.commandLines : 1
     }
 
     /// The tool, in the brighter weight, and its exact subject. A plan is
@@ -1068,7 +1085,8 @@ struct ClaudeExpandedView: View {
 
     // MARK: - Controls
 
-    /// The bottom row every face shares: one height, one place.
+    /// The row every face shares: one height. A status or approval face
+    /// sets it `bodyGap` below its body; the question face's grows to it.
     private func actionRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         HStack(spacing: 8) {
             content()
