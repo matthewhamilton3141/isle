@@ -57,6 +57,9 @@ struct IslandToast: Equatable, Identifiable {
         case sessionDone(session: String)
         /// What a keyboard shortcut just did — see `ClaudeToast.swift`.
         case shortcut
+        /// Auto mode blocked a call (Milestone 23), keyed by session: a
+        /// second block in the same session replaces the first.
+        case autoModeBlocked(session: String)
     }
 
     /// Which Settings switch governs a message. The split is by what is being

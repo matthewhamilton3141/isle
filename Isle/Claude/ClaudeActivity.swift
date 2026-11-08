@@ -78,6 +78,11 @@ struct ClaudeActivity: Equatable {
 
     // MARK: - Target hygiene
 
+    /// The target as `phrase` shows it — a file's name, a command's
+    /// program, a URL's host — for a line that words the call its own way
+    /// (an auto-mode block, Milestone 23).
+    var shownTarget: String? { displayTarget }
+
     /// The target narrowed to something short and non-leaky, by family.
     private var displayTarget: String? {
         guard let target else { return nil }

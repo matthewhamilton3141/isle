@@ -28,6 +28,28 @@ extension IslandToast {
     }
 }
 
+// MARK: - Auto mode's blocks (Milestone 23)
+
+extension IslandToast {
+    /// The pale orange of the guard chip's words (Milestone 17): a call that
+    /// didn't run, which is news but not a needs-you — so not the full orange
+    /// an approval's "Approve" is in, which would read as one.
+    static let blockTint = Color(red: 1, green: 0.8, blue: 0.55)
+
+    /// "Auto mode blocked rm", or "isle-website · blocked rm" for a session
+    /// the island isn't showing (pass its project). Any session's block gets
+    /// one: Claude carries on, so nothing else on the island would change.
+    static func autoModeBlocked(_ block: ClaudeBlock, sessionId: String, project: String?) -> IslandToast {
+        IslandToast(
+            kind: .autoModeBlocked(session: sessionId),
+            glyph: .symbol("hand.raised.fill"),
+            text: block.toastText(project: project),
+            tint: blockTint,
+            gate: .claudeSessions
+        )
+    }
+}
+
 // MARK: - Keyboard shortcuts
 
 extension IslandToast {

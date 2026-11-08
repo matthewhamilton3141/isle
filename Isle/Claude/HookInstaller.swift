@@ -89,6 +89,12 @@ enum HookInstaller {
         // warning and simply never shows a count.
         HookEntry(event: "SubagentStart", args: "subagent-start"),
         HookEntry(event: "SubagentStop", args: "subagent-stop"),
+        // Auto mode's classifier blocked a tool call (Milestone 23). 2.1.319
+        // fires it for that alone — not for a deny rule, a hook's deny, a No,
+        // or a prompt `permissions.denyInsteadOfPrompting` refused. The turn
+        // carries on, so `denied` records the block without changing the
+        // state, and prints nothing (no retry).
+        HookEntry(event: "PermissionDenied", args: "denied"),
         // Fires when a session ends (exit, Ctrl-D, terminal closed). Clears the
         // island back to disconnected — otherwise a session closed mid-work
         // leaves the last state (e.g. "working") frozen on the notch, since no
@@ -134,8 +140,14 @@ enum HookInstaller {
     /// counted — SubagentStart and SubagentStop entries run `subagent-start`
     /// and `subagent-stop`, which keep a file per running agent, and every
     /// record carries `subagents`, their types in the order they started;
-    /// the turn's end, the next prompt and the session's end clear them.)
-    private static let currentVersion = 13
+    /// the turn's end, the next prompt and the session's end clear them.
+    /// v14: auto mode's blocks — a PermissionDenied entry runs `denied`,
+    /// which keeps the session's last blocked call (tool, program, the
+    /// command's first 48 characters, auto mode's reason, how many since the
+    /// last prompt) at ~/.isle/blocked/<session>.json; every record carries
+    /// it as `blocked` until the next prompt or the session's end, and the
+    /// blocked call no longer reads as running.)
+    private static let currentVersion = 14
     private static let versionKey = "HookInstaller.installedVersion"
 
     private static var home: URL {
@@ -309,6 +321,7 @@ enum HookInstaller {
     #   isle-cli guard                                         # Bash → ask when it's a guarded command
     #   isle-cli subagent-start                                # SubagentStart → count it as running
     #   isle-cli subagent-stop                                 # SubagentStop → stop counting it
+    #   isle-cli denied                                        # PermissionDenied → auto mode blocked a call
     #   isle-cli end                                           # session ended — clear the island
     #
     # Kept in sync with Isle's embedded HookInstaller.scriptBody.
@@ -365,6 +378,33 @@ enum HookInstaller {
     # record carries the types in the order they started, as `subagents`.
     AGENT_DIR="$STATUS_DIR/subagents"
 
+    # The last call auto mode blocked in each session (Milestone 23), as one line of
+    # JSON at blocked/<session>.json, written by `denied` (the PermissionDenied
+    # hook) and carried into every record as `blocked`. Claude Code 2.1.319 fires
+    # PermissionDenied only when auto mode's classifier denied the call: never for
+    # a deny rule, a hook's deny, a person's No, a safety check, or a prompt that
+    # permissions.denyInsteadOfPrompting turned into a denial. The turn usually
+    # carries on, so it is an event, not a state: the record keeps its state. It
+    # stays until the next prompt starts a turn (UserPromptSubmit, SessionStart
+    # other than a compaction) or the session ends; not at Stop, so the Done face
+    # can still say what was blocked.
+    BLOCK_DIR="$STATUS_DIR/blocked"
+
+    # This session's last block as JSON, in BL_JSON; `null` when there is none,
+    # which is one file test on nearly every write. Made JSON-safe when stored.
+    blocked_json() {
+      local id="${SESSION_ID//[^A-Za-z0-9_-]/}" f
+      BL_JSON="null"
+      [ -n "$id" ] || return 0
+      f="$BLOCK_DIR/$id.json"
+      [ -f "$f" ] || return 0
+      { IFS= read -r BL_JSON || [ -n "$BL_JSON" ]; } 2>/dev/null < "$f" || BL_JSON=""
+      case "$BL_JSON" in
+        '{'*'}') : ;;
+        *) BL_JSON="null" ;;
+      esac
+    }
+
     # The running subagents of this session as a JSON array of their types, oldest
     # first, in SA_JSON. One directory test and nothing else for a session with
     # none, which is nearly every write. Types were made JSON-safe when stored.
@@ -404,6 +444,7 @@ enum HookInstaller {
       # The running subagents are read from their files at the moment of writing,
       # and again after: a SubagentStart or SubagentStop landing in between would
       # otherwise be lost under this write until the next one. Twice more at most.
+      blocked_json
       while :; do
       subagents_json
       seen="$SA_JSON"
@@ -422,6 +463,7 @@ enum HookInstaller {
       "request_id": "$2",
       "request_kind": "${3:-}",
       "last_message": "$LAST_EXCERPT",
+      "blocked": $BL_JSON,
       "subagents": $SA_JSON,
       "updated_at": "$ts"
     }
@@ -470,6 +512,52 @@ enum HookInstaller {
         [ "$n" -lt 3 ] || break
         subagents_json
         [ "$SA_JSON" != "$seen" ] || break
+      done
+    }
+
+    # PermissionDenied: the record as the last hook left it, with `blocked` (and
+    # `updated_at`) brought up to date and the blocked call no longer running. Its
+    # PreToolUse wrote it as the tool in progress, and no PostToolUse follows a
+    # denial: left alone, the face would say "Running rm" for a command that never
+    # ran. So when the record's tool and target are the blocked call's, they go and
+    # `tool_active` goes false; when they're another call's (one in parallel, an
+    # approval waiting), they're left alone. The state stays: Claude Code carries
+    # the turn on.
+    # Line by line and re-done on a new inode, like `rewrite_subagents`; with no
+    # record yet, a fresh one, since a call was just made.
+    rewrite_blocked() {
+      local sf="$SESSION_DIR/${SESSION_ID:-unknown}.json" tmp ts line ino ours n=0
+      blocked_json
+      if [ ! -f "$sf" ]; then
+        ACTION=""; TARGET=""
+        write_status "working" ""
+        return 0
+      fi
+      ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      tmp="$sf.tmp.$$"
+      while :; do
+        ino="$(stat -f %i "$sf" 2>/dev/null || true)"
+        ours=0
+        grep -qxF "  \"action\": \"$ACTION\"," "$sf" 2>/dev/null \
+          && grep -qxF "  \"target\": \"$TARGET\"," "$sf" 2>/dev/null && ours=1
+        while IFS= read -r line || [ -n "$line" ]; do
+          case "$line" in
+            '  "blocked":'*) ;;
+            '  "tool_active":'*) if [ "$ours" = 1 ]; then printf '  "tool_active": false,\n'; else printf '%s\n' "$line"; fi ;;
+            '  "action":'*) if [ "$ours" = 1 ]; then printf '  "action": "",\n'; else printf '%s\n' "$line"; fi ;;
+            '  "target":'*) if [ "$ours" = 1 ]; then printf '  "target": "",\n'; else printf '%s\n' "$line"; fi ;;
+            '  "updated_at":'*) printf '  "blocked": %s,\n  "updated_at": "%s"\n' "$BL_JSON" "$ts" ;;
+            *) printf '%s\n' "$line" ;;
+          esac
+        done < "$sf" > "$tmp" 2>/dev/null || true
+        n=$((n + 1))
+        if [ "$(stat -f %i "$sf" 2>/dev/null || true)" != "$ino" ]; then
+          [ "$n" -lt 3 ] && continue
+          rm -f "$tmp"
+          return 0
+        fi
+        mv -f "$tmp" "$sf"
+        break
       done
     }
 
@@ -1308,11 +1396,14 @@ enum HookInstaller {
       subagent-start|subagent-stop)
         STATE=""   # the record keeps its state; see the subagent block below
         ;;
+      denied)
+        STATE=""   # the record keeps its state; see the PermissionDenied block below
+        ;;
       end)
         STATE="disconnected"   # SessionEnd — clear the island (guarded below)
         ;;
       *)
-        echo "Usage: isle-cli <set-state <state> | notify | fail | ask | ask-question | guard | subagent-start | subagent-stop | end>" >&2
+        echo "Usage: isle-cli <set-state <state> | notify | fail | ask | ask-question | guard | subagent-start | subagent-stop | denied | end>" >&2
         exit 1
         ;;
     esac
@@ -1489,6 +1580,46 @@ enum HookInstaller {
             | grep -oE '"agent_type"[[:space:]]*:[[:space:]]*"[^"]*"' \
             | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' | LC_ALL=C tr -cd 'A-Za-z0-9 _.:-' | cut -c1-64 || true)"
           ;;
+        denied)
+          # PermissionDenied (2.1.319): the base fields, then `tool_name`,
+          # `tool_input`, `tool_use_id` and `reason` — auto mode's own words, a
+          # category in brackets ("[Shared Scratch Sweep]") when the classifier
+          # judged the call, or a sentence when it couldn't ("Classifier
+          # unavailable"). The reason is the last key of its name, since a tool's
+          # input may carry one too. Both texts are kept exactly as Claude Code
+          # escaped them, cut on whole tokens (see the Stop excerpt above), so
+          # neither can break the record. The command is a Bash or Monitor call's
+          # first line, up to 48 characters, like every target here; `cut` says
+          # whether there was more.
+          BL_ID="$(printf '%s' "$STDIN_JSON" \
+            | grep -oE '"tool_use_id"[[:space:]]*:[[:space:]]*"[^"]*"' \
+            | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' | LC_ALL=C tr -cd 'A-Za-z0-9_-' | cut -c1-64 || true)"
+          BL_TOOL="$(printf '%s' "$ACTION" | LC_ALL=C tr -cd 'A-Za-z0-9_.:-' | cut -c1-64)"
+          tok='(\\u([0-9A-Ca-c][0-9A-Fa-f]{3}|[Dd][0-7][0-9A-Fa-f]{2}|[EFef][0-9A-Fa-f]{3})|\\["\\/bfnrt]|[^"\\])'
+          BL_REASON="$(printf '%s' "$STDIN_JSON" \
+            | LC_ALL=en_US.UTF-8 grep -oE "\"reason\"[[:space:]]*:[[:space:]]*\"$tok{0,120}" \
+            | tail -n 1 \
+            | LC_ALL=en_US.UTF-8 sed -E 's/^"reason"[[:space:]]*:[[:space:]]*"//' \
+            | LC_ALL=C tr -d '\000-\037\177' || true)"
+          BL_CMD=""; BL_CUT=false
+          case "$ACTION" in
+            Bash|Monitor)
+              # No \n, \r or \t in a token here: the excerpt ends with its line.
+              ctok='(\\u([0-9A-Ca-c][0-9A-Fa-f]{3}|[Dd][0-7][0-9A-Fa-f]{2}|[EFef][0-9A-Fa-f]{3})|\\["\\/bf]|[^"\\])'
+              BL_CMD="$(printf '%s' "$STDIN_JSON" \
+                | LC_ALL=en_US.UTF-8 grep -oE "\"command\"[[:space:]]*:[[:space:]]*\"$ctok{0,48}" \
+                | head -n 1 \
+                | LC_ALL=en_US.UTF-8 sed -E 's/^"command"[[:space:]]*:[[:space:]]*"//' \
+                | LC_ALL=C tr -d '\000-\037\177' || true)"
+              if ! printf '%s' "$STDIN_JSON" \
+                   | LC_ALL=en_US.UTF-8 grep -qE "\"command\"[[:space:]]*:[[:space:]]*\"$ctok{0,48}\"" 2>/dev/null; then
+                BL_CUT=true
+              fi
+              ;;
+          esac
+          if ! printf '%s' "$BL_REASON" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then BL_REASON=""; fi
+          if ! printf '%s' "$BL_CMD" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then BL_CMD=""; BL_CUT=true; fi
+          ;;
       esac
     fi
 
@@ -1519,6 +1650,43 @@ enum HookInstaller {
       fi
       rewrite_subagents
       exit 0
+    fi
+
+    # PermissionDenied (Milestone 23): auto mode blocked a call. Keep it as the
+    # session's last block, counting the blocks since the last prompt, and put it in
+    # the record without changing the state: Claude Code tells the model and the
+    # turn carries on. Prints nothing, so the hook never asks for a retry. The same
+    # call reported twice (a duplicate hook entry) counts once.
+    if [ "$CMD" = "denied" ]; then
+      bl_session="${SESSION_ID//[^A-Za-z0-9_-]/}"
+      [ -n "$bl_session" ] || exit 0
+      bl_file="$BLOCK_DIR/$bl_session.json"
+      bl_count=1
+      if [ -f "$bl_file" ]; then
+        bl_old="$(cat "$bl_file" 2>/dev/null || true)"
+        if [ -n "$BL_ID" ] && [[ $bl_old == *"\"id\": \"$BL_ID\","* ]]; then exit 0; fi
+        if [[ $bl_old =~ \"count\":\ ([0-9]{1,6}) ]]; then bl_count=$((BASH_REMATCH[1] + 1)); fi
+      fi
+      mkdir -p "$BLOCK_DIR" 2>/dev/null || true
+      if printf '{"id": "%s", "tool": "%s", "target": "%s", "command": "%s", "cut": %s, "reason": "%s", "count": %s, "at": "%s"}\n' \
+           "$BL_ID" "$BL_TOOL" "$TARGET" "$BL_CMD" "$BL_CUT" "$BL_REASON" "$bl_count" "$TIMESTAMP" \
+           > "$bl_file.tmp.$$" 2>/dev/null && mv -f "$bl_file.tmp.$$" "$bl_file" 2>/dev/null; then
+        rewrite_blocked
+      fi
+      exit 0
+    fi
+
+    # A new turn, or a new or ended session: the last one's block is history, as it
+    # is in Claude Code's own /permissions › Recently blocked. Not at Stop, so the
+    # Done face can still say why Claude didn't do something.
+    bl_session="${SESSION_ID//[^A-Za-z0-9_-]/}"
+    if [ -n "$bl_session" ] && [ -f "$BLOCK_DIR/$bl_session.json" ]; then
+      case "$CMD:$HOOK_EVENT" in
+        set-state:UserPromptSubmit|end:*)
+          rm -f "$BLOCK_DIR/$bl_session.json" ;;
+        set-state:SessionStart)
+          [ "$SOURCE" = compact ] || rm -f "$BLOCK_DIR/$bl_session.json" ;;
+      esac
     fi
 
     # The turn is over, or another has begun, or the session has: whatever agents

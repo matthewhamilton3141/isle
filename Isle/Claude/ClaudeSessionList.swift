@@ -216,7 +216,11 @@ struct ClaudeSessionRow: Identifiable, Equatable {
             let doing = activity ?? (status.limitNext == .resumed ? ClaudeLimit.resumedLine(kind: status.limitKind) : "Thinking…")
             // Its subagents (Milestone 22), counted ahead of the tool so a
             // narrow row cuts the tool rather than the count.
-            detail = status.subagents.isEmpty ? doing : "\(ClaudeSubagents.count(status.subagents)) · \(doing)"
+            let working = status.subagents.isEmpty ? doing : "\(ClaudeSubagents.count(status.subagents)) · \(doing)"
+            // A block auto mode made this turn (Milestone 23) ahead of both:
+            // the row is where it's seen when an alert elsewhere held the
+            // island and its toast was dropped.
+            detail = status.blocked.map { "\($0.rowPhrase) · \(working)" } ?? working
         case .compacting:
             detail = "Compacting the conversation"
         case .needsApproval:
