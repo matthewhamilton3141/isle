@@ -91,6 +91,10 @@ enum ClaudePanelLayout {
     static let optionLabelSize: CGFloat = 12
     static let optionDescriptionSize: CGFloat = 11
     static let pillSize: CGFloat = 11.5
+    /// A shortcut's keys on a button (`ShortcutHints`).
+    static let keyHintSize: CGFloat = 10
+    /// Kept clear for a key over a stacked option's top corner.
+    static let keyHintClearance: CGFloat = 26
 
     static var eyebrowFont: Font { .system(size: eyebrowSize, weight: .semibold) }
     static var headlineFont: Font { .system(size: headlineSize, weight: .bold) }
@@ -100,6 +104,7 @@ enum ClaudePanelLayout {
     static var optionLabelFont: Font { .system(size: optionLabelSize, weight: .semibold) }
     static var optionDescriptionFont: Font { .system(size: optionDescriptionSize, weight: .regular) }
     static var pillFont: Font { .system(size: pillSize, weight: .semibold) }
+    static var keyHintFont: Font { .system(size: keyHintSize, weight: .medium) }
 
     // MARK: - Line heights
 

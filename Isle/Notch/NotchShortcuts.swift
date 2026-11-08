@@ -50,6 +50,16 @@ final class NotchShortcuts {
     /// Whether, and since when, the request's face is in front of the user.
     private var faceTracker = ShortcutFaceTracker()
 
+    /// A look again the moment the face counts as seen, so the hints that
+    /// wait for that (`ShortcutHints`) come up then. One-shot, like
+    /// `armWork`, and only while a face is up and not yet seen.
+    private var seenWork: DispatchWorkItem?
+    private var seenWorkAt: Date?
+
+    /// The hints' keys, made again only when the bindings or the request
+    /// change: writing a combo asks the keyboard layout what its key types.
+    private var hintKeys: (bindings: ShortcutBindings, request: String?, keys: [ShortcutAction: String])?
+
     init(viewModel: NotchViewModel, settings: AppSettings? = nil, center: HotKeyCenter? = nil,
          host: ShortcutIslandHost) {
         let settings = settings ?? .shared
@@ -80,9 +90,45 @@ final class NotchShortcuts {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.refreshQueued = false
-            self.center.apply(ShortcutPlan.active(self.context(), bindings: self.settings.shortcuts))
-            _ = self.face()
+            let context = self.context()
+            self.center.apply(ShortcutPlan.active(context, bindings: self.settings.shortcuts))
+            self.showHints(context: context, face: self.face())
         }
+    }
+
+    /// Tells the face which keys its buttons carry, and which a press would
+    /// act on now (`ShortcutHints`).
+    private func showHints(context: ShortcutContext, face: ShortcutFace) {
+        let bindings = settings.shortcuts
+        let request = viewModel.pendingRequest?.id
+        let keys: [ShortcutAction: String]
+        if let cached = hintKeys, cached.bindings == bindings, cached.request == request {
+            keys = cached.keys
+        } else {
+            keys = ShortcutHints.keys(bindings)
+            hintKeys = (bindings, request, keys)
+        }
+        viewModel.setShortcutHints(ShortcutHints(
+            keys: keys, live: ShortcutPlan.live(context, face: face, held: center.held)))
+
+        // Shown but not yet seen: look again when it will be.
+        guard face == .shown, let since = faceTracker.since else {
+            seenWork?.cancel()
+            seenWork = nil
+            seenWorkAt = nil
+            return
+        }
+        let due = since.addingTimeInterval(ShortcutPlan.seenDelay)
+        guard seenWorkAt != due else { return }
+        seenWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.seenWork = nil
+            self?.seenWorkAt = nil
+            self?.refresh()
+        }
+        seenWork = work
+        seenWorkAt = due
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, due.timeIntervalSinceNow) + 0.01, execute: work)
     }
 
     /// The moment, as `ShortcutPlan` reads it.

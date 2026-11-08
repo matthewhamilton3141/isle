@@ -144,9 +144,10 @@ final class NotchViewModel: ObservableObject {
     @Published private(set) var claudeFinalLine: String?
 
     /// The subagents the island's session has running, by type, oldest
-    /// first (Milestone 22): what its hooks reported, cleared when the turn
-    /// ends. Empty when none are, or the helper or Claude Code is too old to
-    /// say. See `ClaudeSubagents` for the line made of it.
+    /// first (Milestone 22): what its hooks reported, each until its own
+    /// stop, and none once the session's process is gone. Empty when none
+    /// are, or the helper or Claude Code is too old to say. See
+    /// `ClaudeSubagents` for the line made of it.
     @Published private(set) var claudeSubagents: [String] = []
 
     /// The last call auto mode blocked in the island's session since its
@@ -513,7 +514,14 @@ final class NotchViewModel: ObservableObject {
             guard let id = status.sessionId else { return true }
             return claudeSessions.contains { $0.sessionId == id }
         }
-        let pool = (live.isEmpty ? statuses : live).map(reconciled).map(backgroundMerge.resolve)
+        // A record's agents only while its process lives: one killed outright
+        // fires no SessionEnd to clear them (Milestone 22).
+        let liveIds = Set(claudeSessions.map(\.sessionId))
+        let pool = (live.isEmpty ? statuses : live).map(reconciled).map(backgroundMerge.resolve).map { status in
+            var status = status
+            status.subagents = ClaudeSubagents.counted(status.subagents, sessionId: status.sessionId, live: liveIds)
+            return status
+        }
         if let pinned, !pool.contains(where: { $0.sessionId == pinned }),
            let background = backgroundMerge.agentOnly(pinned) {
             return pool + [background]
@@ -653,9 +661,11 @@ final class NotchViewModel: ObservableObject {
     /// A prompt dismissed with Esc is the same kind of stuck record — no hook
     /// fires — so the attention states ride along (see `reconciledPrompt`).
     private func updateReselectTimer(for state: ClaudeCodeState) {
+        // Agents counted past their turn (Milestone 22) are work in progress
+        // too: their session being killed outright is only seen by a tick.
         guard keepAwake.isHeld || !hookOthersQuiet || sessionListShown
                 || state == .working || state == .compacting || state == .waitingInput
-                || state.isAttention else {
+                || state.isAttention || !claudeSubagents.isEmpty else {
             stopReselectTimer()
             return
         }
@@ -780,7 +790,8 @@ final class NotchViewModel: ObservableObject {
         // written, and the bare prompt never flashes between them.
         refreshPendingRequest()
         let resolved = selectStatus(from: claudeStatuses)
-        if applyAny || resolved.state != claudeState {
+        // Agents going with their session's process change no state.
+        if applyAny || resolved.state != claudeState || resolved.subagents != claudeSubagents {
             applyClaudeStatus(resolved)
         }
         updateKeepAwake()
@@ -2610,6 +2621,15 @@ final class NotchViewModel: ObservableObject {
         if expandedPlace != .face(.claude), availableTabs.contains(.claude) {
             selectTab(.claude)
         }
+    }
+
+    /// The keys the face's buttons carry (Approve ⌃', ⌥1 on an option), and
+    /// which a press would act on now — `NotchShortcuts` keeps it, from the
+    /// bindings and the same plan a press goes through. See `ShortcutHints`.
+    @Published private(set) var shortcutHints = ShortcutHints()
+
+    func setShortcutHints(_ hints: ShortcutHints) {
+        if shortcutHints != hints { shortcutHints = hints }
     }
 
     /// What a shortcut just did, said in the collapsed island — so a press

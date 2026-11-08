@@ -76,7 +76,7 @@ enum Tests {
         let one = record("real1.json", records)
         equal(one?.left?.tasks, [shell("sleep", "sleep 300"), agent("Explore")],
               "the real Stop: a shell and an agent")
-        equal(one?.subagents, [], "and the agent isn't also counted as running")
+        equal(one?.subagents, ["Explore"], "and the agent still counted until its own stop (v17)")
         check(one?.left?.at != nil, "with when the turn ended")
         let two = record("real2.json", records)
         equal(two?.left?.wakes, [.init(schedule: "0 9 9 11 *", recurring: false),

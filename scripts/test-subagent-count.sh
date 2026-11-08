@@ -2,8 +2,9 @@
 #
 # Tests for subagents, counted (Milestone 22): isle-cli's `subagent-start` and
 # `subagent-stop` (SubagentStart / SubagentStop) keeping the running agents,
-# a stop without a start changing nothing, and the turn's end, the next prompt
-# and the session's end clearing them; one agent's approval waiting through
+# a stop without a start changing nothing, each agent counted until its own
+# stop across turns (v17: not cleared by the turn's end or the next prompt),
+# and the session's end, or a resume, clearing them; one agent's approval waiting through
 # another agent's tool calls, and let go by its own call's end, the turn's end
 # or the next prompt (v16); the record's rewrites racing the session's end and
 # newer writes (v16, with a fake `stat` / `ls`); then the app's side, built from
@@ -104,21 +105,30 @@ stop a1b2c3d4e5f600001 Plan
 expect "every agent stopped: none" "[]" state=working
 [ ! -d "$AD" ] && ok "the session's directory goes with its last agent" || bad "the session's directory goes with its last agent" "$(ls -la "$AD")"
 
-echo "Cleared when the turn, or the session, ends"
+echo "Counted until their own stop, across turns (v17)"
 start x1 Explore; start x2 Plan
 end_turn
-expect "Stop clears them" "[]" state=done last_message=Done.
-[ ! -d "$AD" ] && ok "and their files" || bad "and their files" "$(ls "$AD")"
-stop x1 Explore
-expect "a stop after the turn's end counts nothing out (or back)" "[]" state=done
-
-prompt; start y1 Explore
-printf '{"session_id":"s1","hook_event_name":"StopFailure","error":"overloaded","last_assistant_message":"API Error"}' | hook fail
-expect "StopFailure clears them" "[]" state=error
-
-prompt; start z1 Explore
+expect "the turn's end keeps them: a background agent still runs" '["Explore", "Plan"]' state=done last_message=Done.
 prompt
-expect "a new prompt clears a turn's leftovers (an interrupt fires no Stop)" "[]" state=working
+expect "start A, a new prompt: A still counted" '["Explore", "Plan"]' state=working
+stop x1 Explore
+expect "A's own stop, a turn later: gone" '["Plan"]' state=working
+[ ! -e "$AD/x1" ] && ok "and its file" || bad "and its file" "$(ls "$AD")"
+printf '{"session_id":"s1","hook_event_name":"StopFailure","error":"overloaded","last_assistant_message":"API Error"}' | hook fail
+expect "a StopFailure keeps the rest" '["Plan"]' state=error
+stop x2 Plan
+expect "the last one's stop: none" "[]" state=error
+[ ! -d "$AD" ] && ok "the session's directory goes with it" || bad "the session's directory goes with it" "$(ls "$AD")"
+before="$(stat -f %i "$SF") $(cat "$SF")"
+stop x1 Explore
+stop never1 Explore
+after="$(stat -f %i "$SF") $(cat "$SF")"
+[ "$before" = "$after" ] && ok "a stop seen twice, or for an agent never started, at none: still none, record untouched" \
+  || bad "a stop with nothing counted" "$(agents)"
+prompt; start y1 Explore
+stop never2 Plan
+expect "a stop for an agent never started, with one running: still one" '["Explore"]' state=working
+stop y1 Explore
 
 start c1 Explore
 printf '{"session_id":"s1","hook_event_name":"PreCompact","trigger":"auto"}' | hook set-state compacting
@@ -128,9 +138,12 @@ printf '{"session_id":"s1","hook_event_name":"SessionStart","source":"resume"}' 
 expect "a resumed session starts with none" "[]" state=idle
 
 prompt; start e1 Explore
+end_turn; prompt
 start o1 Plan s2
 printf '{"session_id":"s1","hook_event_name":"SessionEnd","reason":"exit"}' | hook end
-[ ! -e "$SF" ] && [ ! -d "$AD" ] && ok "SessionEnd removes the record and the agents" || bad "SessionEnd removes the record and the agents" "$(ls "$H/.isle/subagents")"
+[ ! -e "$SF" ] && [ ! -d "$AD" ] && ok "SessionEnd clears them, turns later, with the record" || bad "SessionEnd removes the record and the agents" "$(ls "$H/.isle/subagents")"
+stop e1 Explore
+[ ! -e "$SF" ] && [ ! -d "$AD" ] && ok "a stop after the session's end brings nothing back" || bad "a stop after SessionEnd" "$(ls "$H/.isle/sessions")"
 [ "$(agents "$H/.isle/sessions/s2.json")" = '["Plan"]' ] && ok "another session's agents are its own" \
   || bad "another session's agents are its own" "$(agents "$H/.isle/sessions/s2.json")"
 printf '{"hook_event_name":"Stop"}' | hook set-state done
@@ -176,6 +189,7 @@ expect "an approval being waited on keeps its request id" '["Explore", "Plan", "
   state=needs_approval request_id=s1-1794121762-4242 request_kind=approval
 
 echo "Types made safe"
+stop n1 Explore; stop n2 Plan; stop n3 general-purpose
 end_turn
 start h1 'feature-dev:code-reviewer'
 start h2 'evil\" , \"x'
@@ -183,6 +197,7 @@ start h3 ''
 expect "a plugin's type kept whole, cut at an escaped quote, a missing one empty" \
   '["feature-dev:code-reviewer", "evil", ""]'
 cp "$SF" "$SCRATCH/records/odd.json"
+stop h1 x; stop h2 x; stop h3 x
 end_turn
 
 echo "An approval waited on, while other agents work"
@@ -297,6 +312,7 @@ tool_hook PostToolUse a1 AskUserQuestion "$QI" toolu_q1
 gone "its own PostToolUse lets it go" working
 rm -f "$H/.isle/run/answering"
 end_turn
+stop a1 general-purpose
 
 echo "Rewrites racing the session's end"
 # A fake `stat` / `ls` in front of the real one, counting its calls in the hook
@@ -325,29 +341,31 @@ raced() {
 }
 END_S1="printf '{\"session_id\":\"s1\",\"hook_event_name\":\"SessionEnd\"}' | HOME='$H' /bin/bash '$CLI' end"
 NEWER="printf '{\"session_id\":\"s1\",\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"/tmp/newer.txt\"},\"tool_use_id\":\"t9\"}' | HOME='$H' /bin/bash '$CLI' set-state working"
+# Each case starts from an ended session: agents outlive a prompt (v17).
 # The review's case (v15): `stat` saw a new inode after the read, the pass went
 # round again with nothing to read, and the first pass's temp file went back
 # into place. A rewrite has no `stat` left for it to land in.
-prompt; start r1 Explore
+eval "$END_S1"; prompt; start r1 Explore
 raced stat "" "$END_S1" start r2 Explore
 if [ -e "$FB/landed.2" ] && [ -e "$SF" ]; then
   bad "SessionEnd after the inode check's read brought the record back" "state $(field state), subagents $(agents)"
 else
   ok "SessionEnd after the read, seen as a new inode: stays ended"
 fi
-prompt; start r1 Explore
+eval "$END_S1"; prompt; start r1 Explore
 raced ls "$END_S1" "" start r2 Explore
 [ -e "$FB/landed.1" ] && [ ! -e "$SF" ] && ok "SessionEnd between the read and the rename: stays ended" \
   || bad "SessionEnd between the read and the rename" "landed: $(ls "$FB" | grep landed), state $(field state)"
-prompt; start r1 Explore
+eval "$END_S1"; prompt; start r1 Explore
 raced ls "$NEWER" "$END_S1" start r2 Explore
 [ -e "$FB/landed.2" ] && [ ! -e "$SF" ] && ok "a newer write, then SessionEnd in the pass after it: stays ended" \
   || bad "a newer write, then SessionEnd" "landed: $(ls "$FB" | grep landed), state $(field state)"
-prompt; start r1 Explore
+eval "$END_S1"; prompt; start r1 Explore
 raced ls "$NEWER" "" start r2 Explore
 expect "a newer write mid-rewrite is kept, with the count" '["Explore", "Explore"]' state=working action=Read target=newer.txt
 ls "$H/.isle/sessions" | grep -q tmp && bad "no temp file left behind" "$(ls "$H/.isle/sessions")" || ok "no temp file left behind"
 end_turn
+stop r1 Explore; stop r2 Explore
 
 echo "Many at once"
 prompt
