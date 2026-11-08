@@ -97,11 +97,15 @@ final class NotchWindowController {
             self?.fileDragChanged(inFlight)
         }
         observeComposing()
+        observeReduceMotion()
     }
 
     deinit {
         if let screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)
+        }
+        if let accessibilityObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(accessibilityObserver)
         }
         if let pointerMonitor {
             NSEvent.removeMonitor(pointerMonitor)
@@ -135,6 +139,7 @@ final class NotchWindowController {
         for island in islands.values {
             island.presentation.endDrop(collapse: false)
             island.presentation.setHovering(false)
+            island.presentation.relaxProximity()
             island.window.orderOut(nil)
         }
         // The panels are kept, not destroyed: `hide()` is a toggle from the
@@ -308,7 +313,9 @@ final class NotchWindowController {
 
     /// Tracks the pointer to do three things: keep clicks passing through the
     /// dead area around each notch, open a panel when the pointer arrives on
-    /// its island, and collapse it once the pointer leaves for good. Isle never
+    /// its island, and collapse it once the pointer leaves for good. (It also
+    /// feeds the collapsed island's proximity swell, which costs a rect test
+    /// while the pointer is out of reach — see `ProximityGate`.) Isle never
     /// becomes the active app, so a global monitor (not a local one) is what
     /// sees these moves.
     ///
@@ -401,8 +408,18 @@ final class NotchWindowController {
         // still be hovered. This is what closes the island you just left —
         // unless a reply is being typed in it, which holds it open wherever
         // the pointer goes.
-        for other in islands.values where other !== active && other !== keyIsland {
-            other.presentation.setHovering(false)
+        for other in islands.values where other !== active {
+            other.presentation.relaxProximity()
+            if other !== keyIsland { other.presentation.setHovering(false) }
+        }
+
+        // The swell, before the hover rule and independent of it: it never
+        // opens, delays or holds anything. A sweep is the pointer passing,
+        // not arriving, so it gets no reaction either.
+        if sweeping || reduceMotion {
+            active.presentation.relaxProximity()
+        } else {
+            active.presentation.trackProximity(pointer: pointer, drawn: drawnRectInScreen(active))
         }
 
         guard let zones = hoverZones(for: active) else { return }
@@ -452,11 +469,41 @@ final class NotchWindowController {
     }
 
     private func collapseAll() {
+        relaxAllProximity()
         for island in islands.values where island !== keyIsland {
             island.presentation.setHovering(false)
         }
         cancelSweepRecheck()
         runDeferredSync()
+    }
+
+    private func relaxAllProximity() {
+        for island in islands.values {
+            island.presentation.relaxProximity()
+        }
+    }
+
+    // MARK: - Reduce Motion
+
+    /// System Settings › Accessibility › Reduce Motion, cached: it's read on
+    /// every pointer move, and the workspace says when it changes. With it
+    /// on there's no swell at all (the views also check, through the
+    /// environment, and the collapse goes plain there).
+    private var reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    private var accessibilityObserver: (any NSObjectProtocol)?
+
+    private func observeReduceMotion() {
+        accessibilityObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+                if self.reduceMotion { self.relaxAllProximity() }
+            }
+        }
     }
 
     /// Run a sync that was held off because an island was open.
@@ -538,6 +585,9 @@ final class NotchWindowController {
 
     private func fileDragChanged(_ inFlight: Bool) {
         viewModel.fileDragChanged(inFlight)
+        // A drag sends no moves to keep the swell current, so it starts from
+        // the island exactly as it rests.
+        if inFlight { relaxAllProximity() }
         // Back to the plain hot rect once it's over; the drag's own grown
         // one from its first event.
         for island in islands.values {
