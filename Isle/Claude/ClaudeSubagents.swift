@@ -82,6 +82,23 @@ enum ClaudeSubagents {
         return "\(count(running)) · " + parts.joined(separator: ", ")
     }
 
+    /// The agents as the end of the face's activity line ("Running python3
+    /// · 1 agent"), fullest first: a lone agent by its type ("Explore
+    /// agent"), then the bare count; several by their count alone ("3
+    /// agents"), the tooltip naming them. A type is named only when it says
+    /// something: not Claude Code's default, "general-purpose", nor one the
+    /// hook didn't carry. Empty with nothing running.
+    static func briefs(_ running: [String]) -> [String] {
+        guard !running.isEmpty else { return [] }
+        if running.count == 1 {
+            let type = displayName(running[0])
+            if !type.isEmpty, type != "general-purpose" {
+                return ["\(type) agent", count(running)]
+            }
+        }
+        return [count(running)]
+    }
+
     /// Every form of the line, the fullest first and the bare count last,
     /// for a view to take the first that fits its width. Empty with nothing
     /// running.

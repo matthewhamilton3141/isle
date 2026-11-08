@@ -33,7 +33,6 @@ struct PomodoroExpandedView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                     .contentTransition(.opacity)
-                    .padding(.trailing, 36)
 
                 Spacer().frame(height: 2)
 

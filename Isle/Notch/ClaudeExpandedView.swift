@@ -134,7 +134,7 @@ struct ClaudeExpandedView: View {
                     Text("Replying").foregroundStyle(.white.opacity(0.8))
                 }
             } extra: {
-                if viewModel.claudeUpdatedAt != nil, state != .disconnected, viewModel.composing != .reply {
+                if viewModel.claudeUpdatedAt != nil, showsAge, viewModel.composing != .reply {
                     if viewModel.claudeProject?.isEmpty == false { separator }
                     elapsed
                 }
@@ -154,9 +154,6 @@ struct ClaudeExpandedView: View {
                 }
             }
             .frame(height: L.headlineLine, alignment: .leading)
-            // Level with the waveform pinned at the panel's top-right by
-            // ExpandedNotchView; stop short of it.
-            .padding(.trailing, L.waveformClearance)
 
             Spacer().frame(height: L.headlineGap)
 
@@ -194,16 +191,15 @@ struct ClaudeExpandedView: View {
                 } else {
                     leftLine
                 }
+            } else if foldsAgents {
+                // What Claude is doing, with its agents at the end of the
+                // same line: "Running python3 · 1 agent".
+                activityLine
+                if viewModel.claudeBlock != nil {
+                    blockLine
+                }
             } else {
-                Text(detail)
-                    .font(L.detailFont)
-                    .foregroundStyle(.islandSecondary(0.72))
-                    .lineLimit(1)
-                    // Shrink a long filename to fit before resorting to an
-                    // ellipsis, so "Editing SomeLongComponentName.swift" stays
-                    // whole instead of getting clipped mid-name.
-                    .minimumScaleFactor(0.7)
-                    .truncationMode(.middle)
+                detailText(detail)
                     .frame(height: L.detailLine, alignment: .leading)
                     .padding(.trailing, switcherClearance)
                 // A block takes the second line from the agents: it's the
@@ -236,10 +232,81 @@ struct ClaudeExpandedView: View {
         }
     }
 
+    /// The detail line's text: shrinks a long filename to fit before
+    /// resorting to an ellipsis, so "Editing SomeLongComponentName.swift"
+    /// stays whole instead of getting clipped mid-name.
+    private func detailText(_ text: String) -> some View {
+        Text(text)
+            .font(L.detailFont)
+            .foregroundStyle(.islandSecondary(0.72))
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .truncationMode(.middle)
+    }
+
+    /// The agents join the activity line while Claude is doing something
+    /// (working, thinking, compacting): one line instead of two. The faces
+    /// after a turn have no activity line, and keep theirs (Milestones 20
+    /// and 22).
+    private var foldsAgents: Bool {
+        agentState == nil && (state == .working || state == .compacting)
+    }
+
+    /// What Claude is doing, and the agents it has running at the line's end
+    /// (`ClaudeSubagents.briefs`): "Editing Foo.swift · 3 agents". Whole if
+    /// it fits; else the activity gives way — shrinks, then is cut in the
+    /// middle — and the agents keep their place, in their shortest form.
+    /// The tooltip names every kind.
+    @ViewBuilder
+    private var activityLine: some View {
+        let forms = ClaudeSubagents.briefs(viewModel.claudeSubagents)
+        let full = ClaudeSubagents.lines(viewModel.claudeSubagents).first
+        Group {
+            if forms.isEmpty {
+                detailText(detail)
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    ForEach(forms, id: \.self) { form in
+                        HStack(spacing: 0) {
+                            Text(detail)
+                                .foregroundStyle(.islandSecondary(0.72))
+                            agentsTail(form)
+                        }
+                        .lineLimit(1)
+                        .fixedSize()
+                    }
+                    HStack(spacing: 0) {
+                        detailText(detail)
+                        agentsTail(forms[forms.count - 1])
+                            .fixedSize()
+                            .layoutPriority(1)
+                    }
+                }
+                .font(L.detailFont)
+                .help(full ?? "")
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel([detail, full].compactMap { $0 }.joined(separator: ", "))
+            }
+        }
+        .frame(height: L.detailLine, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.trailing, switcherClearance)
+        .contentTransition(.opacity)
+    }
+
+    /// " · 1 agent", quieter than the activity in front of it, as the line
+    /// under it was.
+    private func agentsTail(_ form: String) -> some View {
+        (Text(" · ").foregroundColor(.white.opacity(0.3)) + Text(form))
+            .foregroundStyle(.islandSecondary(0.5))
+            .lineLimit(1)
+    }
+
     /// The subagents running for this session (Milestone 22), under what
     /// it's doing: "3 agents · Explore ×2, Plan". Only while the hooks say
     /// one is; one line, quieter than the detail above it, naming as many
-    /// kinds as fit and counting the rest as "+N".
+    /// kinds as fit and counting the rest as "+N". On the faces with no
+    /// activity line for them to join (see `foldsAgents`).
     @ViewBuilder
     private var subagentLine: some View {
         let lines = ClaudeSubagents.lines(viewModel.claudeSubagents)
@@ -331,8 +398,8 @@ struct ClaudeExpandedView: View {
     /// the keep-awake hold. Same height and place on every face.
     ///
     /// When it's crowded it gives way in order of what matters least:
-    /// `extra` first (the elapsed time), then the keep-awake mark's word,
-    /// leaving its cup; the project is cut short only after both.
+    /// `extra` first (the elapsed time); the project is cut short only
+    /// after that.
     private func eyebrow<Leading: View, Extra: View>(
         hint: String? = nil,
         @ViewBuilder leading: () -> Leading,
@@ -341,20 +408,17 @@ struct ClaudeExpandedView: View {
         let leading = leading()
         let extra = extra()
         return ViewThatFits(in: .horizontal) {
-            eyebrowRow(compactMarks: false, hint: hint) { leading; extra }
-            eyebrowRow(compactMarks: false, hint: hint) { leading }
-            eyebrowRow(compactMarks: true, hint: hint) { leading }
+            eyebrowRow(hint: hint) { leading; extra }
+            eyebrowRow(hint: hint) { leading }
         }
         .font(L.eyebrowFont)
         .labelStyle(EyebrowLabelStyle())
         .foregroundStyle(.islandSecondary(0.5))
         .lineLimit(1)
         .frame(height: L.eyebrowHeight)
-        // Level with the waveform at the top-right; clear it.
-        .padding(.trailing, L.waveformClearance)
     }
 
-    private func eyebrowRow<Leading: View>(compactMarks: Bool, hint: String? = nil,
+    private func eyebrowRow<Leading: View>(hint: String? = nil,
                                            @ViewBuilder leading: () -> Leading) -> some View {
         HStack(spacing: 5) {
             leading()
@@ -362,7 +426,7 @@ struct ClaudeExpandedView: View {
             if let hint {
                 Text(hint).fixedSize()
             }
-            marks(compact: compactMarks)
+            marks
             // On a status face only: a request's own row has Terminal.
             if jumpIsLone, asking == nil, approval == nil {
                 jumpChip
@@ -424,18 +488,24 @@ struct ClaudeExpandedView: View {
     /// thing it names is true — the count from the registry's live sessions,
     /// the cup from the assertion itself (`isKeepingAwake`) — and neither has
     /// an "off" form.
-    private func marks(compact: Bool) -> some View {
+    private var marks: some View {
         HStack(spacing: 8) {
             sessionMarks
             if viewModel.isKeepingAwake {
-                Label("Mac awake", systemImage: "cup.and.saucer.fill")
-                    .labelStyle(EyebrowLabelStyle(iconOnly: compact))
-                    .accessibilityLabel("Keeping the Mac awake while Claude works")
+                keepAwakeCup
             }
         }
         .fixedSize()
         .animation(.easeInOut(duration: 0.2), value: viewModel.otherSessions)
         .animation(.easeInOut(duration: 0.2), value: viewModel.isKeepingAwake)
+    }
+
+    /// The keep-awake hold, as its cup alone: the words are its tooltip.
+    private var keepAwakeCup: some View {
+        Image(systemName: "cup.and.saucer.fill")
+            .imageScale(.small)
+            .help("Mac kept awake while Claude works")
+            .accessibilityLabel("Keeping the Mac awake while Claude works")
     }
 
     /// The other live sessions, and the way to the list of them all
@@ -460,7 +530,7 @@ struct ClaudeExpandedView: View {
                 HStack(spacing: 8) {
                     othersCounts(others)
                     if others.isEmpty, quiet > 0 {
-                        Text("+\(quiet) more")
+                        Text("+\(quiet)")
                     }
                     Image(systemName: "chevron.right")
                         .font(.system(size: 8, weight: .bold))
@@ -469,8 +539,10 @@ struct ClaudeExpandedView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("Every session")
-            .accessibilityLabel("Every session, \(viewModel.sessionList.count) live")
+            .help(others.isEmpty && quiet > 0 ? "\(quiet) more \(quiet == 1 ? "session" : "sessions")" : "Every session")
+            .accessibilityLabel(others.isEmpty && quiet > 0
+                                ? "\(quiet) more \(quiet == 1 ? "session" : "sessions"), show every session"
+                                : "Every session, \(viewModel.sessionList.count) live")
         } else {
             othersCounts(others)
         }
@@ -548,8 +620,7 @@ struct ClaudeExpandedView: View {
                 }
                 Spacer(minLength: 6)
                 if viewModel.isKeepingAwake {
-                    Label("Mac awake", systemImage: "cup.and.saucer.fill")
-                        .accessibilityLabel("Keeping the Mac awake while Claude works")
+                    keepAwakeCup
                 }
             }
             .font(L.eyebrowFont)
@@ -588,9 +659,6 @@ struct ClaudeExpandedView: View {
             }
             .padding(.bottom, L.sessionListBottomInset)
         }
-        // Clear of the waveform pinned at the panel's top-right: the eyebrow
-        // and the first row are level with it, and the rows keep one edge.
-        .padding(.trailing, L.waveformClearance)
         .animation(.easeInOut(duration: 0.2), value: rows)
     }
 
@@ -978,8 +1046,8 @@ struct ClaudeExpandedView: View {
     /// eyebrow's trailing end, on the row that already says where the
     /// session is. Alone in the action row it was a big pill in an empty row,
     /// bottom-left; here it takes no row of its own and leaves the room
-    /// below to what Claude said. Right of the camera cutout, and inside the
-    /// eyebrow's waveform clearance, so it meets neither.
+    /// below to what Claude said. Below the camera band, on the eyebrow's
+    /// line, so it never meets the hardware.
     @ViewBuilder
     private var jumpChip: some View {
         if let target = viewModel.jumpTarget {
@@ -1097,8 +1165,6 @@ struct ClaudeExpandedView: View {
                         .lineLimit(fit.questionLines)
                         .truncationMode(.tail)
                         .frame(height: CGFloat(fit.questionLines) * L.questionLine, alignment: .topLeading)
-                        // Level with the waveform at the top-right; clear it.
-                        .padding(.trailing, L.waveformClearance)
                 }
 
                 Spacer().frame(height: L.questionGap)
@@ -1424,6 +1490,16 @@ struct ClaudeExpandedView: View {
         }
     }
 
+    /// The eyebrow says how long ago the session last moved only where the
+    /// age means something: after a turn (Done, Waiting, Ready), on a
+    /// request, a failure. Not while Claude is at work — working, thinking,
+    /// compacting — when it's always a few seconds and only ticks.
+    private var showsAge: Bool {
+        guard state != .disconnected else { return false }
+        if let agentState { return agentState != .working }
+        return state != .working && state != .compacting
+    }
+
     /// What Claude said last, for the states that follow a finished turn:
     /// Done, the "Ready" it eases back to, and "Waiting for you". In place of
     /// the stock line, and only when there are words to quote.
@@ -1544,16 +1620,11 @@ private struct PillLabelStyle: LabelStyle {
 /// An eyebrow label: the symbol a touch smaller than the text and tucked in
 /// closer than `Label`'s default, so a mark reads as one word.
 private struct EyebrowLabelStyle: LabelStyle {
-    /// Drops the word, for a crowded eyebrow.
-    var iconOnly = false
-
     func makeBody(configuration: Configuration) -> some View {
         HStack(spacing: 3) {
             configuration.icon
                 .imageScale(.small)
-            if !iconOnly {
-                configuration.title
-            }
+            configuration.title
         }
     }
 }

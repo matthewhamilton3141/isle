@@ -51,33 +51,39 @@ struct ExpandedNotchView: View {
             .animation(reduceMotion ? Self.crossDissolve : .tileMorph, value: viewModel.expandedPlace == .home)
             .animation(Self.crossDissolve, value: viewModel.expandedPlace)
             .animation(.easeInOut(duration: 0.2), value: dropPayload != nil)
-            // The waveform is pinned to ONE fixed spot in the panel and drawn
-            // outside the face switch, so it holds the exact same real position
-            // on every face instead of re-aligning to each face's text — it
-            // stays put through a swipe, fading while the faces cross under
-            // it and back once they land. Not on Home, where it would sit
-            // on a tile and the Music tile already says what's playing, nor on
-            // the shelf, the agenda or the drop face, whose items, week strip,
-            // timeline and targets run to the column's edge under it. Gated on
-            // a live track; non-interactive so it never swallows a seek or
-            // dismiss tap.
+            // The waveform, on the Music face only: the other faces are about
+            // something else, and a row of paused dots in their corner was
+            // one more thing to read. Pinned to the panel's top-right outside
+            // the face switch, so it fades out as a swipe carries the Music
+            // face away and in once it lands back. Gated on a live track;
+            // non-interactive so it never swallows a seek or dismiss tap.
             .overlay(alignment: .topTrailing) {
-                if media.hasTrack, viewModel.showsWaveform, viewModel.expandedPlace != .home,
-                   viewModel.expandedPlace != .face(.shelf), viewModel.expandedPlace != .face(.agenda),
-                   dropPayload == nil {
-                    LiveEqualizer(
-                        source: viewModel.audioLevelSource,
-                        palette: palette,
-                        isPlaying: media.isPlaying,
-                        listens: viewModel.waveformSource.capturesAudio
-                    )
-                    .frame(width: 30, height: 24)
-                    .padding(.top, 10)
-                    .padding(.trailing, 4)
-                    .allowsHitTesting(false)
-                    .modifier(SwipeFade(pager: island.pager))
+                ZStack {
+                    if showsCornerWaveform {
+                        LiveEqualizer(
+                            source: viewModel.audioLevelSource,
+                            palette: palette,
+                            isPlaying: media.isPlaying,
+                            listens: viewModel.waveformSource.capturesAudio
+                        )
+                        .frame(width: 30, height: 24)
+                        .padding(.top, 10)
+                        .padding(.trailing, 4)
+                        .allowsHitTesting(false)
+                        .modifier(SwipeFade(pager: island.pager))
+                        .transition(.opacity)
+                    }
                 }
+                // Scoped to the waveform, so it fades in and out without
+                // re-timing anything on the faces under it.
+                .animation(Self.crossDissolve, value: showsCornerWaveform)
             }
+    }
+
+    /// The Music face's waveform: on that face alone, with a track to draw
+    /// and the setting on.
+    private var showsCornerWaveform: Bool {
+        media.hasTrack && viewModel.showsWaveform && viewModel.expandedPlace == .face(.music) && dropPayload == nil
     }
 
     @ViewBuilder

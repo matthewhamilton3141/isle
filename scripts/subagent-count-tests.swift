@@ -113,6 +113,22 @@ enum Tests {
             "8 agents",
         ], "every form, fullest first, the count last")
         equal(S.lines(["Explore"]), ["1 agent · Explore", "1 agent"], "one: named, then counted")
+
+        print("The activity line's tail")
+        equal(S.briefs([]), [], "nothing running: no tail")
+        equal(S.briefs(["general-purpose"]), ["1 agent"], "one general-purpose: just the count")
+        equal(S.briefs([""]), ["1 agent"], "one untyped: just the count")
+        equal(S.briefs(["Explore"]), ["Explore agent", "1 agent"], "one named: its type, then the count")
+        equal(S.briefs(["feature-dev:code-reviewer"]), ["code-reviewer agent", "1 agent"],
+              "one plugin agent: by its own name")
+        equal(S.briefs(["Explore", "Plan", "Explore"]), ["3 agents"], "several: the count, types in the tooltip")
+        equal(S.briefs(["general-purpose", "general-purpose"]), ["2 agents"], "several general-purpose: the count")
+        equal(S.briefs(manyTypes()), ["8 agents"], "many kinds: still the count")
+    }
+
+    static func manyTypes() -> [String] {
+        ["Explore", "Plan", "general-purpose", "Explore", "statusline-setup",
+         "claude-code-guide", "Explore", "code-reviewer"]
     }
 
     // MARK: - Liveness (v17)
