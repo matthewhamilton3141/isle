@@ -64,7 +64,8 @@ final class FakeRegistrar: HotKeyRegistrar {
 @MainActor
 final class FakeHost: ShortcutIslandHost {
     var shortcutsRunning = true
-    var isAnyIslandExpanded = false
+    var islandPresence: ShortcutIslandPresence = .closed
+    var isAnyIslandExpanded: Bool { islandPresence != .closed }
     var calls: [String] = []
     func toggleIslandFromShortcut() { calls.append("toggle") }
     func openIslandFromShortcut() { calls.append("open") }
@@ -97,8 +98,8 @@ func questionCtx(_ options: Int, multi: Bool = false) -> Ctx {
     Ctx(running: true, request: .question(options: options, multiSelect: multi), armed: true)
 }
 
-func cmdFor(_ action: A, _ ctx: Ctx, visible: Bool) -> ShortcutCommand {
-    ShortcutPlan.command(for: action, context: ctx, faceVisible: visible)
+func cmdFor(_ action: A, _ ctx: Ctx, _ face: ShortcutFace) -> ShortcutCommand {
+    ShortcutPlan.command(for: action, context: ctx, face: face)
 }
 
 @main
@@ -111,6 +112,7 @@ enum ShortcutsTests {
         notes()
         heldWhile()
         commands()
+        faceTracking()
         center()
         endToEnd()
         persistence()
@@ -355,48 +357,133 @@ enum ShortcutsTests {
     @MainActor
     static func commands() {
         print("Press: an approval")
-        equal(cmdFor(.approve, approvalCtx(), visible: true), .approve, "Approve, on screen")
-        equal(cmdFor(.approve, approvalCtx(), visible: false), .approve, "Approve, island closed: one press, as the button")
-        equal(cmdFor(.deny, approvalCtx(), visible: false), .deny, "Deny, island closed")
-        equal(cmdFor(.option1, approvalCtx(), visible: true), .none, "an option key on an approval: nothing")
+        equal(cmdFor(.approve, approvalCtx(), .shown), .approve, "Approve, in front of you: one press, as the button")
+        equal(cmdFor(.approve, approvalCtx(), .seen), .approve, "and once looked at")
+        equal(cmdFor(.approve, approvalCtx(), .hidden), .reveal,
+              "closed, or auto-opened on another display: the first press opens it where you are, approves nothing")
+        equal(cmdFor(.deny, approvalCtx(), .hidden), .deny, "Deny, unseen: one press (refusing is safe)")
+        equal(cmdFor(.option1, approvalCtx(), .seen), .none, "an option key on an approval: nothing")
 
         print("Press: a guarded command (M17)")
-        equal(cmdFor(.approve, approvalCtx(guarded: true), visible: false), .reveal,
+        equal(cmdFor(.approve, approvalCtx(guarded: true), .hidden), .reveal,
               "island closed: the first press opens it to the command, and approves nothing")
-        equal(cmdFor(.approve, approvalCtx(guarded: true), visible: true), .approve, "in view: the next press approves")
-        equal(cmdFor(.deny, approvalCtx(guarded: true), visible: false), .deny, "Deny stays one press: refusing is safe")
+        equal(cmdFor(.approve, approvalCtx(guarded: true), .shown), .reveal,
+              "just come up (a fast double-tap, or an alert's auto-open): still nothing")
+        equal(cmdFor(.approve, approvalCtx(guarded: true), .seen), .approve, "in front of you for half a second: approves")
+        equal(cmdFor(.deny, approvalCtx(guarded: true), .hidden), .deny, "Deny stays one press: refusing is safe")
 
         print("Press: Always…'s review")
-        equal(cmdFor(.approve, approvalCtx(reviewing: true), visible: true), .confirmRemember, "Approve is the review's Confirm")
-        equal(cmdFor(.deny, approvalCtx(reviewing: true), visible: true), .cancelRemember, "Deny is the review's Back")
-        equal(cmdFor(.approve, approvalCtx(reviewing: true), visible: false), .reveal,
+        equal(cmdFor(.approve, approvalCtx(reviewing: true), .seen), .confirmRemember, "Approve is the review's Confirm")
+        equal(cmdFor(.deny, approvalCtx(reviewing: true), .seen), .cancelRemember, "Deny is the review's Back")
+        equal(cmdFor(.approve, approvalCtx(reviewing: true), .hidden), .reveal,
               "out of view, saving a rule is never a blind press: reveal")
-        equal(cmdFor(.deny, approvalCtx(reviewing: true), visible: false), .reveal, "nor Back")
+        equal(cmdFor(.approve, approvalCtx(reviewing: true), .shown), .reveal, "nor a moment after it comes up")
+        equal(cmdFor(.deny, approvalCtx(reviewing: true), .hidden), .reveal, "nor Back")
 
         print("Press: a question")
-        equal(cmdFor(.option2, questionCtx(3), visible: true), .pick(1), "⌥2 on screen picks the second option")
-        equal(cmdFor(.option2, questionCtx(3), visible: false), .reveal, "⌥2 unseen opens the island to the question")
-        equal(cmdFor(.option4, questionCtx(3), visible: true), .none, "⌥4 with three options: nothing")
-        equal(cmdFor(.approve, questionCtx(3), visible: true), .none, "⌥⏎ on a single-select: nothing (picking sends)")
-        equal(cmdFor(.approve, questionCtx(3, multi: true), visible: true), .submit, "⌥⏎ on a multi-select: Done")
-        equal(cmdFor(.approve, questionCtx(3, multi: true), visible: false), .reveal, "unseen: reveal")
-        equal(cmdFor(.option1, questionCtx(3, multi: true), visible: true), .pick(0), "multi-select: ⌥1 toggles")
-        equal(cmdFor(.deny, questionCtx(3), visible: true), .none, "⌥⎋ on a question: nothing")
+        equal(cmdFor(.option2, questionCtx(3), .seen), .pick(1), "⌥2 on screen picks the second option")
+        equal(cmdFor(.option2, questionCtx(3), .hidden), .reveal, "⌥2 unseen opens the island to the question")
+        equal(cmdFor(.option2, questionCtx(3), .shown), .reveal, "⌥2 the instant it's up: not yet")
+        equal(cmdFor(.option4, questionCtx(3), .seen), .none, "⌥4 with three options: nothing")
+        equal(cmdFor(.approve, questionCtx(3), .seen), .none, "Approve on a single-select: nothing (picking sends)")
+        equal(cmdFor(.approve, questionCtx(3, multi: true), .seen), .submit, "Approve on a multi-select: Done")
+        equal(cmdFor(.approve, questionCtx(3, multi: true), .shown), .reveal, "only once looked at")
+        equal(cmdFor(.option1, questionCtx(3, multi: true), .seen), .pick(0), "multi-select: ⌥1 toggles")
+        equal(cmdFor(.deny, questionCtx(3), .seen), .none, "Deny on a question: nothing")
 
         print("Press: a press that arrives late")
         var late = approvalCtx()
         late.answering = true
-        equal(cmdFor(.approve, late, visible: true), .none, "already answered: nothing (never twice)")
+        equal(cmdFor(.approve, late, .seen), .none, "already answered: nothing (never twice)")
         late = approvalCtx(); late.armed = false
-        equal(cmdFor(.approve, late, visible: true), .none, "not armed: nothing")
+        equal(cmdFor(.approve, late, .seen), .none, "not armed: nothing")
         late = approvalCtx(); late.composing = true
-        equal(cmdFor(.approve, late, visible: true), .none, "a field has the keys: nothing")
-        equal(cmdFor(.approve, Ctx(running: true), visible: true), .none, "the request is gone: nothing")
+        equal(cmdFor(.approve, late, .seen), .none, "a field has the keys: nothing")
+        equal(cmdFor(.approve, Ctx(running: true), .seen), .none, "the request is gone: nothing")
 
         print("Press: the island")
-        equal(cmdFor(.toggleIsland, Ctx(running: true), visible: false), .toggleIsland, "open/close")
-        equal(cmdFor(.toggleIsland, approvalCtx(), visible: true), .toggleIsland, "open/close, a request or not")
-        equal(cmdFor(.toggleIsland, Ctx(), visible: false), .none, "not running: nothing")
+        equal(cmdFor(.toggleIsland, Ctx(running: true), .hidden), .toggleIsland, "open/close")
+        equal(cmdFor(.toggleIsland, approvalCtx(), .seen), .toggleIsland, "open/close, a request or not")
+        equal(cmdFor(.toggleIsland, Ctx(), .hidden), .none, "not running: nothing")
+    }
+
+    // MARK: - In front of the user
+
+    @MainActor
+    static func faceTracking() {
+        print("Seen: when the face is in front of the user")
+        let t0 = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        func at(_ s: TimeInterval) -> Date { t0.addingTimeInterval(s) }
+        let half = ShortcutPlan.seenDelay
+
+        var f = ShortcutFaceTracker()
+        equal(f.update(request: nil, showsFace: true, presence: .pointerScreen, now: at(0)), .hidden, "no request: hidden")
+        equal(f.update(request: "r1", showsFace: false, presence: .closed, now: at(0)), .hidden, "closed: hidden")
+        equal(f.update(request: "r1", showsFace: true, presence: .pointerScreen, now: at(1)), .shown,
+              "open on the pointer's display: shown, from now")
+        equal(f.update(request: "r1", showsFace: true, presence: .pointerScreen, now: at(1 + half - 0.01)), .shown,
+              "not yet half a second")
+        equal(f.update(request: "r1", showsFace: true, presence: .pointerScreen, now: at(1 + half)), .seen, "half a second: seen")
+        equal(f.update(request: "r1", showsFace: false, presence: .pointerScreen, now: at(2)), .hidden,
+              "switched to another face: hidden")
+        equal(f.update(request: "r1", showsFace: true, presence: .pointerScreen, now: at(2.1)), .shown,
+              "back on it: the half second starts over")
+
+        print("Seen: an alert's auto-open on another display")
+        f = ShortcutFaceTracker()
+        equal(f.update(request: "r2", showsFace: true, presence: .elsewhere, now: at(0)), .hidden,
+              "auto-opened where the pointer isn't: hidden — nobody may be looking")
+        equal(f.update(request: "r2", showsFace: true, presence: .elsewhere, now: at(5)), .hidden,
+              "however long it's been up there")
+        equal(f.update(request: "r2", showsFace: true, presence: .pointerScreen, now: at(6)), .shown,
+              "the pointer comes to its display: shown, from then")
+        equal(f.update(request: "r2", showsFace: true, presence: .pointerScreen, now: at(6 + half)), .seen, "and seen after")
+        equal(f.update(request: "r2", showsFace: true, presence: .elsewhere, now: at(7)), .hidden,
+              "pointer away again, never having gone to it: hidden")
+
+        print("Seen: visited")
+        f = ShortcutFaceTracker()
+        equal(f.update(request: "r3", showsFace: true, presence: .visited, now: at(0)), .shown, "hovered: shown")
+        equal(f.update(request: "r3", showsFace: true, presence: .elsewhere, now: at(0.3)), .shown,
+              "then the pointer goes to another display: still in front of them (they went to it)")
+        equal(f.update(request: "r3", showsFace: true, presence: .elsewhere, now: at(0 + half)), .seen,
+              "and the half second runs on")
+        equal(f.update(request: "r3", showsFace: false, presence: .closed, now: at(1)), .hidden, "closed: hidden")
+        equal(f.update(request: "r4", showsFace: true, presence: .elsewhere, now: at(2)), .hidden,
+              "a new request: the visit was to the old one")
+
+        print("Seen: a reveal starts the look over")
+        f = ShortcutFaceTracker()
+        _ = f.update(request: "r5", showsFace: true, presence: .pointerScreen, now: at(0))
+        f.restart(now: at(0.4))
+        equal(f.update(request: "r5", showsFace: true, presence: .pointerScreen, now: at(0.6)), .shown,
+              "a press that revealed at 0.4s: not seen at 0.6s")
+        equal(f.update(request: "r5", showsFace: true, presence: .pointerScreen, now: at(0.4 + half)), .seen,
+              "seen half a second after the reveal")
+        var closed = ShortcutFaceTracker()
+        closed.restart(now: at(0))
+        equal(closed.update(request: "r6", showsFace: true, presence: .visited, now: at(0.1)), .shown,
+              "a reveal of a closed island: the look starts when it's up")
+
+        print("Seen: the two holes this closes")
+        // (A) expandOnAlert: an approval opens itself; a press 0.5s later
+        // (the arm delay) mustn't approve a guarded command unread.
+        f = ShortcutFaceTracker()
+        let autoOpen = f.update(request: "g", showsFace: true, presence: .elsewhere, now: at(0.5))
+        equal(cmdFor(.approve, approvalCtx(guarded: true), autoOpen), .reveal,
+              "(A) guarded, auto-opened on a display you aren't on: the press reveals, approves nothing")
+        let plainElsewhere = f.update(request: "g", showsFace: true, presence: .elsewhere, now: at(0.6))
+        equal(cmdFor(.approve, approvalCtx(), plainElsewhere), .reveal, "(A) a plain approval there: the same")
+        // (B) island closed: a fast double-tap.
+        f = ShortcutFaceTracker()
+        let first = f.update(request: "g", showsFace: false, presence: .closed, now: at(1))
+        equal(cmdFor(.approve, approvalCtx(guarded: true), first), .reveal, "(B) first tap: reveal")
+        f.restart(now: at(1))
+        let second = f.update(request: "g", showsFace: true, presence: .visited, now: at(1.12))
+        equal(cmdFor(.approve, approvalCtx(guarded: true), second), .reveal,
+              "(B) second tap 120ms later, panel still opening: still nothing")
+        let third = f.update(request: "g", showsFace: true, presence: .visited, now: at(1.12 + half))
+        equal(cmdFor(.approve, approvalCtx(guarded: true), third), .approve, "a press after a real look approves")
     }
 
     // MARK: - HotKeyCenter
@@ -576,13 +663,19 @@ enum ShortcutsTests {
         equal(reg.heldActions, Set([.toggleIsland, .approve] + A.options.prefix(multi)), "multi-select: and ⌥⏎ for Done")
 
         print("End to end: presses that only reveal")
-        host.isAnyIslandExpanded = false
+        host.islandPresence = .closed
         reg.press(.option1); spin()
         equal(host.calls, ["open"], "⌥1 with the island closed opens it")
         equal(vm.questionPicks.first ?? [], [], "and picks nothing")
-        host.isAnyIslandExpanded = true
+        host.islandPresence = .visited
+        shortcuts.refresh(); spin()
         reg.press(.option1); spin()
-        equal(vm.questionPicks.first ?? [], [ClaudePanelFixture.multiSelect.options[0].label], "in view, ⌥1 toggles option 1")
+        equal(vm.questionPicks.first ?? [], [], "⌥1 again at once, the panel just up: still nothing")
+        equal(host.calls, ["open", "open"], "it reveals again")
+        spin(ShortcutPlan.seenDelay + 0.1)
+        reg.press(.option1); spin()
+        equal(vm.questionPicks.first ?? [], [ClaudePanelFixture.multiSelect.options[0].label],
+              "after half a second in view, ⌥1 toggles option 1")
         reg.press(.option1); spin()
         equal(vm.questionPicks.first ?? [], [], "and again, off")
 
@@ -590,17 +683,40 @@ enum ShortcutsTests {
                                                   request: guarded))
         spin(ShortcutPlan.armDelay + 0.15)
         host.calls = []
-        host.isAnyIslandExpanded = false
+        host.islandPresence = .closed
+        shortcuts.refresh(); spin()
         reg.press(.approve); spin()
-        equal(host.calls, ["open"], "⌥⏎ on a guarded command, island closed: opens it")
+        equal(host.calls, ["open"], "Approve on a guarded command, island closed: opens it")
         check(!vm.isAnsweringRequest, "and sends nothing")
         check(vm.shortcutNotice == nil, "and claims nothing")
+        host.islandPresence = .visited
+        reg.press(.approve); spin()
+        check(!vm.isAnsweringRequest, "a fast second press, panel just open: sends nothing")
+        equal(host.calls, ["open", "open"], "it reveals again, and the look starts over")
+
+        // That request was visited; a fresh one, auto-opened elsewhere.
+        vm.applyPreviewFixture(ClaudePanelFixture(name: "w2", state: .working, action: "Bash", target: "ls"))
+        spin()
+        host.islandPresence = .elsewhere
+        vm.applyPreviewFixture(ClaudePanelFixture(name: "g3", state: .needsApproval, action: "Bash", target: "git",
+                                                  request: guarded))
+        spin(max(ShortcutPlan.armDelay, ShortcutPlan.seenDelay) + 0.15)
+        host.calls = []
+        reg.press(.approve); spin()
+        equal(host.calls, ["open"], "auto-opened on another display, however long: the press reveals it where you are")
+        check(!vm.isAnsweringRequest, "and sends nothing")
+        check(shortcuts.face() != .seen, "not seen")
+        host.islandPresence = .pointerScreen
+        shortcuts.refresh(); spin()
+        equal(shortcuts.face(), .shown, "on the pointer's display: shown")
+        spin(ShortcutPlan.seenDelay + 0.1)
+        equal(shortcuts.face(), .seen, "and seen half a second on, with no press to ask")
 
         print("End to end: the island")
         host.calls = []
         reg.press(.toggleIsland); spin()
         equal(host.calls, ["toggle"], "⌥⇥ toggles")
-        host.isAnyIslandExpanded = true
+        host.islandPresence = .visited
         shortcuts.refresh(); spin()
         check(!reg.held.values.contains { $0.keyCode == UInt32(kVK_Escape) && $0.modifiers == 0 },
               "open by shortcut: bare Esc is never taken")

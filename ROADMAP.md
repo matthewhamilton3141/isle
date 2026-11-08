@@ -1759,15 +1759,27 @@ A press calls the face's own method (`decide(allow:)`, `allowRemembering`,
 `pickOption`, `advanceQuestion`) and does what the face would, or opens the
 island to it where the face needs a look first (`ShortcutPlan.command`):
 
-- **Plain approval**: ⌃' approves, island open or closed (one tap on the face).
-- **Guarded command (M17)**: with the island closed, the first ⌃' only opens
-  it to the command; the next, with it in view, approves. A guard exists so
-  someone looks. ⌃⎋ stays one press.
-- **Always…'s review**: ⌃' is Confirm and ⌃⎋ is Back, only while the review
-  is on screen; out of view either just reveals it. Saving a rule is never a
-  blind press.
-- **Questions**: a number key picks only with the question on screen; out of
-  view it opens the island to it.
+- **In front of the user** (`ShortcutFaceTracker`): an island is open on
+  the Claude face with this request on it, and it's on the pointer's
+  display — or the user went to it (hovered it, or opened it by shortcut),
+  after which its auto-opened panel stays "in front" when the pointer moves
+  to another display. An alert's auto-open on a display the pointer isn't
+  on, never visited, is not. **Seen** is in front for 0.5s; the clock starts
+  when it comes up and again when it goes down, a new request takes its
+  place, or a press had to reveal it.
+- **Plain approval**: ⌃' approves in one press when the request is in front
+  of the user. Closed, or auto-opened elsewhere: the first press opens it
+  where the pointer is and approves nothing.
+- **Guarded command (M17)**: ⌃' approves only once it's been seen; before
+  that a press reveals it and restarts the half second. So neither
+  expandOnAlert's auto-open nor a fast double-tap on a closed island (the
+  panel is "open" synchronously, long before it's legible) approves it
+  unread. A guard exists so someone looks. ⌃⎋ stays one press.
+- **Always…'s review**: ⌃' is Confirm and ⌃⎋ is Back, only once the review
+  has been seen; before that either just reveals it. Saving a rule is never
+  a blind press.
+- **Questions**: a number key picks only once the question has been seen;
+  before that it opens the island to it.
 - **Which request**: always `pendingRequest`, the one on the island's
   session, the same one the face's Approve answers. With several sessions
   waiting, selection already puts the most pressing on the island; the rest
@@ -1818,8 +1830,10 @@ differs from the defaults.
 ### Decisions to confirm
 
 - ⌥⇥ for the island (vs ⌥Space, or ⌥\`).
-- A guarded command needing a second press when the island is closed (the
-  face itself approves it in one tap).
+- A guarded command needing a second press, half a second after it's in
+  view (the face itself approves it in one tap), and a plain approval
+  needing one when the island is closed or open on another display.
+- The pointer's display as the proxy for where Matthew is looking.
 - No Esc for a held island (it was taken system-wide while the hold lasted,
   so it couldn't interrupt Claude in the terminal); ⌥⇥, a click elsewhere or
   a visit and leaving put it away.

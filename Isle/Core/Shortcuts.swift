@@ -22,8 +22,10 @@
 //    a keystroke already on its way to another app as the request lands must reach
 //    that app, not approve something nobody has seen.
 //  - **A press does exactly what the face's button does**, through the same
-//    view model call, and where the face needs a look first the press opens
-//    the island to it instead (see `ShortcutPlan.command`).
+//    view model call — but only on a request in front of you. Where it isn't
+//    (closed, or auto-opened on a display you aren't on), or where the face
+//    needs a look first and it hasn't had one, the press opens the island to
+//    it where you are instead (see `ShortcutFace`, `ShortcutPlan.command`).
 //
 
 import Foundation
@@ -317,6 +319,80 @@ struct ShortcutContext: Equatable {
     var composing = false
 }
 
+/// Where the open island is, as far as the user goes. Read off the islands
+/// by their owner (`ShortcutIslandHost`).
+enum ShortcutIslandPresence: Equatable {
+    /// No island open (a file drag's drop face doesn't count).
+    case closed
+    /// Open only on displays the pointer isn't on, and nobody went to it:
+    /// an alert's auto-open on a screen the user may not be looking at.
+    case elsewhere
+    /// Open on the display the pointer is on.
+    case pointerScreen
+    /// Open because the user went to it: the pointer is in it, or a
+    /// shortcut opened it.
+    case visited
+}
+
+/// The request's face, as a press sees it.
+enum ShortcutFace: Equatable {
+    /// Not in front of the user: the island is closed, on another face or
+    /// the list, or auto-opened on a display the pointer isn't on and never
+    /// visited.
+    case hidden
+    /// In front of the user, but for less than `ShortcutPlan.seenDelay`.
+    case shown
+    /// In front of the user for at least `ShortcutPlan.seenDelay` — looked at,
+    /// as near as Isle can tell.
+    case seen
+}
+
+/// When the request's face came up in front of the user, so a press can
+/// tell `shown` from `seen`. Fed on every look at the moment (`update`);
+/// pure, so the tests drive it with their own clock.
+///
+/// In front of the user: an island is open on the Claude face with this
+/// request on it, and it's on the pointer's display, or the user went to it
+/// (hovered it, or opened it by shortcut). Having gone to it once, the
+/// request's auto-opened panel stays in front of them when the pointer
+/// moves to another display. The clock starts when it comes up and starts
+/// again whenever it goes down, a new request takes its place, or a press
+/// had to reveal it (`restart`).
+struct ShortcutFaceTracker {
+    private(set) var request: String?
+    private(set) var since: Date?
+    private(set) var visited = false
+
+    mutating func update(request id: String?, showsFace: Bool, presence: ShortcutIslandPresence,
+                         now: Date) -> ShortcutFace {
+        if id != request {
+            request = id
+            since = nil
+            visited = false
+        }
+        guard id != nil else { return .hidden }
+        if showsFace, presence == .visited { visited = true }
+        let inView: Bool
+        switch presence {
+        case .closed: inView = false
+        case .elsewhere: inView = showsFace && visited
+        case .pointerScreen, .visited: inView = showsFace
+        }
+        guard inView else {
+            since = nil
+            return .hidden
+        }
+        if since == nil { since = now }
+        return now.timeIntervalSince(since!) >= ShortcutPlan.seenDelay ? .seen : .shown
+    }
+
+    /// A press had to reveal the request: the look it was waiting for
+    /// starts now, whatever was on screen before.
+    mutating func restart(now: Date) {
+        if since != nil { since = now }
+    }
+}
+
 /// What a press comes to.
 enum ShortcutCommand: Equatable {
     case approve
@@ -338,6 +414,9 @@ enum ShortcutCommand: Equatable {
 enum ShortcutPlan {
     /// How long a request is up before its keys are taken.
     static let armDelay: TimeInterval = 0.5
+    /// How long the request's face must have been in front of the user
+    /// before a press that needs a look first counts as made after one.
+    static let seenDelay: TimeInterval = 0.5
 
     /// The shortcuts to hold right now, and their keys.
     static func active(_ context: ShortcutContext, bindings: ShortcutBindings) -> [ShortcutAction: KeyCombo] {
@@ -362,21 +441,22 @@ enum ShortcutPlan {
         return active
     }
 
-    /// What pressing `action` does. `faceVisible`: an island is open on the
-    /// Claude face with this request on it, where the user can see it.
+    /// What pressing `action` does, with the request's face where `face`
+    /// says.
     ///
-    /// Mirrors the face. Approve and Deny there are one tap, so they're one
-    /// press here, open or not — except:
-    /// - **A guarded command** asks every time so that someone looks at it.
-    ///   A press with the island closed opens it to the command; the next
-    ///   press, with it in view, approves. Deny stays one press: refusing is
-    ///   never what the guard is for.
-    /// - **Always…'s review** is a second step the face asks for. Its
-    ///   Confirm and Back answer to Approve and Deny, only while it's on
-    ///   screen.
-    /// - **A question** is answered by picking from options you can see. A
-    ///   number key with the island closed opens it to the question.
-    static func command(for action: ShortcutAction, context: ShortcutContext, faceVisible: Bool) -> ShortcutCommand {
+    /// Mirrors the face, on a request in front of you:
+    /// - **Approve** is one press with the request shown where you are. With
+    ///   the island closed, or auto-opened on a display you aren't on, the
+    ///   first press opens it there and approves nothing.
+    /// - **A guarded command** asks every time so that someone looks at it:
+    ///   Approve takes it only once it's been `seen` — in front of you for
+    ///   half a second. Before that a press reveals it (again) and the half
+    ///   second starts over, so neither an alert's auto-open nor a fast
+    ///   double-tap on a closed island approves it unread.
+    /// - **Deny** stays one press: refusing is never what the guard is for.
+    /// - **Always…'s review** and **a question's options** need `seen` too:
+    ///   saving a rule, or picking an answer, is never a blind press.
+    static func command(for action: ShortcutAction, context: ShortcutContext, face: ShortcutFace) -> ShortcutCommand {
         switch action {
         case .toggleIsland:
             return context.running ? .toggleIsland : .none
@@ -388,7 +468,7 @@ enum ShortcutPlan {
         switch request {
         case .approval(let guarded, let reviewing):
             if reviewing {
-                guard faceVisible else { return action == .approve || action == .deny ? .reveal : .none }
+                guard face == .seen else { return action == .approve || action == .deny ? .reveal : .none }
                 switch action {
                 case .approve: return .confirmRemember
                 case .deny: return .cancelRemember
@@ -396,17 +476,19 @@ enum ShortcutPlan {
                 }
             }
             switch action {
-            case .approve: return guarded && !faceVisible ? .reveal : .approve
+            case .approve:
+                if guarded { return face == .seen ? .approve : .reveal }
+                return face == .hidden ? .reveal : .approve
             case .deny: return .deny
             default: return .none
             }
         case .question(let options, let multiSelect):
             if let index = action.optionIndex {
                 guard index < options else { return .none }
-                return faceVisible ? .pick(index) : .reveal
+                return face == .seen ? .pick(index) : .reveal
             }
             if action == .approve, multiSelect {
-                return faceVisible ? .submit : .reveal
+                return face == .seen ? .submit : .reveal
             }
             return .none
         }

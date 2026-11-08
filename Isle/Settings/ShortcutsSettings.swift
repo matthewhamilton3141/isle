@@ -41,7 +41,7 @@ struct ShortcutsSettingsSection: View {
                 row(.approve, subtitle: "Also Always…’s Confirm, and Done on a question that takes several answers.")
                 row(.deny, subtitle: "Also Always…’s Back.")
                 optionsRow
-                Text("A press does what the button does, on the request the island is showing. A guarded command takes two presses: the first opens the island to it, the second approves. A number key picks only once the question is on screen; the first press opens it. Keys are taken half a second after a request appears, so a keystroke already on its way to another app stays there.")
+                Text("A press does what the button does, on the request the island is showing — once it’s open on the screen your pointer is on. Until then the first press opens it there. A guarded command, Always…’s Confirm and the number keys also wait until it’s been in view for half a second: press, read, press again. Deny is always one press. Keys are taken half a second after a request appears, so a keystroke already on its way to another app stays there.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
