@@ -200,7 +200,7 @@ struct IslandFill: View {
     var closedGlass: Bool = false
     /// What lies over the camera on glass, the housing it covers, and how
     /// far right of it the outline is drawn.
-    var camera: IslandGlass.CameraCover = .none
+    var camera = IslandGlass.CameraCover(housing: false, openGlow: false)
     var housing: CGSize = .zero
     var housingShift: CGFloat = 0
 

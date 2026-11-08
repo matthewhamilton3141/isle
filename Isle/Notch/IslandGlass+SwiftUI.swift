@@ -17,7 +17,8 @@
 //
 //  Nothing here runs on a clock. The blend is `Animatable`, interpolated by
 //  the same spring that moves the outline and only for as long as it runs;
-//  at rest it doesn't evaluate. The camera cover is a bitmap built once.
+//  at rest it doesn't evaluate. The camera cover is a Canvas redrawn only
+//  while a spring moves it, over a glow bitmap built once.
 //
 
 import SwiftUI
@@ -43,7 +44,7 @@ struct IslandGlassFill: View {
     /// — the blend's other target, 1 or 0.
     var closedGlass: Bool
     /// What lies over the camera, and the housing it covers (the physical
-    /// cutout; unused with `.none`).
+    /// cutout; unused without one).
     var camera: IslandGlass.CameraCover
     var housing: CGSize
     /// How far the outline sits right of the housing's centre (NotchRootView's
@@ -71,7 +72,9 @@ struct IslandGlassFill: View {
 
 /// The blend from black to glass as an animatable value, so it follows the
 /// spring that moves the outline frame by frame rather than jumping to its
-/// end.
+/// end. The outline's shift right of the camera is animated with it, on the
+/// same channel as NotchRootView's offset, so the camera cover can find the
+/// camera inside a moving outline.
 private struct IslandGlassBlend: View, Animatable {
     var progress: Double
     var closedGlass: Double
@@ -81,11 +84,12 @@ private struct IslandGlassBlend: View, Animatable {
     var housing: CGSize
     var housingShift: CGFloat
 
-    var animatableData: AnimatablePair<Double, Double> {
-        get { AnimatablePair(progress, closedGlass) }
+    var animatableData: AnimatablePair<AnimatablePair<Double, Double>, CGFloat> {
+        get { AnimatablePair(AnimatablePair(progress, closedGlass), housingShift) }
         set {
-            progress = newValue.first
-            closedGlass = newValue.second
+            progress = newValue.first.first
+            closedGlass = newValue.first.second
+            housingShift = newValue.second
         }
     }
 
@@ -97,19 +101,15 @@ private struct IslandGlassBlend: View, Animatable {
                     .overlay(Color.black.opacity(IslandGlass.tint(for: background, progress: progress)))
                     .transition(.identity)
             }
-            if camera != .none {
-                CameraCoverView(
-                    cover: camera,
-                    housing: housing,
-                    shift: housingShift,
-                    bandOpacity: IslandGlass.bandOpacity(camera, progress: progress),
-                    glowOpacity: IslandGlass.glowLayerOpacity(camera, progress: progress)
-                )
-                // Hidden rather than removed under full black, so its
-                // counter-offset keeps running with the outline's; the
-                // empty pill is then the plain black fill, edge and all.
-                .opacity(shows ? 1 : 0)
-            }
+            CameraCoverCanvas(
+                cover: camera,
+                housing: housing,
+                shift: housingShift,
+                openness: IslandGlass.coverOpenness(progress: progress)
+            )
+            // Hidden under full black: the empty pill is then the plain
+            // black fill, edge and all.
+            .opacity(shows ? 1 : 0)
             Rectangle()
                 .fill(.black)
                 .opacity(IslandGlass.blackCover(progress: progress, closedGlass: closedGlass))
@@ -117,64 +117,111 @@ private struct IslandGlassBlend: View, Animatable {
     }
 }
 
-/// The camera cover (`IslandGlass.CameraCover`): the camera band, and over
-/// it what the notch glow adds, each a cached bitmap at its own opacity —
-/// closed the band alone, open the glow (or, with the glow off, nothing).
-/// Anchored on the camera, not the panel: while the outline is a lopsided
-/// pill it is drawn `shift` right of the housing, and gets there on the
-/// width's spring, so the cover is moved back by the same amount on the same
-/// spring and stays put on screen while the panel narrows around it.
-private struct CameraCoverView: View {
+/// The camera cover (`IslandGlass.CameraCover`), drawn at the outline's
+/// live size: the closed wing gradient at 1 - `openness`, and the notch
+/// glow (a cached bitmap) at `openness`, their alpha added — so the two
+/// mix pixel for pixel, as `IslandGlass.coverAlpha` says, with no dip
+/// where both are solid.
+///
+/// A Canvas, redrawn only when its inputs change: at rest, never; while a
+/// spring runs, once a frame, at the in-between size and shift the outline
+/// itself is laid out at. Each wing's gradient runs from the core to the
+/// outline's end on that side, so it follows a toast widening one side, the
+/// width spring of a collapse, and the shift that keeps the camera centred.
+private struct CameraCoverCanvas: View {
     var cover: IslandGlass.CameraCover
     var housing: CGSize
     var shift: CGFloat
-    var bandOpacity: Double
-    var glowOpacity: Double
+    var openness: Double
+
+    /// Stops across a wing, for the eased fade. Enough that the steps of a
+    /// piecewise-linear ramp don't show over a wing of a hundred points.
+    private static let stops = 24
+
+    private static let wingStops: [Double] = (0...stops).map {
+        IslandGlass.wingAlpha(Double($0) / Double(stops))
+    }
 
     var body: some View {
         let covered = IslandGlass.coveredHousing(housing)
-        // An overlay on a flexible clear view, so the cover takes the fill's
-        // size and never sets it: wider and deeper than a pill, as a frame it
-        // would grow the fill, and the outline clipped to it with it.
-        Color.clear.overlay(alignment: .top) {
-            ZStack(alignment: .top) {
-                layer(.band, covered: covered, extent: IslandGlass.bandExtent(covered: covered), opacity: bandOpacity)
-                if cover == .bandToGlow {
-                    layer(.glowOverBand, covered: covered, extent: IslandGlass.glowExtent(housing: covered), opacity: glowOpacity)
+        let core = covered
+        let glow = cover.openGlow ? CameraGlowImage.image(covered: covered) : nil
+        let t = min(max(openness, 0), 1)
+        Canvas { context, size in
+            let camera = size.width / 2 - shift
+            let runs = IslandGlass.wingRuns(width: size.width, shift: shift, core: core.width)
+            let depth = core.height + IslandGlass.closedFadeDown
+            context.drawLayer { all in
+                if t < 1, cover.housing {
+                    all.opacity = 1 - t
+                    all.drawLayer { closed in
+                        closed.fill(
+                            Path(CGRect(x: camera - core.width / 2, y: 0, width: core.width, height: depth)),
+                            with: .color(.black)
+                        )
+                        Self.wing(&closed, from: camera - core.width / 2, run: -runs.leading, depth: depth)
+                        Self.wing(&closed, from: camera + core.width / 2, run: runs.trailing, depth: depth)
+                        // The fade below the core's depth.
+                        closed.blendMode = .destinationIn
+                        let down = core.height / depth
+                        closed.fill(
+                            Path(CGRect(x: 0, y: 0, width: size.width, height: depth)),
+                            with: .linearGradient(
+                                Gradient(stops: [.init(color: .black, location: 0)] + (0...8).map { i in
+                                    let y = core.height + IslandGlass.closedFadeDown * CGFloat(i) / 8
+                                    return .init(
+                                        color: .black.opacity(IslandGlass.closedDownAlpha(y: y, core: core)),
+                                        location: down + (1 - down) * CGFloat(i) / 8
+                                    )
+                                }),
+                                startPoint: .zero, endPoint: CGPoint(x: 0, y: depth)
+                            )
+                        )
+                    }
+                }
+                if let glow, t > 0 {
+                    let extent = IslandGlass.glowExtent(housing: covered)
+                    all.opacity = t
+                    all.blendMode = .plusLighter
+                    all.draw(
+                        Image(decorative: glow, scale: CameraGlowImage.scale),
+                        in: CGRect(x: camera - extent.width / 2, y: 0, width: extent.width, height: extent.height)
+                    )
                 }
             }
-            .offset(x: -shift)
-            .islandCollapseChannel(.width)
         }
+        .allowsHitTesting(false)
     }
 
-    @ViewBuilder
-    private func layer(_ kind: CameraCoverImage.Kind, covered: CGSize, extent: CGSize, opacity: Double) -> some View {
-        if let image = CameraCoverImage.image(kind, covered: covered) {
-            Image(decorative: image, scale: CameraCoverImage.scale)
-                .resizable()
-                .frame(width: extent.width, height: extent.height)
-                .opacity(opacity)
+    /// One wing: black at `from`, easing to clear `run` points away (negative
+    /// runs to the left).
+    private static func wing(_ context: inout GraphicsContext, from x: CGFloat, run: CGFloat, depth: CGFloat) {
+        guard abs(run) > 0.5 else { return }
+        let rect = CGRect(x: min(x, x + run), y: 0, width: abs(run), height: depth)
+        let stops = wingStops.enumerated().map { i, a in
+            Gradient.Stop(color: .black.opacity(a), location: CGFloat(i) / CGFloat(Self.stops))
         }
+        context.fill(
+            Path(rect),
+            with: .linearGradient(
+                Gradient(stops: stops),
+                startPoint: CGPoint(x: x, y: 0), endPoint: CGPoint(x: x + run, y: 0)
+            )
+        )
     }
 }
 
-/// The cover's layers as images, built once per housing size: static
-/// bitmaps the compositor only has to place and fade, rather than a field
-/// redrawn as the panel moves.
+/// The notch glow's falloff as an image, built once per housing size: a
+/// static bitmap the canvas only has to place.
 @MainActor
-private enum CameraCoverImage {
-    enum Kind: String { case band, glowOverBand }
-
+private enum CameraGlowImage {
     static let scale: CGFloat = 2
     private static var cache: [String: CGImage] = [:]
 
-    static func image(_ kind: Kind, covered: CGSize) -> CGImage? {
-        let key = "\(kind.rawValue)-\(covered.width)x\(covered.height)"
+    static func image(covered: CGSize) -> CGImage? {
+        let key = "\(covered.width)x\(covered.height)"
         if let cached = cache[key] { return cached }
-        let mask = kind == .band
-            ? IslandGlass.bandMask(covered: covered, scale: scale)
-            : IslandGlass.glowOverBandMask(covered: covered, scale: scale)
+        let mask = IslandGlass.glowMask(housing: covered, scale: scale)
         // Black, premultiplied: every channel but alpha is zero.
         var pixels = [UInt8](repeating: 0, count: mask.width * mask.height * 4)
         for i in 0..<mask.alpha.count { pixels[i * 4 + 3] = mask.alpha[i] }
