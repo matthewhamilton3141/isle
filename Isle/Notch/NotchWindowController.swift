@@ -244,6 +244,13 @@ final class NotchWindowController {
                 self?.updateActiveRect(rect, on: id)
             }
         )
+        // The window is sized and placed by `maximumFrame` alone. Left to its
+        // defaults the hosting view also sizes it, to the SwiftUI content's
+        // ideal width (the 520pt panel), keeping the origin: with the side
+        // pad's 16pt on each side that took 32pt off the right and drew the
+        // whole island 16pt left of the camera, the collapsed pill's right
+        // cluster half under the housing.
+        hosting.sizingOptions = []
 
         // In the dictionary before the content view is set: SwiftUI can report
         // its first layout during the `contentView` assignment, and the
