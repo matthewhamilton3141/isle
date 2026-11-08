@@ -31,9 +31,20 @@ final class IslandPresentation: ObservableObject {
     @Published private(set) var isHovering: Bool = false {
         didSet {
             guard isHovering != oldValue else { return }
+            // However it closed, a shortcut's hold went with it.
+            if !isHovering, isHeldOpen { isHeldOpen = false }
             content.islandHoverChanged(isHovering)
         }
     }
+
+    /// A keyboard shortcut opened this island and the pointer hasn't been to
+    /// it since. The panel stays up wherever the pointer is — it was asked
+    /// for from the keyboard, so a pointer that was never near it can't be
+    /// "leaving" — until Esc, the shortcut again, or a click in another app.
+    /// The first time the pointer comes into the panel's stay-open zone the
+    /// hold ends and it's an ordinary hover: leaving closes it, as always.
+    /// Nothing here is timed.
+    @Published private(set) var isHeldOpen = false
 
     /// Geometry of the camera housing (or the fallback pill) on the screen this
     /// island is drawn on. Published because the views size themselves from it:
@@ -110,6 +121,24 @@ final class IslandPresentation: ObservableObject {
         isDropTarget = false
         litDropTarget = nil
         if collapse { setHovering(false) }
+    }
+
+    /// A keyboard shortcut opened the island: up now, and held (see
+    /// `isHeldOpen`). Past the collapse lock, like a drop — the lock is
+    /// there for a pointer still on its way out, and this isn't one.
+    func openFromShortcut() {
+        relaxProximity()
+        if !isHovering { isHovering = true }
+        isHeldOpen = true
+    }
+
+    /// The pointer is in the open panel's stay-open zone. Ends a shortcut's
+    /// hold — from here it's a hover like any other — and counts as a visit
+    /// to the alert on it, as a hover-in does.
+    func notePointerInside() {
+        guard isHeldOpen else { return }
+        isHeldOpen = false
+        content.noteAlertVisited()
     }
 
     /// A scroll event reached this island's window — which happens only with

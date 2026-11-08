@@ -2413,10 +2413,12 @@ final class NotchViewModel: ObservableObject {
         return answeredRequestId == id
     }
 
-    /// Approve or Deny the pending tool call.
-    func decide(allow: Bool) {
-        guard let request = pendingRequest, request.kind == .approval, !isAnsweringRequest else { return }
-        send(allow ? .allow : .deny, to: request)
+    /// Approve or Deny the pending tool call. Whether the answer went —
+    /// for a keyboard shortcut's notice (the buttons ignore it).
+    @discardableResult
+    func decide(allow: Bool) -> Bool {
+        guard let request = pendingRequest, request.kind == .approval, !isAnsweringRequest else { return false }
+        return send(allow ? .allow : .deny, to: request)
     }
 
     /// "Always…": puts what would be saved on the face, for a second tap to
@@ -2435,10 +2437,11 @@ final class NotchViewModel: ObservableObject {
 
     /// The confirm on the review: allow this call and accept the suggestions
     /// as Claude Code offered them.
-    func allowRemembering() {
+    @discardableResult
+    func allowRemembering() -> Bool {
         guard let request = pendingRequest, request.kind == .approval, request.remember != nil,
-              isReviewingRemember, !isAnsweringRequest else { return }
-        send(.allowRemembering, to: request)
+              isReviewingRemember, !isAnsweringRequest else { return false }
+        return send(.allowRemembering, to: request)
     }
 
     /// The question currently on screen, when a question is pending.
@@ -2516,7 +2519,8 @@ final class NotchViewModel: ObservableObject {
         send(.terminal, to: request)
     }
 
-    private func send(_ reply: ClaudeRequestWatcher.Reply, to request: ClaudeRequest) {
+    @discardableResult
+    private func send(_ reply: ClaudeRequestWatcher.Reply, to request: ClaudeRequest) -> Bool {
         answeredRequestId = request.id
         guard requestWatcher.respond(reply, to: request) else {
             // The hook let go first (its deadline, Esc in the terminal) or the
@@ -2524,7 +2528,46 @@ final class NotchViewModel: ObservableObject {
             // request that is already gone retire now.
             answeredRequestId = nil
             requestWatcher.refresh()
-            return
+            return false
+        }
+        return true
+    }
+
+    // MARK: - Keyboard shortcuts
+
+    /// The Claude face with the pending request on it is what the open
+    /// panel shows — not the list, not another face. Where a shortcut's
+    /// press counts as made in view of it (see `ShortcutPlan.command`).
+    var showsPendingRequestFace: Bool {
+        pendingRequest != nil && expandedPlace == .face(.claude) && !sessionListShown
+    }
+
+    /// Puts the pending request's face up — out of the list, onto the Claude
+    /// face — for a shortcut that opens the island to it.
+    func revealPendingRequest() {
+        guard pendingRequest != nil else { return }
+        closeSessionList()
+        if expandedPlace != .face(.claude), availableTabs.contains(.claude) {
+            selectTab(.claude)
+        }
+    }
+
+    /// What a shortcut just did, said in the collapsed island — so a press
+    /// made with the island closed is never silent. Unlike a toast it shows
+    /// over a live alert: it's the answer to that alert, and it's the user's
+    /// own doing. Brief, and replaced by the next.
+    @Published private(set) var shortcutNotice: IslandToast?
+    private var shortcutNoticeTask: Task<Void, Never>?
+    private static let shortcutNoticeSeconds: TimeInterval = 2.5
+
+    func showShortcutNotice(_ notice: IslandToast) {
+        shortcutNoticeTask?.cancel()
+        withAnimation(.easeInOut(duration: 0.2)) { shortcutNotice = notice }
+        shortcutNoticeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.shortcutNoticeSeconds))
+            guard !Task.isCancelled, let self else { return }
+            withAnimation(.easeInOut(duration: 0.25)) { self.shortcutNotice = nil }
+            self.shortcutNoticeTask = nil
         }
     }
 
@@ -3307,9 +3350,12 @@ final class NotchViewModel: ObservableObject {
 
     /// What borrows the collapsed island right now, if anything: the drop
     /// notice while a file drag is under way — the user is mid-gesture, and
-    /// that outranks a toast — else the toast. Neither under a live alert.
+    /// that outranks a toast — else a keyboard shortcut's notice, which may
+    /// sit over the alert it answered — else the toast. The drop notice and
+    /// the toast never show under a live alert.
     var collapsedToast: IslandToast? {
         if showsDropNotice { return .dropNotice }
+        if let shortcutNotice { return shortcutNotice }
         return showsToast ? activeToast : nil
     }
 
@@ -3633,6 +3679,11 @@ extension NotchViewModel {
     /// itself four seconds after the canvas renders it.
     func pinPreviewToast(_ toast: IslandToast) {
         activeToast = toast
+    }
+
+    /// The same for a shortcut's notice.
+    func pinShortcutNotice(_ notice: IslandToast) {
+        shortcutNotice = notice
     }
 
     /// Cycles the full set on a loop, through the real queue and the real

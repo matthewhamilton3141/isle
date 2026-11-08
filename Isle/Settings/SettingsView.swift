@@ -12,6 +12,7 @@ import EventKit
 
 private enum SettingsPage: String, Identifiable {
     case general
+    case shortcuts
     case music
     case claude
     case agenda
@@ -23,6 +24,7 @@ private enum SettingsPage: String, Identifiable {
     var title: String {
         switch self {
         case .general: return "General"
+        case .shortcuts: return "Shortcuts"
         case .music: return "Music"
         case .claude: return "Claude Code"
         case .agenda: return "Calendar & Reminders"
@@ -34,6 +36,7 @@ private enum SettingsPage: String, Identifiable {
     var symbol: String {
         switch self {
         case .general: return "gearshape"
+        case .shortcuts: return "keyboard"
         case .music: return "music.note"
         case .claude: return "sparkles"
         case .agenda: return "calendar"
@@ -74,6 +77,7 @@ struct SettingsView: View {
             List(selection: $selectedPage) {
                 Section {
                     sidebarRow(.general)
+                    sidebarRow(.shortcuts)
                 }
 
                 Section("Features") {
@@ -110,7 +114,7 @@ struct SettingsView: View {
     }
 
     private var availablePages: [SettingsPage] {
-        var pages: [SettingsPage] = [.general]
+        var pages: [SettingsPage] = [.general, .shortcuts]
         if settings.effectiveMode.showsMusic { pages.append(.music) }
         if settings.effectiveMode.showsClaude { pages.append(.claude) }
         pages += [.agenda, .pomodoro, .updates]
@@ -130,6 +134,8 @@ struct SettingsView: View {
                 modeSection
                 notchSection
                 powerSection
+            case .shortcuts:
+                ShortcutsSettingsSection(settings: settings)
             case .music:
                 musicSection
             case .claude:
