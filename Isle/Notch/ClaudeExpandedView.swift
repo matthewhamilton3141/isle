@@ -163,15 +163,18 @@ struct ClaudeExpandedView: View {
                 // Claude's own words: up to two lines, cut at the end of a
                 // sentence where one falls (see `ClaudeDoneLine`), else at
                 // the tail. Never shrunk — it's prose, not a filename.
+                // One line of it when a block's line is below: the two
+                // together hold the room two lines of it would.
                 Text(said)
                     .font(L.detailFont)
                     .foregroundStyle(.islandSecondary(0.72))
-                    .lineLimit(L.saidLines)
+                    .lineLimit(viewModel.claudeBlock == nil ? L.saidLines : 1)
                     .truncationMode(.tail)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.trailing, switcherClearance)
                     .contentTransition(.opacity)
+                blockLine
             } else {
                 Text(detail)
                     .font(L.detailFont)
@@ -184,7 +187,13 @@ struct ClaudeExpandedView: View {
                     .truncationMode(.middle)
                     .frame(height: L.detailLine, alignment: .leading)
                     .padding(.trailing, switcherClearance)
-                subagentLine
+                // A block takes the second line from the agents: it's the
+                // one thing on the face that didn't happen.
+                if viewModel.claudeBlock != nil {
+                    blockLine
+                } else {
+                    subagentLine
+                }
             }
 
             // The row follows what's above it at one gap, whatever its
@@ -228,6 +237,44 @@ struct ClaudeExpandedView: View {
             .transition(.opacity)
             .accessibilityLabel(lines[0])
         }
+    }
+
+    /// The last call auto mode blocked (Milestone 23), under what Claude is
+    /// doing: "Auto mode blocked rm · Shared Scratch Sweep". One line, in the
+    /// guard chip's pale orange, in the fullest form that fits; the tooltip says
+    /// how to allow it in Claude Code. No button: the face's Jump is the way
+    /// to the session.
+    @ViewBuilder
+    private var blockLine: some View {
+        if let block = viewModel.claudeBlock {
+            ViewThatFits(in: .horizontal) {
+                ForEach(block.lines, id: \.self) { line in
+                    blockText(line).lineLimit(1)
+                }
+            }
+            .font(L.detailFont)
+            .foregroundStyle(IslandToast.blockTint)
+            .frame(height: L.detailLine, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.trailing, switcherClearance)
+            .contentTransition(.opacity)
+            .transition(.opacity)
+            .help(block.help)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(block.help)
+        }
+    }
+
+    private func blockText(_ line: ClaudeBlock.Line) -> Text {
+        var text = Text(Image(systemName: "hand.raised.fill")).font(.system(size: 10, weight: .semibold))
+            + Text(" " + line.lead)
+        if let object = line.object {
+            text = text + Text(" ") + (line.isCommand ? Text(object).font(L.commandFont) : Text(object))
+        }
+        if let reason = line.reason {
+            text = text + Text(" · ").foregroundColor(.white.opacity(0.3)) + Text(reason)
+        }
+        return text
     }
 
     // MARK: - Eyebrow

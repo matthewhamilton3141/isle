@@ -2137,7 +2137,7 @@ post.
 - New hooks: `SubagentStart`, `PermissionDenied`, `TaskCreated`,
   `TaskCompleted`.
 - 2.1.319 adds `permissions.denyInsteadOfPrompting`, which may stop approvals
-  ever reaching the notch. Unverified.
+  ever reaching the notch. Checked under M23: it doesn't, while Isle answers.
 
 ### M19 — Usage limit, said straight · S · built (`feature/usage-limit`, helper v12), not yet tested in the app
 
@@ -2326,13 +2326,138 @@ agents and a dump hook):
 - **The action row.** The row moves down one line while agents run, like a
   two-line "said".
 
-### M23 — Auto mode's blocks, shown (candidate) · S
+### M23 — Auto mode's blocks, shown · S · built (`feature/auto-mode-blocks`, helper v14), not yet tested in the app
 
-"Auto mode blocked `rm -rf /tmp/build` · Irreversible Local Destruction",
-with Jump, from the `PermissionDenied` hook.
+"Auto mode blocked rm · Shared Scratch Sweep" on the Claude face, and a
+toast on the collapsed island, from the `PermissionDenied` hook. There's no
+Approve: the real approval is Claude Code's `/permissions › Recently
+blocked`, which the line's tooltip names. The face's own Jump is the way to
+the session. Pairs with M17.
 
-- There's no Approve. The real approval is `/permissions › Recently blocked`.
-- Pairs with M17.
+**The payload** (2.1.319, `claude -p --permission-mode auto`, haiku, a
+scratch project and a dump hook; `scratchpad/m23/payloads/`). It took a
+prompt-injected TODO.md to get a block: the classifier allows what the user
+asks for in so many words (`rm -rf` outside the project, `git remote add`, a
+`find /tmp … -delete` all ran when asked directly).
+
+- `PermissionDenied`: `session_id`, `transcript_path`, `cwd`, `prompt_id`,
+  `permission_mode` (`auto`), `effort`, `hook_event_name`, `tool_name`,
+  `tool_input` (the call's input as sent), `tool_use_id` and `reason`. Inside
+  a subagent the base fields carry `agent_id`; an MCP tool adds `mcp_server`.
+  No `permission_suggestions`, no `message`.
+- `reason` is auto mode's own, in brackets when the classifier judged the
+  call: `"[Shared Scratch Sweep]"` (the categories are `claude auto-mode
+  defaults`' soft_deny names, e.g. "Irreversible Local Destruction", "Git
+  Destructive", "Code from External"). When it couldn't judge, a sentence:
+  "Classifier unavailable", "Auto mode classifier transcript exceeded
+  context window — …", "Auto mode unavailable — stopped after repeated
+  responses with no safety verdict". With no reason at all, Claude Code
+  sends "Permission denied".
+- It fires **only** for a denial whose decision reason is auto mode's
+  classifier (the binary checks `type === "classifier" && classifier ===
+  "auto-mode"`). Not for a deny rule, a hook's deny, a person's No, the
+  built-in `rm` safety check (seen: the stream said `permission_denied` with
+  `decision_reason_type: "safetyCheck"`, and the hook didn't fire), or a
+  prompt `denyInsteadOfPrompting` refused.
+- The call's `PreToolUse` fires first (8s before, while the classifier ran),
+  and no `PostToolUse` follows. Output `{"hookSpecificOutput":
+  {"hookEventName":"PermissionDenied","retry":true}}` would tell the model it
+  may retry; Isle prints nothing.
+
+**`permissions.denyInsteadOfPrompting` doesn't stop approvals reaching the
+notch.** Its own description in the binary: "Allow rules, the permission
+mode, auto mode's classifier and PermissionRequest hooks decide first, as
+they do without it; it only ever denies." Checked with two interactive
+sessions (expect, manual mode, the setting in `--settings`, the real
+`isle-cli ask` under a scratch HOME, M17's responder standing in for Isle;
+`scratchpad/m23/deny/`):
+
+| Isle | PermissionRequest | Terminal prompt | Outcome | PermissionDenied |
+|---|---|---|---|---|
+| answering, Approve | fired; `ask` blocked, notch answered | none | ran | — |
+| not running | fired; `ask` returned nothing | none | denied at once, the turn went on | not fired |
+
+So with Isle answering, a session with the setting is answered from the
+notch exactly as before. Without it there's no terminal prompt to fall back
+to: the call is refused and Claude carries on. M23 doesn't show that refusal,
+since no hook reports it. The text for the two cases doesn't need to differ:
+every PermissionDenied is auto mode's.
+
+One wrinkle, not new: with Isle not answering (not running, or the toggle
+off), `ask` writes the "needs you" state on its way out, and under this
+setting nothing then asks; the island says Question until the next hook
+(Claude's next tool call or its Stop, usually seconds). Isle can't see the
+setting (`--settings` and managed settings count, and the hook payload
+doesn't say), so it's left alone.
+
+**What was built:**
+
+- **isle-cli v14.** A PermissionDenied entry runs `denied`. It keeps the
+  session's last block at `~/.isle/blocked/<session>.json`, one line of
+  JSON: `id` (tool_use_id), `tool`, `target` (the program for Bash and
+  Monitor, read from the whole command as in v12; a file's name, a URL),
+  `command` (a Bash or Monitor call's first line, 48 characters at most, cut
+  on whole JSON tokens like the Done excerpt), `cut`, `reason` (the last
+  `reason` key, 120 tokens at most, so a tool input's own can't stand in),
+  `count` (blocks since the last prompt; the same call twice counts once) and
+  `at`. Every record carries it as `blocked` (`null` without one), one file
+  test a write.
+- **The state stays.** `denied` rewrites the record line by line like the
+  subagent verbs. When the record's tool and target are the blocked call's
+  (its PreToolUse wrote them), they're cleared and `tool_active` goes false,
+  so the face says "Thinking…" rather than "Running rm" for a command that
+  never ran. Another call's (a parallel one, an approval waiting) are left
+  alone. About 70ms a block.
+- **When it clears.** The next prompt (UserPromptSubmit), a new session
+  (SessionStart other than a compaction) and SessionEnd. Not Stop, so the
+  Done face can still say why Claude skipped something.
+- **The app.** `ClaudeStatus.blocked` and `ClaudeBlock` (Isle/Claude/
+  ClaudeBlock.swift). A block that doesn't decode is no block, never a lost
+  record.
+- **The face.** One line under the detail, in the guard chip's pale orange
+  with a raised hand: "Auto mode blocked rm · Shared Scratch Sweep". It
+  takes the subagents' line while it's there, and on a Done face Claude's
+  words give up their second line to it. The fullest form that fits, in
+  order: the command itself (only when it starts with its program, so a long
+  `cd …` never stands in), the program with the reason, "Blocked rm · …",
+  then without the reason. Two or more: "Auto mode blocked 2 calls, last git
+  · Git Destructive". A refusal without a judgment: "· couldn't check it".
+  Any other reason gives none. The tooltip has the command, the rule, the
+  count and "To allow it, use /permissions › Recently blocked in Claude
+  Code."
+- **The toast.** "Auto mode blocked rm" for the island's own session,
+  "isle-website · blocked git" for another, in the same pale orange (not the
+  approval's full orange, which would read as a needs-you). A second block in
+  the same session replaces the one up. Only between two readings that both
+  saw the session, so nothing is announced at launch. A live alert drops it,
+  as it drops every toast.
+- **Session rows.** A working row reads "Blocked git · Thinking…" ("2
+  blocked · …" for more), which is where a block is seen when an approval
+  elsewhere held the island and the toast was dropped.
+
+**Tests.** `scripts/test-auto-mode-blocks.sh`: 28 isle-cli cases on the
+real payload's shape (the cut, the count, carrying, clearing, a hostile
+reason, another tool, an older record, a parallel call, an approval
+waiting, other sessions) and 92 Swift cases (the parser on those records,
+the reason, the line's forms, the toast, rows, when it's announced).
+
+**Renders.** `scratchpad/m23/render/png/`, sheet
+`scratchpad/m23/render/m23_contact_sheet.png`: Black and Glass (a flat
+stand-in), short and long commands, a cd in front, no reason, couldn't
+check, two in a row, another tool, with agents, Done, Both mode, the toasts,
+and a block while an approval waits in another session (island, face, the
+blocked session pinned, the list).
+
+**Decisions to confirm.**
+- **The program, not the command, in practice.** The face's line fits the
+  command only when it's short and there's no reason; the program and the
+  rule almost always win. The command is in the tooltip.
+- **No approval-style orange.** Pale orange for the toast and line.
+- **Toasts for the island's own session too**, since nothing else on the
+  island changes after a block.
+- **Kept until the next prompt**, through Done and the idle nudge.
+- **Dropped under a live alert**, like every toast; the row and the face
+  keep it.
 
 ### Seen but not pursued
 

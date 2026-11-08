@@ -35,6 +35,9 @@
     "SubagentStop": [
       { "hooks": [{ "type": "command", "command": "isle-cli subagent-stop" }] }
     ],
+    "PermissionDenied": [
+      { "hooks": [{ "type": "command", "command": "isle-cli denied" }] }
+    ],
     "SessionEnd": [
       { "hooks": [{ "type": "command", "command": "isle-cli end" }] }
     ]

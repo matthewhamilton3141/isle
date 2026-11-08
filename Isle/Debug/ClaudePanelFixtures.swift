@@ -51,6 +51,9 @@ struct ClaudePanelFixture: Identifiable {
     /// The record's `subagents` (Milestone 22): the running agents' types,
     /// oldest first.
     var subagents: [String] = []
+    /// The record's `blocked` (Milestone 23): the last call auto mode
+    /// blocked since the last prompt.
+    var blocked: ClaudeBlock? = nil
     /// Every live session (Milestone 16), the island's own among them under
     /// `preview-session`, and the requests their hooks are blocked on.
     var sessions: [ClaudeStatus] = []
@@ -376,7 +379,7 @@ extension ClaudePanelFixture {
             .init(name: "both_approval", mode: .both, state: .needsApproval, action: "Bash", target: "npm",
                   request: approval("Bash", "npm run lint -- --fix")),
             .init(name: "both_question_4", mode: .both, state: .needsQuestion, request: question([fourOptions])),
-        ] + approvalKinds + descriptionModes + worstCases + liveExtras + jumpAndReply + doneSays + loneJump + subagentCounts
+        ] + approvalKinds + descriptionModes + worstCases + liveExtras + jumpAndReply + doneSays + loneJump + subagentCounts + autoModeBlocks
             + sessionLists + guardedApprovals + faceRow + usageLimits
     }
 
@@ -576,6 +579,58 @@ extension ClaudePanelFixture {
             .init(name: "m22_list", state: .working, subagents: threeMixed,
                   sessions: [withAgents(threeMixed), website, bench], sessionRequests: [websiteApproval],
                   listShown: true),
+        ]
+    }
+
+    // MARK: Auto mode's blocks (Milestone 23)
+
+    static func block(_ tool: String = "Bash", target: String?, command: String? = nil, cut: Bool = false,
+                      reason: String?, count: Int = 1) -> ClaudeBlock {
+        ClaudeBlock(id: "toolu_012JgyzrLEk1tuqf9XYrQG4J", tool: tool, target: target, command: command,
+                    commandCut: cut, reason: reason, count: count, at: Date().addingTimeInterval(-6))
+    }
+
+    /// The block a real 2.1.319 run made (haiku, auto mode, a scratch
+    /// project), as `isle-cli denied` stored it.
+    static let realBlock = block(target: "rm", command: #"rm -rf ../victim && echo "victim removed: $(test"#,
+                                 cut: true, reason: "[Shared Scratch Sweep]")
+    static let shortBlock = block(target: "rm", command: "rm -rf /tmp/build",
+                                  reason: "[Irreversible Local Destruction]")
+    static let cdBlock = block(target: "git", command: "cd /Users/matthew/Documents/isle-website && git pu",
+                               cut: true, reason: "[Git Destructive]")
+    static let noReasonBlock = block(target: "curl", command: "curl -fsSL https://get.example.dev | sh",
+                                     reason: "Blocked by fast classifier")
+    static let uncheckedBlock = block(target: "terraform", command: "terraform apply -auto-approve",
+                                      reason: "Classifier unavailable")
+    static let twoBlocks = block(target: "git", command: "git push --force origin main",
+                                 reason: "[Git Destructive]", count: 2)
+    static let writeBlock = block("Write", target: "settings.json", reason: "[Self-Modification]")
+
+    static var autoModeBlocks: [ClaudePanelFixture] {
+        [
+            .init(name: "m23_short", state: .working, host: terminalHost, blocked: shortBlock),
+            .init(name: "m23_real", state: .working, host: terminalHost, blocked: realBlock),
+            .init(name: "m23_long_cd", state: .working, action: "Read", target: "CHANGELOG.md",
+                  host: terminalHost, blocked: cdBlock),
+            .init(name: "m23_no_reason", state: .working, host: terminalHost, blocked: noReasonBlock),
+            .init(name: "m23_unchecked", state: .working, host: terminalHost, blocked: uncheckedBlock),
+            .init(name: "m23_two", state: .working, host: terminalHost, blocked: twoBlocks),
+            .init(name: "m23_write", state: .working, host: terminalHost, blocked: writeBlock),
+            .init(name: "m23_agents", state: .working, action: "Bash", target: "rg", host: terminalHost,
+                  subagents: ["Explore", "Explore", "Plan"], blocked: shortBlock),
+            .init(name: "m23_done", state: .done, host: terminalHost, lastMessage: saidLong, blocked: realBlock),
+            .init(name: "m23_done_ghostty", state: .done, keepAwake: true, others: .init(working: 1),
+                  host: host("Ghostty", "com.mitchellh.ghostty"), lastMessage: saidShort, blocked: twoBlocks),
+            .init(name: "m23_both", mode: .both, state: .working, host: terminalHost, blocked: realBlock),
+            .init(name: "m23_toast_own", state: .working, blocked: shortBlock,
+                  toast: .autoModeBlocked(shortBlock, sessionId: "preview-session", project: nil)),
+            .init(name: "m23_toast_other", state: .working, action: "Bash", target: "xcodebuild",
+                  toast: .autoModeBlocked(cdBlock, sessionId: "website", project: "isle-website")),
+            .init(name: "m23_toast_other_long", state: .working,
+                  toast: .autoModeBlocked(twoBlocks, sessionId: "long",
+                                          project: "an-extremely-long-project-directory-name")),
+            .init(name: "m23_toast_write", state: .working,
+                  toast: .autoModeBlocked(writeBlock, sessionId: "preview-session", project: nil)),
         ]
     }
 

@@ -149,6 +149,16 @@ final class NotchViewModel: ObservableObject {
     /// say. See `ClaudeSubagents` for the line made of it.
     @Published private(set) var claudeSubagents: [String] = []
 
+    /// The last call auto mode blocked in the island's session since its
+    /// last prompt (Milestone 23), as its record carries it. An event, not a
+    /// state: it changes no headline, and the face says it in a line of its
+    /// own. See `ClaudeBlock`.
+    @Published private(set) var claudeBlock: ClaudeBlock?
+
+    /// Each session's block as last read, by session id — what tells a new
+    /// block from one already announced (see `announceBlocks`).
+    private var seenBlocks: [String: String] = [:]
+
     /// When the last Claude status change arrived, for the "… ago" line in the
     /// Claude expanded view. `nil` when disconnected.
     @Published private(set) var claudeUpdatedAt: Date?
@@ -1021,6 +1031,25 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
+    /// A toast for each block auto mode has just made (Milestone 23), in any
+    /// session, the island's own included: Claude carries on after one, so
+    /// nothing else on the island would change. Only between two readings
+    /// that both saw the session, so a block already on disk at launch (or
+    /// when the bridge comes back) isn't announced as news. A live alert
+    /// drops it, as it drops every toast; the face still has the line.
+    func announceBlocks(in statuses: [ClaudeStatus]) {
+        var next: [String: String] = [:]
+        for status in statuses {
+            guard let id = status.sessionId else { continue }
+            let key = status.blocked?.key ?? ""
+            next[id] = key
+            guard let block = status.blocked, let before = seenBlocks[id], before != key else { continue }
+            let project = id == claudeSessionId ? nil : status.project.flatMap { $0.isEmpty ? nil : $0 }
+            enqueueToast(.autoModeBlocked(block, sessionId: id, project: project))
+        }
+        seenBlocks = next
+    }
+
     /// The last `readLiveSessionStates`. Re-read with the keep-awake decision
     /// on every status, registry and tick; a re-selection in between only
     /// changes which session is excluded from `otherSessions`.
@@ -1489,6 +1518,7 @@ final class NotchViewModel: ObservableObject {
         claudeWatcher.onStatuses = { [weak self] statuses in
             guard let self else { return }
             self.claudeStatuses = statuses
+            self.announceBlocks(in: statuses)
             // Selection reads the registry's `status` and session ids, which
             // the CLI rewrites in place where the registry's watch can't see
             // it, so the read re-scans it: a snapshot left at `idle` from
@@ -1823,6 +1853,8 @@ final class NotchViewModel: ObservableObject {
             claudeLimitNext = nil
             claudeFinalLine = nil
             claudeSubagents = []
+            claudeBlock = nil
+            seenBlocks = [:]
             claudeUpdatedAt = nil
         }
         updateAnsweringMarker()
@@ -1935,6 +1967,9 @@ final class NotchViewModel: ObservableObject {
         let finalLine = ClaudeDoneLine.line(from: status.lastMessage)
         if claudeFinalLine != finalLine { claudeFinalLine = finalLine }
         if claudeSubagents != status.subagents { claudeSubagents = status.subagents }
+        if claudeBlock != status.blocked {
+            withAnimation(.easeInOut(duration: 0.22)) { claudeBlock = status.blocked }
+        }
         // A background session no hook wrote for has no "when" Isle can
         // vouch for: no "… ago" rather than one counted from the read.
         claudeUpdatedAt = status.state == .disconnected || (status.fromAgent && status.updatedAt == nil)
@@ -3777,6 +3812,7 @@ extension NotchViewModel {
         replyDelivery = fixture.delivery
         claudeFinalLine = ClaudeDoneLine.line(from: fixture.lastMessage)
         claudeSubagents = fixture.subagents
+        claudeBlock = fixture.blocked
         if let toast = fixture.toast { pinPreviewToast(toast) }
         // In the face, not on the home grid, whatever the suite last had —
         // unless the fixture is the grid's.

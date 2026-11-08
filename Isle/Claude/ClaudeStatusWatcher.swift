@@ -80,6 +80,11 @@ struct ClaudeStatus: Equatable {
     /// helper saw and whose `SubagentStop` hasn't come; cleared when the turn
     /// ends. Empty on an older helper or Claude Code.
     var subagents: [String] = []
+    /// The last call auto mode's classifier blocked in this session since
+    /// the last prompt, and how many it has (Milestone 23, helper v14). An
+    /// event the record carries, never its state. Nil when there's been
+    /// none, or on an older helper.
+    var blocked: ClaudeBlock? = nil
     /// The state is Claude Code's own, from `claude agents` (Milestone 21),
     /// rather than this record's: a background session no hook writes for,
     /// or one Claude Code says is blocked after the hooks saw its turn end.
@@ -223,7 +228,8 @@ final class ClaudeStatusWatcher {
             lastMessage: payload.last_message.flatMap { $0.isEmpty ? nil : $0 },
             limitKind: payload.limit_kind.flatMap { $0.isEmpty ? nil : $0 },
             limitNext: payload.limit_next.flatMap(ClaudeLimitNext.init(rawValue:)),
-            subagents: payload.subagents ?? []
+            subagents: payload.subagents ?? [],
+            blocked: payload.blocked?.value?.block
         )
     }
 
@@ -257,6 +263,36 @@ private struct StatusPayload: Decodable {
     let limit_next: String?
     /// The running subagents' types, oldest first (helper v13).
     let subagents: [String]?
+    /// The last call auto mode blocked (helper v14); `null` when none.
+    /// Lenient: a block that doesn't read is no block, never a lost record.
+    let blocked: Lenient<BlockedPayload>?
+
+    struct Lenient<T: Decodable>: Decodable {
+        let value: T?
+        init(from decoder: Decoder) throws { value = try? T(from: decoder) }
+    }
+
+    struct BlockedPayload: Decodable {
+        let id: String?
+        let tool: String?
+        let target: String?
+        let command: String?
+        let cut: Bool?
+        let reason: String?
+        let count: Int?
+        let at: String?
+
+        /// Nil without a tool: there's nothing to say about a block that
+        /// doesn't say what it blocked.
+        var block: ClaudeBlock? {
+            guard let tool, !tool.isEmpty else { return nil }
+            func text(_ s: String?) -> String? { s.flatMap { $0.isEmpty ? nil : $0 } }
+            return ClaudeBlock(
+                id: id ?? "", tool: tool, target: text(target), command: text(command),
+                commandCut: cut ?? false, reason: text(reason), count: max(1, count ?? 1),
+                at: text(at).flatMap { ISO8601DateFormatter().date(from: $0) })
+        }
+    }
 
     /// The usage-limit reset moment, parsed from the epoch string the helper
     /// writes. Accepts seconds (10-digit) or milliseconds (13-digit); anything
