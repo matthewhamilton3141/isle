@@ -20,10 +20,14 @@
 import SwiftUI
 
 /// What a toast draws to the left of the camera cutout. An enum rather than a
-/// symbol name because one of the glyphs isn't a system symbol: SF Symbols has
-/// no Bluetooth mark, so that case is drawn by `BluetoothRune`.
+/// symbol name because two of the glyphs aren't a fixed system symbol: SF
+/// Symbols has no Bluetooth mark, so that case is drawn by `BluetoothRune`;
+/// and this Mac's symbol depends on its display, which only the main actor
+/// can ask about, so it's looked up where the toast is drawn
+/// (`DeviceSymbol.thisMac`) rather than where the power monitor makes it.
 enum ToastGlyph: Equatable {
     case symbol(String)
+    case thisMac
     case bluetoothRune
 }
 
@@ -45,6 +49,17 @@ struct IslandToast: Equatable, Identifiable {
         case event(key: String)
         /// A reminder coming due, keyed the same way.
         case reminder(key: String)
+        /// A drag carrying files is under way — see `IslandToast.dropNotice`.
+        case dropNotice
+        /// A Claude session the island wasn't showing finished its turn —
+        /// see `ClaudeToast.swift`. Keyed by session, so two finishing
+        /// together each get their say.
+        case sessionDone(session: String)
+        /// What a keyboard shortcut just did — see `ClaudeToast.swift`.
+        case shortcut
+        /// Auto mode blocked a call (Milestone 23), keyed by session: a
+        /// second block in the same session replaces the first.
+        case autoModeBlocked(session: String)
     }
 
     /// Which Settings switch governs a message. The split is by what is being
@@ -56,6 +71,11 @@ struct IslandToast: Equatable, Identifiable {
         case deviceBattery
         case calendar
         case reminders
+        /// The drop notice. Never queued and never switched off: it's the
+        /// user's own drag, shown exactly as long as it lasts.
+        case fileDrag
+        /// A background Claude session finishing. On whenever the bridge is.
+        case claudeSessions
     }
 
     let id = UUID()
@@ -69,9 +89,13 @@ struct IslandToast: Equatable, Identifiable {
 
     /// The SF Symbol name, when this toast uses one. Nil for the hand-drawn
     /// rune — which is exactly the distinction callers need to make.
+    @MainActor
     var symbolName: String? {
-        if case let .symbol(name) = glyph { return name }
-        return nil
+        switch glyph {
+        case .symbol(let name): return name
+        case .thisMac: return DeviceSymbol.thisMac
+        case .bluetoothRune: return nil
+        }
     }
 
     static func == (lhs: IslandToast, rhs: IslandToast) -> Bool {
@@ -83,6 +107,24 @@ struct IslandToast: Equatable, Identifiable {
     func coalesces(with other: IslandToast) -> Bool {
         kind == other.kind
     }
+}
+
+// MARK: - Drop notice
+
+extension IslandToast {
+    /// "Drop on Isle", while a drag carrying files is in flight anywhere on
+    /// screen. Toast-shaped because it's the same kind of thing — a moment's
+    /// borrow of the whole island — but it doesn't go through the queue or
+    /// its clock: it's on for exactly as long as the drag is, which the drag
+    /// itself reports (see `FileDragWatch`). One value, so its identity is
+    /// stable for as long as it's up.
+    static let dropNotice = IslandToast(
+        kind: .dropNotice,
+        glyph: .symbol("tray.and.arrow.down.fill"),
+        text: "Drop on Isle",
+        tint: neutral,
+        gate: .fileDrag
+    )
 }
 
 // MARK: - Formatting

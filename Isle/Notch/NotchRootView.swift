@@ -32,6 +32,28 @@ struct NotchRootView: View {
     /// content and the hit-test, so neither jumps ahead of the frame.
     @State private var liveSize: CGSize = .zero
 
+    /// The size the island last started collapsing from, for the collapse's
+    /// taper (see `outline`). Snapshotted from the live frame at the moment
+    /// of the close rather than recomputed, because the open size a face
+    /// would report can change under a collapse already in flight.
+    @State private var collapseOrigin: CGSize?
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    /// What the open panel is drawn on. Reduce Transparency takes the glass
+    /// modes back to black.
+    private var panelBackground: PanelBackground {
+        reduceTransparency ? .black : viewModel.panelBackground
+    }
+
+    /// The camera housing the notch glow grows from: with the glow on, and
+    /// only on a screen with a real notch.
+    private var glowHousing: CGSize? {
+        guard viewModel.panelNotchGlow, let metrics = island.metrics, metrics.hasPhysicalNotch else { return nil }
+        return metrics.notchSize
+    }
+
     /// Horizontal padding inside the collapsed shape: 10 (root) + 4 (collapsed
     /// view), each side. Used to turn content widths into a shape width.
     private static let collapsedHPadding: CGFloat = 28
@@ -54,7 +76,27 @@ struct NotchRootView: View {
                 height: metrics.notchSize.height
             )
         }
-        return metrics.windowSize(for: state)
+        return CGSize(width: metrics.windowSize(for: state).width, height: expandedHeight)
+    }
+
+    /// The open panel's height: the standard 146, unless the face on screen
+    /// asks for more — a live question seating its options, the agenda its
+    /// day — when it grows to that, capped (see `NotchMetrics.panelHeight`).
+    /// Only ever read for an expanded state.
+    private var expandedHeight: CGFloat {
+        // The drop face stands in for whatever face was open, at the
+        // standard height, and goes again with the drag.
+        if island.isDropTarget, viewModel.acceptsDrops { return NotchMetrics.expandedSize.height }
+        let room = NotchMetrics.contentRoom(bandHeight: notchBandHeight)
+        guard let content = viewModel.faceContentHeight(room: room) else { return NotchMetrics.expandedSize.height }
+        return NotchMetrics.panelHeight(contentHeight: content, bandHeight: notchBandHeight)
+    }
+
+    /// The spring for a height change while open — a face growing or
+    /// shrinking the panel. The open and close curves, by direction.
+    private var panelResizeAnimation: Animation {
+        reduceMotion ? .notchCloseReduced
+            : expandedHeight > NotchMetrics.expandedSize.height ? .notchOpen : .notchClose
     }
 
     /// The collapsed sides are asymmetric (Claude's side is usually wider), so
@@ -98,14 +140,63 @@ struct NotchRootView: View {
     }
 
     var body: some View {
+        // Read here, not in the closure: the transaction is built from the
+        // state this body was evaluated for.
+        let opening = state.isExpanded
+        let reduced = reduceMotion
         VStack(spacing: 0) {
             notch
                 .offset(x: collapsedShift)
+                // The shift exists to centre an asymmetric pill, so it moves
+                // with the width.
+                .islandCollapseChannel(.width)
+                // A swipe lands in an untimed transaction (see
+                // `FacePager.settle`): `disablesAnimations`, so the faces swap
+                // and the pager re-bases its offset in one frame. The
+                // `.animation(value: expandedHeight)` below honours that flag,
+                // which left the height snapping to the new face's. Here a
+                // swipe's transaction gets the resize spring back for the
+                // outline, and the guard on the content inside takes it away
+                // again, so only the outline moves.
+                //
+                // It has to sit here, on the outermost modifier of the notch:
+                // measured, a transaction changed on an inner frame (as the
+                // scoped `transaction(_:body:)` on the height frame did) leaves
+                // the size's animation as the outer transaction had it.
+                .transaction { t in
+                    guard t.isPanelResize else { return }
+                    t.disablesAnimations = false
+                    t.animation = panelResizeAnimation
+                }
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .animation(state.isExpanded ? .notchOpen : .notchClose, value: state)
+        // Open on the open spring. Close on the close spring, marked as a
+        // collapse so the outline's width, height and corners each take their
+        // own (see `notch`; the close spring is the height's, and is what the
+        // content's fade-out runs on) — or, with Reduce Motion, on a plain
+        // quick ease with nothing shaped about it: unmarked, the channels
+        // stand aside and the outline closes as one frame.
+        .transaction(value: state) { t in
+            guard !t.disablesAnimations else { return }
+            if opening {
+                t.animation = .notchOpen
+            } else if reduced {
+                t.animation = .notchCloseReduced
+            } else {
+                t.animation = .notchClose
+                t.isIslandCollapse = true
+            }
+        }
+        // A question arriving while the panel is already open (or leaving it),
+        // or a move to or from a taller face, changes the height without
+        // changing the state; give that its own spring rather than a jump.
+        // The same curves, by direction.
+        .animation(panelResizeAnimation, value: expandedHeight)
         .onChange(of: state) { previous, current in
+            if previous.isExpanded, !current.isExpanded, liveSize.width > 0, liveSize.height > 0 {
+                collapseOrigin = liveSize
+            }
             // Only on the open/close transition itself, not on changes between
             // the two expanded states — those aren't a gesture the user made
             // and buzzing for them would feel random.
@@ -114,15 +205,29 @@ struct NotchRootView: View {
         }
     }
 
+    /// The island's outline, shared by the clip and the fill so the two can
+    /// never disagree. While collapsing it carries the sizes it's collapsing
+    /// between, which is what lets it taper (see `NotchShape.genie`).
+    private var outline: NotchShape {
+        let corners = state.isExpanded ? IslandMotion.openCorners : IslandMotion.collapsedCorners
+        var genie: NotchShape.Genie?
+        if state == .collapsed, !reduceMotion, let collapseOrigin {
+            genie = NotchShape.Genie(
+                expanded: collapseOrigin,
+                collapsed: size,
+                band: island.metrics?.notchSize ?? NotchMetrics.fallbackNotchSize,
+                bandShift: collapsedShift
+            )
+        }
+        return NotchShape(topCornerRadius: corners.top, bottomCornerRadius: corners.bottom, genie: genie)
+    }
+
     private var notch: some View {
         ZStack {
-            NotchShape(
-                topCornerRadius: state.isExpanded ? 12 : 8,
-                bottomCornerRadius: state.isExpanded ? 22 : 12
-            )
-            // Flat black on both tabs — the ambient artwork/Claude wash was
-            // removed, so nothing tints the panel behind the content.
-            .fill(.black)
+            // Holds the ZStack at the full frame the way the fill used to.
+            // The fill itself is now `IslandFill`, behind and outside the
+            // clip, so it can carry the proximity swell.
+            Color.clear
 
             content
                 .padding(.horizontal, state.isExpanded ? 22 : 10)
@@ -133,46 +238,84 @@ struct NotchRootView: View {
                 .padding(.top, state.isExpanded ? notchBandHeight + 2 : 0)
                 .padding(.bottom, state.isExpanded ? 8 : 0)
 
-            // The face switcher (only when more than one face is on). Inside
-            // the ZStack so it clips to the notch outline; opacity-gated so it
-            // fades in with the rest of the expanded content instead of
-            // popping mid-animation.
+            // The way home, inside a face (only when there is more than one
+            // face, so there's a home to go back to). In the housing band to
+            // the right of the physical cutout: that band is ordinary screen,
+            // not hardware, and nothing else uses it — the waveform sits
+            // below it. Inside the ZStack so it clips to the notch outline;
+            // opacity-gated so it fades in with the rest of the expanded
+            // content instead of popping mid-animation.
             //
-            // Two faces get a single toggle parked in the panel's bottom-right
-            // corner, inset enough to clear the rounded corner and the
-            // transport keys, which stay centred. Three or more get a strip
-            // in the housing band to the right of the physical cutout: the
-            // band right of the camera is ordinary screen, not hardware, and
-            // nothing else uses it but the waveform at the far right — so the
-            // strip sits there, out of the way of every face's content.
-            if state.isExpanded && viewModel.showsTabBar {
-                if viewModel.showsTabStrip {
-                    tabStrip
+            // It comes and goes with the tile moves under it, on their spring
+            // (see `TileMorph`), rather than popping as the face starts.
+            ZStack {
+                if state.isExpanded, viewModel.showsHome, !island.isDropTarget, let face = viewModel.expandedPlace.face {
+                    NotchCrumb(face: face, attention: viewModel.needsYouElsewhere) {
+                        viewModel.selectHome()
+                    }
+                    .frame(height: notchBandHeight)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .padding(.trailing, Self.crumbTrailing)
+                    .opacity(expandedContentOpacity)
+                    .transition(.opacity)
+                } else if state.isExpanded, viewModel.expandedPlace == .home || !viewModel.showsHome, !island.isDropTarget {
+                    // On Home the same spot holds Settings — and on the one
+                    // face of an island with no Home, which has no way home
+                    // to sit there and would otherwise have no gear at all. Its right edge
+                    // sits where the crumb's does (the crumb's label carries
+                    // its own 4pt inset; the gear's 22pt target is centred).
+                    NotchSettingsButton()
+                        .frame(height: notchBandHeight)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                        .padding(.trailing, Self.tabStripTrailing)
-                        // Centred in the band's height.
-                        .padding(.top, max(0, (notchBandHeight - Self.tabStripCell) / 2))
+                        .padding(.trailing, Self.crumbTrailing - 5)
                         .opacity(expandedContentOpacity)
-                } else {
-                    tabToggle
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                        .padding(.trailing, Self.tabToggleTrailing)
-                        .padding(.bottom, Self.tabToggleBottom)
-                        .opacity(expandedContentOpacity)
+                        .transition(.opacity)
                 }
             }
+            .animation(reduceMotion ? .easeInOut(duration: 0.28) : .tileMorph, value: viewModel.expandedPlace == .home)
         }
-        .frame(width: size.width, height: size.height)
+        // A swipe's face swap stays instant for everything inside the
+        // outline, though the notch's outermost modifier (in `body`) gives
+        // the swipe's transaction an animation for the outline's sake.
+        .transaction { t in
+            guard t.isPanelResize else { return }
+            t.disablesAnimations = true
+            t.animation = nil
+        }
+        // Width and height as separate animatable lengths, each under its
+        // own channel, so a collapse runs them on separate springs: the
+        // width leads, the height follows. Not plain `.frame`s — see
+        // `IslandOutlineLength` for why those moved in lockstep. Outside a
+        // collapse both lengths snap and the layout animates the size
+        // change as one frame, as it always did.
+        .modifier(IslandOutlineLength(axis: .horizontal, length: size.width))
+        .islandCollapseChannel(.width, snaps: true)
+        .modifier(IslandOutlineLength(axis: .vertical, length: size.height))
+        .islandCollapseChannel(.height, snaps: true)
         // Clip everything to the notch outline. The expanded content is laid
         // out at its full width the instant the state flips, but the frame
         // only reaches that width at the end of the animation — without this
         // the content spills out of a still-growing notch.
-        .clipShape(
-            NotchShape(
-                topCornerRadius: state.isExpanded ? 12 : 8,
-                bottomCornerRadius: state.isExpanded ? 22 : 12
+        .clipShape(outline)
+        // Flat black on both tabs — the ambient artwork/Claude wash was
+        // removed, so nothing tints the panel behind the content — or, in a
+        // glass mode, black that blends to glass while open. Drawn
+        // outside the clip so the collapsed island can swell a few points as
+        // the pointer nears; never part of the hit rect below.
+        .background(alignment: .top) {
+            IslandFill(
+                proximity: island.proximity,
+                shape: outline,
+                size: size,
+                active: state == .collapsed,
+                background: panelBackground,
+                opened: state.isExpanded,
+                housing: glowHousing,
+                housingShift: collapsedShift
             )
-        )
+        }
+        // The corners lead the collapse: the clip's and the fill's radii.
+        .islandCollapseChannel(.corners)
         // Hit region is the full bounding rectangle, not the notch outline. The
         // outline's top edge sits at the screen edge and its top corners are
         // carved inward by the concave flares, so the corners of the island
@@ -229,7 +372,9 @@ struct NotchRootView: View {
     @ViewBuilder
     private var content: some View {
         if state.isExpanded {
-            ExpandedNotchView(viewModel: viewModel, island: island, palette: palette)
+            let glass = panelBackground.isGlass
+            ExpandedNotchView(viewModel: viewModel, island: island, palette: glass ? palette.flooredForGlass : palette)
+                .environment(\.islandOnGlass, glass)
                 // Opacity gated on how far the notch has actually opened; the
                 // transition still handles the fade-out on collapse.
                 .opacity(expandedContentOpacity)
@@ -240,104 +385,19 @@ struct NotchRootView: View {
         }
     }
 
-    // MARK: - Tab switcher
+    // MARK: - Crumb
 
-    /// Diameter of the single toggle button, and its inset from the panel's
-    /// bottom-right corner. A face whose content reaches that corner clears
-    /// it — see `AgendaExpandedView.switcherClearance`.
-    private static let tabToggleSize: CGFloat = 34
-    private static let tabToggleTrailing: CGFloat = 22
-    private static let tabToggleBottom: CGFloat = 16
-
-    /// Square hit area of one face in the strip, and the gap between them.
-    /// Small enough that four of them fit between the cutout and the
-    /// waveform on the narrowest housing.
-    private static let tabStripCell: CGFloat = 20
-    private static let tabStripGap: CGFloat = 6
-
-    /// Inset from the panel's right edge: past the waveform pinned at the
-    /// top-right (22 panel padding + 4 + 30 wide) with a little air. Constant
-    /// whether or not the waveform is showing, so the strip never hops.
-    private static let tabStripTrailing: CGFloat = 64
-
-    /// A single toggle rather than a segmented pill: it shows the *other*
-    /// face's icon (the one you'd switch to), so on Music it's the 3x3 Claude
-    /// mark and on Claude it's the waveform. Tapping goes to that face.
-    private var tabToggle: some View {
-        let target = viewModel.nextTab
-        return Button {
-            // No withAnimation here: the content cross-fade is handled by
-            // ExpandedNotchView's own `.animation(value: expandedTab)`.
-            viewModel.selectTab(target)
-        } label: {
-            tabIcon(for: target, size: 18)
-                .frame(width: Self.tabToggleSize, height: Self.tabToggleSize)
-                .background(Circle().fill(.black.opacity(0.35)))
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(target.title)
-        .animation(.easeInOut(duration: 0.15), value: viewModel.expandedTab)
-    }
-
-    /// A strip of every face, the current one lit and the rest dimmed. Tapping any goes straight there — no cycling through faces
-    /// you didn't want to reach the one you did.
-    private var tabStrip: some View {
-        HStack(spacing: Self.tabStripGap) {
-            ForEach(viewModel.availableTabs) { tab in
-                let active = tab == viewModel.expandedTab
-                Button {
-                    // No withAnimation here: the content cross-fade is handled
-                    // by ExpandedNotchView's own `.animation(value: expandedTab)`.
-                    viewModel.selectTab(tab)
-                } label: {
-                    tabIcon(for: tab, size: 13)
-                        .opacity(active ? 1 : 0.4)
-                        .frame(width: Self.tabStripCell, height: Self.tabStripCell)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(tab.title)
-                .accessibilityAddTraits(active ? [.isSelected] : [])
-            }
-        }
-        .animation(.easeInOut(duration: 0.15), value: viewModel.expandedTab)
-    }
-
-    /// Music, Pomodoro and Agenda keep their SF Symbols; Claude uses the dot
-    /// mark. All are drawn into the same square so none outweighs the others.
-    @ViewBuilder
-    private func tabIcon(for tab: IsleTab, size: CGFloat) -> some View {
-        let color = Color.white
-        switch tab {
-        case .agenda:
-            Image(systemName: "calendar")
-                .font(.system(size: size * 0.85, weight: .semibold))
-                .foregroundStyle(color)
-                .frame(width: size, height: size)
-        case .music:
-            // A 4-bar waveform, sized to the same box as the Claude dot grid.
-            WaveformIcon(color: color)
-                .frame(width: size, height: size)
-        case .claude:
-            // A simpler 3x3 grid reads better than 5x5 at tab-icon size.
-            DotGridIcon(color: color, dimension: 3)
-                .frame(width: size, height: size)
-        case .pomodoro:
-            Image(systemName: tab.symbolName)
-                .font(.system(size: size * 0.85, weight: .semibold))
-                .foregroundStyle(color)
-                .frame(width: size, height: size)
-        }
-    }
-
+    /// Inset of the crumb from the panel's right edge: the panel's 22 plus
+    /// the waveform's own 4, so the crumb ends on the waveform's right edge
+    /// in the band just above it.
+    private static let crumbTrailing: CGFloat = 26
 }
 
 // MARK: - Previews
 
 #if DEBUG
 /// Full-app canvas preview of the notch overlay. Live and interactive — the
-/// Music/Claude switcher works, so the alert tab-override fix can be exercised
+/// home grid and the crumb work, so the alert override can be exercised
 /// right in the canvas. No subsystems start (the view model is only
 /// constructed, never `start()`ed), so nothing touches audio or the adapter.
 private enum NotchPreview {
@@ -349,7 +409,7 @@ private enum NotchPreview {
     ) -> (NotchViewModel, IslandPresentation) {
         // Isolated defaults so a preview never reads or writes the real prefs.
         let settings = AppSettings(defaults: UserDefaults(suiteName: "isle.preview")!)
-        settings.mode = .both            // show both sources + the tab switcher
+        settings.mode = .both            // show both sources + the home grid
         let vm = NotchViewModel(settings: settings)
         let island = IslandPresentation(content: vm)
         if let screen = NSScreen.main {
@@ -376,9 +436,9 @@ private struct NotchPreviewStage<Content: View>: View {
     }
 }
 
-#Preview("Notch — live alert (tab switch)") {
-    // A live approval auto-jumps to the Claude tab; click Music in the
-    // canvas to confirm the manual override now sticks.
+#Preview("Notch — live alert (face switch)") {
+    // A live approval auto-jumps to the Claude face; go Home and pick Music
+    // in the canvas to confirm the manual override sticks.
     let (vm, island) = NotchPreview.island { $0.claudeState = .needsApproval }
     return NotchPreviewStage {
         NotchRootView(viewModel: vm, island: island)

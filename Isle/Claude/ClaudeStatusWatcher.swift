@@ -51,16 +51,50 @@ struct ClaudeStatus: Equatable {
     /// doesn't emit the field, which only costs a suppression, never a wrong
     /// state.
     var toolActive: Bool = false
-    /// For a `usage_limit` failure, the moment the limit resets, recovered from
-    /// the limit message's embedded Unix epoch. Nil when the message carried no
-    /// reset time (the island then pins "Limit reached" with no countdown).
+    /// For a `usage_limit` failure, the moment the limit resets: from the
+    /// transcript's `quotaLimits.resetsAt`, else from Claude Code's own words
+    /// ("resets 6:50pm (America/Toronto)"). Nil when neither said (the face
+    /// then gives no time).
     var resetAt: Date?
     /// When the hook wrote this record. Breaks ties between sessions of equal
     /// urgency — see `NotchViewModel.selectStatus`.
     var updatedAt: Date?
-    /// For a `.needsApproval` raised by the `ask` (PermissionRequest) hook, the
-    /// id of the blocked request. Nil when the approval didn't come from `ask`.
+    /// While `ask` / `ask-question` is blocked waiting on the notch, the id of
+    /// its request (see ClaudeRequestWatcher). Any other write clears it, which
+    /// is half of how a request that resolved elsewhere retires its buttons.
     var requestId: String?
+    /// For `.done`, the start of what Claude said last: up to 300 characters
+    /// of its final message, as the `Stop` hook carried it. Raw — the face
+    /// takes its first sentence (see `ClaudeDoneLine`). Nil when there was
+    /// nothing to quote, or on a helper older than v10.
+    var lastMessage: String?
+    /// For a usage limit, the window that was hit (`five_hour`, `seven_day`,
+    /// …), and — on the limit or the turn that continued after it — what
+    /// Claude Code said comes next (Milestone 19, helper v12). Nil when
+    /// nothing said.
+    var limitKind: String? = nil
+    var limitNext: ClaudeLimitNext? = nil
+    /// The subagents this session has running (Milestone 22, helper v13):
+    /// each one's type (`Explore`, `Plan`, a custom agent's name), oldest
+    /// first, one entry per agent. Only agents whose `SubagentStart` the
+    /// helper saw and whose `SubagentStop` hasn't come; cleared when the turn
+    /// ends. Empty on an older helper or Claude Code.
+    var subagents: [String] = []
+    /// The last call auto mode's classifier blocked in this session since
+    /// the last prompt, and how many it has (Milestone 23, helper v14). An
+    /// event the record carries, never its state. Nil when there's been
+    /// none, or on an older helper.
+    var blocked: ClaudeBlock? = nil
+    /// What the last turn left running or scheduled when it ended
+    /// (Milestone 20, helper v15): Stop's `background_tasks` and
+    /// `session_crons`, as of that Stop. Nil when it left nothing, after the
+    /// next prompt, or on an older helper.
+    var left: ClaudeLeftovers? = nil
+    /// The state is Claude Code's own, from `claude agents` (Milestone 21),
+    /// rather than this record's: a background session no hook writes for,
+    /// or one Claude Code says is blocked after the hooks saw its turn end.
+    /// Never set on a record read from disk.
+    var fromAgent = false
 
     static let disconnected = ClaudeStatus(state: .disconnected, project: nil, sessionId: nil)
 }
@@ -72,13 +106,21 @@ final class ClaudeStatusWatcher {
     var onStatuses: (([ClaudeStatus]) -> Void)?
 
     private let directoryURL: URL
+    /// Where the watch's events land, and where every scan runs: reading and
+    /// decoding each session file is file I/O and JSON, and none of it needs
+    /// the main thread. Serial, so scans run in the order they were asked for.
     private let queue = DispatchQueue(label: "isle.claude-status-watcher", qos: .utility)
 
-    private var directorySource: DispatchSourceFileSystemObject?
+    private var watch: DirectoryWatch?
     private var coalesceTask: Task<Void, Never>?
 
     private var lastStatuses: [ClaudeStatus] = []
     private var isRunning = false
+    /// Bumped by every scan asked for, and by `stop`. A scan publishes only if
+    /// it is still the newest one when it lands, so a slow scan can never
+    /// overwrite what a newer one already reported — nor one from before a
+    /// stop reach a watcher that has since been restarted.
+    private var generation = 0
 
     private static let coalesceInterval: Duration = .milliseconds(80)
 
@@ -104,38 +146,25 @@ final class ClaudeStatusWatcher {
             withIntermediateDirectories: true
         )
 
-        startDirectoryWatch()
+        // By path, not by vnode: a reinstall that deletes and recreates the
+        // directory would otherwise leave this watching the dead one.
+        let watch = DirectoryWatch(url: directoryURL, queue: queue) { [weak self] _ in
+            Task { @MainActor in self?.scheduleRefresh() }
+        }
+        self.watch = watch
+        watch.start()
         refresh()
     }
 
     func stop() {
         guard isRunning else { return }
         isRunning = false
+        generation += 1
         coalesceTask?.cancel()
         coalesceTask = nil
-        directorySource?.cancel()   // cancel handler closes the fd
-        directorySource = nil
+        watch?.stop()
+        watch = nil
         lastStatuses = []
-    }
-
-    // MARK: - Watch
-
-    private func startDirectoryWatch() {
-        guard directorySource == nil else { return }
-        let fd = open(directoryURL.path, O_EVTONLY)
-        guard fd >= 0 else { return }
-
-        let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: fd,
-            eventMask: [.write, .delete, .rename],
-            queue: queue
-        )
-        source.setEventHandler { [weak self] in
-            Task { @MainActor in self?.scheduleRefresh() }
-        }
-        source.setCancelHandler { close(fd) }
-        directorySource = source
-        source.resume()
     }
 
     // MARK: - Refresh
@@ -150,52 +179,70 @@ final class ClaudeStatusWatcher {
         }
     }
 
-    /// Re-reads every session file and publishes. Every event funnels here, so
-    /// it must be idempotent.
+    /// Re-reads every session file off the main thread and publishes the
+    /// result, if it's still the newest and anything changed. Every event
+    /// funnels here, so it must be idempotent.
     private func refresh() {
         guard isRunning else { return }
-
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: directoryURL.path)) ?? []
-        let statuses = names
-            .compactMap(status(named:))
-            .sorted { ($0.sessionId ?? "") < ($1.sessionId ?? "") }
-
-        guard statuses != lastStatuses else { return }
-        lastStatuses = statuses
-        onStatuses?(statuses)
+        generation += 1
+        let generation = generation
+        let directoryURL = directoryURL
+        queue.async { [weak self] in
+            let statuses = Self.scan(directoryURL)
+            Task { @MainActor in
+                guard let self, self.isRunning, self.generation == generation,
+                      statuses != self.lastStatuses
+                else { return }
+                self.lastStatuses = statuses
+                self.onStatuses?(statuses)
+            }
+        }
     }
 
-    /// Parses one `<session-id>.json`. Any failure — unreadable bytes, malformed
-    /// JSON, unknown state string — drops that one record rather than faulting
-    /// the whole scan, so a single bad file can't blind the island to the rest.
-    /// The filename is the fallback session id, since it *is* the session id.
-    private func status(named name: String) -> ClaudeStatus? {
-        let url = URL(fileURLWithPath: name, relativeTo: directoryURL)
-        guard url.pathExtension == "json",
-              let data = try? Data(contentsOf: url),
-              let payload = try? JSONDecoder().decode(StatusPayload.self, from: data)
-        else {
+    /// Every session file in `directoryURL`, decoded, in session-id order.
+    nonisolated private static func scan(_ directoryURL: URL) -> [ClaudeStatus] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directoryURL.path)) ?? []
+        return names
+            .compactMap { name -> ClaudeStatus? in
+                let url = URL(fileURLWithPath: name, relativeTo: directoryURL)
+                guard url.pathExtension == "json", let data = try? Data(contentsOf: url) else { return nil }
+                return decode(data, fileStem: url.deletingPathExtension().lastPathComponent)
+            }
+            .sorted { ($0.sessionId ?? "") < ($1.sessionId ?? "") }
+    }
+
+    /// Parses one `<session-id>.json`. Any failure — malformed JSON, unknown
+    /// state string — drops that one record rather than faulting the whole
+    /// scan, so a single bad file can't blind the island to the rest. The
+    /// filename is the fallback session id, since it *is* the session id.
+    nonisolated static func decode(_ data: Data, fileStem: String) -> ClaudeStatus? {
+        guard let payload = try? JSONDecoder().decode(StatusPayload.self, from: data) else {
             return nil
         }
         return ClaudeStatus(
             state: payload.claudeState,
             project: payload.project,
-            sessionId: payload.session_id.flatMap { $0.isEmpty ? nil : $0 }
-                ?? url.deletingPathExtension().lastPathComponent,
+            sessionId: payload.session_id.flatMap { $0.isEmpty ? nil : $0 } ?? fileStem,
             action: payload.action.flatMap { $0.isEmpty ? nil : $0 },
             target: payload.target.flatMap { $0.isEmpty ? nil : $0 },
             errorType: payload.error_type.flatMap { $0.isEmpty ? nil : $0 },
             toolActive: payload.tool_active ?? false,
             resetAt: payload.resetDate,
-            updatedAt: payload.updated_at.flatMap(Self.timestamp(from:)),
-            requestId: payload.request_id.flatMap { $0.isEmpty ? nil : $0 }
+            updatedAt: payload.updated_at.flatMap(timestamp(from:)),
+            requestId: payload.request_id.flatMap { $0.isEmpty ? nil : $0 },
+            lastMessage: payload.last_message.flatMap { $0.isEmpty ? nil : $0 },
+            limitKind: payload.limit_kind.flatMap { $0.isEmpty ? nil : $0 },
+            limitNext: payload.limit_next.flatMap(ClaudeLimitNext.init(rawValue:)),
+            subagents: payload.subagents ?? [],
+            blocked: payload.blocked?.value?.block,
+            left: payload.left?.value?.leftovers
         )
     }
 
-    private static let timestampFormatter = ISO8601DateFormatter()
-
-    private static func timestamp(from string: String) -> Date? {
-        string.isEmpty ? nil : timestampFormatter.date(from: string)
+    nonisolated private static func timestamp(from string: String) -> Date? {
+        // A formatter per call: this runs on the scan queue, where a shared
+        // one would need a lock, and making one is cheap next to the read.
+        string.isEmpty ? nil : ISO8601DateFormatter().date(from: string)
     }
 }
 
@@ -215,6 +262,93 @@ private struct StatusPayload: Decodable {
     let tool_active: Bool?
     let reset_at: String?
     let request_id: String?
+    /// The start of Claude's final message, written on `Stop` (helper v10).
+    let last_message: String?
+    /// A usage limit's window and what comes next (helper v12).
+    let limit_kind: String?
+    let limit_next: String?
+    /// The running subagents' types, oldest first (helper v13).
+    let subagents: [String]?
+    /// The last call auto mode blocked (helper v14); `null` when none.
+    /// Lenient: a block that doesn't read is no block, never a lost record.
+    let blocked: Lenient<BlockedPayload>?
+    /// What the turn left running or scheduled (helper v15); `null` when
+    /// nothing. Lenient, like `blocked`.
+    let left: Lenient<LeftPayload>?
+
+    struct LeftPayload: Decodable {
+        struct Task: Decodable {
+            let type: String?
+            let name: String?
+            let run: String?
+            let cut: Bool?
+        }
+        struct Cron: Decodable {
+            let schedule: String?
+            let recurring: Bool?
+        }
+        let tasks: [Lenient<Task>]?
+        let more: Int?
+        let crons: [Lenient<Cron>]?
+        let more_crons: Int?
+        let at: String?
+
+        /// Each field on its own, so one that doesn't read loses only itself.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            tasks = try? c.decode([Lenient<Task>].self, forKey: .tasks)
+            more = try? c.decode(Int.self, forKey: .more)
+            crons = try? c.decode([Lenient<Cron>].self, forKey: .crons)
+            more_crons = try? c.decode(Int.self, forKey: .more_crons)
+            at = try? c.decode(String.self, forKey: .at)
+        }
+
+        private enum CodingKeys: String, CodingKey { case tasks, more, crons, more_crons, at }
+
+        /// Nil when it holds nothing to say.
+        var leftovers: ClaudeLeftovers? {
+            func text(_ s: String?) -> String? { s.flatMap { $0.isEmpty ? nil : $0 } }
+            let tasks = (tasks ?? []).compactMap(\.value).compactMap { task -> ClaudeLeftovers.Task? in
+                guard let type = text(task.type) else { return nil }
+                return .init(type: type, name: text(task.name), run: text(task.run), cut: task.cut ?? false)
+            }
+            let wakes = (crons ?? []).compactMap(\.value).compactMap { cron -> ClaudeLeftovers.Wake? in
+                guard let schedule = text(cron.schedule) else { return nil }
+                return .init(schedule: schedule, recurring: cron.recurring ?? false)
+            }
+            let left = ClaudeLeftovers(
+                tasks: tasks, more: max(0, more ?? 0), wakes: wakes, moreWakes: max(0, more_crons ?? 0),
+                at: text(at).flatMap { ISO8601DateFormatter().date(from: $0) })
+            return left.isEmpty ? nil : left
+        }
+    }
+
+    struct Lenient<T: Decodable>: Decodable {
+        let value: T?
+        init(from decoder: Decoder) throws { value = try? T(from: decoder) }
+    }
+
+    struct BlockedPayload: Decodable {
+        let id: String?
+        let tool: String?
+        let target: String?
+        let command: String?
+        let cut: Bool?
+        let reason: String?
+        let count: Int?
+        let at: String?
+
+        /// Nil without a tool: there's nothing to say about a block that
+        /// doesn't say what it blocked.
+        var block: ClaudeBlock? {
+            guard let tool, !tool.isEmpty else { return nil }
+            func text(_ s: String?) -> String? { s.flatMap { $0.isEmpty ? nil : $0 } }
+            return ClaudeBlock(
+                id: id ?? "", tool: tool, target: text(target), command: text(command),
+                commandCut: cut ?? false, reason: text(reason), count: max(1, count ?? 1),
+                at: text(at).flatMap { ISO8601DateFormatter().date(from: $0) })
+        }
+    }
 
     /// The usage-limit reset moment, parsed from the epoch string the helper
     /// writes. Accepts seconds (10-digit) or milliseconds (13-digit); anything

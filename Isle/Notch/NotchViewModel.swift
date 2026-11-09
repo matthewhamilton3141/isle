@@ -32,6 +32,44 @@ enum CollapsedSize {
     static let statusFontSize: CGFloat = 10
 }
 
+/// How many live sessions besides the island's own are busy or blocked —
+/// see `NotchViewModel.otherSessions`.
+struct ClaudeOtherSessions: Equatable {
+    /// Working or compacting.
+    var working = 0
+    /// Blocked on an approval or a question.
+    var needYou = 0
+
+    var isEmpty: Bool { working == 0 && needYou == 0 }
+}
+
+/// The text fields in the panel — the Claude face's three and the agenda's
+/// quick add. Each one makes the panel key while it's in use — see
+/// `NotchViewModel.composing`.
+enum ComposeKind: Equatable {
+    /// A reply to a session at its prompt, typed into its terminal.
+    case reply
+    /// "Type something": a free-text answer to the question on screen.
+    case answer
+    /// "No, and tell Claude what to do differently": a denial with a reason.
+    case denial
+    /// "Add event or reminder…" on the agenda face.
+    case quickAdd
+}
+
+/// What became of a reply, in the order it can happen. Nothing here is
+/// claimed early: `sent` waits for the transcript to show the text as the
+/// user's own turn.
+enum ReplyDelivery: Equatable {
+    case none
+    /// Typed into the terminal; not yet seen in the transcript.
+    case sending(String)
+    /// The transcript holds it as a turn the user typed.
+    case sent(String)
+    /// It didn't get there. `text` is kept in the field; `reason` says why.
+    case failed(text: String, reason: String)
+}
+
 /// Everything the island *shows*, shared by every island on every screen.
 ///
 /// Hover and per-screen geometry are not here — they belong to one island and
@@ -51,10 +89,11 @@ final class NotchViewModel: ObservableObject {
     /// dismissed by a stray move nearby).
     private var alertWasHovered = false
 
-    /// The user manually picked a tab while the current alert was live, so the
-    /// auto-jump to the Claude tab (see `expandedTab`) should stop overriding
-    /// their choice for the rest of this alert. Re-armed on the next state
-    /// change, so a fresh interrupt still grabs the Claude tab once.
+    /// The user went somewhere themselves — a tile, Home, a swipe — while the
+    /// current alert was live, so the auto-jump to the Claude face (see
+    /// `expandedPlace`) should stop overriding their choice for the rest of
+    /// this alert. Re-armed on the next state change, so a fresh interrupt
+    /// still grabs the Claude face once.
     private var tabOverriddenDuringAlert = false
 
     /// Claude Code state from the hook bridge, driven by `ClaudeStatusWatcher`.
@@ -89,17 +128,212 @@ final class NotchViewModel: ObservableObject {
     /// countdown; the display eases back to idle at this moment. Nil when unknown.
     @Published private(set) var claudeResetAt: Date?
 
+    /// For a usage limit, the window that was hit, and — on the limit or the
+    /// turn Claude Code continued after it — what it said comes next
+    /// (Milestone 19). Nil when the record didn't say.
+    @Published private(set) var claudeLimitKind: String?
+    @Published private(set) var claudeLimitNext: ClaudeLimitNext?
+
+    /// The start of what Claude said at the end of its last turn, as the face
+    /// and the home tile show it (see `ClaudeDoneLine`). Read from the
+    /// session's record, which carries the message from `Stop` until the next
+    /// prompt — so it stays through the checkmark easing back to "Ready" and
+    /// the "waiting for your input" nudge, and goes the moment a new turn
+    /// starts. Nil when the turn ended with nothing to quote (only code, or
+    /// no text), and on a helper older than v10.
+    @Published private(set) var claudeFinalLine: String?
+
+    /// The subagents the island's session has running, by type, oldest
+    /// first (Milestone 22): what its hooks reported, each until its own
+    /// stop, and none once the session's process is gone. Empty when none
+    /// are, or the helper or Claude Code is too old to say. See
+    /// `ClaudeSubagents` for the line made of it.
+    @Published private(set) var claudeSubagents: [String] = []
+
+    /// The last call auto mode blocked in the island's session since its
+    /// last prompt (Milestone 23), as its record carries it. An event, not a
+    /// state: it changes no headline, and the face says it in a line of its
+    /// own. See `ClaudeBlock`.
+    @Published private(set) var claudeBlock: ClaudeBlock?
+
+    /// What the island's session's last turn left running or scheduled when
+    /// it ended (Milestone 20), as its record carries it: the shells and
+    /// agents still in flight at that Stop, and the wake-ups set for later.
+    /// As of the turn's end, never a live count; the next prompt clears it.
+    /// See `ClaudeLeftovers`.
+    @Published private(set) var claudeLeftovers: ClaudeLeftovers?
+
+    /// Each session's block as last read, by session id — what tells a new
+    /// block from one already announced (see `announceBlocks`).
+    private var seenBlocks: [String: String] = [:]
+
     /// When the last Claude status change arrived, for the "… ago" line in the
     /// Claude expanded view. `nil` when disconnected.
     @Published private(set) var claudeUpdatedAt: Date?
 
-    /// The tab the user last selected in `.both` mode. Backed by AppSettings so
-    /// it survives relaunch. Display may override this during an interrupt —
-    /// see `expandedTab`.
+    /// Isle is holding the keep-awake assertion right now. A mirror of
+    /// `ClaudeKeepAwake.isHeld`, re-published after every take and release,
+    /// so the panel's mark is the assertion itself rather than the setting:
+    /// on while `pmset -g assertions` lists the hold, off the moment it goes.
+    @Published private(set) var isKeepingAwake = false
+
+    /// Live sessions other than the one on the island that are busy or
+    /// blocked — selection shows one session, and this is how the panel
+    /// admits the rest. Counted only from sessions the registry vouches for,
+    /// so a crashed session's leftover file never inflates it.
+    @Published private(set) var otherSessions = ClaudeOtherSessions()
+
+    // MARK: Every session at once (Milestone 16)
+
+    /// Every live session, in the order selection ranks them — the list the
+    /// Claude face can flip to. Only sessions the registry vouches for, each
+    /// corrected as the island corrects its own (see `updateSessionList`).
+    @Published private(set) var sessionList: [ClaudeSessionRow] = []
+
+    /// The Claude face is showing the list rather than a session. Held here,
+    /// like the question step, so every island shows the same thing; put
+    /// away when the panel closes.
+    @Published private(set) var sessionListShown = false
+
+    /// The session the user picked from the list, while it holds the island
+    /// (see `ClaudeSelection.Pin`). The face says so with a way back.
+    @Published private(set) var pinnedSessionId: String?
+
+    private var sessionPin: ClaudeSelection.Pin? {
+        didSet {
+            if pinnedSessionId != sessionPin?.sessionId { pinnedSessionId = sessionPin?.sessionId }
+        }
+    }
+
+    /// Where each listed session is on screen, for its row's Jump. Resolved
+    /// only while the list is up, and only from the session's own process
+    /// tree — a row without one has no Jump.
+    @Published private(set) var sessionHosts: [String: ClaudeSessionHost] = [:]
+
+    /// The CLI pid each entry in `sessionHosts` was resolved for.
+    private var sessionHostPIDs: [String: pid_t] = [:]
+
+    // MARK: Background sessions (Milestone 21)
+
+    /// Every session `claude agents --json --all` last listed.
+    private var claudeAgents: [ClaudeAgent] = []
+
+    /// When Isle saw each background session finish (see
+    /// `ClaudeBackground.noteFinishes`), by session id.
+    private var backgroundFinishedAt: [String: Date] = [:]
+
+    /// The background half of the last reading: names, attach ids, Claude
+    /// Code's states, and the sessions only agent view knows of.
+    private var backgroundMerge = ClaudeBackground.Merge.empty
+
+    /// What agent view adds about the island's session, when it hosts it:
+    /// its name for the eyebrow and its attach id for Jump.
+    @Published private(set) var claudeBackground: ClaudeBackgroundInfo?
+
+    /// The island's state is Claude Code's (`claude agents`), not a hook's:
+    /// the face says it in Claude Code's words, and nothing eases it away.
+    @Published private(set) var claudeStateFromAgent = false
+
+    /// Whether the live sessions the hooks report, besides the island's, are
+    /// all quiet — what the reselect tick runs on. The background sessions
+    /// only agent view knows of are counted in `otherSessions` but don't
+    /// keep the tick going: nothing a tick re-reads can change them.
+    private var hookOthersQuiet = true
+
+    // MARK: Answering from the notch (Milestone 7)
+
+    /// The request the selected session's hook says it is blocked on — the
+    /// status file's `request_id`. Nil once any other verb has written.
+    private var claudeRequestId: String?
+
+    /// Every request a hook is blocked on right now, as `requestWatcher` last
+    /// reported it.
+    private var claudeRequests: [ClaudeRequest] = []
+
+    /// The request the notch can answer right now: the one whose id the
+    /// selected session's status names *and* whose file still exists. Either
+    /// half going away retires the buttons — the file when the hook exits (an
+    /// answer, its deadline, Esc in the terminal), the id when any other verb
+    /// writes (the prompt was answered in the terminal and Claude moved on).
+    /// Isle offers nothing it can't back with a hook that is actually waiting.
+    @Published private(set) var pendingRequest: ClaudeRequest?
+
+    /// The request a click has already answered, from the moment the response
+    /// is written until the hook takes it and the request goes away. Disables
+    /// the buttons so a double-click can't write twice.
+    @Published private(set) var answeredRequestId: String?
+
+    /// Which of a multi-question `AskUserQuestion` is on screen, and what has
+    /// been picked for each so far. Held here rather than in the view so every
+    /// island shows the same step.
+    @Published private(set) var questionIndex = 0
+    @Published private(set) var questionPicks: [Set<String>] = []
+
+    /// "Always…" has been tapped on an approval that carries Claude Code's
+    /// suggestions: the face shows exactly what accepting them would save,
+    /// and only a second tap sends it. Held here, like the question step, so
+    /// every island shows the same face.
+    @Published private(set) var isReviewingRemember = false
+
+    /// Whether `run/answering` is currently down, so it's only touched on a
+    /// change.
+    private var answeringMarkerWritten = false
+
+    /// Free text typed for the current question ("Type something"), by
+    /// question index. An entry replaces the picks for its question.
+    @Published private(set) var questionTyped: [Int: String] = [:]
+
+    // MARK: Jump and reply (Milestone 11)
+
+    /// Where the island's session is on screen, from its CLI's process tree
+    /// (see `ClaudeSessionHost`). Nil until resolved, and whenever the chain
+    /// doesn't end at an app — the Jump pill and the Reply field are drawn
+    /// only from this, so neither ever appears on a guess.
+    @Published private(set) var sessionHost: ClaudeSessionHost?
+
+    /// The CLI pid `sessionHost` was resolved for, so a re-selection of the
+    /// same session doesn't walk the tree again.
+    private var sessionHostPID: pid_t?
+
+    /// Which text field is taking keys, if any. The window controller makes
+    /// the panel key exactly while this is set, and hands focus back the
+    /// moment it clears — see `NotchWindowController.observeComposing`.
+    @Published private(set) var composing: ComposeKind?
+
+    /// Reply drafts by session id, so text typed for one session never goes
+    /// to another when the island moves on — it waits for its own session.
+    @Published private var replyDrafts: [String: String] = [:]
+
+    /// Text for the pending request ("Type something", "No, and tell
+    /// Claude…"). Cleared when the request changes: its question is gone.
+    @Published var answerDraft = ""
+    @Published var denialDraft = ""
+
+    /// What happened to the last reply, as far as Isle can vouch for it.
+    @Published private(set) var replyDelivery: ReplyDelivery = .none
+
+    /// Watches the transcript for a sent reply to land. Cancelled by a newer
+    /// send or a session change.
+    private var deliveryTask: Task<Void, Never>?
+
+    /// The face the user last went into. Backed by AppSettings so it survives
+    /// relaunch. Display may override this during an interrupt — see
+    /// `expandedPlace`.
     @Published var activeTab: IsleTab {
         didSet {
             guard activeTab != oldValue else { return }
             settings.lastTab = activeTab
+        }
+    }
+
+    /// The user last went back to the home grid rather than into a face, so
+    /// that's where the panel opens. Persisted with `activeTab`: together
+    /// they're the last place chosen. Only the user's own moves write either
+    /// — a takeover shows Claude without touching them.
+    @Published private(set) var isHome: Bool {
+        didSet {
+            guard isHome != oldValue else { return }
+            settings.lastOnHome = isHome
         }
     }
 
@@ -144,6 +378,12 @@ final class NotchViewModel: ObservableObject {
     /// the thumb doesn't fight the playback clock under the finger.
     @Published var scrubTarget: Double?
 
+    /// The audio outputs and the system default, for the music face's output
+    /// switcher. Handed out whole like `audioLevelSource`, so a device
+    /// coming or going redraws the switcher alone; it listens to the HAL
+    /// only while that face is on screen.
+    let outputDevices = OutputDevices()
+
     /// What's left of today — events still to come or in progress, and
     /// reminders due by the end of the day — as `AgendaMonitor` last reported
     /// it. Empty when both agenda switches are off. Drawn by the agenda face
@@ -152,19 +392,45 @@ final class NotchViewModel: ObservableObject {
 
     private let settings: AppSettings
     private let adapter = MediaRemoteAdapterClient()
-    private let spotify = SpotifyController()
+    /// One controller per supported player, in cold-start preference order.
+    /// Commands go to the one whose track the island is showing — see
+    /// `routedPlayer` — never to a fixed app.
+    private let players: [MediaPlayerController] = [SpotifyController(), AppleMusicController()]
     private let audio = SystemAudioLevels()
     private let claudeWatcher = ClaudeStatusWatcher()
+    private let requestWatcher = ClaudeRequestWatcher()
     private let sessionRegistry = ClaudeSessionRegistry()
+    /// Agent view's background sessions (Milestone 21), read on a cue.
+    private let agentsMonitor = ClaudeAgentsMonitor()
+    private let keepAwake = ClaudeKeepAwake()
     private let power = PowerMonitor()
     private let bluetoothBattery = BluetoothBatteryMonitor()
-    private let agenda = AgendaMonitor()
+    private let agenda: AgendaMonitor
     private var cancellables = Set<AnyCancellable>()
 
     /// The Pomodoro clock. Always constructed (it's cheap and idle until
     /// started) but only *offered* while `settings.pomodoroEnabled` is on —
     /// see `pomodoroAvailable`. Turning the setting off resets it.
     let pomodoro: PomodoroTimer
+
+    /// Files and folders kept within reach. Offered as a face only while it
+    /// holds something — see `availableTabs`.
+    let shelf: ShelfStore
+
+    /// The agenda face's days, ticks and quick-add. Observed by the face
+    /// itself rather than forwarded through this model: none of it changes
+    /// anything outside that face.
+    let agendaModel: AgendaModel
+
+    /// A drag carrying files is in flight somewhere on screen, as
+    /// `FileDragWatch` reads it off the global mouse events and the drag
+    /// pasteboard. Drives the drop notice.
+    @Published private(set) var fileDragInFlight = false
+
+    /// What the drag over an island carries, read off the drag's own
+    /// pasteboard as it reached the island. Nil while no island is a drop
+    /// target.
+    @Published private(set) var dropPayload: DropPayload?
 
     /// True between `start()` and `stop()` — i.e. while the notch window is
     /// shown. Guards the live mode-change subscription so it doesn't spin up
@@ -215,8 +481,32 @@ final class NotchViewModel: ObservableObject {
     /// let a background session's `Stop` or idle notification wipe the session
     /// the user was watching. Rank by how much the state wants attention, and
     /// only break ties by recency — so a quiescent session can never displace
-    /// an active one, however recently it moved.
+    /// an active one, however recently it moved (`ClaudeSelection.ranked`).
+    ///
+    /// Except for a session the user picked from the list, which holds the
+    /// island until another session newly needs them, or it goes away (see
+    /// `ClaudeSelection.Pin`). Settles the pin as it goes.
     private func selectStatus(from statuses: [ClaudeStatus]) -> ClaudeStatus {
+        var pin = sessionPin
+        // A pin needs a process the registry can see — never a leftover file
+        // — or a background session agent view still lists (Milestone 21).
+        if let held = pin, !claudeSessions.contains(where: { $0.sessionId == held.sessionId }),
+           backgroundMerge.agentOnly(held.sessionId) == nil {
+            pin = nil
+        }
+        let selection = ClaudeSelection.select(from: selectionPool(statuses, pinned: pin?.sessionId), pin: pin)
+        if sessionPin != selection.pin { sessionPin = selection.pin }
+        return selection.status
+    }
+
+    /// The records selection chooses between, corrected.
+    ///
+    /// A background session only agent view knows of (Milestone 21) is in
+    /// the pool only while it's the one pinned: it is listed and counted,
+    /// but never takes the island by itself — its state comes from a read on
+    /// a cue, not an event there is a moment to announce, and a session
+    /// blocked for days would otherwise hold the island for days.
+    private func selectionPool(_ statuses: [ClaudeStatus], pinned: String? = nil) -> [ClaudeStatus] {
         // Drop records whose process is gone. Skipped entirely while the
         // registry is empty (not yet scanned, or ~/.claude/sessions missing),
         // since filtering against nothing would blank the island.
@@ -224,11 +514,23 @@ final class NotchViewModel: ObservableObject {
             guard let id = status.sessionId else { return true }
             return claudeSessions.contains { $0.sessionId == id }
         }
-        let pool = (live.isEmpty ? statuses : live).map(reconciled)
-        return pool.max {
-            (Self.urgency($0.state), $0.updatedAt ?? .distantPast)
-                < (Self.urgency($1.state), $1.updatedAt ?? .distantPast)
-        } ?? .disconnected
+        // A record's agents only while its process lives: one killed outright
+        // fires no SessionEnd to clear them (Milestone 22). Only against a
+        // registry that has been read: before the first pass, or with no
+        // registry directory at all, nothing says a process is gone. An
+        // empty registry that was read says every process is.
+        let liveIds = Set(claudeSessions.map(\.sessionId))
+        let pool = (live.isEmpty ? statuses : live).map(reconciled).map(backgroundMerge.resolve).map { status in
+            guard claudeRegistryRead else { return status }
+            var status = status
+            status.subagents = ClaudeSubagents.counted(status.subagents, sessionId: status.sessionId, live: liveIds)
+            return status
+        }
+        if let pinned, !pool.contains(where: { $0.sessionId == pinned }),
+           let background = backgroundMerge.agentOnly(pinned) {
+            return pool + [background]
+        }
+        return pool
     }
 
     /// Corrects a `working` record the hooks will never close out.
@@ -251,12 +553,15 @@ final class NotchViewModel: ObservableObject {
     /// Except when the transcript carries the interrupt marker, which decides
     /// it on its own — see below.
     private func reconciled(_ status: ClaudeStatus) -> ClaudeStatus {
+        if status.state.isAttention {
+            return reconciledPrompt(status)
+        }
         guard status.state == .working,
               let id = status.sessionId,
               let session = claudeSessions.first(where: { $0.sessionId == id }),
               // No readable transcript is no second signal — leave the record
               // alone rather than guess.
-              let tail = transcriptTail(for: session)
+              let tail = transcriptTails[id]
         else {
             return status
         }
@@ -282,20 +587,45 @@ final class NotchViewModel: ObservableObject {
         corrected.state = .idle
         corrected.action = nil
         corrected.target = nil
+        // The turn is over without the Stop that says which agents outlived
+        // it (isle-cli v18 keeps only those `background_tasks` lists), so
+        // none are claimed: a background one may still run, but nothing here
+        // can say so.
+        corrected.subagents = []
         return corrected
     }
 
-    /// How much a state deserves the island. Higher wins.
-    private static func urgency(_ state: ClaudeCodeState) -> Int {
-        switch state {
-        // Blocked on the user, or ended badly — these are the whole point.
-        case .needsApproval, .needsQuestion, .failed: return 3
-        // Something is actually happening.
-        case .working, .compacting: return 2
-        // Alive but not doing anything; must never displace the tier above.
-        case .waitingInput, .done, .idle: return 1
-        case .disconnected: return 0
+    /// Retires a prompt that was dismissed with Esc.
+    ///
+    /// Esc on Claude Code's permission dialog (or its question UI) interrupts
+    /// the turn and fires no hook. It does cancel a hook blocked on the
+    /// prompt — that much was verified — but the status file it leaves behind
+    /// still says the prompt is up, and an approval has no revert timer, so
+    /// without this the panel would sit open asking for something nobody is
+    /// waiting on until the next prompt.
+    ///
+    /// Same evidence as the `working` case: the interrupt marker at the
+    /// transcript's tail, which is written for no other reason. And never
+    /// while a hook is still waiting under the status's request id — a live
+    /// request is a prompt that is genuinely still up.
+    private func reconciledPrompt(_ status: ClaudeStatus) -> ClaudeStatus {
+        if let requestId = status.requestId, claudeRequests.contains(where: { $0.id == requestId }) {
+            return status
         }
+        guard let id = status.sessionId,
+              claudeSessions.contains(where: { $0.sessionId == id }),
+              let tail = transcriptTails[id],
+              tail.interrupted
+        else {
+            return status
+        }
+        var corrected = status
+        corrected.state = .idle
+        corrected.action = nil
+        corrected.target = nil
+        corrected.requestId = nil
+        corrected.subagents = []
+        return corrected
     }
 
     /// Live sessions as the CLI itself reports them, hook-free. Ground truth
@@ -304,12 +634,12 @@ final class NotchViewModel: ObservableObject {
     ///
     /// Not published: no view reads it, and it changes with every CLI status
     /// flip, so publishing it would invalidate the whole notch on each one for
-    /// nothing. Selection re-runs on the change (see `onSessions`) and
-    /// publishes through `claudeState` only when the result differs.
+    /// nothing. Selection re-runs with each read and publishes through
+    /// `claudeState` only when the result differs.
     ///
-    /// Only as fresh as the last `sessionRegistry.refresh()` — the directory
-    /// watch sees sessions start and exit, not status changes — so selection
-    /// paths refresh it before reading.
+    /// Only as fresh as the last background read — the directory watch sees
+    /// sessions start and exit, not status changes — so every selection path
+    /// re-reads it first (`requestClaudeReading`).
     private var claudeSessions: [ClaudeSession] = []
 
     private var reselectTimer: Timer?
@@ -326,29 +656,216 @@ final class NotchViewModel: ObservableObject {
     /// stuck record. An interrupt fires no hook, and the registry's directory
     /// watch can't see the CLI rewriting its record in place, so each tick
     /// re-reads the registry and re-selects.
+    ///
+    /// Also kept running while the keep-awake assertion is held, or the panel
+    /// is counting other busy sessions, whatever the island shows: a session
+    /// needing attention outranks one still working, so the island can sit on
+    /// a state the timer ignores while a background session holds the Mac
+    /// awake or is counted as working — and that session's interrupt or
+    /// SIGKILL is only ever noticed by a tick. And while the session list is
+    /// up, whose every row is subject to the same.
+    ///
+    /// A prompt dismissed with Esc is the same kind of stuck record — no hook
+    /// fires — so the attention states ride along (see `reconciledPrompt`).
     private func updateReselectTimer(for state: ClaudeCodeState) {
-        guard state == .working || state == .compacting || state == .waitingInput else {
+        // Agents counted past their turn (Milestone 22) are work in progress
+        // too: their session being killed outright is only seen by a tick.
+        guard keepAwake.isHeld || !hookOthersQuiet || sessionListShown
+                || state == .working || state == .compacting || state == .waitingInput
+                || state.isAttention || !claudeSubagents.isEmpty else {
             stopReselectTimer()
             return
         }
         guard reselectTimer == nil else { return }
         let timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self else { return }
                 // The registry's watch misses in-place rewrites and killed
-                // pids, so the tick is also what keeps it current.
-                self.sessionRegistry.refresh()
-                // Apply only on a real change, so an unchanged state doesn't
+                // pids, so the tick is also what keeps it current. Applied
+                // only on a real change of state, so an unchanged one doesn't
                 // re-render the island every tick.
-                let resolved = self.selectStatus(from: self.claudeStatuses)
-                guard resolved.state != self.claudeState else { return }
-                self.applyClaudeStatus(resolved)
+                self?.requestClaudeReading(.tick)
             }
         }
         // Coarse by design, so it can afford to be coalesced with whatever
         // else wakes the process.
         timer.tolerance = 1
         reselectTimer = timer
+    }
+
+    // MARK: - Reading Claude's state, off the main thread
+
+    /// The transcript's last conversation entry, as `reconciled` needs it.
+    struct TranscriptTail: Equatable {
+        /// A `user` turn the model still owes a response to.
+        let awaitingModel: Bool
+        /// The marker an interrupt (Esc) leaves.
+        let interrupted: Bool
+        let at: Date
+    }
+
+    /// One background pass: the registry, and the transcript tail of every
+    /// session whose record reconciliation may have to correct.
+    private struct ClaudeReading {
+        let sessions: [ClaudeSession]
+        let tails: [String: TranscriptTail]
+        /// The registry's directory was there to read: an empty `sessions`
+        /// then means no Claude Code process is alive, not that there was
+        /// nothing to look at.
+        var registryRead = true
+    }
+
+    /// Whether the last pass read a registry directory — see
+    /// `ClaudeReading.registryRead`. Until one has, a session's agents can't
+    /// be checked against its process.
+    private var claudeRegistryRead = false
+
+    /// Each live session's transcript tail, as the last background pass read
+    /// it. Only for the sessions `reconciled` consults — working, or showing a
+    /// prompt no hook is waiting on. Selection reads this, never the disk.
+    private var transcriptTails: [String: TranscriptTail] = [:]
+
+    /// Where the registry and transcript tails are read. Serial, so passes
+    /// finish in the order they were asked for.
+    private let claudeReadQueue = DispatchQueue(label: "isle.claude-read", qos: .utility)
+
+    /// Bumped by every pass asked for, and when the bridge stops. A pass
+    /// applies only if it is still the newest when it lands: the newest
+    /// event always wins, and a pass that read the disk before it never
+    /// overwrites one that read it after.
+    private var claudeReadGeneration = 0
+
+    /// Whether a pending pass was asked for by an event, which applies
+    /// whatever selection resolves, rather than by the tick alone, which
+    /// applies only a change of state. Survives a superseded pass, so an
+    /// event's apply can't be lost to a tick that overtook it.
+    private var claudeReadWantsApply = false
+
+    private enum ClaudeReadCause { case event, tick }
+
+    /// Re-reads the registry and the transcript tails off the main thread,
+    /// then re-runs selection on the main thread with what it found. Every
+    /// path that used to re-select in place — a status, a request, the
+    /// registry, the tick — comes through here, so the decoding and the
+    /// transcript parsing (megabytes of JSON lines, `split` and all) never
+    /// run on the main thread.
+    private func requestClaudeReading(_ cause: ClaudeReadCause = .event) {
+        guard claudeRunning else { return }
+        claudeReadGeneration += 1
+        if cause == .event { claudeReadWantsApply = true }
+        let generation = claudeReadGeneration
+        let statuses = claudeStatuses
+        let waitingRequests = Set(claudeRequests.map(\.id))
+        let registryURL = sessionRegistry.directoryURL
+        claudeReadQueue.async { [weak self] in
+            let reading = Self.readClaude(statuses: statuses, waitingRequests: waitingRequests,
+                                          registryURL: registryURL)
+            Task { @MainActor in
+                self?.applyClaudeReading(reading, generation: generation)
+            }
+        }
+    }
+
+    /// The read itself, on `claudeReadQueue`.
+    nonisolated private static func readClaude(statuses: [ClaudeStatus], waitingRequests: Set<String>,
+                                               registryURL: URL) -> ClaudeReading {
+        let sessions = ClaudeSessionRegistry.scan(registryURL)
+        var isDirectory: ObjCBool = false
+        let registryRead = FileManager.default.fileExists(atPath: registryURL.path, isDirectory: &isDirectory) && isDirectory.boolValue
+        var tails: [String: TranscriptTail] = [:]
+        for status in statuses where status.state == .working || status.state.isAttention {
+            guard let id = status.sessionId, tails[id] == nil,
+                  let session = sessions.first(where: { $0.sessionId == id })
+            else { continue }
+            // A prompt a hook is still blocked on is up for certain; its
+            // transcript has nothing to add (see `reconciledPrompt`).
+            if status.state.isAttention, let request = status.requestId, waitingRequests.contains(request) {
+                continue
+            }
+            tails[id] = transcriptTail(cwd: session.cwd, sessionId: id)
+        }
+        return ClaudeReading(sessions: sessions, tails: tails, registryRead: registryRead)
+    }
+
+    private func applyClaudeReading(_ reading: ClaudeReading, generation: Int) {
+        // A newer pass is on its way, or the bridge stopped since.
+        guard claudeRunning, generation == claudeReadGeneration else { return }
+        let applyAny = claudeReadWantsApply
+        claudeReadWantsApply = false
+
+        let sessionsChanged = reading.sessions != claudeSessions
+        // A background session's process starting, exiting or changing its
+        // status is a cue to ask agent view what that means (Milestone 21).
+        if reading.sessions.filter(\.isBackground) != claudeSessions.filter(\.isBackground) {
+            agentsMonitor.cue()
+        }
+        claudeSessions = reading.sessions
+        claudeRegistryRead = reading.registryRead
+        transcriptTails = reading.tails
+        updateBackgroundMerge()
+
+        // A request that came or went shows (or retires) its buttons here,
+        // after the same hops as the status that goes with it — so a click's
+        // `working` and its request leaving land in the order they were
+        // written, and the bare prompt never flashes between them.
+        refreshPendingRequest()
+        let resolved = selectStatus(from: claudeStatuses)
+        // Agents going with their session's process change no state.
+        if applyAny || resolved.state != claudeState || resolved.subagents != claudeSubagents {
+            applyClaudeStatus(resolved)
+        }
+        updateKeepAwake()
+        updateSessionList()
+        syncIslandBackground()
+        // The island's session may only now have a pid to resolve.
+        if sessionsChanged { updateSessionHost() }
+    }
+
+    // MARK: - Background sessions (Milestone 21)
+
+    /// A new read of `claude agents`. Applied like a reading: the merge,
+    /// then selection, the counts and the list — and only when it changes
+    /// what the merge says, so an unchanged read costs nothing more.
+    private func receiveAgents(_ agents: [ClaudeAgent]) {
+        let now = Date()
+        backgroundFinishedAt = ClaudeBackground.noteFinishes(
+            previous: claudeAgents, current: agents, finishedAt: backgroundFinishedAt, now: now)
+        claudeAgents = agents
+        guard claudeRunning else { return }
+        let before = backgroundMerge
+        updateBackgroundMerge(now: now)
+        guard backgroundMerge != before else { return }
+        let resolved = selectStatus(from: claudeStatuses)
+        if resolved.state != claudeState || resolved.fromAgent != claudeStateFromAgent
+            || resolved.sessionId != claudeSessionId {
+            applyClaudeStatus(resolved)
+        }
+        updateKeepAwake()
+        updateSessionList()
+        syncIslandBackground()
+    }
+
+    /// Re-merges the last `claude agents` read with the bridge's sessions.
+    /// Cheap and pure; run on every reading, since a hook record appearing
+    /// or going changes which background sessions are agent view's alone.
+    /// A finished session Isle saw finish drops off an hour later at the
+    /// first reading after that — there's no timer for it.
+    private func updateBackgroundMerge(now: Date = Date()) {
+        var seen = Set<String>()
+        let hookIds = claudeStatuses.compactMap { status -> String? in
+            guard let id = status.sessionId, !seen.contains(id),
+                  claudeSessions.contains(where: { $0.sessionId == id }) else { return nil }
+            seen.insert(id)
+            return id
+        }
+        backgroundMerge = ClaudeBackground.merge(
+            hookSessionIds: hookIds, registry: claudeSessions, agents: claudeAgents,
+            finishedAt: backgroundFinishedAt, now: now)
+    }
+
+    /// Publishes what agent view adds about the island's session.
+    private func syncIslandBackground() {
+        let info = claudeSessionId.flatMap { backgroundMerge.info[$0] }
+        if claudeBackground != info { claudeBackground = info }
     }
 
     /// The transcript's last timestamped entry: whether it leaves the model
@@ -359,23 +876,14 @@ final class NotchViewModel: ObservableObject {
     /// is called on a timer. Entries without a timestamp (`file-history-snapshot`
     /// and friends) are skipped rather than treated as the end, since they're
     /// interleaved with the real ones.
-    private func transcriptTail(for session: ClaudeSession) -> (awaitingModel: Bool, interrupted: Bool, at: Date)? {
-        let slug = session.cwd.replacingOccurrences(of: "/", with: "-")
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/projects/\(slug)/\(session.sessionId).jsonl")
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
-        defer { try? handle.close() }
-
-        guard let end = try? handle.seekToEnd() else { return nil }
-        let window: UInt64 = 64 * 1024
-        try? handle.seek(toOffset: end > window ? end - window : 0)
-        guard let data = try? handle.readToEnd(),
-              let text = String(data: data, encoding: .utf8)
-        else { return nil }
-
-        for line in text.split(separator: "\n").reversed() {
-            guard let lineData = line.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+    ///
+    /// Line by line from the end, on the bytes: the window's first line is
+    /// cut short (and may start inside a multi-byte character, which made the
+    /// whole window fail to decode as one string), and only the last few
+    /// lines are ever needed.
+    nonisolated static func transcriptTail(cwd: String, sessionId: String) -> TranscriptTail? {
+        for line in transcriptLines(cwd: cwd, sessionId: sessionId) {
+            guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
                   let type = object["type"] as? String,
                   // Only conversation turns answer the question. The transcript
                   // is interleaved with bookkeeping — `queue-operation`,
@@ -384,7 +892,7 @@ final class NotchViewModel: ObservableObject {
                   // make an unanswered turn look answered.
                   type == "user" || type == "assistant",
                   let stamp = object["timestamp"] as? String,
-                  let at = Self.transcriptDate(stamp)
+                  let at = transcriptDate(stamp)
             else { continue }
             // A `user` entry is either a fresh prompt or a tool result; both
             // leave the model owing output. An `assistant` entry means it has
@@ -392,12 +900,62 @@ final class NotchViewModel: ObservableObject {
             // synthetic `user` entry and fires no hook at all, so reading it as
             // an outstanding turn is precisely what pins the island on
             // `Thinking` with nothing running.
-            let interrupted = type == "user" && Self.isInterruption(object)
-            return (
-                awaitingModel: type == "user" && !interrupted,
-                interrupted: interrupted,
-                at: at
-            )
+            let interrupted = type == "user" && isInterruption(object)
+            return TranscriptTail(awaitingModel: type == "user" && !interrupted,
+                                  interrupted: interrupted, at: at)
+        }
+        return nil
+    }
+
+    /// The complete lines in the last 64 KB of a session's transcript, newest
+    /// first. Empty when there's no transcript to read.
+    nonisolated private static func transcriptLines(cwd: String, sessionId: String) -> [Data] {
+        guard let url = transcriptURL(cwd: cwd, sessionId: sessionId),
+              let handle = try? FileHandle(forReadingFrom: url)
+        else { return [] }
+        defer { try? handle.close() }
+
+        guard let end = try? handle.seekToEnd() else { return [] }
+        let window: UInt64 = 64 * 1024
+        let start = end > window ? end - window : 0
+        try? handle.seek(toOffset: start)
+        guard let data = try? handle.readToEnd() else { return [] }
+
+        var lines = data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true)
+        // Starting mid-file, the first line is a fragment.
+        if start > 0, !lines.isEmpty { lines.removeFirst() }
+        return lines.reversed().map { Data($0) }
+    }
+
+    /// A session's transcript, as Claude Code files it: under
+    /// ~/.claude/projects, in a folder named for the working directory with
+    /// every character but an ASCII letter or digit turned into "-" (one per
+    /// UTF-16 unit, as its JavaScript does). Only "/" used to be replaced
+    /// here, so a session in a folder with a dot, an underscore or a space in
+    /// its path — `~/.config`, `my_app`, `Side Projects` — had no transcript
+    /// as far as Isle could see, and neither the interrupt check nor reply
+    /// confirmation worked for it. A very long path is shortened by Claude
+    /// Code with a hash on the end; that folder is found by its prefix.
+    nonisolated static func transcriptURL(cwd: String, sessionId: String) -> URL? {
+        let projects = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects", isDirectory: true)
+        let slug = String(String.UnicodeScalarView(cwd.utf16.map { unit -> Unicode.Scalar in
+            let scalar = Unicode.Scalar(UInt8(truncatingIfNeeded: unit))
+            let alphanumeric = unit < 0x80
+                && (("a"..."z").contains(scalar) || ("A"..."Z").contains(scalar) || ("0"..."9").contains(scalar))
+            return alphanumeric ? scalar : "-"
+        }))
+        let file = "\(sessionId).jsonl"
+        let direct = projects.appendingPathComponent(slug).appendingPathComponent(file)
+        if FileManager.default.fileExists(atPath: direct.path) { return direct }
+
+        guard slug.count > 100,
+              let folders = try? FileManager.default.contentsOfDirectory(atPath: projects.path)
+        else { return nil }
+        let prefix = String(slug.prefix(100))
+        for folder in folders where folder.hasPrefix(prefix) {
+            let candidate = projects.appendingPathComponent(folder).appendingPathComponent(file)
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
         }
         return nil
     }
@@ -406,7 +964,7 @@ final class NotchViewModel: ObservableObject {
     /// user interrupts a turn ("[Request interrupted by user]", and the
     /// "…for tool use" variant). It arrives as a `user` entry but terminates a
     /// turn rather than opening one.
-    private static func isInterruption(_ object: [String: Any]) -> Bool {
+    nonisolated private static func isInterruption(_ object: [String: Any]) -> Bool {
         guard let message = object["message"] as? [String: Any] else { return false }
         let texts: [String]
         if let text = message["content"] as? String {
@@ -419,20 +977,342 @@ final class NotchViewModel: ObservableObject {
         return texts.contains { $0.hasPrefix("[Request interrupted") }
     }
 
-    private static let transcriptFormatter: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-
-    private static func transcriptDate(_ string: String) -> Date? {
-        transcriptFormatter.date(from: string)
-            ?? ISO8601DateFormatter().date(from: string)
+    nonisolated private static func transcriptDate(_ string: String) -> Date? {
+        // Formatters per call: this runs on the read queue and in reply
+        // confirmation, and making one is cheap next to the read.
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: string) ?? ISO8601DateFormatter().date(from: string)
     }
 
     private func stopReselectTimer() {
         reselectTimer?.invalidate()
         reselectTimer = nil
+    }
+
+    // MARK: - Keep awake
+
+    /// Holds the keep-awake assertion exactly while the setting is on and at
+    /// least one live session is working, and releases it on every other path.
+    ///
+    /// Read from the per-session records, not from `claudeState`: selection is
+    /// urgency-ranked, so an approval or a failure in one session takes the
+    /// island while another is still mid-turn — and that turn is the one that
+    /// needs the Mac awake.
+    ///
+    /// Each record goes through `reconciled`, the same correction selection
+    /// applies, so an interrupted turn stops holding the Mac awake at the
+    /// moment the island stops calling it working — no second opinion about
+    /// what a frozen `working` means. Liveness is stricter than selection's,
+    /// though: selection falls back to every record when the registry is empty
+    /// rather than blank the island, but a record with no live pid behind it is
+    /// exactly the SIGKILL residue that would otherwise pin the Mac awake
+    /// forever. Holding a power assertion needs a process Isle can see.
+    private func updateKeepAwake() {
+        let before = liveSessionStates
+        liveSessionStates = readLiveSessionStates()
+        announceBackgroundFinishes(since: before)
+        let wasHeld = keepAwake.isHeld
+        keepAwake.setHeld(settings.keepAwakeWhileWorking && claudeRunning
+                          && liveSessionStates.values.contains(.working))
+        publishKeepAwake()
+        updateOtherSessions()
+        // The tick is what notices a background session's interrupt or kill,
+        // so it has to run for as long as the assertion does.
+        if keepAwake.isHeld != wasHeld {
+            updateReselectTimer(for: claudeState)
+        }
+    }
+
+    /// Mirrors the assertion into `isKeepingAwake`, publishing only on a
+    /// change. Called after every take or release, so the panel's mark can
+    /// never outlive the hold or show before it.
+    private func publishKeepAwake() {
+        if isKeepingAwake != keepAwake.isHeld { isKeepingAwake = keepAwake.isHeld }
+    }
+
+    /// The reconciled state of every session the registry can vouch for,
+    /// keyed by session id — the shared reading behind the keep-awake hold
+    /// and the other-sessions count. Liveness is the strict kind (see
+    /// `updateKeepAwake`): a record with no live pid behind it is left out,
+    /// and so is one with no session id to check. Reconciling reads each
+    /// working session's transcript tail, so this is done once per pass and
+    /// kept in `liveSessionStates`.
+    private func readLiveSessionStates() -> [String: ClaudeCodeState] {
+        var states: [String: ClaudeCodeState] = [:]
+        for status in claudeStatuses {
+            guard let id = status.sessionId,
+                  claudeSessions.contains(where: { $0.sessionId == id })
+            else { continue }
+            let corrected = status.state == .working || status.state.isAttention
+                ? reconciled(status)
+                : status
+            // A finished turn Claude Code says is blocked (Milestone 21).
+            states[id] = backgroundMerge.resolve(corrected).state
+        }
+        return states
+    }
+
+    /// A toast for each session the island isn't showing that has just
+    /// finished a turn — from mid-turn to `done`, as its own `Stop` wrote it,
+    /// never inferred. The island's own session says "Done" itself, and a
+    /// turn that ended any other way (an interrupt reconciled to idle, an
+    /// error) isn't a finish. Only between two readings that both saw the
+    /// session, so nothing is announced at launch.
+    private func announceBackgroundFinishes(since before: [String: ClaudeCodeState]) {
+        let midTurn: Set<ClaudeCodeState> = [.working, .compacting, .needsApproval, .needsQuestion]
+        for (id, state) in liveSessionStates where state == .done && id != claudeSessionId {
+            guard let previous = before[id], midTurn.contains(previous) else { continue }
+            let project = claudeStatuses.first { $0.sessionId == id }?.project
+            enqueueToast(.sessionDone(sessionId: id, project: project.flatMap { $0.isEmpty ? nil : $0 }))
+        }
+    }
+
+    /// A toast for each block auto mode has just made (Milestone 23), in any
+    /// session, the island's own included: Claude carries on after one, so
+    /// nothing else on the island would change. Only between two readings
+    /// that both saw the session, so a block already on disk at launch (or
+    /// when the bridge comes back) isn't announced as news. A live alert
+    /// drops it, as it drops every toast; the face still has the line.
+    func announceBlocks(in statuses: [ClaudeStatus]) {
+        var next: [String: String] = [:]
+        for status in statuses {
+            guard let id = status.sessionId else { continue }
+            let key = status.blocked?.key ?? ""
+            next[id] = key
+            guard let block = status.blocked, let before = seenBlocks[id], before != key else { continue }
+            let project = id == claudeSessionId ? nil : status.project.flatMap { $0.isEmpty ? nil : $0 }
+            enqueueToast(.autoModeBlocked(block, sessionId: id, project: project))
+        }
+        seenBlocks = next
+    }
+
+    /// The last `readLiveSessionStates`. Re-read with the keep-awake decision
+    /// on every status, registry and tick; a re-selection in between only
+    /// changes which session is excluded from `otherSessions`.
+    private var liveSessionStates: [String: ClaudeCodeState] = [:]
+
+    /// Recounts `otherSessions` from `liveSessionStates`, leaving out the
+    /// session the island is showing. Publishes only on a change.
+    ///
+    /// The background sessions only agent view knows of (Milestone 21) are
+    /// counted too, as Claude Code reports them — blocked needs you, working
+    /// is working — but kept out of `hookOthersQuiet`, the tick's reason.
+    private func updateOtherSessions() {
+        var others = ClaudeOtherSessions()
+        func count(_ state: ClaudeCodeState) {
+            if state.isAttention {
+                others.needYou += 1
+            } else if state == .working || state == .compacting {
+                others.working += 1
+            }
+        }
+        var hookQuiet = true
+        if claudeRunning {
+            for (id, state) in liveSessionStates where id != claudeSessionId {
+                count(state)
+            }
+            hookQuiet = others.isEmpty
+            for status in backgroundMerge.agentOnly where status.sessionId != claudeSessionId {
+                count(status.state)
+            }
+        }
+        let wasQuiet = hookOthersQuiet
+        hookOthersQuiet = hookQuiet
+        if others != otherSessions { otherSessions = others }
+        // A busy background session is only ever noticed going quiet by an
+        // event or a tick — an interrupt fires no hook — so the tick runs
+        // for as long as the count does.
+        if hookQuiet != wasQuiet {
+            updateReselectTimer(for: claudeState)
+        }
+    }
+
+    // MARK: - Every session at once (Milestone 16)
+
+    /// Rebuilds `sessionList` from the last reading. Liveness is the strict
+    /// kind, as for the keep-awake hold: a record with no live pid behind it,
+    /// or no session id to check one, is left out — the list never names a
+    /// session Isle can't see running.
+    ///
+    /// Each record gets the corrections the island would make. `reconciled`
+    /// first, so an interrupted turn doesn't list as working. Then the ones
+    /// the face makes on a clock, because the hooks never close those states
+    /// out: a question nothing is waiting on any more, a compaction, and a
+    /// usage limit whose reset has passed all read as Ready once the island
+    /// would have eased them there. Ranked after that, so a row sits where
+    /// its own word puts it.
+    ///
+    /// A finished turn stays Done, with what Claude said, until the session
+    /// moves again — the record says so, and the list is where you go to
+    /// find out what each session did.
+    ///
+    /// Background sessions (Milestone 21) are merged in last: a live one
+    /// keeps its hook row, with its own name and Claude Code's word where
+    /// the hooks have none; one only agent view knows of gets a row of its
+    /// own. Matched on session id, so nothing is listed twice.
+    private func updateSessionList() {
+        var rows: [ClaudeSessionRow] = []
+        if claudeRunning {
+            let now = Date()
+            let live = claudeStatuses.filter { status in
+                guard let id = status.sessionId else { return false }
+                return claudeSessions.contains { $0.sessionId == id }
+            }
+            rows = ClaudeBackground.rows(live: live.map { eased(reconciled($0), at: now) },
+                                         merge: backgroundMerge, request: request(for:))
+        }
+        if rows != sessionList { sessionList = rows }
+        updateSessionHosts()
+    }
+
+    /// `status` as the island would be showing it at `now`, for the states
+    /// it eases off on a clock (see `applyClaudeStatus`).
+    private func eased(_ status: ClaudeStatus, at now: Date) -> ClaudeStatus {
+        let age = status.updatedAt.map { now.timeIntervalSince($0) } ?? 0
+        let stale: Bool
+        switch status.state {
+        case .needsQuestion: stale = age > Self.questionRevertSeconds && request(for: status) == nil
+        case .compacting: stale = age > Self.compactingRevertSeconds
+        case .failed: stale = status.errorType == "usage_limit" && (Self.limitEasesAt(status).map { $0 <= now } ?? false)
+        default: stale = false
+        }
+        guard stale else { return status }
+        var eased = status
+        eased.state = .idle
+        eased.action = nil
+        eased.target = nil
+        eased.requestId = nil
+        eased.subagents = []
+        return eased
+    }
+
+    /// The request a session's hook is blocked on, if its file is still
+    /// there.
+    private func request(for status: ClaudeStatus) -> ClaudeRequest? {
+        guard let id = status.requestId else { return nil }
+        return claudeRequests.first { request in
+            request.id == id && (request.sessionId == nil || request.sessionId == status.sessionId)
+        }
+    }
+
+    /// Flips the Claude face to the list. Coming from a session picked from
+    /// it, that session stops holding the island: the list is the way back
+    /// up, and the next pick pins afresh.
+    func showSessionList() {
+        guard settings.effectiveMode.showsClaude else { return }
+        releasePin()
+        sessionListShown = true
+        updateReselectTimer(for: claudeState)
+        updateSessionHosts()
+        // What agent view says now, not when it last changed a file.
+        agentsMonitor.cue()
+    }
+
+    /// Back from the list to the face, on whichever session selection has.
+    func closeSessionList() {
+        guard sessionListShown else { return }
+        sessionListShown = false
+        updateReselectTimer(for: claudeState)
+    }
+
+    /// A row was clicked: that session takes the face, and everything on it
+    /// — the approval, the question, the reply — is for that session, until
+    /// another session newly needs you or you go back.
+    func pinSession(_ sessionId: String) {
+        guard claudeSessions.contains(where: { $0.sessionId == sessionId })
+                || backgroundMerge.agentOnly(sessionId) != nil,
+              let pin = ClaudeSelection.pin(sessionId, in: selectionPool(claudeStatuses, pinned: sessionId))
+        else { return }
+        sessionPin = pin
+        sessionListShown = false
+        updateReselectTimer(for: claudeState)
+        reselectQuietly()
+    }
+
+    /// Drops the pin, if there is one, and puts selection's own pick back.
+    private func releasePin() {
+        guard sessionPin != nil else { return }
+        sessionPin = nil
+        reselectQuietly()
+    }
+
+    /// Re-runs selection on what the last reading saw, for a change the user
+    /// made rather than one a session made: no chime, and no panel popping
+    /// open for an alert they have already seen in the list.
+    private func reselectQuietly() {
+        applyClaudeStatus(selectStatus(from: claudeStatuses), announce: false)
+    }
+
+    /// The panel closed: the list goes, and so does the pin. The island
+    /// collapsed always means selection's own pick — a session picked once
+    /// and forgotten mustn't keep a more pressing one off it.
+    private func resetSessionList() {
+        if sessionListShown {
+            sessionListShown = false
+            updateReselectTimer(for: claudeState)
+        }
+        releasePin()
+    }
+
+    /// Resolves where each listed session is, while the list is up. Off the
+    /// main thread, once per pid; a session gone from the list takes its
+    /// host with it.
+    private func updateSessionHosts() {
+        let listed = Set(sessionList.map(\.id))
+        for id in sessionHosts.keys where !listed.contains(id) { sessionHosts[id] = nil }
+        for id in sessionHostPIDs.keys where !listed.contains(id) { sessionHostPIDs[id] = nil }
+        guard sessionListShown else { return }
+        for row in sessionList {
+            guard let pid = claudeSessions.first(where: { $0.sessionId == row.id })?.pid,
+                  sessionHostPIDs[row.id] != pid
+            else { continue }
+            sessionHostPIDs[row.id] = pid
+            sessionHosts[row.id] = nil
+            let id = row.id
+            Task.detached(priority: .utility) { [weak self] in
+                let host = ClaudeHostResolver.resolve(cliPID: pid)
+                await self?.receiveSessionHost(host, id: id, pid: pid)
+            }
+        }
+    }
+
+    private func receiveSessionHost(_ host: ClaudeSessionHost?, id: String, pid: pid_t) {
+        guard sessionHostPIDs[id] == pid else { return }
+        sessionHosts[id] = host?.app == nil ? nil : host
+    }
+
+    /// The app a row's Jump names, or nil when there's nowhere resolved. A
+    /// background session with no terminal of its own (Milestone 21) jumps
+    /// by attaching in Terminal, when its attach id is known.
+    func jumpTarget(for sessionId: String) -> String? {
+        sessionHosts[sessionId]?.app?.name
+            ?? (backgroundMerge.info[sessionId]?.attachId != nil ? ClaudeLauncher.attachApp : nil)
+    }
+
+    /// Whether a row's Jump attaches (`claude attach`) rather than going to
+    /// a terminal the session is already in.
+    func jumpAttaches(_ sessionId: String) -> Bool {
+        sessionHosts[sessionId]?.app == nil && backgroundMerge.info[sessionId]?.attachId != nil
+    }
+
+    /// A row's Jump: that session's tab, resolved again at the click — or,
+    /// for a background session with no terminal, a Terminal window
+    /// attached to it.
+    func jumpToSession(_ sessionId: String) {
+        if jumpAttaches(sessionId), let info = backgroundMerge.info[sessionId], let id = info.attachId {
+            ClaudeLauncher.attach(id, in: info.cwd)
+            return
+        }
+        guard let pid = claudeSessions.first(where: { $0.sessionId == sessionId })?.pid,
+              sessionHosts[sessionId] != nil
+        else { return }
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let host = ClaudeHostResolver.resolve(cliPID: pid)
+            await self?.receiveSessionHost(host, id: sessionId, pid: pid)
+            guard let host, host.app != nil else { return }
+            _ = await TerminalBridge.jump(to: host)
+        }
     }
 
     // MARK: - Working words
@@ -488,14 +1368,30 @@ final class NotchViewModel: ObservableObject {
     /// Focus intervals per Pomodoro cycle (Settings), for the tally dots.
     var pomodoroSessionsPerCycle: Int { settings.pomodoroSessionsPerCycle }
 
-    // The two now-playing sources, kept separately and merged in
-    // `recomputeSource`. The adapter (MediaRemote) is preferred when Spotify
-    // owns the system session — it pushes updates and ships artwork as bytes.
-    // The AppleScript poll is the fallback for when something else (a browser
-    // tab, say) owns the session, so the notch still shows Spotify.
+    // The now-playing sources, kept separately and merged in
+    // `recomputeSource`. The adapter (MediaRemote) is preferred when a
+    // supported player owns the system session — it pushes updates and ships
+    // artwork as bytes. The per-player AppleScript polls are the fallback for
+    // when something else (a browser tab, say) owns the session, so the notch
+    // still shows the player.
     private var adapterModel = MediaPlaybackModel()
-    private var spotifyModel: MediaPlaybackModel?
+    /// Each player's latest poll, keyed by bundle id. Absent when that player
+    /// isn't running or is stopped.
+    private var pollModels: [String: MediaPlaybackModel] = [:]
     private var lastApplied = MediaPlaybackModel()
+
+    /// The player whose track the island is showing, by bundle id — the one
+    /// every command is sent to. Nil while nothing is showing.
+    private var routedPlayerID: String?
+
+    /// The last player that was routed. Breaks the tie when both players are
+    /// running with a track and neither is playing: the one the island was
+    /// on stays, rather than a cold-start default displacing it.
+    private var lastActivePlayerID: String?
+
+    private var routedPlayer: MediaPlayerController? {
+        players.first { $0.bundleID == routedPlayerID }
+    }
 
     // After a manual transport action, trust the optimistic value and ignore
     // contradicting source reads until a source confirms it or this window
@@ -520,12 +1416,19 @@ final class NotchViewModel: ObservableObject {
     /// isn't running, which EqualizerView reads as "use the procedural fallback".
     var audioLevelSource: SystemAudioLevels { audio }
 
+    /// What the open panel is drawn on, as chosen in Settings — read here so
+    /// a change re-renders the island through this model.
+    var panelBackground: PanelBackground { settings.panelBackground }
+
+    /// Whether glass grows black out of the notch — see `AppSettings`.
+    var panelNotchGlow: Bool { settings.panelNotchGlow }
+
     /// The waveform source as chosen in Settings. The views read it here rather
     /// than from `AppSettings` so a change re-renders them through this model.
     var waveformSource: WaveformSource { settings.waveformSource }
 
-    /// Whether a waveform is drawn at all. Off leaves its slot in place but
-    /// empty (see `waveSlot`), so the collapsed layout doesn't depend on this.
+    /// Whether a waveform is drawn at all. Off gives the bars' space back in
+    /// the split layout and holds it in music-solo — see `waveSlot`.
     var showsWaveform: Bool { settings.waveformSource.isShown }
 
     /// Why audio capture isn't running, if it isn't.
@@ -538,7 +1441,12 @@ final class NotchViewModel: ObservableObject {
         let resolvedSettings = settings ?? .shared
         self.settings = resolvedSettings
         self.activeTab = resolvedSettings.lastTab
+        self.isHome = resolvedSettings.lastOnHome
         self.pomodoro = PomodoroTimer(settings: resolvedSettings)
+        self.shelf = ShelfStore(settings: resolvedSettings)
+        let agenda = AgendaMonitor()
+        self.agenda = agenda
+        self.agendaModel = AgendaModel(monitor: agenda)
 
         // The timer publishes on its own object; the island reads it through
         // this model, so forward its changes (they're at most once a second
@@ -546,6 +1454,17 @@ final class NotchViewModel: ObservableObject {
         // TimelineView, not off a publish).
         pomodoro.objectWillChange
             .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
+        // The shelf publishes on its own object too; its face, its tile and
+        // whether it's in the grid at all read it through this model.
+        shelf.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        shelf.$items
+            .map(\.count)
+            .removeDuplicates()
+            .sink { [weak self] count in self?.fitShelfRows(count) }
             .store(in: &cancellables)
 
         pomodoro.onIntervalEnded = { [weak self] _ in
@@ -577,72 +1496,96 @@ final class NotchViewModel: ObservableObject {
             // island reads that poll only every third second. So a play
             // pressed anywhere but in the panel — Spotify's own button, a
             // media key, a phone on Spotify Connect — took up to three
-            // seconds to be believed. Nothing on a collapsed island shows the
-            // transport, so the only visible symptom was the waveform: past
-            // the pause grace the tap is suspended, and it is this flag that
-            // resumes it, so the bars stayed dots for those seconds while
-            // music played. Measured at 0.0/1.0/3.0s before, 0.3s after.
-            // The adapter hears the change in ~0.2s; take that as the cue to
-            // read the truth now rather than at the next relaxed tick.
+            // seconds to be believed. Nothing on a collapsed island shows
+            // the transport, so the only visible symptom was the waveform:
+            // past the pause grace the tap is suspended, and it is this flag
+            // that resumes it, so the bars stayed dots for those seconds
+            // while music played. The adapter hears the change in ~100ms;
+            // take that as the cue to read the truth now rather than at the
+            // next relaxed tick.
             if model.isPlaying != wasPlaying {
-                self.spotify.pollNow()
+                self.players.first { $0.bundleID == model.bundleIdentifier }?.pollNow()
             }
-            // The adapter losing Spotify's track is the moment the poll's
-            // model — and so its cover — becomes the one on screen. Any cover
-            // the poll held back while the adapter was supplying one is
-            // fetched now; see `spotify.wantsArtwork` below.
-            if !model.hasTrack {
-                self.spotify.fetchArtworkIfNeeded()
-            }
+            // The adapter losing the track is the moment a poll's model — and
+            // so its cover — becomes the one on screen. `recomputeSource`
+            // fetches any cover the routed player's poll held back while the
+            // adapter was supplying one; see `wantsArtwork` below.
             self.recomputeSource()
         }
-        spotify.onUpdate = { [weak self] model in
-            self?.spotifyModel = model
-            self?.recomputeSource()
-        }
-        // The poll's cover is only drawn when the adapter has no Spotify
-        // track (`recomputeSource` prefers the adapter's model whole, artwork
-        // included). Fetching it otherwise was a download and a decode per
-        // track change that never reached the screen.
-        spotify.wantsArtwork = { [weak self] in
-            guard let self else { return false }
-            return !self.adapterModel.hasTrack
-        }
-        // Full rate while the poll is the only source (the adapter has no
-        // Spotify track — a browser owns the session), or while a panel is
-        // open and its scrubber and toggles are actually drawn from it.
-        // Otherwise the adapter pushes every change a collapsed island shows,
-        // and the poll can relax — see `SpotifyController.tick`.
-        spotify.wantsFullRate = { [weak self] in
-            guard let self else { return false }
-            return !self.adapterModel.hasTrack
-                || self.hoveredIslands > 0
-                || self.autoExpandsForActivity
+        for player in players {
+            let id = player.bundleID
+            player.onUpdate = { [weak self] model in
+                guard let self else { return }
+                self.pollModels[id] = model
+                self.recomputeSource()
+            }
+            // A poll's cover is only drawn when its player is the one the
+            // island is routed to and the adapter isn't supplying the track
+            // (`recomputeSource` prefers the adapter's model whole, artwork
+            // included). Fetching it otherwise was a download — or, for
+            // Music, an Apple-event blob — and a decode per track change that
+            // never reached the screen. "Routed to nobody" counts as yes: the
+            // first poll to show a track is about to become the island.
+            player.wantsArtwork = { [weak self] in
+                guard let self else { return false }
+                return !self.adapterModel.hasTrack
+                    && (self.routedPlayerID == nil || self.routedPlayerID == id)
+            }
+            // Full rate while this player's poll is the only source (the
+            // adapter has no track — a browser owns the session), or while a
+            // panel is open and its scrubber and toggles are actually drawn
+            // from it. Otherwise the adapter pushes every change a collapsed
+            // island shows, and the poll can relax — see `tick` in either
+            // controller. A player the island isn't routed to always relaxes —
+            // including when nothing is routed at all, so an open-but-stopped
+            // player isn't sent an Apple event every second for nothing. It
+            // only needs to be noticed if it starts playing: the adapter hears
+            // that in ~100ms when the player takes the session, and three
+            // seconds is soon enough when a browser holds it. Hovering an
+            // empty island still asks every player at once.
+            player.wantsFullRate = { [weak self] in
+                guard let self else { return false }
+                guard self.routedPlayerID == id else { return false }
+                return !self.adapterModel.hasTrack
+                    || self.hoveredIslands > 0
+                    || self.autoExpandsForActivity
+            }
         }
 
         claudeWatcher.onStatuses = { [weak self] statuses in
             guard let self else { return }
             self.claudeStatuses = statuses
+            self.announceBlocks(in: statuses)
             // Selection reads the registry's `status` and session ids, which
             // the CLI rewrites in place where the registry's watch can't see
-            // it. Re-read it now: a snapshot left at `idle` from before the
-            // prompt makes `reconciled` retire a turn that is still running,
-            // and one holding an outdated session id would filter the live
-            // session out.
-            // (A change publishes through `onSessions`, which re-selects; the
-            // apply below is then a no-op.)
-            self.sessionRegistry.refresh()
-            self.applyClaudeStatus(self.selectStatus(from: statuses))
+            // it, so the read re-scans it: a snapshot left at `idle` from
+            // before the prompt makes `reconciled` retire a turn that is still
+            // running, and one holding an outdated session id would filter the
+            // live session out.
+            self.requestClaudeReading()
         }
 
-        sessionRegistry.onSessions = { [weak self] sessions in
+        requestWatcher.onRequests = { [weak self] requests in
             guard let self else { return }
-            self.claudeSessions = sessions
+            self.claudeRequests = requests
+            // A request that disappears with no status write behind it is a
+            // hook Claude Code cancelled — Esc on its prompt. Re-select so an
+            // interrupted prompt stops asking (see `reconciledPrompt`); the
+            // reselect timer catches it if the transcript marker lands after
+            // this. The buttons themselves update when the read lands.
+            self.requestClaudeReading()
+        }
+
+        sessionRegistry.onChange = { [weak self] in
             // A session dropping out of the registry is dead for real — its pid
             // is gone. A clean exit removes its status file too, but a SIGKILL
             // fires no SessionEnd, so the file lingers and no status event will
             // ever arrive. Re-running selection here is what retires it.
-            self.applyClaudeStatus(self.selectStatus(from: self.claudeStatuses))
+            self?.requestClaudeReading()
+        }
+
+        agentsMonitor.onAgents = { [weak self] agents in
+            self?.receiveAgents(agents)
         }
 
         power.onEvent = { [weak self] toast in
@@ -673,6 +1616,16 @@ final class NotchViewModel: ObservableObject {
         agenda.onAgendaChanged = { [weak self] items in
             guard let self, self.agendaItems != items else { return }
             self.agendaItems = items
+            self.agendaModel.listChanged(items)
+        }
+
+        agenda.onDaysChanged = { [weak self] days in
+            self?.agendaModel.update(days: days)
+        }
+
+        agendaModel.onAdded = { [weak self] in
+            guard self?.composing == .quickAdd else { return }
+            self?.endCompose()
         }
 
         // The tap only earns its keep while something is playing. Paused, the
@@ -719,7 +1672,11 @@ final class NotchViewModel: ObservableObject {
             self.settings.$showCalendarEvents.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             self.settings.$showReminders.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             self.settings.$eventLeadMinutes.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            self.settings.$waveformSource.dropFirst().map { _ in () }.eraseToAnyPublisher()
+            self.settings.$waveformSource.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            self.settings.$keepAwakeWhileWorking.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            // Puts down or picks up `run/answering`. Off releases every hook
+            // that is waiting on the notch, back to its terminal prompt.
+            self.settings.$answerFromNotch.dropFirst().map { _ in () }.eraseToAnyPublisher()
         )
         .receive(on: RunLoop.main)
         .sink { [weak self] in
@@ -761,6 +1718,8 @@ final class NotchViewModel: ObservableObject {
         setMediaRunning(media)
         setAudioRunning(media && settings.waveformSource.capturesAudio)
         setClaudeRunning(settings.effectiveMode.showsClaude)
+        updateKeepAwake()
+        updateAnsweringMarker()
         // Power is ambient — it runs in every mode, gated only by its own two
         // toggles. Suppressed while the display is off for the same reason the
         // media pipeline is: nothing it produces could be seen.
@@ -790,6 +1749,8 @@ final class NotchViewModel: ObservableObject {
         case .deviceBattery: return settings.showDeviceBattery
         case .calendar: return settings.showCalendarEvents
         case .reminders: return settings.showReminders
+        case .fileDrag: return true
+        case .claudeSessions: return claudeRunning
         }
     }
 
@@ -847,10 +1808,10 @@ final class NotchViewModel: ObservableObject {
         mediaRunning = running
         if running {
             adapter.start()
-            spotify.start()
+            players.forEach { $0.start() }
         } else {
             adapter.stop()
-            spotify.stop()
+            players.forEach { $0.stop() }
         }
     }
 
@@ -869,12 +1830,51 @@ final class NotchViewModel: ObservableObject {
         claudeRunning = running
         if running {
             claudeWatcher.start()
+            requestWatcher.start()
             sessionRegistry.start()
+            agentsMonitor.start()
+            // The registry, even if no status file ever publishes.
+            requestClaudeReading()
         } else {
             claudeWatcher.stop()
+            requestWatcher.stop()
             sessionRegistry.stop()
+            agentsMonitor.stop()
+            claudeAgents = []
+            backgroundFinishedAt = [:]
+            backgroundMerge = .empty
+            claudeBackground = nil
+            claudeStateFromAgent = false
+            hookOthersQuiet = true
+            // Not watching means nothing to back the claim with.
+            keepAwake.release()
+            publishKeepAwake()
+            liveSessionStates = [:]
+            otherSessions = ClaudeOtherSessions()
+            sessionList = []
+            sessionListShown = false
+            sessionPin = nil
+            sessionHosts = [:]
+            sessionHostPIDs = [:]
+            // Drop any read still in flight.
+            claudeReadGeneration += 1
+            claudeReadWantsApply = false
+            transcriptTails = [:]
             claudeSessions = []
+            claudeRegistryRead = false
             claudeStatuses = []
+            claudeRequests = []
+            claudeRequestId = nil
+            pendingRequest = nil
+            answeredRequestId = nil
+            isReviewingRemember = false
+            questionTyped = [:]
+            composing = nil
+            sessionHost = nil
+            sessionHostPID = nil
+            deliveryTask?.cancel()
+            deliveryTask = nil
+            replyDelivery = .none
             lastAppliedStatus = nil
             doneRevertTask?.cancel()
             doneRevertTask = nil
@@ -887,7 +1887,31 @@ final class NotchViewModel: ObservableObject {
             claudeTarget = nil
             claudeErrorType = nil
             claudeResetAt = nil
+            claudeLimitKind = nil
+            claudeLimitNext = nil
+            claudeFinalLine = nil
+            claudeSubagents = []
+            claudeBlock = nil
+            claudeLeftovers = nil
+            seenBlocks = [:]
             claudeUpdatedAt = nil
+        }
+        updateAnsweringMarker()
+    }
+
+    /// Puts `run/answering` down exactly while the Claude bridge is running
+    /// with "Answer from the notch" on, and picks it up otherwise — so a hook
+    /// only ever blocks when there is a notch on screen that can answer it.
+    /// Hiding the notch, a mode without Claude, and quitting all stop the
+    /// bridge, and with it every wait.
+    private func updateAnsweringMarker() {
+        let answering = claudeRunning && settings.answerFromNotch
+        guard answering != answeringMarkerWritten else { return }
+        answeringMarkerWritten = answering
+        if answering {
+            ClaudeAnsweringMarker.write()
+        } else {
+            ClaudeAnsweringMarker.remove()
         }
     }
 
@@ -928,7 +1952,11 @@ final class NotchViewModel: ObservableObject {
 
     /// Applies a fresh status from the watcher. Keeps the `done` checkmark on
     /// screen briefly, then eases it back to `idle` so it behaves like a toast.
-    private func applyClaudeStatus(_ status: ClaudeStatus) {
+    ///
+    /// `announce` is false for a change the user made — picking a session from
+    /// the list, or going back. That rings nothing, and an alert it lands on
+    /// counts as already seen, so the panel doesn't pop open for it.
+    private func applyClaudeStatus(_ status: ClaudeStatus, announce: Bool = true) {
         guard status != lastAppliedStatus else { return }
         lastAppliedStatus = status
 
@@ -945,24 +1973,56 @@ final class NotchViewModel: ObservableObject {
         // alert opens even if the previous one was dismissed — but a re-write of
         // the same state (e.g. a still-pending approval) stays dismissed.
         if status.state != claudeState {
-            alertDismissed = false
+            alertDismissed = !announce
             alertWasHovered = false
-            // Re-arm the Claude-tab auto-jump: a fresh interrupt gets to grab
-            // the tab once again, even if the user overrode the previous one.
+            // Re-arm the Claude-face auto-jump: a fresh interrupt gets to grab
+            // the face once again, even if the user overrode the previous one.
             tabOverriddenDuringAlert = false
-            playSound(for: status.state, errorType: status.errorType)
+            if announce { playSound(for: status.state, errorType: status.errorType, limitNext: status.limitNext) }
         }
         withAnimation(.easeInOut(duration: 0.25)) {
             claudeState = status.state
         }
         claudeProject = status.project
+        if claudeSessionId != status.sessionId {
+            // Another session took the island: whatever was being typed or
+            // confirmed was for the one before. Its draft stays filed under
+            // its own id.
+            composing = nil
+            deliveryTask?.cancel()
+            deliveryTask = nil
+            replyDelivery = .none
+        }
         claudeSessionId = status.sessionId
+        if claudeStateFromAgent != status.fromAgent { claudeStateFromAgent = status.fromAgent }
+        syncIslandBackground()
         claudeAction = status.action
         claudeTarget = status.target
         claudeErrorType = status.errorType
         claudeToolActive = status.toolActive
         claudeResetAt = status.resetAt
-        claudeUpdatedAt = status.state == .disconnected ? nil : Date()
+        claudeLimitKind = status.limitKind
+        claudeLimitNext = status.limitNext
+        let finalLine = ClaudeDoneLine.line(from: status.lastMessage)
+        if claudeFinalLine != finalLine { claudeFinalLine = finalLine }
+        if claudeSubagents != status.subagents { claudeSubagents = status.subagents }
+        if claudeBlock != status.blocked {
+            withAnimation(.easeInOut(duration: 0.22)) { claudeBlock = status.blocked }
+        }
+        if claudeLeftovers != status.left {
+            withAnimation(.easeInOut(duration: 0.22)) { claudeLeftovers = status.left }
+        }
+        // A background session no hook wrote for has no "when" Isle can
+        // vouch for: no "… ago" rather than one counted from the read.
+        claudeUpdatedAt = status.state == .disconnected || (status.fromAgent && status.updatedAt == nil)
+            ? nil : Date()
+        claudeRequestId = status.requestId
+        refreshPendingRequest()
+        // The island may have moved to another session; the count leaves out
+        // whichever one it now shows.
+        updateOtherSessions()
+        updateSessionHost()
+        settleReplyState(for: status.state)
 
         // Rotate the "thinking" word only while actually working.
         if status.state == .working {
@@ -971,6 +2031,10 @@ final class NotchViewModel: ObservableObject {
             stopWorkingWords()
         }
         updateReselectTimer(for: status.state)
+
+        // Claude Code's own state isn't a hook's toast: it says blocked
+        // until Claude Code says otherwise, so nothing eases it to Ready.
+        guard !status.fromAgent else { return }
 
         // `done` and `failed` are both terminal toasts: show them, then ease
         // back to idle so they don't stick until the next prompt. A failure
@@ -984,8 +2048,10 @@ final class NotchViewModel: ObservableObject {
                 // it stays on the island until it resets. When the reset moment is
                 // known, ease back to idle exactly then (clearing at once if it's
                 // already past); when it isn't, leave it pinned with no timer —
-                // the next real session activity replaces it.
-                guard let reset = status.resetAt else { return }
+                // the next real session activity replaces it. A limit waiting for
+                // Enter, or one that won't continue, can be past its reset and
+                // stays until something moves (see `limitEasesAt`).
+                guard let reset = Self.limitEasesAt(status) else { return }
                 revertDelay = max(0, reset.timeIntervalSinceNow)
             } else {
                 revertDelay = max(settings.doneToastSeconds, 6)
@@ -994,7 +2060,8 @@ final class NotchViewModel: ObservableObject {
             // A question is answered in the terminal, and nothing clears it if
             // you decline or ignore it (Claude Code fires no hook for a declined
             // tool). So ease it back to idle after a spell rather than letting
-            // "Question" wedge the island until the next prompt.
+            // "Question" wedge the island until the next prompt. Held while
+            // a hook is still waiting on the notch — see `scheduleIdleRevert`.
             revertDelay = Self.questionRevertSeconds
         case .compacting:
             // Only PreCompact fires — a cancelled compaction sends no follow-up,
@@ -1003,13 +2070,32 @@ final class NotchViewModel: ObservableObject {
             revertDelay = Self.compactingRevertSeconds
         default: return
         }
+        scheduleIdleRevert(after: revertDelay)
+    }
+
+    /// Eases the island back to idle after `delay`, unless something else
+    /// arrives first (any new status cancels it).
+    ///
+    /// Never while a request is pending: a question the notch is offering is
+    /// not an abandoned one, however long it has been up. The revert then
+    /// stands down, and `refreshPendingRequest` re-arms it once the request
+    /// goes away.
+    private func scheduleIdleRevert(after delay: TimeInterval) {
+        doneRevertTask?.cancel()
         doneRevertTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(revertDelay))
-            guard !Task.isCancelled else { return }
-            // Idle is quiescent — nothing left to re-select for.
-            self?.stopReselectTimer()
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self else { return }
+            guard self.pendingRequest == nil else {
+                self.doneRevertTask = nil
+                return
+            }
+            // Idle is quiescent — nothing left to re-select for, unless a
+            // background session is holding the Mac awake.
+            self.updateReselectTimer(for: .idle)
+            // Ready says no agents are running, as `eased` does for the list.
+            self.claudeSubagents = []
             withAnimation(.easeInOut(duration: 0.25)) {
-                self?.claudeState = .idle
+                self.claudeState = .idle
             }
         }
     }
@@ -1022,13 +2108,14 @@ final class NotchViewModel: ObservableObject {
     ///
     /// A usage-limit failure is deliberately silent: it is pinned for as
     /// long as hours, and there is nothing to do about it but wait.
-    private func playSound(for state: ClaudeCodeState, errorType: String?) {
+    private func playSound(for state: ClaudeCodeState, errorType: String?, limitNext: ClaudeLimitNext? = nil) {
         switch state {
         case .needsApproval, .needsQuestion:
             guard settings.claudeAlertSoundEnabled else { return }
             settings.claudeAlertSound.play()
         case .failed:
-            guard settings.claudeAlertSoundEnabled, errorType != "usage_limit" else { return }
+            // …except one waiting for Enter: that one needs you.
+            guard settings.claudeAlertSoundEnabled, errorType != "usage_limit" || limitNext == .enter else { return }
             settings.claudeAlertSound.play()
         case .done:
             guard settings.claudeDoneSoundEnabled else { return }
@@ -1038,27 +2125,29 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
-    /// Picks which source drives the notch and feeds it through `apply`.
+    /// Picks which source drives the notch, which player the island is routed
+    /// to, and feeds the result through `apply`.
     ///
-    /// Prefer the adapter whenever it carries a Spotify track (Spotify owns
-    /// the system session); otherwise fall back to the AppleScript poll. The
-    /// equality guard matters: without it, a 1 Hz poll tick would re-apply an
-    /// unchanged adapter model and yank the scrubber back to that model's
-    /// now-stale elapsed time every second.
+    /// Prefer the adapter whenever it carries a supported player's track (that
+    /// player owns the system session); otherwise fall back to a poll — see
+    /// `fallbackPollModel` for which. The equality guard matters: without it,
+    /// a 1 Hz poll tick would re-apply an unchanged adapter model and yank the
+    /// scrubber back to that model's now-stale elapsed time every second.
     private func recomputeSource() {
         var effective = adapterModel.hasTrack
             ? adapterModel
-            : (spotifyModel ?? MediaPlaybackModel())
+            : (fallbackPollModel() ?? MediaPlaybackModel())
 
-        // The AppleScript poll reads Spotify's *true* player position, which
-        // the adapter's cached elapsed lags after a seek/restart (MediaRemote
-        // catches up on its own schedule). For a Spotify-scoped app the poll is
-        // the ground truth for the clock, so let it drive the timing fields
-        // while the adapter still supplies metadata and byte artwork. Without
-        // this, a stale adapter position snaps the bar back over a fresh seek;
-        // apply()'s drift easing absorbs the steady 1 Hz corrections so this
-        // doesn't reintroduce jitter, and a restart self-corrects within ~1s.
-        if let poll = spotifyModel, poll.hasTrack,
+        // The AppleScript poll reads the player's *true* position, which the
+        // adapter's cached elapsed lags after a seek/restart (MediaRemote
+        // catches up on its own schedule). The poll is the ground truth for
+        // the clock, so let it drive the timing fields while the adapter still
+        // supplies metadata and byte artwork. Without this, a stale adapter
+        // position snaps the bar back over a fresh seek; apply()'s drift
+        // easing absorbs the steady 1 Hz corrections so this doesn't
+        // reintroduce jitter, and a restart self-corrects within ~1s. Keyed by
+        // the track's owner, so Music's poll can never time Spotify's track.
+        if let poll = pollModels[effective.bundleIdentifier], poll.hasTrack,
            poll.title == effective.title, poll.album == effective.album {
             effective.reportedElapsed = poll.reportedElapsed
             effective.timestamp = poll.timestamp
@@ -1067,16 +2156,42 @@ final class NotchViewModel: ObservableObject {
             // Shuffle/repeat come from the poll too: the MediaRemote adapter
             // doesn't report them for Spotify (they're absent from its payload),
             // so without this the toggles would read permanently off and never
-            // light up even when Spotify has them on.
+            // light up even when the player has them on.
             effective.isShuffled = poll.isShuffled
             effective.repeatMode = poll.repeatMode
         }
 
         holdOptimisticTransport(&effective)
 
+        // Route to whoever owns the track on screen. The waveform's tap
+        // follows: it is bound to one process, and it must be this one.
+        routedPlayerID = effective.hasTrack ? effective.bundleIdentifier : nil
+        if let routedPlayerID {
+            lastActivePlayerID = routedPlayerID
+            audio.setTarget(routedPlayerID)
+        }
+        // With the adapter silent, the routed poll's model — and so its cover —
+        // is the one on screen. Any cover it held back while the adapter was
+        // supplying one, or while another player was routed, is fetched now.
+        if !adapterModel.hasTrack {
+            routedPlayer?.fetchArtworkIfNeeded()
+        }
+
         guard effective != lastApplied else { return }
         lastApplied = effective
         apply(effective)
+    }
+
+    /// Which poll drives the island when the adapter is silent: the player
+    /// that's playing; failing that, the one the island was already on; and on
+    /// a cold start with two paused players, the first in `players` order —
+    /// Spotify, the behaviour Isle has always had. Nil when no player has a
+    /// track.
+    private func fallbackPollModel() -> MediaPlaybackModel? {
+        let candidates = players.compactMap { pollModels[$0.bundleID] }.filter(\.hasTrack)
+        return candidates.first(where: \.isPlaying)
+            ?? candidates.first(where: { $0.bundleIdentifier == lastActivePlayerID })
+            ?? candidates.first
     }
 
     /// Keeps the user's last play/pause or seek in place until a source agrees
@@ -1241,8 +2356,28 @@ final class NotchViewModel: ObservableObject {
         // ambient info, shown in the island but never taking over the panel, so
         // it doesn't sit maximized for however long the limit lasts.
         guard settings.effectiveMode.showsClaude else { return false }
-        if claudeState.isAttention { return true }
+        if claudeState.isAttention || isLimitWaitingForEnter { return true }
         return claudeState == .failed && !isUsageLimit
+    }
+
+    /// The limit reset while the Mac slept, and Claude Code is waiting for
+    /// Enter (`quota_auto_resume_stale`): unlike the limit itself, this one
+    /// needs you, so it opens the panel and rings like a question.
+    var isLimitWaitingForEnter: Bool {
+        isUsageLimit && claudeLimitNext == .enter
+    }
+
+    /// When a usage-limit record stops being the island's news: at its reset,
+    /// except a limit waiting for Enter (its reset has passed; that's the
+    /// point), or one that won't continue whose reset had already passed when
+    /// it said so. Those stay until the session moves. Nil: pinned.
+    nonisolated static func limitEasesAt(_ status: ClaudeStatus) -> Date? {
+        guard let reset = status.resetAt else { return nil }
+        switch status.limitNext {
+        case .enter: return nil
+        case .stopped: return reset > (status.updatedAt ?? .distantPast) ? reset : nil
+        default: return reset
+        }
     }
 
     /// The current failure is the Claude usage/subscription limit (pinned, resets
@@ -1255,7 +2390,7 @@ final class NotchViewModel: ObservableObject {
     /// receive alerts minimized. When off, the alert still shows in the collapsed
     /// island (glyph/label) and the user expands on hover — it just doesn't pop
     /// open on its own. `hasLiveActivity` itself stays true so a manual expand
-    /// still lands on the Claude tab (see `expandedTab`).
+    /// still lands on the Claude face (see `expandedPlace`).
     /// Internal rather than private: `IslandPresentation.state` crosses it with
     /// that island's own hover.
     var autoExpandsForActivity: Bool {
@@ -1272,18 +2407,28 @@ final class NotchViewModel: ObservableObject {
     /// How many islands the pointer currently holds open. The pointer is only
     /// ever on one screen, so this is 0 or 1 in practice; a count rather than
     /// a flag so two islands changing in the same event can't leave it wrong.
-    /// Feeds the Spotify poll's cadence — see `spotify.wantsFullRate`.
+    /// Feeds the player polls' cadence — see `wantsFullRate` in `init`.
     private var hoveredIslands = 0
 
     /// An island's hover flipped. Called by `IslandPresentation` on every
     /// transition, in both directions.
     func islandHoverChanged(_ hovering: Bool) {
         hoveredIslands = max(0, hoveredIslands + (hovering ? 1 : -1))
+        if !hovering, hoveredIslands == 0 { resetSessionList() }
         // Opening the panel puts the scrubber on screen: bring the position
-        // current now rather than at the next relaxed read.
+        // current now rather than at the next relaxed read. With nothing
+        // routed, every player gets asked, so whichever has a track is found.
         if hovering, hoveredIslands == 1 {
-            spotify.pollNow()
+            (routedPlayer.map { [$0] } ?? players).forEach { $0.pollNow() }
+            // The Claude face and the home tile count agent view's sessions;
+            // opening the panel is the moment to have them current.
+            if settings.effectiveMode.showsClaude { agentsMonitor.cue() }
+            // The shelf's watches catch a file leaving; this catches what a
+            // watch can't (a volume that went before its watch was set).
+            shelf.prune()
         }
+        // Closed: the shelf can give back a row it was holding.
+        if hoveredIslands == 0 { fitShelfRows(shelf.items.count) }
     }
 
     /// The pointer left an island. Hovering away from an auto-opened alert the
@@ -1309,6 +2454,525 @@ final class NotchViewModel: ObservableObject {
         return true
     }
 
+    // MARK: - Answering from the notch
+
+    /// Re-derives `pendingRequest` from the status's request id and the
+    /// requests on disk. Called whenever either side moves.
+    private func refreshPendingRequest() {
+        let match = claudeRequests.first { request in
+            guard request.id == claudeRequestId else { return false }
+            // The id is session-scoped already; this just refuses to show one
+            // session's request under another's status.
+            if let session = request.sessionId, session != claudeSessionId { return false }
+            switch request.kind {
+            case .approval: return claudeState == .needsApproval
+            case .question: return claudeState == .needsQuestion
+            }
+        }
+        guard match != pendingRequest else { return }
+
+        if match?.id != pendingRequest?.id {
+            // A different request (or none): start its questions from the top
+            // and re-arm the buttons.
+            questionIndex = 0
+            questionPicks = Array(repeating: [], count: match?.questions.count ?? 0)
+            questionTyped = [:]
+            answeredRequestId = nil
+            isReviewingRemember = false
+            // Text typed for the request before belongs to a question or a
+            // call that has already gone, one way or another.
+            answerDraft = ""
+            denialDraft = ""
+            if composing == .answer || composing == .denial { composing = nil }
+        }
+        withAnimation(.easeInOut(duration: 0.25)) {
+            pendingRequest = match
+        }
+
+        // The question went back to the terminal (or was answered) without a
+        // status write to restart the clock: let it ease off as any other
+        // question would.
+        if match == nil, claudeState == .needsQuestion, doneRevertTask == nil {
+            scheduleIdleRevert(after: Self.questionRevertSeconds)
+        }
+    }
+
+    /// A click has been sent for the pending request and is waiting for the
+    /// hook to take it.
+    var isAnsweringRequest: Bool {
+        guard let id = pendingRequest?.id else { return false }
+        return answeredRequestId == id
+    }
+
+    /// Approve or Deny the pending tool call. Whether the answer went —
+    /// for a keyboard shortcut's notice (the buttons ignore it).
+    @discardableResult
+    func decide(allow: Bool) -> Bool {
+        guard let request = pendingRequest, request.kind == .approval, !isAnsweringRequest else { return false }
+        return send(allow ? .allow : .deny, to: request)
+    }
+
+    /// "Always…": puts what would be saved on the face, for a second tap to
+    /// confirm. Saving a rule outlives this one call, so it is never one tap.
+    func reviewRemember() {
+        guard let request = pendingRequest, request.kind == .approval, request.remember != nil,
+              !isAnsweringRequest else { return }
+        withAnimation(.easeInOut(duration: 0.2)) { isReviewingRemember = true }
+    }
+
+    /// Back from the review to the plain decision.
+    func cancelRemember() {
+        guard isReviewingRemember, !isAnsweringRequest else { return }
+        withAnimation(.easeInOut(duration: 0.2)) { isReviewingRemember = false }
+    }
+
+    /// The confirm on the review: allow this call and accept the suggestions
+    /// as Claude Code offered them.
+    @discardableResult
+    func allowRemembering() -> Bool {
+        guard let request = pendingRequest, request.kind == .approval, request.remember != nil,
+              isReviewingRemember, !isAnsweringRequest else { return false }
+        return send(.allowRemembering, to: request)
+    }
+
+    /// The question currently on screen, when a question is pending.
+    var currentQuestion: ClaudeQuestion? {
+        guard let request = pendingRequest, request.kind == .question,
+              request.questions.indices.contains(questionIndex) else { return nil }
+        return request.questions[questionIndex]
+    }
+
+    /// A tap on an option. Single-select records it and moves on — to the
+    /// next question, or, on the last, sends every answer. Multi-select only
+    /// toggles; `advanceQuestion` commits it.
+    func pickOption(_ label: String) {
+        guard let question = currentQuestion, !isAnsweringRequest,
+              questionPicks.indices.contains(questionIndex) else { return }
+        // A tap on an option takes the place of anything typed for it.
+        questionTyped[questionIndex] = nil
+        if question.multiSelect {
+            if questionPicks[questionIndex].contains(label) {
+                questionPicks[questionIndex].remove(label)
+            } else {
+                questionPicks[questionIndex].insert(label)
+            }
+        } else {
+            questionPicks[questionIndex] = [label]
+            advanceQuestion()
+        }
+    }
+
+    /// Next / Done: moves past the current question once it has an answer,
+    /// and sends them all after the last.
+    func advanceQuestion() {
+        guard let request = pendingRequest, request.kind == .question, !isAnsweringRequest,
+              questionPicks.indices.contains(questionIndex),
+              !questionPicks[questionIndex].isEmpty || questionTyped[questionIndex] != nil
+        else { return }
+
+        if questionIndex + 1 < request.questions.count {
+            withAnimation(.easeInOut(duration: 0.2)) { questionIndex += 1 }
+            return
+        }
+
+        // Keyed by the question text, as Claude Code expects. A multi-select's
+        // labels go in the order the options were offered, comma-joined.
+        // Typed text goes in as it was written: Claude Code takes any string
+        // here, and shows it as the answer just as the terminal's "Type
+        // something" row would (verified on 2.1.318 — "Which fruit? → Mango,
+        // and make it a smoothie").
+        var answers: [String: String] = [:]
+        for (index, question) in request.questions.enumerated() {
+            if let typed = questionTyped[index] {
+                answers[question.question] = typed
+                continue
+            }
+            let picked = questionPicks[index]
+            answers[question.question] = question.options
+                .map(\.label)
+                .filter { picked.contains($0) }
+                .joined(separator: ", ")
+        }
+        send(.answers(answers), to: request)
+    }
+
+    /// Back to the previous question of a multi-question ask.
+    func previousQuestion() {
+        guard currentQuestion != nil, questionIndex > 0, !isAnsweringRequest else { return }
+        withAnimation(.easeInOut(duration: 0.2)) { questionIndex -= 1 }
+    }
+
+    /// Answer in terminal: releases the hook with no decision, so Claude shows
+    /// its own prompt now rather than at the deadline. For a question that is
+    /// the difference between a blank terminal and the question UI.
+    func deferToTerminal() {
+        guard let request = pendingRequest, !isAnsweringRequest else { return }
+        send(.terminal, to: request)
+    }
+
+    @discardableResult
+    private func send(_ reply: ClaudeRequestWatcher.Reply, to request: ClaudeRequest) -> Bool {
+        answeredRequestId = request.id
+        guard requestWatcher.respond(reply, to: request) else {
+            // The hook let go first (its deadline, Esc in the terminal) or the
+            // write failed. Claim nothing: re-arm, and re-scan so buttons for a
+            // request that is already gone retire now.
+            answeredRequestId = nil
+            requestWatcher.refresh()
+            return false
+        }
+        return true
+    }
+
+    // MARK: - Keyboard shortcuts
+
+    /// The Claude face with the pending request on it is what the open
+    /// panel shows — not the list, not another face. Where a shortcut's
+    /// press counts as made in view of it (see `ShortcutPlan.command`).
+    var showsPendingRequestFace: Bool {
+        pendingRequest != nil && expandedPlace == .face(.claude) && !sessionListShown
+    }
+
+    /// Puts the pending request's face up — out of the list, onto the Claude
+    /// face — for a shortcut that opens the island to it.
+    func revealPendingRequest() {
+        guard pendingRequest != nil else { return }
+        closeSessionList()
+        if expandedPlace != .face(.claude), availableTabs.contains(.claude) {
+            selectTab(.claude)
+        }
+    }
+
+    /// The keys the face's buttons carry (Approve ⌃', ⌥1 on an option), and
+    /// which a press would act on now — `NotchShortcuts` keeps it, from the
+    /// bindings and the same plan a press goes through. See `ShortcutHints`.
+    @Published private(set) var shortcutHints = ShortcutHints()
+
+    func setShortcutHints(_ hints: ShortcutHints) {
+        if shortcutHints != hints { shortcutHints = hints }
+    }
+
+    /// What a shortcut just did, said in the collapsed island — so a press
+    /// made with the island closed is never silent. Unlike a toast it shows
+    /// over a live alert: it's the answer to that alert, and it's the user's
+    /// own doing. Brief, and replaced by the next.
+    @Published private(set) var shortcutNotice: IslandToast?
+    private var shortcutNoticeTask: Task<Void, Never>?
+    private static let shortcutNoticeSeconds: TimeInterval = 2.5
+
+    func showShortcutNotice(_ notice: IslandToast) {
+        shortcutNoticeTask?.cancel()
+        withAnimation(.easeInOut(duration: 0.2)) { shortcutNotice = notice }
+        shortcutNoticeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.shortcutNoticeSeconds))
+            guard !Task.isCancelled, let self else { return }
+            withAnimation(.easeInOut(duration: 0.25)) { self.shortcutNotice = nil }
+            self.shortcutNoticeTask = nil
+        }
+    }
+
+    // MARK: - Jump and reply (Milestone 11)
+
+    /// The island's session as the registry last reported it.
+    private var selectedSession: ClaudeSession? {
+        guard let id = claudeSessionId else { return nil }
+        return claudeSessions.first { $0.sessionId == id }
+    }
+
+    /// Re-resolves `sessionHost` when the island's session, or its pid,
+    /// changes. Off the main thread: tmux in the chain means asking tmux.
+    private func updateSessionHost() {
+        let pid = selectedSession?.pid
+        guard pid != sessionHostPID else { return }
+        sessionHostPID = pid
+        // Never show the last session's host for this one, even briefly.
+        sessionHost = nil
+        guard let pid else { return }
+        Task.detached(priority: .utility) { [weak self] in
+            let host = ClaudeHostResolver.resolve(cliPID: pid)
+            await self?.receiveHost(host, for: pid)
+        }
+    }
+
+    /// A resolution landing, for whichever session was asked about: kept
+    /// only if that session is still the island's.
+    private func receiveHost(_ host: ClaudeSessionHost?, for pid: pid_t) {
+        guard sessionHostPID == pid else { return }
+        sessionHost = host
+    }
+
+    /// What the Jump pill says — the hosting app's own name — or nil when
+    /// there's nowhere resolved to jump to.
+    var jumpTarget: String? {
+        guard claudeState != .disconnected else { return nil }
+        return sessionHost?.app?.name ?? (islandAttachId != nil ? ClaudeLauncher.attachApp : nil)
+    }
+
+    /// The island's session is a background one with no terminal of its own
+    /// (Milestone 21): Jump attaches to it in Terminal.
+    var jumpAttaches: Bool {
+        sessionHost?.app == nil && islandAttachId != nil
+    }
+
+    private var islandAttachId: String? {
+        claudeBackground?.attachId
+    }
+
+    /// Brings the session's tab (or its app) to the front. Resolved again
+    /// at the click, since tabs move between windows and a tmux client can
+    /// re-attach elsewhere; a session that no longer resolves goes nowhere.
+    /// A background session with no terminal is attached to instead.
+    func jumpToSession() {
+        if jumpAttaches, let id = islandAttachId {
+            ClaudeLauncher.attach(id, in: claudeBackground?.cwd)
+            return
+        }
+        guard let pid = selectedSession?.pid, sessionHost?.app != nil else { return }
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let host = ClaudeHostResolver.resolve(cliPID: pid)
+            await self?.receiveHost(host, for: pid)
+            guard let host, host.app != nil else { return }
+            _ = await TerminalBridge.jump(to: host)
+        }
+    }
+
+    /// Whether the face offers "Reply to Claude…": the session sits at its
+    /// prompt as far as the island knows, and its terminal is one Isle can
+    /// type into without focusing it. The stricter checks run at Send.
+    var canReply: Bool {
+        repliesFromNotch && pendingRequest == nil && Self.isAtPrompt(claudeState)
+    }
+
+    /// Whether this session's row ever holds a reply: the setting is on and
+    /// its terminal can be typed into. Not whether it can right now — that's
+    /// `canReply`, which comes and goes with the state. The face places Jump
+    /// by this, so the pill doesn't move when the reply field appears.
+    var repliesFromNotch: Bool {
+        settings.answerFromNotch && sessionHost?.typingRoute != nil
+    }
+
+    /// States in which Claude Code is waiting for the next prompt.
+    private static func isAtPrompt(_ state: ClaudeCodeState) -> Bool {
+        switch state {
+        case .done, .waitingInput, .idle, .failed: return true
+        default: return false
+        }
+    }
+
+    /// The reply being written for the island's session.
+    var replyDraft: String {
+        get { claudeSessionId.flatMap { replyDrafts[$0] } ?? "" }
+        set {
+            guard let id = claudeSessionId else { return }
+            replyDrafts[id] = newValue.isEmpty ? nil : newValue
+        }
+    }
+
+    /// Starts taking keys for one of the face's fields. The panel becomes key
+    /// (without activating Isle) in response; see `NotchWindowController`.
+    func beginCompose(_ kind: ComposeKind) {
+        switch kind {
+        case .reply:
+            guard canReply else { return }
+        case .answer:
+            guard pendingRequest?.kind == .question, !isAnsweringRequest else { return }
+        case .denial:
+            guard pendingRequest?.kind == .approval, !isAnsweringRequest, !isReviewingRemember else { return }
+        case .quickAdd:
+            guard showsAgenda else { return }
+        }
+        guard composing != kind else { return }
+        composing = kind
+    }
+
+    /// Esc, or focus going elsewhere: stop taking keys. What was typed is
+    /// kept, and is there when the field is opened again.
+    func endCompose() {
+        guard composing != nil else { return }
+        composing = nil
+    }
+
+    /// Return, or the Send button.
+    func sendCompose() {
+        switch composing {
+        case .reply: sendReply()
+        case .answer: answerWithTypedText()
+        case .denial: denyWithMessage()
+        // The first Return previews, a second adds — and an add that lands
+        // ends composing (see `agendaModel.onAdded`).
+        case .quickAdd: agendaModel.submit()
+        case nil: break
+        }
+    }
+
+    /// "Type something": the typed text answers the question on screen, then
+    /// the ask moves on — to the next question, or, on the last, sends.
+    private func answerWithTypedText() {
+        let text = answerDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, currentQuestion != nil, !isAnsweringRequest,
+              questionPicks.indices.contains(questionIndex) else { return }
+        composing = nil
+        questionTyped[questionIndex] = text
+        questionPicks[questionIndex] = []
+        answerDraft = ""
+        advanceQuestion()
+    }
+
+    /// "No, and tell Claude what to do differently": a denial whose message
+    /// carries the user's words. The message is what Claude reads as the
+    /// tool's result, the same slot the terminal's own option fills.
+    private func denyWithMessage() {
+        let text = denialDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, let request = pendingRequest, request.kind == .approval,
+              !isAnsweringRequest else { return }
+        composing = nil
+        send(.denySaying(text), to: request)
+    }
+
+    /// Types the draft into the session's terminal as the user's next prompt.
+    ///
+    /// Every check that decides whether keys would land in Claude's prompt
+    /// runs here, at the click, against fresh state: the CLI must report
+    /// itself idle (not mid-turn, not showing a dialog, where a typed Return
+    /// would answer it), and its process group must own the tab's terminal
+    /// (so it isn't a shell after Claude exited, where the text would run as
+    /// a command). Then it's typed, and only the transcript can say it
+    /// arrived — see `confirmDelivery`.
+    private func sendReply() {
+        let text = Self.oneLine(replyDraft)
+        guard !text.isEmpty, let session = selectedSession else { return }
+        if case .sending = replyDelivery { return }
+        composing = nil
+        deliveryTask?.cancel()
+
+        let sessionId = session.sessionId
+        // Read now, at the click: the CLI rewrites its record in place, and
+        // only a fresh read says it is at its prompt.
+        guard let fresh = sessionRegistry.currentSessions().first(where: { $0.sessionId == sessionId }),
+              fresh.status == .idle
+        else {
+            replyDelivery = .failed(text: text, reason: "Claude isn't at its prompt right now")
+            return
+        }
+
+        replyDelivery = .sending(text)
+        let pid = fresh.pid
+        let sentAt = Date()
+        deliveryTask = Task { [weak self] in
+            let typed = await Task.detached(priority: .userInitiated) { () -> (Result<Void, TerminalBridge.Failure>, String)? in
+                guard let host = ClaudeHostResolver.resolve(cliPID: pid),
+                      let route = host.typingRoute,
+                      ProcessSnapshot(pid: pid)?.ownsTerminal == true
+                else { return nil }
+                return (await TerminalBridge.type(text, via: route), host.app?.name ?? "the terminal")
+            }.value
+            guard let self, !Task.isCancelled else { return }
+
+            guard let (result, app) = typed else {
+                self.replyDelivery = .failed(text: text, reason: "Something else is in front in Claude's tab")
+                return
+            }
+            if case .failure(let failure) = result {
+                self.replyDelivery = .failed(text: text, reason: Self.reason(for: failure, app: app))
+                return
+            }
+            // In the terminal now: the field lets go of it, so a second Send
+            // can't type it twice.
+            if Self.oneLine(self.replyDraft(for: sessionId)) == text {
+                self.replyDrafts[sessionId] = nil
+            }
+            await self.confirmDelivery(text, session: fresh, since: sentAt, app: app)
+        }
+    }
+
+    private func replyDraft(for sessionId: String) -> String { replyDrafts[sessionId] ?? "" }
+
+    /// Waits for the transcript to show `text` as a turn the user typed —
+    /// `origin.kind == "human"`, the same entry a prompt typed at the keyboard
+    /// makes. A few seconds is plenty: Claude Code writes the turn the moment
+    /// Return submits it. Not seeing it isn't proof it went nowhere — it may
+    /// be sitting in the prompt — so the text comes back to the field and the
+    /// reason says to look before sending again.
+    private func confirmDelivery(_ text: String, session: ClaudeSession, since: Date, app: String) async {
+        for _ in 0..<16 {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            // Off the main thread: the read and the JSON are the transcript's.
+            let cwd = session.cwd, id = session.sessionId
+            let found = await Task.detached(priority: .userInitiated) {
+                Self.transcriptHasHumanTurn(text, cwd: cwd, sessionId: id, since: since)
+            }.value
+            guard !Task.isCancelled else { return }
+            if found {
+                replyDelivery = .sent(text)
+                return
+            }
+        }
+        guard !Task.isCancelled else { return }
+        if replyDraft(for: session.sessionId).isEmpty { replyDrafts[session.sessionId] = text }
+        replyDelivery = .failed(text: text, reason: "Typed into \(app), but Claude didn't take it — check its prompt")
+    }
+
+    /// Keeps the reply's outcome honest as the session moves on.
+    private func settleReplyState(for state: ClaudeCodeState) {
+        if composing == .reply, !canReply { composing = nil }
+        switch replyDelivery {
+        case .sent:
+            // Shown for the turn it started; gone when that turn ends.
+            if state != .working && state != .compacting { replyDelivery = .none }
+        case .failed:
+            // The user carried on in the terminal.
+            if state == .working { replyDelivery = .none }
+        default:
+            break
+        }
+    }
+
+    private static func reason(for failure: TerminalBridge.Failure, app: String) -> String {
+        switch failure {
+        case .notPermitted(let name): return "Allow Isle to control \(name) in Privacy › Automation"
+        case .tabMissing: return "Couldn't find Claude's tab in \(app)"
+        case .appGone: return "\(app) isn't running"
+        case .failed: return "\(app) didn't take the text"
+        }
+    }
+
+    /// One line: a Return inside the text would submit the half before it.
+    nonisolated private static func oneLine(_ text: String) -> String {
+        text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    /// Whether the session's transcript, since `since`, has a user turn typed
+    /// by a person that ends with `text`. "Ends with": anything the user had
+    /// already typed in the prompt is sent along with it, and that still
+    /// delivered the reply.
+    nonisolated private static func transcriptHasHumanTurn(_ text: String, cwd: String, sessionId: String,
+                                                           since: Date) -> Bool {
+        for line in transcriptLines(cwd: cwd, sessionId: sessionId) {
+            guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                  object["type"] as? String == "user",
+                  let stamp = object["timestamp"] as? String,
+                  let at = transcriptDate(stamp)
+            else { continue }
+            guard at >= since.addingTimeInterval(-1) else { return false }
+            if let origin = object["origin"] as? [String: Any], origin["kind"] as? String != "human" { continue }
+            guard let message = object["message"] as? [String: Any] else { continue }
+            let content: String
+            if let string = message["content"] as? String {
+                content = string
+            } else if let blocks = message["content"] as? [[String: Any]] {
+                content = blocks.compactMap { $0["text"] as? String }.joined(separator: "\n")
+            } else {
+                continue
+            }
+            if oneLine(content).hasSuffix(text) { return true }
+        }
+        return false
+    }
+
     /// Whether the agenda face is on at all — either switch is enough. The
     /// face shows even when access was declined, so the panel can say so;
     /// hiding it would leave the switch in Settings looking like it did nothing.
@@ -1320,76 +2984,149 @@ final class NotchViewModel: ObservableObject {
     var agendaShowsEvents: Bool { settings.showCalendarEvents }
     var agendaShowsReminders: Bool { settings.showReminders }
 
+    /// How long before a call its Join comes forward on the agenda face and
+    /// the home tile: the island's own lead, so the toast and the button
+    /// arrive together, and never less than ten minutes.
+    var agendaJoinLead: TimeInterval { TimeInterval(max(10, settings.eventLeadMinutes) * 60) }
+
     /// The Pomodoro timer is offered — the Settings toggle is on.
     var pomodoroAvailable: Bool { settings.pomodoroEnabled }
 
-    /// The faces the expanded panel can show right now, in switcher order:
-    /// whatever the mode brings, then Pomodoro if it's been switched on, then
-    /// the agenda if either of its switches is.
+    /// The faces the expanded panel can show right now, in grid order — the
+    /// order of the home tiles, and the order a swipe walks: whatever the
+    /// mode brings, then Pomodoro if it's been switched on, then the agenda
+    /// if either of its switches is. A face that exists only while it holds
+    /// something (a shelf) is appended here only while it does.
     var availableTabs: [IsleTab] {
         var tabs: [IsleTab] = []
         if settings.effectiveMode.showsMusic { tabs.append(.music) }
         if settings.effectiveMode.showsClaude { tabs.append(.claude) }
         if pomodoroAvailable { tabs.append(.pomodoro) }
         if showsAgenda { tabs.append(.agenda) }
+        if !shelf.isEmpty { tabs.append(.shelf) }
         return tabs
     }
 
-    /// Whether the expanded panel shows the switcher — only when there is
-    /// more than one face to switch between; a single source is just shown.
-    var showsTabBar: Bool {
+    /// Whether there's a home grid at all — only when there is more than one
+    /// face to choose between. A single source is just shown, with no crumb
+    /// and nothing to swipe to.
+    var showsHome: Bool {
         availableTabs.count > 1
     }
 
-    /// Whether the switcher is the strip of every face in the housing band
-    /// rather than a single toggle in the corner. Two faces flip: the toggle
-    /// shows the other face's icon and there is nothing to cycle past. From
-    /// three, cycling would make someone pass through a face they didn't
-    /// want to reach the one they did, so each gets its own button.
-    var showsTabStrip: Bool {
-        availableTabs.count > 2
-    }
-
-    /// The single toggle is on: exactly two faces — see `showsTabStrip`.
-    var showsTabToggle: Bool {
-        showsTabBar && !showsTabStrip
-    }
-
-    /// The face the single toggle offers: the one after the current, cycling.
-    /// With two faces that is simply the other one.
-    var nextTab: IsleTab {
+    /// Where the open panel is right now. Normally the last place the user
+    /// chose — the grid, or a face — except that a live Claude interrupt (an
+    /// approval, a question, a failure) goes straight to the Claude face,
+    /// without touching that choice, so it's back once the alert clears. A
+    /// chosen face that is no longer offered (the mode changed, the agenda or
+    /// Pomodoro was switched off) falls back to the grid rather than a guess.
+    var expandedPlace: NotchPlace {
         let tabs = availableTabs
-        guard let index = tabs.firstIndex(of: expandedTab) else { return tabs.first ?? .music }
-        return tabs[(index + 1) % tabs.count]
-    }
-
-    /// Which content the expanded panel should render right now. Normally the
-    /// user's selected tab, except that a live Claude interrupt (a question /
-    /// error) forces the Claude tab — without mutating `activeTab`, so the
-    /// user's choice is restored automatically once the alert clears. A
-    /// selection that is no longer available (the mode changed, the agenda
-    /// or Pomodoro was switched off) falls back to the first face rather than a blank.
-    var expandedTab: IsleTab {
-        let tabs = availableTabs
-        // An alert auto-jumps to Claude, but a manual tab tap during the
-        // alert sticks (see `selectTab`) so the user can still look at music.
+        // An alert auto-jumps to Claude, but going anywhere during the alert
+        // sticks (see `selectTab` / `selectHome`), so the user can still
+        // look at music.
         if hasLiveActivity, !tabOverriddenDuringAlert, tabs.contains(.claude) {
-            return .claude
+            return .face(.claude)
         }
-        if tabs.contains(activeTab) { return activeTab }
-        return tabs.first ?? .music
+        guard tabs.count > 1 else { return .face(tabs.first ?? .music) }
+        if isHome { return .home }
+        if tabs.contains(activeTab) { return .face(activeTab) }
+        return .home
     }
 
+    /// The face `step` places from `tab` in grid order (-1 the previous, +1
+    /// the next), or nil past either end. What a swipe moves to.
+    func neighbor(of tab: IsleTab, step: Int) -> IsleTab? {
+        let tabs = availableTabs
+        guard let index = tabs.firstIndex(of: tab) else { return nil }
+        let target = index + step
+        return tabs.indices.contains(target) ? tabs[target] : nil
+    }
 
-    /// A user tap on the Music/Claude switcher. Records the pick and, when an
-    /// alert is live, marks it as a manual override so `expandedTab` stops
-    /// forcing the Claude tab for the rest of this alert.
+    /// Claude is blocked on the user: an approval or a question, from the
+    /// selected session or any other the registry vouches for. Only ever from
+    /// a status that says so — never inferred from a quiet session.
+    var claudeNeedsYou: Bool {
+        guard settings.effectiveMode.showsClaude else { return false }
+        return claudeState.isAttention || otherSessions.needYou > 0
+    }
+
+    /// A face other than the one on screen needs the user — what the crumb's
+    /// home mark lights for. Claude is the only face that can ask today.
+    var needsYouElsewhere: Bool {
+        guard let face = expandedPlace.face else { return false }
+        return face != .claude && claudeNeedsYou
+    }
+
+    /// The content height the face on screen wants, when it wants more than
+    /// the standard panel — the one place a face's height is decided. The
+    /// panel grows to it, up to `NotchMetrics.panelMaxHeight`; `room` is the
+    /// most content that cap holds, for a face that can fit itself to it.
+    /// Nil keeps `expandedSize`, which Home and every other face do. A new
+    /// face that grows is one more case here and nothing else: the window is
+    /// already sized for the cap.
+    func faceContentHeight(room: CGFloat) -> CGFloat? {
+        guard let face = expandedPlace.face else { return nil }
+        return faceContentHeight(of: face, room: room)
+    }
+
+    /// The content height `face` wants, whether or not it's the face on
+    /// screen — for the pager, which lays the face coming in beside the
+    /// current one out at its own height (see `FaceCarousel`).
+    func faceContentHeight(of face: IsleTab, room: CGFloat) -> CGFloat? {
+        switch face {
+        case .claude: return face == expandedPlace.face ? questionContentHeight(room: room) : nil
+        case .agenda: return min(room, AgendaLayout.contentHeight)
+        case .shelf: return min(room, ShelfLayout.contentHeight(rows: shelfRows))
+        case .music, .pomodoro: return nil
+        }
+    }
+
+    /// The height the question face wants, while it is the face on screen
+    /// (see `faceContentHeight`). Nil without a live question, when the
+    /// face keeps the standard height. The tallest question of a multi-question
+    /// ask sizes it, so stepping through them doesn't bob the panel. Depends
+    /// on the description setting (row heights); the rows have the face's
+    /// full width, with nothing in the panel's corner to clear.
+    ///
+    /// Each question is fitted to `room`, the most the capped panel holds, so
+    /// a question whose descriptions had to shorten asks for the height it's
+    /// drawn at rather than the cap with a gap above the buttons.
+    func questionContentHeight(room: CGFloat) -> CGFloat? {
+        guard expandedPlace == .face(.claude), !sessionListShown,
+              let request = pendingRequest, request.kind == .question else {
+            return nil
+        }
+        return request.questions.map {
+            ClaudePanelLayout.questionContentHeight(
+                $0, descriptions: optionDescriptions, trailingClearance: 0, room: room
+            )
+        }.max()
+    }
+
+    /// How much of each option's description the question face shows.
+    var optionDescriptions: OptionDescriptions { settings.optionDescriptions }
+
+
+    /// The user went into a face: a home tile, or a swipe landing. Records
+    /// the pick and, when an alert is live, marks it as a manual override so
+    /// `expandedPlace` stops forcing the Claude face for the rest of this
+    /// alert.
     func selectTab(_ tab: IsleTab) {
         if hasLiveActivity { tabOverriddenDuringAlert = true }
         activeTab = tab
-        // `activeTab`'s change publishes, but publish explicitly too: if the tap
-        // re-selects the already-active tab, only the override flag moved and the
-        // view still needs to re-read `expandedTab`.
+        isHome = false
+        // The changes publish, but publish explicitly too: if the tap
+        // re-selects the face already showing, only the override flag moved
+        // and the view still needs to re-read `expandedPlace`.
+        objectWillChange.send()
+    }
+
+    /// The user went back to the home grid, from the crumb. Same override
+    /// rule as `selectTab`: during an alert, Home sticks.
+    func selectHome() {
+        if hasLiveActivity { tabOverriddenDuringAlert = true }
+        isHome = true
         objectWillChange.send()
     }
 
@@ -1402,7 +3139,7 @@ final class NotchViewModel: ObservableObject {
     /// the hardware; it stays hoverable (see NotchWindowController's pointer
     /// backstop), so hovering the notch still reveals it.
     var isCollapsedIdle: Bool {
-        !showsToast && !hasMusicActivity && !hasClaudeActivity && !hasPomodoroActivity
+        collapsedToast == nil && !hasMusicActivity && !hasClaudeActivity && !hasPomodoroActivity
     }
 
     /// The Pomodoro clock has something worth showing in the collapsed island:
@@ -1524,14 +3261,16 @@ final class NotchViewModel: ObservableObject {
         // the message sits on the right. Same straddle as the Claude-solo
         // layout, so music and Claude slide back into place when it ends
         // rather than jumping.
-        if let toast = activeToast, showsToast {
+        if let toast = collapsedToast {
             return (s.album + g, IslandToast.width(of: toast.text) + g)
         }
 
         if shouldSplitCollapsed {
             // Music cluster is album + waveform, with the waveform tucked toward
-            // the camera so the album sits outboard, clear of the housing. The
-            // other side seats Claude, the timer, or both in that order.
+            // the camera so the album sits outboard, clear of the housing. With
+            // the waveform off the album is the whole cluster and the island
+            // narrows — see `waveSlot`. The other side seats Claude, the timer,
+            // or both in that order.
             let leading = s.album + waveSlot + g
             var trailing: CGFloat = 0
             if hasClaudeActivity { trailing += s.dots + statusSlot }
@@ -1568,14 +3307,16 @@ final class NotchViewModel: ObservableObject {
         return (s.minSide, s.minSide)   // resting
     }
 
-    /// The waveform's share of the music cluster — the gap plus the bars.
+    /// The waveform's share of the music cluster — the gap plus the bars, or
+    /// nothing when the bars are switched off.
     ///
-    /// Reserved even when the waveform is off. Giving the space back moved the
-    /// album 31pt inboard (and nudged the whole island), which read as the
-    /// cover jumping toward the camera and slipping under the housing. Holding
-    /// the slot means turning the bars off changes nothing but the bars.
+    /// Only the music-solo layout holds the empty seat (see `collapsedSideWidths`),
+    /// where album and waveform straddle the camera and the seat is what keeps
+    /// the two sides even. In the split layout Claude already sits on the other
+    /// side, so an empty seat is just 31pt of dead air between the album and the
+    /// housing: it goes back and the island narrows with it.
     private var waveSlot: CGFloat {
-        CollapsedSize.gap + CollapsedSize.wave
+        showsWaveform ? CollapsedSize.gap + CollapsedSize.wave : 0
     }
 
     /// The timer's compact cluster on the trailing side: a small glyph, a gap,
@@ -1627,15 +3368,20 @@ final class NotchViewModel: ObservableObject {
             // is wrong. Past the staleness threshold the word just dims
             // (`claudeTint`) — the island says nothing it can't back up.
             return (isThinking ? "Thinking" : workingWord) + "…"
-        // Approvals are surfaced as a question — the expanded panel still offers
-        // the Approve/Deny buttons for a live `ask`, but the word is unified.
-        case .needsApproval, .needsQuestion: return "Question"
+        // "Approve" only while a hook is actually waiting on the notch's
+        // Approve / Deny; every other prompt — a question, or an approval
+        // whose wait has ended and lives on only in the terminal — reads as
+        // the one word for "it needs you".
+        case .needsApproval, .needsQuestion:
+            return pendingRequest?.kind == .approval ? "Approve" : "Question"
         case .waitingInput: return "Waiting"
         case .done: return "Done"
         case .idle: return "Ready"
-        // Every failure reads as one thing — a usage limit and a transient API
-        // error are indistinguishable to the user, so both just say "Error".
-        case .failed: return "Error"
+        // A usage limit says when it resets (Milestone 19), as a clock rather
+        // than a ticking count, so the island keeps one width for hours; or
+        // "Press Enter" once it waits for that. Any other failure is "Error".
+        case .failed:
+            return isUsageLimit ? ClaudeLimit.islandWord(resetAt: claudeResetAt, next: claudeLimitNext) : "Error"
         case .compacting: return "Compacting"
         case .disconnected: return ""
         }
@@ -1710,6 +3456,17 @@ final class NotchViewModel: ObservableObject {
         activeToast != nil && !hasLiveActivity
     }
 
+    /// What borrows the collapsed island right now, if anything: the drop
+    /// notice while a file drag is under way — the user is mid-gesture, and
+    /// that outranks a toast — else a keyboard shortcut's notice, which may
+    /// sit over the alert it answered — else the toast. The drop notice and
+    /// the toast never show under a live alert.
+    var collapsedToast: IslandToast? {
+        if showsDropNotice { return .dropNotice }
+        if let shortcutNotice { return shortcutNotice }
+        return showsToast ? activeToast : nil
+    }
+
     /// Accepts a toast, or declines it. Dropped rather than queued when a
     /// Claude alert is live — a power event or a meeting reminder is ambient
     /// and stale within seconds, so waiting its turn behind an approval would
@@ -1779,13 +3536,102 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Drop and shelf
+
+    /// The rows the shelf face lays its items out in, which set its height
+    /// (see `ShelfLayout`). They follow the items — one up to five, two past
+    /// that — except that while a panel is open they only ever grow. An item
+    /// removed from six leaves the face as it was, two rows with a gap,
+    /// rather than pulling the panel's edge up from under a pointer that was
+    /// just at the bottom of it, on the button; the next open is one row.
+    @Published private(set) var shelfRows = 1
+
+    private func fitShelfRows(_ count: Int) {
+        let needed = ShelfLayout.rows(for: count)
+        let rows = hoveredIslands > 0 ? max(shelfRows, needed) : needed
+        if shelfRows != rows { shelfRows = rows }
+    }
+
+    /// The collapsed island says "Drop on Isle" while a file drag is under
+    /// way — but never over a live alert, which outranks everything.
+    var showsDropNotice: Bool {
+        fileDragInFlight && acceptsDrops
+    }
+
+    /// Whether the island takes a drop at all right now. Not while an
+    /// approval, question or failure holds the panel: the drop face would
+    /// cover the thing that needs answering.
+    var acceptsDrops: Bool {
+        !hasLiveActivity
+    }
+
+    /// From `FileDragWatch`, on every change.
+    func fileDragChanged(_ inFlight: Bool) {
+        guard fileDragInFlight != inFlight else { return }
+        withAnimation(.easeInOut(duration: 0.25)) {
+            fileDragInFlight = inFlight
+        }
+    }
+
+    /// A drag reached an island (or left the last one): what it carries.
+    func setDropPayload(_ payload: DropPayload?) {
+        guard dropPayload != payload else { return }
+        dropPayload = payload
+    }
+
+    /// The targets the drop face offers for this payload, in order: Start
+    /// Claude only for exactly one folder, AirDrop only when AirDrop can
+    /// take these items. Keep is always offered — when the shelf is full it
+    /// says so and doesn't light (see `canKeep`).
+    func dropTargets(for payload: DropPayload) -> [DropTarget] {
+        var targets: [DropTarget] = []
+        if payload.claudeFolder != nil { targets.append(.startClaude) }
+        targets.append(.keep)
+        if payload.canAirDrop { targets.append(.airDrop) }
+        return targets
+    }
+
+    /// A target that would do something if released on: offered, and for
+    /// Keep, room on the shelf for at least one of the items.
+    func canPerform(_ target: DropTarget, with payload: DropPayload) -> Bool {
+        guard dropTargets(for: payload).contains(target) else { return false }
+        if target == .keep { return shelf.wouldKeep(payload.urls) > 0 }
+        return true
+    }
+
+    /// The drop was released on a target. Keeping goes to the shelf face, so
+    /// the panel the pointer is still over shows what was kept; the other
+    /// two leave the panel where it was.
+    func performDrop(_ target: DropTarget, with payload: DropPayload) {
+        guard acceptsDrops, canPerform(target, with: payload) else { return }
+        switch target {
+        case .startClaude:
+            if let folder = payload.claudeFolder { ClaudeLauncher.start(in: folder) }
+        case .keep:
+            if shelf.add(payload.items) > 0 { selectTab(.shelf) }
+        case .airDrop:
+            AirDropSender.shared.send(payload.urls)
+        }
+    }
+
+    /// From the shelf face.
+    func startClaude(in folder: URL) {
+        shelf.prune()
+        ClaudeLauncher.start(in: folder)
+    }
+
+    func airDrop(_ urls: [URL]) {
+        shelf.prune()
+        AirDropSender.shared.send(urls.filter { FileManager.default.fileExists(atPath: $0.path) })
+    }
+
     // MARK: - Transport
 
-    // Spotify handles every command over AppleScript, so controls are live
-    // whenever a track is showing, regardless of which app owns the system
-    // now-playing session.
-    var canControlPlayback: Bool { media.hasTrack }
-    var canSeek: Bool { media.hasTrack && media.duration > 0 }
+    // The routed player handles every command over AppleScript, so controls
+    // are live whenever a track is showing, regardless of which app owns the
+    // system now-playing session.
+    var canControlPlayback: Bool { media.hasTrack && routedPlayer != nil }
+    var canSeek: Bool { canControlPlayback && media.duration > 0 }
 
     /// Shuffle/repeat state for the transport buttons, read from the merged
     /// model so the optimistic hold in `holdOptimisticTransport` shows through.
@@ -1793,7 +3639,8 @@ final class NotchViewModel: ObservableObject {
     var repeatMode: RepeatMode { media.repeatMode }
 
     func togglePlayPause() {
-        spotify.playPause()
+        guard let player = routedPlayer else { return }
+        player.playPause()
         // Optimistic: flip locally so the icon and scrubber react at once
         // rather than waiting up to a second for the next poll to confirm.
         // Re-anchor the clock at the current position with the new rate so
@@ -1807,19 +3654,19 @@ final class NotchViewModel: ObservableObject {
         lastApplied = media
 
         // Hold this state until a source confirms it, so the next poll can't
-        // flicker it back before Spotify has processed the command.
+        // flicker it back before the player has processed the command.
         pendingPlayState = media.isPlaying
         pendingCommandDeadline = Date().addingTimeInterval(Self.commandGrace)
     }
 
-    func nextTrack() { spotify.nextTrack() }
-    func previousTrack() { spotify.previousTrack() }
+    func nextTrack() { routedPlayer?.nextTrack() }
+    func previousTrack() { routedPlayer?.previousTrack() }
 
     /// Toggle shuffle, optimistically, then hold it until a source confirms so a
-    /// stale 1 Hz poll can't flicker it back before Spotify processes the flip.
+    /// stale 1 Hz poll can't flicker it back before the player processes the flip.
     func toggleShuffle() {
-        guard canControlPlayback else { return }
-        spotify.toggleShuffle()
+        guard let player = routedPlayer, canControlPlayback else { return }
+        player.toggleShuffle()
         let want = !media.isShuffled
         media.isShuffled = want
         lastApplied = media
@@ -1827,11 +3674,13 @@ final class NotchViewModel: ObservableObject {
         pendingCommandDeadline = Date().addingTimeInterval(Self.commandGrace)
     }
 
-    /// Toggle repeat, optimistically. Spotify's AppleScript has no repeat-one, so
-    /// this is a boolean off↔all — matching what the poll can read back.
+    /// Toggle repeat, optimistically. Off ↔ all in both players: Spotify's
+    /// AppleScript has no repeat-one at all, and Music's `one` — set in Music
+    /// itself, shown here as the lit repeat-1 key — clears to off, which is
+    /// what pressing a lit key should do. One control, one meaning.
     func toggleRepeat() {
-        guard canControlPlayback else { return }
-        spotify.toggleRepeat()
+        guard let player = routedPlayer, canControlPlayback else { return }
+        player.toggleRepeat()
         let want: RepeatMode = media.repeatMode == .off ? .all : .off
         media.repeatMode = want
         lastApplied = media
@@ -1842,12 +3691,12 @@ final class NotchViewModel: ObservableObject {
     /// Commits a scrub. Called on drag end, not continuously — seeking on
     /// every drag sample makes the source app stutter.
     func commitScrub() {
-        guard let scrubTarget, media.duration > 0 else {
+        guard let scrubTarget, media.duration > 0, let player = routedPlayer else {
             self.scrubTarget = nil
             return
         }
         let seconds = scrubTarget * media.duration
-        spotify.seek(to: seconds)
+        player.seek(to: seconds)
 
         // Optimistically move our own clock, otherwise the thumb snaps back
         // to the old position until the source reports the new one. The
@@ -1912,10 +3761,11 @@ extension NotchViewModel {
             .fullyCharged(),
             .lowBattery(percent: lowLevel),
             .unplugged(percent: level, minutesToEmpty: live?.minutesToEmpty ?? 627),
-            .lowPowerMode(on: live?.isLowPowerMode == false, percent: level),
+            .lowPowerMode(on: live?.isLowPowerMode == false),
             .device(PeripheralBattery(
                 name: "AirPods Pro", address: "A4:F6:E6:76:55:32",
-                percent: 12, minorType: "Headphones"
+                percent: 12, minorType: "Headphones",
+                vendorID: DeviceSymbol.appleVendorID, productID: 0x2024
             )),
             .event(
                 key: "preview-event", title: "Design review",
@@ -1939,6 +3789,11 @@ extension NotchViewModel {
         activeToast = toast
     }
 
+    /// The same for a shortcut's notice.
+    func pinShortcutNotice(_ notice: IslandToast) {
+        shortcutNotice = notice
+    }
+
     /// Cycles the full set on a loop, through the real queue and the real
     /// timers. The gap between toasts is deliberate: it's long enough to see
     /// the island hand itself back to whatever was underneath before the next
@@ -1951,6 +3806,81 @@ extension NotchViewModel {
             }
             try? await Task.sleep(for: .seconds(1.5))
         }
+    }
+}
+
+/// Puts the Claude face into a fixed state for previews and the offscreen
+/// render harness — see `ClaudePanelFixture`. Sets the published values the
+/// face reads directly, with no watcher, hook or timer behind them, so a
+/// render shows exactly the state described and nothing eases it away.
+extension NotchViewModel {
+    /// Feeds one reading through the real selection path — the records, the
+    /// registry, the requests — as a background pass would land it, with no
+    /// watcher, registry scan or transcript behind it. For checking the
+    /// session list and the pin off-app; never starts the bridge.
+    func applyTestReading(statuses: [ClaudeStatus], sessions: [ClaudeSession], requests: [ClaudeRequest] = []) {
+        claudeRunning = true
+        claudeStatuses = statuses
+        claudeRequests = requests
+        claudeReadWantsApply = true
+        applyClaudeReading(ClaudeReading(sessions: sessions, tails: [:]), generation: claudeReadGeneration)
+    }
+
+    /// Lands one `claude agents` read, as the monitor would (Milestone 21).
+    /// After `applyTestReading`, which is what turns the bridge on.
+    func applyTestAgents(_ agents: [ClaudeAgent]) {
+        receiveAgents(agents)
+    }
+
+    func applyPreviewFixture(_ fixture: ClaudePanelFixture) {
+        claudeState = fixture.state
+        claudeProject = fixture.project
+        claudeSessionId = fixture.sessionId ?? fixture.request?.sessionId ?? "preview-session"
+        claudeRequests = fixture.sessionRequests + (fixture.request.map { [$0] } ?? [])
+        // Through the real merge, as if `claude agents` had listed
+        // `fixture.agents` (Milestone 21).
+        backgroundMerge = ClaudeBackground.merge(
+            hookSessionIds: fixture.sessions.compactMap(\.sessionId), registry: [], agents: fixture.agents,
+            finishedAt: [:], now: Date())
+        sessionList = ClaudeBackground.rows(live: fixture.sessions, merge: backgroundMerge, request: request(for:))
+        claudeBackground = claudeSessionId.flatMap { backgroundMerge.info[$0] }
+        claudeStateFromAgent = fixture.stateFromAgent
+        sessionListShown = fixture.listShown
+        sessionPin = fixture.pinned ? claudeSessionId.map { ClaudeSelection.Pin(sessionId: $0) } : nil
+        sessionHosts = fixture.sessionHosts
+        claudeAction = fixture.action
+        claudeTarget = fixture.target
+        claudeErrorType = fixture.errorType
+        claudeResetAt = fixture.resetAt
+        claudeLimitKind = fixture.limitKind
+        claudeLimitNext = fixture.limitNext
+        claudeUpdatedAt = fixture.state == .disconnected ? nil : fixture.updatedAt
+        claudeRequestId = fixture.request?.id
+        pendingRequest = fixture.request
+        questionIndex = fixture.questionIndex
+        isReviewingRemember = fixture.reviewingRemember
+        questionPicks = fixture.picks.isEmpty
+            ? Array(repeating: [], count: fixture.request?.questions.count ?? 0)
+            : fixture.picks
+        if let word = fixture.workingWord { workingWord = word }
+        // The published mirrors only — no assertion is taken for a preview.
+        isKeepingAwake = fixture.keepAwake
+        otherSessions = fixture.others
+        sessionHost = fixture.host
+        composing = fixture.composing
+        replyDelivery = fixture.delivery
+        claudeFinalLine = ClaudeDoneLine.line(from: fixture.lastMessage)
+        claudeSubagents = fixture.subagents
+        claudeBlock = fixture.blocked
+        claudeLeftovers = fixture.left
+        if let toast = fixture.toast { pinPreviewToast(toast) }
+        // In the face, not on the home grid, whatever the suite last had —
+        // unless the fixture is the grid's.
+        isHome = fixture.home
+        if let id = claudeSessionId { replyDrafts[id] = fixture.replyDraft.isEmpty ? nil : fixture.replyDraft }
+        answerDraft = fixture.answerDraft
+        denialDraft = fixture.denialDraft
+        activeTab = .claude
     }
 }
 #endif

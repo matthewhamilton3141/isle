@@ -66,6 +66,7 @@ final class NotchWindowController {
 
     private var screenObserver: (any NSObjectProtocol)?
     private var pointerMonitor: Any?
+    private var localPointerMonitor: Any?
     private var cancellables = Set<AnyCancellable>()
 
     /// A sync arrived while an island was open and was deferred — see
@@ -75,9 +76,26 @@ final class NotchWindowController {
     private let viewModel = NotchViewModel()
     private let settings = AppSettings.shared
 
+    /// Whether a file drag is under way, read off the same global monitor
+    /// as the hover — see `FileDrop.swift`.
+    private let fileDrag = FileDragWatch()
+
+    /// The global keyboard shortcuts. Made in `init`: it needs `self`.
+    private var shortcuts: NotchShortcuts!
+
+    /// The island whose display the pointer was last on, to tell the
+    /// shortcuts when that changes.
+    private var lastPointerIsland: ObjectIdentifier?
+
     /// Between `show()` and `hide()`. Screen and settings changes only re-place
     /// panels while this is true.
     private var isRunning = false
+
+    /// The Settings window, while the island previews what it changes (see
+    /// `SettingsPreview.swift`), and the island the preview holds open.
+    private weak var settingsWindow: NSWindow?
+    private var settingsPreview = SettingsPreviewHold<CGDirectDisplayID>()
+    private var settingsPreviewObservers: [any NSObjectProtocol] = []
 
     var isVisible: Bool { islands.values.contains { $0.window.isVisible } }
 
@@ -88,14 +106,30 @@ final class NotchWindowController {
     init() {
         observeScreenChanges()
         observeDisplayScope()
+        fileDrag.onChange = { [weak self] inFlight in
+            self?.fileDragChanged(inFlight)
+        }
+        observeComposing()
+        observeReduceMotion()
+        observeSettingsChanges()
+        shortcuts = NotchShortcuts(viewModel: viewModel, host: self)
     }
 
     deinit {
         if let screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)
         }
+        if let accessibilityObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(accessibilityObserver)
+        }
         if let pointerMonitor {
             NSEvent.removeMonitor(pointerMonitor)
+        }
+        if let localPointerMonitor {
+            NSEvent.removeMonitor(localPointerMonitor)
+        }
+        for observer in settingsPreviewObservers {
+            NotificationCenter.default.removeObserver(observer)
         }
     }
 
@@ -107,6 +141,7 @@ final class NotchWindowController {
         guard !islands.isEmpty else { return }
         observePointer()
         viewModel.start()
+        shortcuts.refresh()
     }
 
     /// Quit path. Hides as usual, then waits briefly for the audio tap to come
@@ -118,8 +153,12 @@ final class NotchWindowController {
 
     func hide() {
         isRunning = false
+        viewModel.endCompose()
+        giveKeysBack()
         for island in islands.values {
+            island.presentation.endDrop(collapse: false)
             island.presentation.setHovering(false)
+            island.presentation.relaxProximity()
             island.window.orderOut(nil)
         }
         // The panels are kept, not destroyed: `hide()` is a toggle from the
@@ -129,8 +168,14 @@ final class NotchWindowController {
             NSEvent.removeMonitor(pointerMonitor)
             self.pointerMonitor = nil
         }
+        if let localPointerMonitor {
+            NSEvent.removeMonitor(localPointerMonitor)
+            self.localPointerMonitor = nil
+        }
         cancelSweepRecheck()
         viewModel.stop()
+        // Not running: every shortcut let go.
+        shortcuts.refresh()
     }
 
     // MARK: - Placement
@@ -179,6 +224,7 @@ final class NotchWindowController {
         }
 
         for (id, island) in islands where !wanted.contains(id) {
+            island.presentation.endDrop(collapse: false)
             island.presentation.setHovering(false)
             island.window.orderOut(nil)
             islands.removeValue(forKey: id)
@@ -188,13 +234,41 @@ final class NotchWindowController {
     private func makeIsland(id: CGDirectDisplayID, screen: NSScreen, metrics: NotchMetrics) {
         let presentation = IslandPresentation(content: viewModel)
         presentation.metrics = metrics
+        // A hover (or a shortcut's hold) is the user going to the island,
+        // which the shortcuts read (`islandPresence`).
+        presentation.$isHovering
+            .removeDuplicates()
+            .sink { [weak self] _ in self?.shortcuts.refresh() }
+            .store(in: &cancellables)
+        // A hold that ended any way but the preview's own end — the pointer
+        // visited, the shortcut, a click in another app — isn't the
+        // preview's to close any more.
+        presentation.$isHeldOpen
+            .removeDuplicates()
+            .filter { !$0 }
+            .sink { [weak self] _ in self?.settingsPreview.released(id) }
+            .store(in: &cancellables)
 
         let window = NotchWindow(contentRect: metrics.maximumFrame)
+        // A two-finger swipe across an open face moves between faces.
+        window.scrollInterceptor = { [weak presentation] event in
+            presentation?.handleScroll(event) ?? false
+        }
+        // Files dragged onto the island open the drop face.
+        window.registerForDraggedTypes([.fileURL])
+        window.dropHandler = self
         let hosting = NotchHostingView(
             rootView: NotchRootView(viewModel: viewModel, island: presentation) { [weak self] rect in
                 self?.updateActiveRect(rect, on: id)
             }
         )
+        // The window is sized and placed by `maximumFrame` alone. Left to its
+        // defaults the hosting view also sizes it, to the SwiftUI content's
+        // ideal width (the 520pt panel), keeping the origin: with the side
+        // pad's 16pt on each side that took 32pt off the right and drew the
+        // whole island 16pt left of the camera, the collapsed pill's right
+        // cluster half under the housing.
+        hosting.sizingOptions = []
 
         // In the dictionary before the content view is set: SwiftUI can report
         // its first layout during the `contentView` assignment, and the
@@ -261,7 +335,9 @@ final class NotchWindowController {
     /// Deliberately lopsided: generous below and to the sides, where the
     /// pointer overshoots on its way to a control, and tight up top, where
     /// there is nothing to overshoot into.
-    private static let stayOpenPad = (top: CGFloat(10), side: CGFloat(16), bottom: CGFloat(26))
+    /// The side is `NotchMetrics.stayOpenSidePad`, which the window frame is
+    /// widened by so a file drag in the pad still reaches the window.
+    private static let stayOpenPad = (top: CGFloat(10), side: NotchMetrics.stayOpenSidePad, bottom: CGFloat(26))
 
     /// A move faster than this, and mostly sideways, is the pointer crossing
     /// the island on its way to the menu bar rather than arriving at it.
@@ -279,21 +355,61 @@ final class NotchWindowController {
 
     /// Tracks the pointer to do three things: keep clicks passing through the
     /// dead area around each notch, open a panel when the pointer arrives on
-    /// its island, and collapse it once the pointer leaves for good. Isle never
+    /// its island, and collapse it once the pointer leaves for good. (It also
+    /// feeds the collapsed island's proximity swell, which costs a rect test
+    /// while the pointer is out of reach — see `ProximityGate`.) Isle never
     /// becomes the active app, so a global monitor (not a local one) is what
-    /// sees these moves. `.mouseMoved` monitoring needs no special permission.
+    /// sees these moves.
+    ///
+    /// The left button's down, dragged and up events come through the same
+    /// monitor, for one thing only: telling a file drag under way, which
+    /// sends no `mouseMoved` at all (see `FileDragWatch`). None of these
+    /// needs a permission — a global monitor is gated behind Accessibility
+    /// for key events only, and mouse events are delivered as they are for
+    /// `.mouseMoved`.
     ///
     /// One monitor covers every island: the pointer is only ever in one place,
     /// so each move is routed to the island whose screen it is on and every
     /// other island is told to collapse.
+    ///
+    /// A global monitor sees only events sent to *other* apps, so it goes
+    /// blind exactly when Isle is where the moves are sent: while the AirDrop
+    /// sheet has Isle active, or while a panel is key for a reply. A local
+    /// monitor on `mouseMoved` sees those, and they take the same path. An
+    /// event goes to one app or the other, never both, so the two don't
+    /// overlap; `handlePointerMove` drops a repeat all the same.
     private func observePointer() {
         guard pointerMonitor == nil else { return }
         pointerMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.mouseMoved]
+            matching: [.mouseMoved, .leftMouseDown, .leftMouseDragged, .leftMouseUp]
         ) { [weak self] event in
             MainActor.assumeIsolated {
-                self?.handlePointerMove(event)
+                guard let self else { return }
+                self.fileDrag.handle(event)
+                switch event.type {
+                case .mouseMoved:
+                    self.handlePointerMove(event)
+                case .leftMouseDragged:
+                    self.handleDragMove()
+                case .leftMouseDown:
+                    // A click in another app — never on an island, which
+                    // would have been Isle's own — puts away an island a
+                    // shortcut is holding open, as it would a popover.
+                    self.closeHeldIsland()
+                default:
+                    break
+                }
             }
+        }
+        // Moves only. Isle's own presses and drags — an item dragged off the
+        // shelf — are no file drag *to* the island, and stay unseen as before.
+        localPointerMonitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.fileDrag.handle(event)
+                self.handlePointerMove(event)
+            }
+            return event
         }
     }
 
@@ -306,6 +422,16 @@ final class NotchWindowController {
     /// points doesn't shut it. The gap between the two is the hysteresis: easy
     /// to commit to, hard to lose by accident.
     private func handlePointerMove(_ event: NSEvent) {
+        // A move already handled, or one older than it: no news. Matters
+        // only for the sweep reading below, which would take a repeat for a
+        // pause — and a pause for an arrival.
+        guard event.timestamp > lastPointerTimestamp else { return }
+
+        // A move with no button held: whatever drag there was is over. The
+        // window's own drag callbacks end the drop face on the way out; this
+        // is the backstop for one that never got them.
+        endDropTargets()
+
         // Every move: reconcile click-through on every island, so the window
         // server only routes clicks to Isle when the pointer is over a drawn
         // notch and passes everything else to what's underneath.
@@ -320,15 +446,35 @@ final class NotchWindowController {
         let sweeping = isSweep(event)
 
         let pointer = NSEvent.mouseLocation
-        guard let active = island(containing: pointer) else {
+        let pointerIsland = island(containing: pointer)
+        // Onto another display: whether an open island is in front of the
+        // user changed, which the shortcuts read (`islandPresence`).
+        let pointerDisplay = pointerIsland.map(ObjectIdentifier.init)
+        if pointerDisplay != lastPointerIsland {
+            lastPointerIsland = pointerDisplay
+            shortcuts.refresh()
+        }
+        guard let active = pointerIsland else {
             collapseAll()
             return
         }
 
         // The pointer is on one screen, so nothing on any other screen can
-        // still be hovered. This is what closes the island you just left.
+        // still be hovered. This is what closes the island you just left —
+        // unless a reply is being typed in it, which holds it open wherever
+        // the pointer goes.
         for other in islands.values where other !== active {
-            other.presentation.setHovering(false)
+            other.presentation.relaxProximity()
+            if other !== keyIsland, !other.presentation.isHeldOpen { other.presentation.setHovering(false) }
+        }
+
+        // The swell, before the hover rule and independent of it: it never
+        // opens, delays or holds anything. A sweep is the pointer passing,
+        // not arriving, so it gets no reaction either.
+        if sweeping || reduceMotion {
+            active.presentation.relaxProximity()
+        } else {
+            active.presentation.trackProximity(pointer: pointer, drawn: drawnRectInScreen(active))
         }
 
         guard let zones = hoverZones(for: active) else { return }
@@ -336,8 +482,14 @@ final class NotchWindowController {
         guard !active.presentation.isHovering else {
             // Open: only a real departure closes it. SwiftUI's `.onHover` sees
             // the drawn rect and nothing more, which is why closing is owned
-            // here — it's the only place that knows about the pad.
-            if !zones.stayOpen.contains(pointer) {
+            // here — it's the only place that knows about the pad. A field
+            // taking keys holds it: moving the pointer off to read the
+            // terminal mustn't throw away what's being written.
+            // A shortcut's hold ends the first time the pointer comes in;
+            // until then a pointer that was never there can't leave.
+            if zones.stayOpen.contains(pointer) {
+                active.presentation.notePointerInside()
+            } else if active !== keyIsland, !active.presentation.isHeldOpen {
                 cancelSweepRecheck()
                 active.presentation.setHovering(false)
                 runDeferredSync()
@@ -376,11 +528,41 @@ final class NotchWindowController {
     }
 
     private func collapseAll() {
-        for island in islands.values {
+        relaxAllProximity()
+        for island in islands.values where island !== keyIsland && !island.presentation.isHeldOpen {
             island.presentation.setHovering(false)
         }
         cancelSweepRecheck()
         runDeferredSync()
+    }
+
+    private func relaxAllProximity() {
+        for island in islands.values {
+            island.presentation.relaxProximity()
+        }
+    }
+
+    // MARK: - Reduce Motion
+
+    /// System Settings › Accessibility › Reduce Motion, cached: it's read on
+    /// every pointer move, and the workspace says when it changes. With it
+    /// on there's no swell at all (the views also check, through the
+    /// environment, and the collapse goes plain there).
+    private var reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    private var accessibilityObserver: (any NSObjectProtocol)?
+
+    private func observeReduceMotion() {
+        accessibilityObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+                if self.reduceMotion { self.relaxAllProximity() }
+            }
+        }
     }
 
     /// Run a sync that was held off because an island was open.
@@ -447,6 +629,56 @@ final class NotchWindowController {
         sweepRecheckWork = nil
     }
 
+    // MARK: - File drags
+
+    /// A file drag moved. The pointer is held down, so `mouseMoved` is silent
+    /// and click-through would stay as the drag found it — leaving every
+    /// island transparent to the drag it's meant to receive. Reconciled here
+    /// instead, only while the drag carries files.
+    private func handleDragMove() {
+        guard fileDrag.isDraggingFiles else { return }
+        for island in islands.values {
+            updateClickThrough(island)
+        }
+    }
+
+    private func fileDragChanged(_ inFlight: Bool) {
+        viewModel.fileDragChanged(inFlight)
+        // A drag sends no moves to keep the swell current, so it starts from
+        // the island exactly as it rests.
+        if inFlight { relaxAllProximity() }
+        // Back to the plain hot rect once it's over; the drag's own grown
+        // one from its first event.
+        for island in islands.values {
+            updateClickThrough(island)
+        }
+    }
+
+    /// Ends every drop face without collapsing, and forgets the payload.
+    private func endDropTargets() {
+        guard viewModel.dropPayload != nil || islands.values.contains(where: { $0.presentation.isDropTarget }) else {
+            return
+        }
+        for island in islands.values {
+            island.presentation.endDrop(collapse: false)
+        }
+        viewModel.setDropPayload(nil)
+    }
+
+    private func island(for window: NotchWindow) -> Island? {
+        islands.values.first { $0.window === window }
+    }
+
+    /// Where a file drag counts as over an island. Collapsed, the island and
+    /// the same lip below it a hover opens from; open on the drop face, the
+    /// panel and the same pad a hover stays open in. Nothing here looks at
+    /// speed: a drag is slow and deliberate, and nothing sweeps past with
+    /// files in hand on the way to the menu bar.
+    private func dropZone(for island: Island) -> CGRect? {
+        guard let zones = hoverZones(for: island) else { return nil }
+        return island.presentation.isDropTarget ? zones.stayOpen : zones.open
+    }
+
     /// Makes a panel transparent to the mouse everywhere except its drawn
     /// notch. Returning `nil` from the hosting view's `hitTest` is not enough:
     /// the window server has already chosen this panel as the click target
@@ -475,7 +707,12 @@ final class NotchWindowController {
 
         // Keep clicks routed to Isle a hair before the pointer reaches the
         // visible notch (the pad), so the first hover-in is never missed.
-        let hot = screenRect.insetBy(dx: -6, dy: -6)
+        var hot = screenRect.insetBy(dx: -6, dy: -6)
+        // A file drag reaches the window over the whole of the drop zone,
+        // or it never sees the lip below the island.
+        if fileDrag.isDraggingFiles, viewModel.acceptsDrops, let zone = dropZone(for: island) {
+            hot = hot.union(zone)
+        }
         let ignores = !hot.contains(NSEvent.mouseLocation)
         // Only on a change. This runs on every pointer move on every island,
         // and the setter is a window-server round trip whether or not the
@@ -498,6 +735,93 @@ final class NotchWindowController {
             width: rect.width,
             height: rect.height
         )
+    }
+
+    // MARK: - Composing
+
+    /// The island whose panel is key while a field on its Claude face takes
+    /// a reply. Nil the rest of the time, which is nearly always.
+    private var keyIsland: Island?
+
+    /// The app that was frontmost when composing began. Isle never activates,
+    /// so this is still the active app throughout; it only lost its keys.
+    private var focusReturnApp: NSRunningApplication?
+
+    private var resignKeyObserver: (any NSObjectProtocol)?
+
+    /// Makes a panel key exactly while `composing` is set, and never longer.
+    private func observeComposing() {
+        viewModel.$composing
+            .map { $0 != nil }
+            .removeDuplicates()
+            // `@Published` fires before the new value is stored; act once it
+            // has, so the view's own focus change lands on a key window.
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] composing in
+                if composing { self?.takeKeys() } else { self?.giveKeysBack() }
+            }
+            .store(in: &cancellables)
+    }
+
+    /// The panel becomes key without activating Isle — `.nonactivatingPanel`
+    /// is what allows it — so the terminal stays the active app, and the
+    /// text field gets the keyboard.
+    private func takeKeys() {
+        guard keyIsland == nil,
+              let island = islands.values.first(where: { $0.presentation.isHovering })
+                ?? islands.values.first(where: { $0.presentation.state.isExpanded })
+        else {
+            // Nowhere on screen to type into: don't leave the field claiming keys.
+            viewModel.endCompose()
+            return
+        }
+        focusReturnApp = NSWorkspace.shared.frontmostApplication
+        keyIsland = island
+        island.window.allowsKey = true
+        island.window.makeKey()
+        // A click in another app takes the keys back; composing ends with it,
+        // and the text stays in the field.
+        resignKeyObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: island.window,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.viewModel.endCompose() }
+        }
+    }
+
+    /// Hands the keyboard back to the app that had it. The panel stops being
+    /// able to take key first, so nothing can make it key again in between.
+    private func giveKeysBack() {
+        guard let island = keyIsland else { return }
+        keyIsland = nil
+        if let resignKeyObserver {
+            NotificationCenter.default.removeObserver(resignKeyObserver)
+        }
+        resignKeyObserver = nil
+        island.window.allowsKey = false
+        let returnTo = focusReturnApp
+        focusReturnApp = nil
+        // The pointer may have left while the keys held the panel open.
+        if let zones = hoverZones(for: island), !zones.stayOpen.contains(NSEvent.mouseLocation) {
+            island.presentation.setHovering(false)
+        }
+        guard island.window.isKeyWindow else { return }
+
+        island.window.makeFirstResponder(nil)
+        // The app is already active — Isle never took that from it — so
+        // activating it only asks it to take its key window back.
+        if let returnTo, !returnTo.isTerminated {
+            returnTo.activate()
+        }
+        // If the window server still routes keys here, take the panel off
+        // screen and straight back: a window that isn't on screen can't be
+        // key, and one ordered back without `makeKey` doesn't become key.
+        DispatchQueue.main.async {
+            guard island.window.isKeyWindow else { return }
+            island.window.orderOut(nil)
+            island.window.orderFrontRegardless()
+        }
     }
 
     // MARK: - Screen and settings changes
@@ -529,5 +853,262 @@ final class NotchWindowController {
                 self?.syncIslands()
             }
             .store(in: &cancellables)
+    }
+}
+
+// MARK: - Keyboard shortcuts
+
+extension NotchWindowController: ShortcutIslandHost {
+    var shortcutsRunning: Bool { isRunning && !islands.isEmpty }
+
+    var isAnyIslandExpanded: Bool {
+        islands.values.contains { $0.presentation.state.isExpanded && !$0.presentation.isDropTarget }
+    }
+
+    /// An open island is in front of the user if the pointer is in it (or a
+    /// shortcut opened it — `isHovering` covers both) or on its display.
+    /// One open only by an alert, on another display, isn't.
+    var islandPresence: ShortcutIslandPresence {
+        let open = islands.values.filter { $0.presentation.state.isExpanded && !$0.presentation.isDropTarget }
+        guard !open.isEmpty else { return .closed }
+        if open.contains(where: { $0.presentation.isHovering }) { return .visited }
+        if let here = island(containing: NSEvent.mouseLocation), open.contains(where: { $0 === here }) {
+            return .pointerScreen
+        }
+        return .elsewhere
+    }
+
+    /// Open the island if none is open; otherwise put it away — whatever is
+    /// holding it, as far as Settings allows: a hover or a shortcut's hold
+    /// ends, a field's draft is kept, and an alert's auto-open is dismissed
+    /// as a click on it would be (only when "Dismiss alert panel" is on).
+    func toggleIslandFromShortcut() {
+        guard isAnyIslandExpanded else {
+            openIslandFromShortcut()
+            return
+        }
+        viewModel.endCompose()
+        for island in islands.values where island.presentation.isHovering {
+            island.presentation.setHovering(false)
+        }
+        if viewModel.autoExpandsForActivity { viewModel.dismissAlert() }
+        cancelSweepRecheck()
+        runDeferredSync()
+    }
+
+    /// Opens, held, the island on the pointer's screen — else the built-in
+    /// display's, else any. An island already open by hover stays as it is.
+    func openIslandFromShortcut() {
+        guard isRunning, !islands.values.contains(where: { $0.presentation.isHovering }) else { return }
+        let pointer = NSEvent.mouseLocation
+        let preferred = NotchMetrics.preferredScreen().flatMap(Self.displayID(of:))
+        guard let target = island(containing: pointer)
+                ?? preferred.flatMap({ islands[$0] })
+                ?? islands.values.first
+        else { return }
+        cancelSweepRecheck()
+        target.presentation.openFromShortcut()
+        // The pointer is already there: that's an arrival, not a hold.
+        if let zones = hoverZones(for: target), zones.stayOpen.contains(pointer) {
+            target.presentation.notePointerInside()
+        }
+    }
+
+    /// A click in another app: put away an island a shortcut is holding.
+    /// (There's no Esc for it — Esc is vim's and Claude Code's interrupt.)
+    func closeHeldIsland() {
+        var closed = false
+        for island in islands.values where island.presentation.isHeldOpen && island !== keyIsland {
+            island.presentation.setHovering(false)
+            closed = true
+        }
+        if closed { runDeferredSync() }
+    }
+}
+
+// MARK: - Settings preview
+
+extension NotchWindowController {
+    /// Settings is open in `window`: from now on a change made in it opens
+    /// the island to show it (see `SettingsPreview.swift`), until the window
+    /// closes or Isle stops being the active app. Called each time Settings
+    /// is brought up; the same window again changes nothing.
+    func watchSettingsWindow(_ window: NSWindow) {
+        guard window !== settingsWindow else { return }
+        for observer in settingsPreviewObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        settingsWindow = window
+        let center = NotificationCenter.default
+        settingsPreviewObservers = [
+            center.addObserver(forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.endSettingsPreview(.settingsClosed) }
+            },
+            center.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.endSettingsPreview(.appResignedActive) }
+            },
+        ]
+    }
+
+    /// Every change to a setting the island shows. A turn later, like the
+    /// other settings observers: `@Published` fires before the value lands,
+    /// and the faces on offer (Pomodoro switched on) follow from it.
+    private func observeSettingsChanges() {
+        settings.previewChanges
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] change in self?.settingChanged(change) }
+            .store(in: &cancellables)
+    }
+
+    private func settingChanged(_ change: SettingsPreviewChange) {
+        guard let window = settingsWindow else { return }
+        var context = SettingsPreviewPlan.Context()
+        context.running = isRunning && !islands.isEmpty
+        // The window in front, or the colour panel the accent well opened
+        // from it — read now, never polled.
+        let colourPanelKey = NSColorPanel.sharedColorPanelExists && NSColorPanel.shared.isKeyWindow
+        context.settingsInFront = NSApp.isActive && window.isVisible && (window.isKeyWindow || colourPanelKey)
+        context.dropInProgress = fileDrag.isDraggingFiles || islands.values.contains { $0.presentation.isDropTarget }
+        context.composing = viewModel.composing != nil || keyIsland != nil
+        // Any live Claude alert on its face, not only one with a request
+        // file: an approval without "Answer from the notch", a failure, a
+        // limit waiting for Enter. Moving off it would mark the alert's
+        // face as overridden until the alert cleared.
+        context.requestShowing = viewModel.hasLiveActivity && viewModel.expandedPlace == .face(.claude)
+        context.availableTabs = viewModel.availableTabs
+
+        guard case .open(let face) = SettingsPreviewPlan.decide(change, context: context) else { return }
+        if let face, viewModel.expandedPlace != .face(face) {
+            viewModel.selectTab(face)
+        }
+        openIslandForSettingsPreview(near: window)
+    }
+
+    /// Opens, held, the built-in display's island — the one with the notch,
+    /// else the one Settings is on, else any. An island already open by
+    /// the pointer, or held by the shortcut, is left as it is and not
+    /// claimed: it isn't the preview's to close.
+    private func openIslandForSettingsPreview(near window: NSWindow) {
+        guard !islands.values.contains(where: { $0.presentation.isHovering }) else { return }
+        let notched = NSScreen.screens.first { $0.safeAreaInsets.top > 0 }
+        let candidates = [notched, window.screen, NotchMetrics.preferredScreen()]
+            .compactMap { $0.flatMap(Self.displayID(of:)) }
+        guard let id = candidates.first(where: { islands[$0] != nil }) ?? islands.keys.first,
+              let target = islands[id]
+        else { return }
+        cancelSweepRecheck()
+        target.presentation.openFromShortcut()
+        settingsPreview.opened(id)
+        // The pointer is already there: that's a visit, not a hold.
+        if let zones = hoverZones(for: target), zones.stayOpen.contains(NSEvent.mouseLocation) {
+            target.presentation.notePointerInside()
+        }
+    }
+
+    /// Settings closed, or Isle went to the back: put away the island the
+    /// preview is holding — and only that, only while it still holds it.
+    private func endSettingsPreview(_ reason: SettingsPreviewEnd) {
+        guard let id = settingsPreview.end(reason), let island = islands[id],
+              island.presentation.isHeldOpen, island !== keyIsland else { return }
+        island.presentation.setHovering(false)
+        runDeferredSync()
+    }
+}
+
+// MARK: - Drop destination
+
+extension NotchWindowController: NotchDropHandler {
+    /// Every `draggingEntered` and `draggingUpdated`. Opens the drop face as
+    /// the drag reaches the island, lights the target under the pointer, and
+    /// lets the face go if the drag strays past the panel's pad. Says a drop
+    /// is possible only over a target that would do something, so letting
+    /// go anywhere else hands the files straight back.
+    func dragUpdated(_ info: any NSDraggingInfo, in window: NotchWindow) -> NSDragOperation {
+        guard let island = island(for: window) else { return [] }
+        let presentation = island.presentation
+
+        // A drag that started in Isle — an item leaving the shelf — isn't a
+        // drop onto it. And nothing drops over a live alert.
+        guard info.draggingSource == nil, viewModel.acceptsDrops else {
+            presentation.endDrop(collapse: false)
+            return []
+        }
+        guard let zone = dropZone(for: island) else { return [] }
+        let pointer = window.convertPoint(toScreen: info.draggingLocation)
+
+        if !presentation.isDropTarget {
+            guard zone.contains(pointer),
+                  let urls = DropPayload.fileURLs(on: info.draggingPasteboard)
+            else { return [] }
+            viewModel.setDropPayload(DropPayload(urls: urls))
+            for other in islands.values where other !== island {
+                other.presentation.endDrop(collapse: true)
+            }
+            cancelSweepRecheck()
+            presentation.beginDrop()
+            updateClickThrough(island)
+        } else if !zone.contains(pointer) {
+            presentation.endDrop(collapse: true)
+            updateClickThrough(island)
+            return []
+        }
+
+        guard let payload = viewModel.dropPayload else { return [] }
+        presentation.lightDropTarget(at: island.hosting.topLeftPoint(fromWindow: info.draggingLocation)) {
+            self.viewModel.canPerform($0, with: payload)
+        }
+        guard presentation.litDropTarget != nil else { return [] }
+        return Self.dropOperation(allowedBy: info.draggingSourceOperationMask)
+    }
+
+    /// What every target tells the source it did: a copy, or failing that
+    /// a link — never a move. The shelf keeps only a path, Start Claude
+    /// only opens one, and AirDrop sends a copy of its own, so the source's
+    /// file has to stay exactly where it was. `.generic` doesn't promise
+    /// that: plenty of sources — another shelf, a file manager, a list in an
+    /// app — read it as a move and take their copy away once the drop lands.
+    ///
+    /// Copy before link because every file source offers it, so the cursor
+    /// shows the same badge whatever the drag came from. A source offering
+    /// neither — Command held over a Finder drag asks for a move and nothing
+    /// else — gets no drop, rather than one it would take for a move.
+    static func dropOperation(allowedBy mask: NSDragOperation) -> NSDragOperation {
+        if mask.contains(.copy) { return .copy }
+        if mask.contains(.link) { return .link }
+        return []
+    }
+
+    func dragExited(_ window: NotchWindow) {
+        guard let island = island(for: window), island.presentation.isDropTarget else { return }
+        island.presentation.endDrop(collapse: true)
+        if !islands.values.contains(where: { $0.presentation.isDropTarget }) {
+            viewModel.setDropPayload(nil)
+        }
+    }
+
+    func performDrop(_ info: any NSDraggingInfo, in window: NotchWindow) -> Bool {
+        guard let island = island(for: window) else { return false }
+        let target = island.presentation.litDropTarget
+        let payload = viewModel.dropPayload
+        island.presentation.endDrop(collapse: false)
+        viewModel.setDropPayload(nil)
+        fileDrag.dragConcluded()
+        guard island.presentation.state.isExpanded, let target, let payload,
+              viewModel.canPerform(target, with: payload)
+        else { return false }
+        // After AppKit is done with the drop: Terminal and the share sheet
+        // shouldn't come up from inside its callback.
+        DispatchQueue.main.async { [viewModel] in
+            viewModel.performDrop(target, with: payload)
+        }
+        return true
+    }
+
+    func dragEnded(_ window: NotchWindow) {
+        guard let island = island(for: window) else { return }
+        island.presentation.endDrop(collapse: false)
+        if !islands.values.contains(where: { $0.presentation.isDropTarget }) {
+            viewModel.setDropPayload(nil)
+        }
     }
 }

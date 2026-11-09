@@ -174,7 +174,7 @@ final class PowerMonitor {
         // switch Low Power Mode off by itself, and when it does, "Charging"
         // is the headline and the mode change is the footnote.
         if now.isLowPowerMode != before.isLowPowerMode {
-            toasts.append(.lowPowerMode(on: now.isLowPowerMode, percent: now.percent))
+            toasts.append(.lowPowerMode(on: now.isLowPowerMode))
         }
 
         return toasts

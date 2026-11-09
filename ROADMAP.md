@@ -26,7 +26,7 @@ ordered so nothing downstream is blocked. Milestones list **Goal**, **Scope**,
 | Audio-reactive waveform | Shipped; source preference pending (M5) | `Isle/Media/SystemAudioLevels.swift` |
 | Display selection (multi-display) | Built-in display only (M8) | `NotchMetrics.preferredScreen()` |
 | Power / charging activities | Shipped (M9) | `Isle/Power/` |
-| Calendar events and reminders (Agenda face + ambient toasts) | Shipped | `Isle/Agenda/` |
+| Calendar events and reminders (Agenda face + ambient toasts) | Shipped; Join, week, timeline, ticks and quick add built (M12) | `Isle/Agenda/` |
 | Claude status glyph (breathing + checkmark) | Built, wired (M3) | `Isle/Claude/` |
 | Claude hook bridge (`isle-cli` + `settings.json`) | Watched (M3); per-session files, v7 | `Isle/Claude/ClaudeStatusWatcher.swift` |
 | Claude session registry (hook-free liveness) | Shipped | `Isle/Claude/ClaudeSessionRegistry.swift` |
@@ -36,6 +36,8 @@ ordered so nothing downstream is blocked. Milestones list **Goal**, **Scope**,
 | Settings pane | Shipped — mode, notch, media, Claude, updates. The SwiftUI `Settings` scene is still empty; the real window is built in `openSettings` | `Isle/Settings/SettingsView.swift` |
 | Mode selection (Music / Claude / Both) | Model + gating done (M1); picker shipped in Settings and the menu bar | `Isle/Core/`, `Isle/Settings/SettingsView.swift` |
 | Claude accent colour | Shipped | `Isle/Core/ClaudeAccent.swift` |
+| Jump to the session, reply from the notch | Built (M11), awaiting in-app test | `Isle/Claude/ClaudeSessionHost.swift`, `TerminalBridge.swift` |
+| Every session at once (list, pin, home count) | Built (M16), awaiting in-app test | `Isle/Claude/ClaudeSessionList.swift`, `ClaudeExpandedView.swift` |
 | Tabbed "Both" expanded view | Done (M4) | `Isle/Notch/ExpandedNotchView.swift`, `ClaudeExpandedView.swift` |
 
 The state machine (`NotchState`, `NotchStateResolver`) and the collapsed
@@ -73,6 +75,8 @@ original report, not the report itself.
 | The transcript flushes per *content block*, not per message, and is interleaved with `queue-operation` / `attachment` / `file-history-snapshot` bookkeeping | A tool-free turn still appends every few seconds (so silence is meaningful), but only `user` / `assistant` entries answer "is a turn outstanding" |
 | `~/.claude/sessions/<pid>.json` is written by the CLI itself, hook-free, pid-keyed | Liveness is `kill(pid, 0)` rather than a timeout; survives broken or uninstalled hooks |
 | **An interrupt (ESC) fires no hook at all** — no `Stop`, no `PostToolUse` — and appends a synthetic `user` entry (`[Request interrupted by user]`) to the transcript | Every exit from `working` is hook-driven, so the record froze at `working`; and since that entry parses as a `user` turn, the no-response check read the ended turn as one still owed a response |
+| **A usage limit's StopFailure carries no reset you can compute with** (2.1.318+): `error` is `rate_limit`, no `error_details`, and the words say "resets 6:50pm (America/Toronto)" | The reset is in the transcript (`quotaLimits.resetsAt`) or in those words; see M19 |
+| Notification's `notification_type` has 14 documented values (and five more in the 2.1.319 binary), most of which don't need you | Route by type, and leave the state alone for any other; reading the message made a sign-in a "Question" (M19) |
 
 ### What changed
 
@@ -111,6 +115,24 @@ original report, not the report itself.
   owes a response — and the demotion happens in selection rather than on the
   displayed state, so a stuck background record also stops outranking the
   session the user is actually watching.
+
+### Review fixes (`feature/claude-done-and-watch-fixes`, 2026-11-05)
+
+| Was | Now |
+|---|---|
+| Every watch (`~/.isle/requests`, `~/.isle/sessions`, `~/.claude/sessions`) held its directory's vnode. Delete and recreate the directory (a reinstall, `rm -rf ~/.isle`) and the watch stayed on the dead one: no request, status or session reached the island until a stop/start. The registry also never watched at all if Claude Code created `~/.claude/sessions` after Isle started. | `DirectoryWatch` follows the path. On `.delete`/`.rename`/`.revoke` it re-arms on whatever is at the path; while the directory is missing it watches the nearest ancestor that exists and walks back down as each level reappears. It re-checks once the watch has registered (by inode), because a directory unlinked between `open` and registration never reports its own deletion — that race is real, mid-`rm -rf`. No timers. |
+| An orphaned `*.response.json` under 5s old was skipped and only swept on the next directory event, which might never come. | The sweep sets one re-sweep for when the youngest orphan comes of age. |
+| While Claude was active, every status event decoded every session file, re-scanned the registry and parsed transcript tails with `split` on the main thread, twice (selection, then keep-awake). | `ClaudeStatusWatcher` scans on its own queue and publishes only if still the newest (generation counter). Every re-selection path — status, request, registry, tick — asks for one background read of the registry and the tails `reconciled` needs; selection runs on main against that, and a superseded read is dropped. An event's apply survives a tick that overtakes it. Request changes reach the buttons through the same read, so a click's `working` and its request leaving land in write order. Reply confirmation reads off main too. |
+| The transcript path replaced only `/` in the cwd. Claude Code replaces every non-alphanumeric character (`/private/…/my_dir.v2 sp` → `…-my-dir-v2-sp`), so a session under a path with a dot, underscore or space had no transcript for Isle: no interrupt reconciliation, and reply confirmation always failed. | `transcriptURL` uses Claude Code's rule (per UTF-16 unit), and finds a very long path's hashed folder by prefix. |
+| The 64 KB tail window could start inside a multi-byte character, and then the whole window failed to decode as one string. | Lines are split on bytes; the partial first line is dropped. |
+
+Verified: a watcher test against a scratch tree (13 checks: write, directory
+deleted, recreated, all of `~/.isle` deleted and recreated, renamed away,
+requests recreated, young orphan kept then swept with no further event,
+registry created late and recreated, stop drops in-flight scans, restart
+rescans), three runs clean. The pre-fix watcher fails the recreate check.
+Transcript tails read correctly for a real session under `my_dir.v2 sp`
+(~1 ms per read, now off main).
 
 ### Verified
 
@@ -527,81 +549,1368 @@ Ship-ready framing for the "Dynamic Island + Claude Code" story.
 
 ---
 
-## Milestone 7 — Act from the Notch
+## Milestone 7 — Act from the Notch: approvals *and* questions
 
 Turn the Claude island from a *notifier* into a *control surface*. Today a
-`needs_approval` interrupt opens the notch (`hasLiveActivity` →
-`liveActivityExpanded`) but you still alt-tab to the terminal to answer it. This
-milestone lets you approve or deny a tool call **in the notch**, and have that
-click actually decide the call.
+permission prompt or an `AskUserQuestion` opens the notch, and you still
+alt-tab to the terminal to answer it. This milestone lets you **approve or
+deny a tool call** and **pick an answer to a question** in the notch, with the
+click actually deciding the call in the session — and a fallback that always
+lands on Claude's own terminal prompt when the notch doesn't answer.
 
-This is also the feature that unblocks **Scheduled Prompts** (see "Parked"):
-both need the same primitive — a way for the notch to *talk back* into a live
-Claude Code session. Building the blocking-hook + decision-file handshake here
-de-risks that work.
+This is a second attempt, and the first one is worth understanding before
+judging the idea by its outcome.
 
-### Goal
-When Claude Code asks permission for a tool, the expanded Claude panel shows the
-exact tool + target with **Approve** / **Deny** buttons, and clicking one
-resolves the pending call in the session — with a hard timeout that falls back
-to Claude's normal in-terminal prompt.
+> **Status (2026-11-04): built on `feature/act-from-notch`, awaiting an
+> in-app test.** The hook side and the app's own request/response code were
+> run end to end against Claude Code 2.1.318 (see "What shipped" at the end of
+> this section); the notch UI has been built and read, not yet seen or
+> clicked. The test plan for the running app is in that section too.
 
-### How it works
-Claude Code's `PreToolUse` hook has the two properties this needs: it is an
-ordinary command, so **it can block** as long as it likes before it prints; and
-it can **return a permission decision** on stdout. Current schema (confirm
-against live docs before building — this is the load-bearing detail):
+### What happened the first time
+
+Approve/Deny shipped in `04d44aa` on a blocking `PermissionRequest` hook and
+was removed in `9a0b93e` ("approvals are unified into questions … the
+Approve/Deny UI and its plumbing are gone"). The removed script printed
 
 ```json
-{ "hookSpecificOutput": {
-    "hookEventName": "PreToolUse",
-    "permissionDecision": "allow" | "deny" | "ask",
-    "permissionDecisionReason": "…" } }
+{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":"allow"}}
 ```
 
-The handshake:
-1. `PreToolUse` calls `isle-cli` in a new `ask` mode. It writes `needs_approval`
-   with the already-captured `action`/`target` and a request id keyed by
-   `session_id`, and clears any stale decision file.
-2. The script **blocks**, polling `~/.isle/claude-decision-<session_id>.json`
-   with a timeout.
-3. The notch is already open (via `isAttention`); `ClaudeExpandedView` renders
-   the command/target with Approve / Deny.
-4. The click writes the decision file; the blocked hook reads it, prints the
-   matching JSON, exits. Claude proceeds or is stopped with the reason fed back.
-5. **Timeout or Isle-not-running → exit 0 with no decision**, so Claude falls
-   back to its own permission prompt. Never silently allow.
+but `decision` is an **object**, not a string: the real schema is
+`"decision": {"behavior": "allow"}`. So a notch click could never have resolved
+a prompt — every one fell through to the 30s timeout and the terminal, which
+reads exactly like "the button doesn't work". The mechanism was sound; the
+payload was wrong.
 
-### Scope
-- `isle-cli`: new `ask` verb (write request + block-poll for decision + timeout)
-  and a `decide <session_id> <allow|deny>` verb the app calls. Keep
-  `HookInstaller.scriptBody` byte-for-byte in sync (they're intentionally
-  duplicated).
-- `integration/claude-code-hooks/settings.json`: point `PreToolUse` at `ask`.
-- `ClaudeStatus` / `ClaudeStatusWatcher`: carry the request id through.
-- `ClaudeExpandedView`: Approve / Deny buttons (only when `needsApproval`),
-  showing the exact tool + target.
-- `NotchViewModel`: an action that writes the decision file for the live
-  session.
+### What was verified before this draft (2026-09-03, Claude Code 2.1.259)
+
+Interactive sessions driven with `expect` against throwaway hooks in a scratch
+directory, so nothing here is read off the docs alone. Findings, in the order
+they matter:
+
+| # | Finding | Consequence for the design |
+|---|---|---|
+| 1 | `PermissionRequest` → `{"decision":{"behavior":"allow"}}` resolved the prompt: the transcript shows *Allowed by PermissionRequest hook* and the tool ran. | The approval channel exists and works. |
+| 2 | **The terminal permission dialog is shown *while* the hook runs.** In a hook that slept 6s before allowing, the dialog was up from the start and the hook then dismissed it. | A blocked approval hook costs the user nothing: they can answer in the notch *or* the terminal, whichever they're looking at. The block can be long. |
+| 3 | A hook that reaches its `timeout`, or exits with no output, leaves the dialog in place; Enter approved it normally. | Falling through is safe. Never auto-allow. |
+| 4 | **A terminal answer does not stop the hook.** A 60s heartbeat hook ran to completion after the dialog was answered; its late output was ignored. | Isle must notice a request that resolved elsewhere and retire its buttons. The hook can't tell on its own. |
+| 5 | `PreToolUse` on `AskUserQuestion` returning `permissionDecision: "allow"` + `updatedInput` with an `answers` map answered the question **in an interactive session**: no terminal UI, transcript shows *User answered Claude's questions: … Apples*, the model continued with that label. | Questions are answerable from a hook. The old spec's "questions need terminal injection, out of scope" is no longer true. |
+| 6 | Unlike permissions, **the terminal question UI is held back until the hook returns or times out** (only the spinner shows). At timeout it appeared and was answerable. | A question hook must block briefly, and the notch needs an explicit *Answer in terminal* release. |
+| 7 | A hook cancelled at `timeout` gets `SIGTERM` (a `trap … TERM` fired). | Cleanup on `TERM`/`EXIT` is reliable. |
+| 8 | `-p` mode has no `AskUserQuestion` tool, and auto-allowed commands (`echo`) never fire `PermissionRequest`. | Don't test with either. |
+| 9 | `permission_suggestions` for a `touch` carried `addDirectories` + `setMode: acceptEdits` — the dialog's "Yes, and always allow…" option, echoable as `updatedPermissions`. | "Always allow" is available later without new plumbing. |
+
+Re-verified and extended while building (2026-11-04, Claude Code 2.1.318,
+same `expect` method, hooks pointed at a scratch `HOME` with
+`--setting-sources project` so the real settings never loaded):
+
+| # | Finding | Consequence for the design |
+|---|---|---|
+| 10 | **When `ask-question` returns without an answer, Claude Code raises a `PermissionRequest` for `AskUserQuestion`** — that *is* the terminal question UI coming up, and like finding 2 the UI is on screen while that hook runs. A `PermissionRequest` reply of `{"decision":{"behavior":"allow","updatedInput":{"questions":[…],"answers":{…}}}}` answered it (*User answered Claude's questions … Allowed by PermissionRequest hook*). | `ask` must never offer it as an approval (Approve would be the wrong button) — it returns at once for `AskUserQuestion`. And a later change could answer questions on this channel instead, with no blank-terminal wait at all (see "What shipped"). |
+| 11 | **Esc on the permission dialog SIGTERMs the blocked hook** (its request vanished at the keypress) and writes no status; the turn ends *Interrupted · What should Claude do instead?* and the transcript gets the usual `[Request interrupted by user for tool use]`. | The buttons retire on their own (the request file goes), but the status still says `needs_approval`, which has no revert timer — Isle retires it from the transcript's interrupt marker, as it already does for an interrupted `working`. |
+| 12 | Answering the dialog **Yes** in the terminal while the hook waits: the hook was gone within the same second (the `PostToolUse` write supersedes its id). | Finding 4 holds, and the "another verb wrote" check is what notices it. |
+| 13 | A hook reply of `{}` is no decision: the question UI came up the moment the hook returned; an approval dialog stays up. | "Answer in terminal" is exactly `{}`. |
+| 14 | Multi-question and multi-select answered from the hook: *Which fruit? → Apples · Which toppings? → Cream, Honey*; the model echoed `Cream, Honey`. | The `", "` join is right. |
+| 15 | With **auto mode** on (it was on by default in these nested sessions), the classifier approved `touch` and `python3 -c …` itself and no `PermissionRequest` fired; tests had to pass `--permission-mode default`. `AskUserQuestion` still reached the user in auto mode. | Approvals in the notch only matter in modes that ask; questions matter in every mode. |
+
+**Not verified:** the *Chat about this* row. (The multi-select join and
+Esc are now findings 14 and 11; free-text `answers` — the *Type something*
+row — were verified under Milestone 11, finding R6.)
+
+### Goal
+
+- A permission prompt shows the **exact tool and command/target** with
+  **Approve** / **Deny** in the expanded Claude panel; a click resolves it.
+- An `AskUserQuestion` shows the **question and its options**; a click on an
+  option answers it, and Claude continues with that label.
+- Both carry an **Answer in terminal** escape, and both fall back to the
+  terminal on timeout or when Isle isn't running. Nothing is ever auto-allowed.
+
+### How it works — the handshake
+
+Three files, all under `~/.isle`, all written by rename (Isle watches
+directories, and an in-place rewrite fires no event — the rule from the
+status bridge applies unchanged):
+
+| Path | Written by | Meaning |
+|---|---|---|
+| `run/answering` | Isle | Contains Isle's pid. Present only while the Settings toggle is on and Isle is running; removed on quit or when the toggle is turned off. The hook checks `kill -0 <pid>`, so a crash leaves a stale file that gates *off*, never on. |
+| `requests/<request-id>.json` | `isle-cli` | The hook's **raw stdin**, verbatim. Created when the hook starts blocking, removed by the hook's `EXIT`/`TERM` trap. Its existence *is* "a hook is waiting". |
+| `requests/<request-id>.response.json` | Isle | The **complete stdout payload** for the hook, which `cat`s it and exits. Isle has `JSONSerialization`; the script stays jq-free and never builds JSON. |
+
+The session status file gets `request_id` back (the field still exists in
+`ClaudeStatus`), plus `request_kind` (`approval` | `question`).
+
+**Approval** — `PermissionRequest` → `isle-cli ask`:
+
+1. Read stdin. If `run/answering` is absent or its pid is dead, behave exactly
+   as today: write `needs_question`, exit 0, no block.
+2. `REQUEST_ID="$SESSION_ID-$(date +%s)-$$"`. Write stdin to
+   `requests/$REQUEST_ID.json`; write status `needs_approval` with the id.
+3. Poll every 0.2s until one of:
+   - the response file exists → `cat` it to stdout, exit 0;
+   - the session status file's `request_id` is no longer ours — some other
+     verb wrote (`PostToolUse`, `Stop`, the next `PreToolUse`), which is how
+     "answered in the terminal" shows up (finding 4) → exit 0 silently;
+   - the deadline (300s) passes → rewrite status without the id, exit 0
+     silently. Claude's dialog is still up (finding 3).
+4. The trap removes the request file on every exit path.
+
+**Question** — `PreToolUse` with `"matcher": "AskUserQuestion"` →
+`isle-cli ask-question`: the same loop with state `needs_question` and a
+**45s** deadline, because the terminal shows nothing but a spinner until the
+hook returns (finding 6). Two consequences:
+
+- The generic `PreToolUse` → `set-state working` fires **in parallel** with
+  this one, and its existing `AskUserQuestion → needs_question` conversion
+  would clobber the request id. `set-state` must skip a `PreToolUse` for
+  `AskUserQuestion` and leave that write to `ask-question`.
+- `Notification` fires the `permission_prompt` nudge ~6s into a prompt; the
+  `notify` guard that keeps an active `needs_question` must also keep an
+  active `needs_approval` that carries a request id.
+
+**Response payloads** Isle writes, exactly:
+
+```json
+// Approve
+{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}
+// Approve a plan (ExitPlanMode) — the input handed back, verbatim (finding 18)
+{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedInput":{"plan":"…","planFilePath":"…"}}}}
+// Always… → Confirm — `permission_suggestions` echoed verbatim (finding 16)
+{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedPermissions":[…]}}}
+// Deny — no `interrupt`, so Claude can try another way, as after a terminal "No"
+// ("The user rejected this plan from the Isle notch." for ExitPlanMode)
+{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"The user denied this tool call from the Isle notch."}}}
+// Answer — `questions` echoed verbatim from the request; multi-select joins labels with ", "
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"questions":[…],"answers":{"Which framework?":"React"}}}}
+// Answer in terminal — the hook prints nothing and Claude shows its own UI
+{}
+```
+
+### Isle side
+
+- **`ClaudeRequestWatcher`** (`Isle/Claude/`) — a directory watch on
+  `~/.isle/requests`, same shape as `ClaudeStatusWatcher`, decoding each
+  `<id>.json` into a `ClaudeRequest`: `kind`, `id`, `sessionId`, `toolName`,
+  the **full** `tool_input` (this is where the exact command comes from —
+  the status file's 48-char hygienic `target` is for the collapsed island,
+  not for a decision), and for a question the `questions` array as-is.
+- **`NotchViewModel.pendingRequest`** — the request whose id matches the
+  selected session's `request_id` *and* whose file still exists. Either half
+  going away retires the buttons: the file, when the hook exits (timeout,
+  terminal answer noticed, Isle's own response); the id, when any other verb
+  writes. `decide(allow:)`, `answer(_:)` and `deferToTerminal()` write the
+  response file (temp name not ending in `.json`, then rename, as the status
+  writes do) and set an in-flight flag so a double-click can't write twice.
+  `questionRevertSeconds` must not fire while a request file exists.
+- **`ClaudeExpandedView`** —
+  - *Approval:* headline "Needs your approval"; detail is the tool plus the
+    exact command/target, monospaced, two lines, middle-truncated; the info
+    row becomes **Approve** / **Deny** / **Terminal**. Real `Button`s so a tap
+    is consumed and doesn't fall through to the card's dismiss gesture (the
+    removed build had this right — lift it from `04d44aa`).
+  - *Question:* the `header` as a chip where the project chip sits, the
+    question as the detail line, then the options as rows (label, with the
+    description in the secondary weight). One question at a time with
+    "1 of 3" and Next; `multiSelect` rows toggle and a Done button commits.
+    **Answer in terminal** always present.
+  - Collapsed word: `Approve` for a live approval (it was folded into
+    `Question` when the buttons went; unfold it), `Question` otherwise.
+- **`AppSettings` / `SettingsView`** — one toggle in the Claude section,
+  *Answer questions and approvals from the notch*, default on; it owns the
+  `run/answering` marker. The two deadlines are constants, not settings.
+- **`HookInstaller`** — bump to **v9**. `hookEvents` grows an optional
+  `matcher` and `timeout` per entry: `PreToolUse` gets a second entry
+  `{"matcher": "AskUserQuestion", "timeout": 60}` → `ask-question`, and the
+  `PermissionRequest` entry sets `"timeout": 330` so Claude Code's cancel
+  lands *after* the script's own 300s deadline, never before it. `refersToIsleCLI`
+  matches on the command prefix, so uninstall and re-merge already handle two
+  entries on one event. `integration/claude-code-hooks/` stays byte-for-byte
+  in sync as before.
+- **`IsleApp`** — remove the marker in `applicationWillTerminate`, and on
+  launch remove a stale one before deciding whether to write a fresh one.
+
+### Panel height
+
+`NotchMetrics.expandedSize` is 520×146 and the same for every face. Approve /
+Deny fit: the buttons replace the info row, as in the removed build. A
+question with four options and descriptions does not. Two ways out, one to
+lock below: grow the panel while a question is live (only then; every other
+face keeps 146), or render label-only rows and lose the descriptions.
 
 ### Acceptance
-- A tool permission prompt shows Approve / Deny in the notch; Approve lets the
-  tool run, Deny blocks it with the reason surfaced to Claude.
-- Quitting Isle (or a 30s timeout) mid-prompt never wedges the session — Claude
-  falls back to the terminal prompt.
-- Two concurrent sessions each get their own prompt (decisions keyed by
-  `session_id`).
+
+- A permission prompt shows Approve / Deny in the notch. Approve runs the
+  tool; Deny blocks it and Claude sees *The user denied this tool call from
+  the Isle notch.* (originally *Denied from the Isle notch*). The
+  transcript shows *Allowed/Denied by PermissionRequest hook*.
+- An `AskUserQuestion` shows its options; clicking one continues Claude with
+  that label and no terminal UI appears. Multi-select and multi-question both
+  work; the transcript shows *User answered Claude's questions*.
+- Answering in the terminal instead retires the notch buttons within a
+  status write (no stale Approve after the fact).
+- Quitting Isle mid-prompt, the toggle being off, a crash, or a timeout
+  never wedges the session — the terminal prompt is there every time.
+- Two concurrent sessions each get their own request; a click on one can
+  never resolve the other (ids are session-scoped and the hook validates
+  by filename).
+- With the toggle off, behaviour is identical to today, and `isle-cli ask`
+  returns immediately.
 
 ### Boundaries & decisions to lock
-- **Tool approvals only.** `needsQuestion` (free-text `AskUserQuestion`) can't be
-  answered by allow/deny — that needs text injected into the session (the
-  fragile terminal-injection problem). Out of scope here; it stays a
-  "go to the terminal" case.
-- **Timeout length** — default 30s, then fall back. Confirm the number.
-- **Permission posture** — a notch click authorizes a tool. Always show the exact
-  command/target; default-deny on timeout; never auto-allow.
 
----
+- **No free text from the notch.** `NotchWindow` is a non-activating panel
+  with `canBecomeKey` false; a text field would have to take key focus,
+  which is the one thing the overlay must never do to the terminal. *Type
+  something* and *Chat about this* stay "Answer in terminal".
+  **Superseded by Milestone 11:** the panel now becomes key on demand,
+  without activating Isle, only while a field is composing; *Type
+  something* and "No, and tell Claude…" are answered in the notch.
+- **"Always allow"** — was deferred here; shipped as **Always…** (see
+  "Approval options" below).
+- **Deadlines** — approvals 300s (the dialog is concurrent, a long block is
+  free), questions 45s (the terminal is blank meanwhile). **Locked as
+  recommended.**
+- **Panel growth for questions** — **grows, capped at 230pt, only while a
+  question is on the Claude face**; the descriptions are usually the whole
+  reason the option exists.
+- **Toggle default** — **on**: the hook path is gated on the marker, so
+  nothing changes for anyone until Isle is running with it on.
+- **Permission posture** — a notch click authorises a tool. Always show the
+  exact command; a timeout is never an allow — it falls through to the
+  terminal prompt, which still asks.
+
+### What shipped (`feature/act-from-notch`)
+
+**Hook side** (`isle-cli`, kept byte-for-byte in `HookInstaller.scriptBody`,
+installer v9):
+
+- `ask` / `ask-question` as specified above, with three refinements the
+  probes called for: `ask` returns at once for a `PermissionRequest` on
+  `AskUserQuestion` (finding 10); the wait also ends the moment `run/answering`
+  goes (Isle quit or the toggle turned off — the marker and its pid are
+  re-checked every tick, builtins only); and after a notch decision the hook
+  writes `working` itself before printing, so the island moves on at once
+  instead of waiting for the next hook (a deny fires no `PostToolUse`).
+- The status file carries `request_id` and `request_kind`. The request id
+  ends in the hook's pid, which Isle uses to drop (and delete) a request whose
+  hook was SIGKILLed and never ran its trap.
+- `hookEvents` entries carry an optional `matcher` and `timeout`; the merge
+  filters Isle's old entries once per event before appending, since
+  PreToolUse now has two.
+
+**Isle side** — as specified, plus:
+
+- `ClaudeRequestWatcher` also writes the responses (temp file not ending in
+  `.json`, then `rename(2)`), so the payload shapes live in one place, and
+  sweeps a response nobody read after 5s (a hook that gave up just before the
+  click).
+- `pendingRequest` additionally requires the request's kind to match the
+  status (`approval` ↔ `needs_approval`, `question` ↔ `needs_question`) and its
+  session to be the selected one.
+- Esc on a prompt (finding 11): the attention states join the 5s reselect
+  timer, and `reconciledPrompt` retires one whose transcript ends on the
+  interrupt marker — never while its request is live.
+- The question face drops the 24pt headline (it can't fit with four options
+  under the cap) and leads with the header chip and "1 of 3"; single-select
+  rows answer and advance on tap, multi-select rows toggle with Next/Done,
+  and a chevron steps back. The tallest question sizes the panel so it
+  doesn't bob between steps. "Answer in terminal" and "Terminal" also
+  retract the panel (when the dismiss setting allows).
+- Every option is always on screen. Claude Code 2.1.318's schema caps an
+  `AskUserQuestion` at 1–4 questions of 2–4 options each (a hard zod
+  `min(2).max(4)`, multi-select included; its own *Other* row is added by
+  the terminal and is "Answer in terminal" here). On the question face the
+  glyph shrinks into its top-left corner and the options take the face's
+  full width; when the cap can't hold the descriptions as the setting draws
+  them, the longest lose lines first, then all move beside their labels,
+  then go, and only then does the question give up its second line. Four
+  options fit side by side under a two-line question below a 32pt housing
+  (3pt to spare), and label-only rows fit five, so nothing scrolls within
+  the schema (a scroll, with an "N options" count beside the action, is
+  kept only for a future schema that allows more).
+- Two approvals pending at once *in one session* (parallel tool calls)
+  can't both be answered: the second's status write supersedes the first's
+  id, which falls through to the terminal. Safe, just not notch-answerable.
+
+**Verified here** (scratch `HOME`, never the real settings; nested sessions
+with `--setting-sources project --settings <scratch>`):
+
+- 14 scripted `isle-cli` checks with a stand-in Isle: no marker / dead pid /
+  garbage marker return at once; allow, deny, answer and `{}` produce the
+  right stdout; the request file is stdin verbatim and is gone after every
+  exit path including SIGTERM; the deadline, Isle going away, and a
+  superseding write all release silently; `notify` keeps a blocked approval;
+  two sessions never cross.
+- Real Claude Code, `-p` and interactive: notch allow (*Allowed by
+  PermissionRequest hook*, file created), notch deny (*Denied by
+  PermissionRequest hook*, *Reason: Denied from the Isle notch*, nothing
+  created), question answered with no terminal UI, multi-question +
+  multi-select, `{}` → question UI at once, the real 45s question deadline →
+  terminal UI answerable, a 10s approval deadline with the dialog still
+  answerable afterwards, dead-pid marker → terminal UI at once, Yes and Esc
+  in the terminal while the hook waits.
+- The allow / deny / answer / `{}` runs were repeated with the stand-in
+  built from the app's own `ClaudeRequestWatcher.swift`, so the exact JSON the
+  app writes is what Claude Code accepted. The same harness confirmed its
+  decoding: dead-pid requests dropped and deleted, `PermissionRequest` for
+  `AskUserQuestion` ignored, unknown tools shown as compact JSON, old orphan
+  responses swept.
+
+**Not verified — needs the running app:**
+
+1. Install the new build; Settings → Claude Code shows "Answer questions and
+   approvals from the notch" on, and `~/.isle/run/answering` holds Isle's pid
+   (`cat ~/.isle/run/answering; pgrep -x Isle`). The hooks refresh to v9 on
+   launch: `~/.claude/settings.json` has a second PreToolUse entry
+   (`matcher: AskUserQuestion`, `ask-question`, `timeout: 60`) and
+   `ask` with `timeout: 330`.
+2. In a session in default permission mode (`/permissions` or Shift-Tab out of
+   auto), ask Claude to run something that prompts (`python3 -c "…"`). The
+   notch opens with "Needs your approval", the tool and the full command in
+   monospace, Approve / Deny / Terminal; the collapsed word reads "Approve".
+   Approve runs it; repeat and Deny stops it with *Denied from the Isle
+   notch*; repeat and Terminal leaves the dialog to answer there.
+3. Answer one in the terminal instead (Yes, then Esc on another): the notch
+   buttons disappear within a moment, and after Esc the island settles to
+   idle within ~5s rather than holding "Needs your approval".
+4. Ask Claude to use AskUserQuestion with four options and descriptions, then
+   a two-question one with a multi-select: the panel grows (no clipping of the
+   action row, nothing under the camera or the waveform, the face toggle in
+   the corner clear of the rows), a tap answers and Claude continues with
+   that label, Next/Done/back work.
+5. Let a question sit 45s: the notch buttons go and the terminal shows the
+   question. Turn the toggle off mid-question: same, at once.
+6. Quit Isle (from the menu, not pkill) with a prompt up: the terminal
+   prompt is there; `~/.isle/run/answering` is gone.
+7. Switch to the Music tab while a question is up: the panel returns to its
+   normal height; switch back and it grows again.
+
+**Later, now cheap:** answering questions on finding 10's channel instead
+(the `PermissionRequest` for `AskUserQuestion`, where the terminal UI is
+already up) would remove the 45s blank-terminal wait entirely; it needs a
+check that it fires in every permission mode before the PreToolUse path is
+retired.
+
+### Approval options (`feature/approval-options`)
+
+"Make sure it works for the different options" — every kind of tool that
+asks, and the terminal dialog's answers beyond yes and no. Checked against
+Claude Code 2.1.318 with a dump hook first (the raw stdin of every prompt is
+kept under the scratchpad's `m7/payloads/`, and the debug fixtures decode
+those same payloads), then end to end with the stand-in Isle built from the
+app's own `ClaudeRequestWatcher.swift`, in `-p` and interactive sessions,
+scratch `HOME`, `--setting-sources project,local`, each in its own scratch
+project. The real `~/.claude/settings.json` was hashed before and after:
+unchanged.
+
+| # | Finding | Consequence for the design |
+|---|---|---|
+| 16 | `decision.updatedPermissions` = the request's `permission_suggestions`, verbatim, did exactly what the dialog's "Yes, and don't ask again" does: the rule landed in the project's `.claude/settings.local.json` (`Bash(npm run *)`, `WebSearch`, `mcp__acme__deploy_service`, `WebFetch(domain:example.com)`, `Bash(python3 -c 'print\(6*7\)')`), or for a `session` destination only in memory, and the next matching call didn't ask — in the same session (`npm run build` → `npm run lint`, a second WebSearch, the MCP tool with other arguments, a second Edit under `setMode: acceptEdits`) and in a fresh one. | **Always…** is an echo, never a rule of Isle's making. |
+| 17 | The suggestions are often *not* what the terminal's option 2 shows. For `python3 -c 'print(6*7)'` the hook got the exact command while the dialog offered `python3 *`; a Bash `find /etc …` got a *Read* rule; a `touch` in the project got `addDirectories` **and** `setMode: acceptEdits` together (finding 9); Read outside the project got two rules (`//etc/**`, `//private/etc/**`); a subagent's Bash got `[]`. Destinations seen: `localSettings`, `session`. | The label comes from the suggestion alone, so it can't match the terminal's wording — and must not try. Saving a rule outlives the call, so Always… is two taps: the first shows exactly what would be saved. |
+| 18 | **ExitPlanMode ignores a bare `allow`**: the hook's output is taken, nothing happens, the plan dialog stays up (the first build's Approve did nothing for a plan). With `updatedInput` = its `tool_input` echoed it is *Allowed by PermissionRequest hook* and the session leaves plan mode for **default** (the next Write asked) — the dialog's "Yes, manually approve edits". `updatedPermissions: setMode` alone is ignored too. A deny keeps it in plan mode and Claude says so. Its request carries no suggestions. | Approve on a plan echoes the input. No "auto mode" / "accept edits" choice from the notch: nothing in the request offers one. |
+| 19 | The deny `message` is the *only* thing Claude is told — it arrives as the tool's error. With "Denied from the Isle notch" the model reasoned aloud about what an Isle notch was. | Now "The user denied this tool call from the Isle notch." (plans: "The user rejected this plan …"). Claude doesn't retry and carries on, as before (no `interrupt`). |
+| 20 | Tools that asked in `default` mode: Bash, Edit, Write, NotebookEdit, WebFetch (run inside a `web-fetch` subagent, so its payload has `agent_type`), WebSearch, MCP tools (payload has `mcp_server.name`), Read outside the project, ExitPlanMode (plan mode). Didn't ask: Task/Agent itself (its subagent's tools do, with `agent_id`/`agent_type`), Skill, Monitor, CronCreate, PushNotification, ScheduleWakeup, EnterWorktree, RemoteTrigger, SendMessage. **MultiEdit no longer exists** in 2.1.318 (the name survives only as a rule alias). | The decoder covers MultiEdit anyway; unknown tools still fall back to their whole input. |
+| 21 | **Parallel calls each raise a PermissionRequest at once**, and the second `ask`'s status write retires the first's id: in `-p` the first was denied for want of an answer, interactively it falls through to its terminal dialog. | As before: safe, but only one of two parallel prompts is notch-answerable. A queue is a later change. |
+
+**What the face shows now** (renders: `approval-renders/` in the
+scratchpad, `before_*` / `after_*` / `afterrev_*` and `compare_*.png`):
+
+- The tool, then its exact subject. MCP tools read `acme › deploy_service`
+  then every argument as `key: <json>` (strings keep their quotes, a newline
+  stays `\n`). File paths are relative to the session's directory when inside
+  it (the eyebrow names the project), otherwise whole with `~`.
+- Edits give the second line to what they change, counted from the input:
+  `−1 +1 lines` (Edit, plus `· every occurrence` for `replace_all`),
+  `3 lines` (Write), `replace · cell c1` (NotebookEdit). The path then keeps
+  one line, middle-truncated.
+- ExitPlanMode: headline **Plan ready**, the plan's own text (heading marks
+  and blank lines dropped), cut at the end — read from the top.
+- **Always…** sits between Approve and Deny when every suggestion is one Isle
+  can name exactly (allow `addRules`, `setMode`, `addDirectories`, with a
+  known destination); otherwise it isn't offered. Terminal then gives up its
+  word for its icon (tooltip and accessibility label keep it); in Both mode,
+  beside the corner toggle, the four pills drop their symbols instead of
+  truncating. A tap turns the face into **Don't ask again?** with the change
+  in Claude Code's own terms — `Allow Bash(npm run *)`, `Switch to
+  acceptEdits mode`, `Allow access to ~/Documents/isle` — and where it's kept
+  (`this session`, `this project · .claude/settings.local.json`, `every
+  project · ~/.claude/settings.json`), and **Confirm** / **Back**.
+- A request without suggestions keeps the face exactly as it was.
+- "No, and tell Claude what to do differently" stays **Terminal**: it needs
+  free text (Milestone 11's reply-to-agent). **Now built** — see Milestone
+  11.
+
+**Test in the running app:** default permission mode, then
+
+1. `python3 -c "print(1)"` → Approve; again → Deny (Claude says you denied
+   it); again → Always… → check the review names `Allow Bash(python3 -c …)`
+   and `.claude/settings.local.json` → Back returns, → Always… → Confirm; ask
+   for the identical command again: no prompt anywhere. Remove the rule from
+   the project's `.claude/settings.local.json` afterwards.
+2. An Edit: the second line reads `−n +m lines`; Always… says `Switch to
+   acceptEdits mode · this session`; Confirm, then a second edit doesn't ask
+   (the terminal footer shows accept edits on).
+3. A WebFetch and an MCP tool if one is configured: `server › tool` with its
+   arguments.
+4. Shift-Tab into plan mode, ask for a small plan: the notch says **Plan
+   ready** with the plan's first lines; Approve → Claude starts implementing
+   and asks again before its first edit; another plan → Deny → Claude stays
+   in plan mode.
+5. Both mode: a prompt with Always… shows four word-only pills, none cut off.
+
+## Milestone 11 — Jump to the session, and Reply to Claude
+
+> **Status (2026-11-05): built on `feature/jump-and-reply` (off
+> `test/field-scan-batch`), awaiting an in-app test.** Host resolution and
+> the Terminal tab lookup were checked read-only against this Mac's live
+> sessions; the reply channel was chosen by driving real Claude Code 2.1.318
+> sessions with `expect` and `screen`. Nothing was clicked in the running app.
+
+The Claude face's action row, held empty since Milestone 7 "for jump on the
+leading side", now carries both features from the navigation decision:
+
+- **Jump** — a pill named for the app hosting the session (*Terminal*,
+  *iTerm*, *Ghostty*, *VS Code*, *Cursor*…). A click brings that session's
+  tab, or failing that its app, to the front. *Answer in terminal* and the
+  approval's *Terminal* pill now jump there too.
+- **Reply** — a "Reply to Claude…" field taking the rest of the row on a
+  session that's at its prompt (Done, Waiting, Ready, Error). Click to
+  type, Return sends, Esc cancels.
+- On the request faces: **Type something** next to *Answer in terminal* on
+  a question, and **No, and tell Claude…** (a speech-bubble pill beside
+  Deny) on an approval. Both open the same field in the row.
+
+Each is drawn only when it can actually reach the session. No pill and no
+field rather than one aimed at a guess.
+
+### Jump — how the host is found (`ClaudeSessionHost`)
+
+The registry gives the CLI's pid. From it:
+
+- **The tab's tty** is the CLI's controlling terminal (`sysctl`
+  `KERN_PROC_PID` → `e_tdev` → `devname`), which is what Terminal and
+  iTerm2 address tabs by.
+- **The app** is the first ancestor that's a regular (Dock-visible) app.
+  VS Code's and Cursor's terminal helpers are apps too, but not regular
+  ones, so the walk lands on the editor.
+- **tmux** breaks the chain (the pane's shell hangs off the tmux server, a
+  daemon). The CLI's own environment (`KERN_PROCARGS2`, same user only)
+  has `TMUX` (socket) and `TMUX_PANE`. tmux names the client attached to
+  that session, and the client sits in the terminal tab. A jump runs
+  `switch-client -c <client tty> -t <pane>` and `select-pane`, then
+  brings the client's tab forward.
+- **screen** breaks it the same way, and can't say which terminal shows a
+  session, so it resolves to nothing (no pill).
+
+| Host | Precision | How | Verified |
+|---|---|---|---|
+| Terminal | exact tab | AppleScript: the tab whose `tty` matches, `selected`, window `index` 1, `activate` | Resolution and tab lookup, read-only, on all four live sessions (below). The `type_into` handler was called with a tty no tab has and returned *missing*. Focus change not run. |
+| iTerm2 | exact session | AppleScript: the session whose `tty` matches, `select` window, tab and session | Not installed here. Script compiles only when iTerm2 is the host. |
+| tmux inside any of these | exact pane, then the outer tab | `switch-client` / `select-pane`, then the client's tab as above | Not installed here. |
+| kitty | exact window when started with remote control listening (`KITTY_LISTEN_ON`) | `kitten @ --to … focus-window --match id:` | Not installed here. Otherwise app-level. |
+| Ghostty, Warp, Alacritty, WezTerm, VS Code, Cursor, Zed… | the app only | Launch Services `openApplication` (activates and reopens, like a Dock click) | Not installed here (VS Code and Cursor are, but no sessions run in them). |
+| screen, a detached tmux, SSH | none | — | screen resolved to nothing against a real screen-hosted session. |
+
+Read-only check, every live session on this Mac (all in Terminal):
+`77016 → window 1 tab 1 /dev/ttys001`, `49210 → window 2 /dev/ttys006`,
+`38412 → window 3 /dev/ttys000`, `85069 → window 4 /dev/ttys003`. Each CLI
+owns its terminal (`pgid == tpgid`), including the one mid-tool.
+
+Activation goes through Launch Services for non-scriptable apps because
+Isle is never the active app, and under cooperative activation (macOS 14+)
+`NSRunningApplication.activate` from a background app can be declined.
+
+### Reply — the channel
+
+Every way to get text into a running interactive session was tried:
+
+| # | Finding (Claude Code 2.1.318) | Consequence |
+|---|---|---|
+| R1 | An **`asyncRewake` Stop hook** (`"asyncRewake": true`; runs in the background and wakes the model on exit 2) keeps the terminal free and does wake an idle session. Its stderr reaches the model as a task notification wrapped in **`[SYSTEM NOTIFICATION - NOT USER INPUT] … Do NOT interpret this as user acknowledgement, confirmation, or response to any pending question … must NOT be treated as approval or consent`**. `rewakeMessage` / `rewakeSummary` (schema-marked `@internal`) only change the prefix and the "Stop hook feedback" line. | **Rejected.** By design, this channel can't carry the user's word. Asked "create made-ok.txt?", Sonnet refused a "Yes, go ahead" sent this way: *"it says not to treat it as approval… I can't count that as your confirmation."* (Haiku complied.) Isle won't work around that framing. |
+| R2 | A **blocking Stop hook** returning `{"decision":"block","reason":…}`: the session shows *"running Stop hook"* with the spinner for as long as the hook waits, so the turn never ends. The reason renders in red as *"Stop hook error: …"*. Text typed meanwhile is **queued** behind it ("Press up to edit queued messages"), and goes in *after* the hook's reply. Sonnet did act on the reason. | **Rejected.** A reply can come minutes later, and the terminal would look busy the whole time. |
+| R3 | `asyncRewake` hooks are **not** cancelled by the user typing in the terminal. Two were left waiting at once, and the older one took the reply. Both got SIGTERM at `/exit`. | Any hook channel would need its own supersede check. |
+| R4 | `asyncRewake` only backgrounds in an interactive or streaming-input session. In `-p` it runs synchronously. | It would block a `-p` run for its whole wait. |
+| R5 | Sessions carry `messagingSocketPath` (cross-session peer messaging). Its messages are framed `[MESSAGE FROM NON-USER SOURCE - NOT USER INPUT]`. | Same problem as R1. |
+| R6 | **Typing into the session's own terminal** puts the text in as the user's own turn: the transcript entry has `origin: {kind: "human"}`, `UserPromptSubmit` fires, and the reply is answered. Verified by `screen -X stuff` into a detached screen-hosted session (`SCREENOK`). **CR submits; a bare LF only adds a line to the prompt.** A burst of text ending in CR is submitted, not treated as a paste. CR then LF submits and leaves nothing behind. | **Chosen.** This is the only channel where the reply is the user's own turn. |
+| R7 | Free-text `answers` for `AskUserQuestion` (PreToolUse, `permissionDecision: allow`): *"User answered Claude's questions: · Which fruit? → Mango, and make it a smoothie"*, and the model echoed it verbatim. | *Type something* uses the existing question channel. |
+| R8 | Deny with a message via `PermissionRequest` (`"The user denied this tool call from the Isle notch and said: Name the file made-alt.txt instead…"`) shows as the tool's error, and Sonnet's next call was a Write to `made-alt.txt`. | "No, and tell Claude…" uses the existing approval channel. |
+| R9 | `--resume <id> -p` forks a headless turn the interactive session never sees. `claude --help` lists nothing that sends a message to a running interactive session (`--bg`/`attach` cover only background jobs). | Not usable. |
+
+So **Reply types into the terminal**, and only where that can happen
+without focus or keystroke injection:
+
+- **Terminal**: `do script (text & return) in <tab>`. Terminal then adds
+  its own line ending, which lands on an empty, already-submitted prompt
+  (R6).
+- **iTerm2**: `write text (text & return) newline no`.
+- **tmux**: `send-keys -l -- text`, then `send-keys Enter`.
+- **Everywhere else** (Ghostty, Warp, VS Code's terminal…): no Reply
+  field. Typing there would mean System Events keystrokes into a focused
+  window.
+
+The text is passed to the AppleScript handlers as Apple-event parameters,
+never spliced into script source.
+
+**Safety at Send** (all checked fresh, at the click):
+
+1. The registry must say `idle`. Not `busy` (mid-turn), and not `waiting`
+   (a dialog is open, and a typed Return would answer it).
+2. The CLI's process group must own its terminal. If Claude has exited and
+   a shell is in front, the text would otherwise run as a command.
+3. The host is resolved again, so the right tab gets it.
+4. Newlines are folded to spaces, since a Return mid-text would submit half
+   of it.
+
+**Delivery is claimed only from the transcript.** *Sending…* until a `user`
+entry with `origin.kind == "human"` ending with the reply appears (polled
+over ~6s), then **Sent · <text>** for the rest of that turn. Otherwise it
+says what happened, in the detail line, and keeps the text in the field:
+
+- *Allow Isle to control Terminal in Privacy › Automation* (-1743)
+- *Couldn't find Claude's tab*
+- *Claude isn't at its prompt right now*
+- *Something else is in front in Claude's tab*
+- *Typed into Terminal, but Claude didn't take it — check its prompt*
+
+Drafts are kept per session id, so text for one session is never offered
+to another.
+
+### Typing in a non-activating panel
+
+- `NotchWindow.canBecomeKey` returns `allowsKey`, which is true only while
+  `NotchViewModel.composing` is set. The window controller makes the
+  hovered panel key with `makeKey()` and never calls `NSApp.activate`.
+  `.nonactivatingPanel` means the terminal stays the active app.
+- Composing ends on Return / Send, Esc, the panel resigning key (a click in
+  another app), the field leaving the face (a swipe, or an approval taking
+  the face), the session changing, or the bridge stopping. Keys go back by
+  re-activating the app that was frontmost. If the panel is still key one
+  run-loop turn later, it's ordered out and straight back in.
+- While a field holds the keys, moving the pointer away doesn't collapse
+  the panel, and a click on the card doesn't retract it.
+
+### Renders
+
+`scratchpad/jump-reply-renders/` (`sheet_jr_1…5.png`, `jr_jr_*.png`):
+
+- the pill for Terminal, iTerm, tmux-in-Terminal, Ghostty, VS Code and
+  Cursor
+- the working face (pill, no field) and an unresolved host (empty row)
+- the field at rest, composing (empty and with text), a kept draft,
+  *Sending…*, *Sent*, and three failures
+- Both mode
+- *Type something* (single and multi-question, and typing)
+- the approval row with the bubble pill, with and without *Always…* (five
+  word-only pills)
+- denying with a message, for a tool and for a plan
+
+The hairline ticks at the ends of the field's outline are a
+`CALayer.render` artifact of the harness: `ImageRenderer` draws the same
+capsule clean.
+
+### Test in the running app
+
+1. Install the build and finish a turn in a Terminal session. The face
+   reads *Done* with **Terminal** and **Reply to Claude…**. Click
+   **Terminal**: that exact tab comes forward (the first time, macOS asks
+   to let Isle control Terminal).
+2. From another app, open the notch and click **Reply to Claude…**, type
+   *say hi*, and press Return.
+   - Your app keeps its focus ring; the keys go to the notch.
+   - After sending: the keys come back to your app (type somewhere to
+     check), the Terminal tab shows the prompt submitted, and the notch
+     reads *Sent · say hi* while Claude works.
+3. Click into another app mid-compose: the field stops, and the text is
+   still there next time. Press Esc mid-compose: the same. Move the
+   pointer away mid-compose: the panel stays open.
+4. Try a reply while Claude is mid-turn or showing a dialog. It should say
+   *Claude isn't at its prompt right now*, and nothing is typed.
+5. Quit Claude in that tab (the shell is in front), and try to reply. It
+   should say *Something else is in front…*, and nothing is typed.
+6. On a question, click **Type something**, type an answer, and press
+   Return: Claude shows *User answered … → your text*. On an approval,
+   click the speech-bubble pill, type a reason, and press Return: the call
+   is denied and Claude follows the reason.
+7. Click *Answer in terminal* or *Terminal* on a prompt: the tab comes
+   forward.
+8. In System Settings › Privacy › Automation, turn Isle → Terminal off and
+   reply. It should show the Automation message, and the text stays.
+
+### Decisions to confirm
+
+- **Reply types into the terminal.** It's the only channel where the reply
+  is the user's own turn (R1, R2). Its reach is Terminal, iTerm2 and tmux.
+- **The Terminal `do script` path is the least-proven link.** The byte it
+  appends is unknown, and the design is robust to either (R6). Matthew's
+  first live reply settles it.
+- **Reply rides the existing *Answer questions and approvals from the
+  notch* toggle**, not a new setting.
+- **Esc keeps the draft** rather than discarding it.
+- A draft with the field unfocused **doesn't hold the panel open**. Only
+  focus does.
+- **Focusing a kept draft selects it all** (the AppKit default), so typing
+  replaces it.
+
+### Lone Jump (2026-11-05)
+
+Matthew found Jump awkward where it's the only action: a big pill alone at
+the bottom-left of an empty row. Three placements were rendered for Done,
+Working and Waiting, single face and Both (`lj_*` fixtures):
+
+- **(a) a chip at the eyebrow's trailing end** — chosen. It sits on the row
+  that already says where the session is, right of the camera cutout and
+  inside the waveform clearance, and gives way to nothing (the eyebrow
+  drops the elapsed time and the cup's word first). The action row is
+  simply empty, which leaves the room to what Claude said (M15).
+- (b) inline after the detail: with a two-line M15 message it pushed the
+  stack up, and the eyebrow rose to within 4pt of the band. Rejected.
+- (c) right-aligned in the row: reads as a primary button, and is still a
+  pill alone in a row.
+
+Placement is decided by the host, not the state (`repliesFromNotch`): on a
+terminal Isle can type into, Jump keeps its place in the row while the
+reply field comes and goes beside it, so nothing moves between Working and
+Done. The chip is for hosts that never take a reply (Ghostty, VS Code,
+Cursor, kitty, Warp), or when replying from the notch is off.
+
+## Milestone 15 — Done says what happened
+
+From Field scan 2: a competitor shows what an agent did when it finishes.
+The `Stop` hook's stdin carries `last_assistant_message`, so Isle can show
+the start of what Claude actually said — never a summary Isle invents.
+
+### The payload (Claude Code 2.1.318, captured)
+
+`Stop` stdin, one line, `JSON.stringify` shape: `session_id`,
+`transcript_path`, `cwd`, `prompt_id`, `permission_mode`, `effort`,
+`hook_event_name`, `stop_hook_active`, `last_assistant_message`,
+`background_tasks`, `session_crons`. The message is only the final text
+block: in a turn that used tools it's the closing sentence, with no tool
+noise. Non-ASCII arrives raw (UTF-8); quotes, backslashes, tabs and
+newlines as escapes. Same shape in `-p` and interactive sessions.
+
+### The helper (v10)
+
+- A `Stop` writes `last_message`: the first 300 characters, **kept in the
+  JSON-escaped form Claude Code sent** — so the script never escapes it
+  again — cut on whole tokens (an escape, or one character under a UTF-8
+  locale) with a `grep -E` of two runs of 150 (255 is the most one repeat
+  counts). A cut can't land inside an escape or a multi-byte character, a
+  bare quote or backslash can't get through, and a `\u` escape for half a
+  surrogate pair isn't a token, so the excerpt ends before one. A raw DEL
+  is dropped, and anything still not valid UTF-8 (`iconv`) drops the
+  excerpt. ~40 ms per Stop on a 60 KB message.
+- The idle nudge (`waiting_input`) copies `last_message` from the record
+  verbatim; a new prompt's `working` drops it.
+- The project name is now escaped (`json_escape`, pure bash): a `"` in a
+  folder name used to make the whole record unreadable.
+- Verified with 44 hostile payloads under a scratch HOME (quotes,
+  backslashes, `\n`/`\r`/`\t`, control characters and ANSI, emoji and ZWJ
+  sequences, flags, combining marks, RTL, `$(…)` and backticks, a fake
+  nested key, every escape and multi-byte character at the 298–300
+  boundary, lone and paired surrogate escapes, pretty-printed and missing
+  keys, hostile project names) plus every real capture: all valid JSON,
+  every excerpt an exact prefix of the message. Round trip through Isle's
+  own decoder (`ClaudeStatusWatcher.decode`) exact for real interactive
+  Stops and the carried nudge.
+
+### Isle
+
+- `ClaudeDoneLine` turns the excerpt into the face's line: the first line
+  of prose (a heading only if nothing else; a line ending in `:` carries on
+  into the one it introduces), Markdown taken off (emphasis, links, lists,
+  quotes, backticks; `snake_case` and `__init__.py` survive), cut at the
+  end of a sentence when one ends within ~two lines, else truncated at the
+  tail — with "…" when the helper's 300-character cut lands in the line.
+  Code blocks (fenced, or cut off before their closing fence), rules and
+  control characters are left out. Only code, or no text → nil.
+- The detail line shows it for Done, the Ready it eases back to, and
+  Waiting for you, up to two lines, in place of the stock line only when
+  there are words. The home grid's Claude tile uses it too.
+- **Toast:** the island's own session already says "Done" collapsed, so
+  it gets none. A session the island isn't showing — which used to finish
+  silently — gets one, naming its project: `isle-website · done`.
+
+### Renders
+
+`done-renders/after_m15_*`: short, long, Markdown, list, hostile and
+code-only messages; Ready and Waiting after a turn; Terminal (with Reply),
+Ghostty, crowded eyebrow; Both; home tile (short, long, code-only); the
+background toast (short and long project).
+
+### Decisions to confirm
+
+- **Claude's words stay through Ready and Waiting**, not just the few
+  seconds of Done, until the next prompt. Without that the line is visible
+  only for `doneToastSeconds`.
+- **Plain text, not quoted.** The face doesn't mark the line as Claude's
+  words beyond its place under "Done".
+- **A first sentence under 24 characters** ("Done.") takes the next one
+  with it.
+- **The background toast** has no setting of its own; it's on whenever the
+  bridge is.
+
+## Milestone 18 — A bigger calendar: Join, the week, a timeline, ticks and quick add
+
+**Status:** Built on `feature/calendar-plus`, rendered, awaiting in-app test.
+
+### What it is
+
+- **Taller agenda face.** Every face may ask for its own content height
+  (`NotchViewModel.faceContentHeight`), capped by one shared
+  `NotchMetrics.panelMaxHeight` (230) that the window is already sized
+  for. The question face is now one case of it; the agenda is another
+  (`AgendaLayout.contentHeight` = 144 → a 186pt panel under a 32pt band).
+  A new face that grows (the shelf, next) is one more case, no new path.
+- **Three views, Day the default.** Day (the list, five lines), Timeline,
+  Week — a switcher under the date card. Opens on today's list every time.
+- **Week strip, not month grid.** Both were rendered; the strip won because
+  a picked day's list fits under it, where the month grid fills the column
+  and a pick has to go back to Day. Paged by chevrons, last week to four
+  ahead — the range `AgendaMonitor.dayInterval` reads.
+- **Timeline** from an hour ago to the end of the last event (another day:
+  9–6 widened to fit), six hours minimum, blocks in lanes per run of
+  overlaps, all-day events as chips, one line of free/busy. The now line
+  steps with `TimelineView(.everyMinute)` — on the minute, never per frame.
+- **Join** (`MeetingLink`): exact hosts only — Zoom (+ company subdomains),
+  ZoomGov, Meet, Teams, FaceTime, Webex (+ subdomains), GoTo, Whereby,
+  Jitsi, Chime — with a meeting-shaped path; URL field, then location,
+  then notes; two different meetings in one field is no Join. A pill when
+  the call is within `max(10, lead)` minutes or under way, a quiet camera
+  before. On the home tile too. The toast wears `video.fill` for a call;
+  it isn't clickable, so it has no button.
+- **Ticks** save at once (`EKReminder.isCompleted`, `commit: true`); the
+  line stays ticked with Undo for five seconds. Repeating reminders get no
+  Undo: EventKit moves them on, and unticking wouldn't move them back.
+- **Quick add** (`QuickAddParser`, `NSDataDetector` plus "in N min", "for N
+  minutes", "remind me"): a clock time makes an event in the default
+  calendar; a day only, no date, or "remind me" a reminder. Return
+  previews (kind · title · when · calendar); only Add, or Return again on
+  the same line, saves. Refuses two dates, "at 9" with no day, "the 1st",
+  and times already past. Keys through `ComposeKind.quickAdd`, the same
+  composing path as Reply.
+- **Access**: the full access the agenda already asks for covers writing.
+  A quick add of a kind never asked for (Reminders while its switch is
+  off) asks at Add, the first write.
+
+### Decisions to confirm
+
+- The waveform overlay is off the agenda face now (its week strip and
+  timeline run to the column's corner), as it is off the shelf.
+- Opening the panel while a call's toast is up doesn't jump to the agenda;
+  Join is on the home tile and the face. A takeover like Claude's is
+  possible but would be the first non-Claude one.
+- "Call mom in 30 min" is an event (it has a time), per the rule; "remind
+  me to…" is the way to a reminder.
+- Parts of the day ("morning", "tonight", "lunch") make a dated reminder,
+  not an event at the hour the detector picks.
+
+## Milestone 16 — Every Claude Code session at once
+
+From Field scan 2: several competitors show every running agent session,
+each with its state. Isle already tracked them all (per-session records,
+the registry for liveness, urgency selection); the face showed one and
+admitted the rest only as "+2 working".
+
+### What it does
+
+- **The way in** is the other-sessions marks, now a button with a chevron:
+  "+1 needs you  +1 working ›". With nothing busy elsewhere but another
+  session alive, "+1 more ›" stands in, so the list is reachable whenever
+  there's more than one session. Three entries were rendered
+  (`session-list-renders/sheet_entry{A,B,C}_1.png`): (A) the marks, chosen;
+  (B) the marks plus a `square.stack` count chip — a fourth thing in the
+  eyebrow, and in a crowded eyebrow its capsule lands under the camera
+  cutout 2pt below the band, so the project name collapses to "i";
+  (C) the project label as a picker ("isle ⌃⌄ 3") — tidy, but the marks
+  that actually say something needs you weren't the way in, and the
+  chevron reads as a pop-up menu that isn't there.
+- **The list** takes the face's width (no big glyph; each row has its own),
+  one line a session: a 12pt dot-matrix marker (the user's own design),
+  the project, the state in its marker's colour, the detail — the tool and
+  target, the command or question a hook is blocked on, or for Done/Waiting/
+  Ready the M15 excerpt — then how long since its hook last wrote, and an
+  icon-only Jump chip (the app's name is its tooltip). The session on the
+  island is lit. Four rows fit the 146pt panel under a 32pt housing; more
+  scroll vertically, with "7 live ↕" in the eyebrow and a fading foot. No
+  height change.
+- **Order** is selection's own ranking, now shared (`ClaudeSelection.ranked`):
+  needs you / failed, then working, then waiting / done / ready, each by
+  recency. A 5000-pool random check confirms `ranked.first` is exactly what
+  the old `selectStatus` picked.
+- **Live only**: a row needs a record with a session id and a pid the
+  registry can see — the strict liveness keep-awake uses. Each record goes
+  through `reconciled` (an interrupted turn isn't "Working"), then the face's
+  own clock: a question nothing is waiting on past 45s, a compaction past
+  25s and a usage limit past its reset list as Ready, since no hook will
+  ever close them. Done stays Done, with Claude's words, until the session
+  moves — that's what the list is for.
+- **Clicking a row** pins that session: the face, the approval buttons, the
+  question and the reply are all its. The eyebrow's folder becomes a
+  chevron ("‹ notch-bench"), the way back up to the list.
+- **Home tile**: "3 sessions · 1 needs you" in place of the other-sessions
+  line when more than one is live; the island's own approval or question
+  keeps its detail.
+
+### The pin (`ClaudeSelection.Pin`)
+
+The smallest override that's correct: `selectStatus` asks
+`ClaudeSelection.select(from:pin:)`, which returns the pinned record while
+it holds and the ranking's pick otherwise.
+
+- It yields only to another session that **newly** needs you — approval,
+  question or failure — while the pinned one doesn't. The pin remembers what
+  already outranked it that way (`heldAgainst`), so an approval that was up
+  when you picked another session doesn't snatch the face straight back; if
+  it's answered in the terminal and asks again, that's new. A session that
+  merely starts working never takes a pinned face.
+- If the pinned session needed you and you answer it, anything else needing
+  you now outranks it, newly — so answering one of two waiting sessions
+  moves the face to the other.
+- It goes when the session's pid leaves the registry, when you go back to
+  the list, and when the panel closes: a collapsed island always means
+  selection's pick, so a session picked once and forgotten can't keep a more
+  pressing one off it.
+- A switch the user made applies quietly (`applyClaudeStatus(announce:
+  false)`): no chime, and an alert it lands on counts as already seen, so
+  the panel doesn't pop open for it.
+
+### Tests
+
+A harness compiled with every Isle source (`scratchpad/sl/tests`), 42 checks:
+the ranking against the old selection; pin holds over working, yields to a
+new approval and a new failure, holds against an approval already up and
+its re-writes, yields when that session asks again; a pinned approval holds
+against a newer question, and answering it hands the face over; death; and
+through the real view model (`applyTestReading`): pin, an approval arriving
+in another session (its buttons are its own), a SIGKILL'd pinned session,
+back from the face and from the list, the panel closing, stale and live
+questions in the list, the question face not growing the panel under the
+list, and leftover/id-less records never listed.
+
+### Renders
+
+`session-list-renders/sheet_final_*.png`: entry points (busy, quiet,
+crowded with Ghostty's chip and the cup, on an approval); lists of 2, 4 and
+7 (with and without hosts); pinned Done and Waiting; the override (pinned on
+a working session, then an approval arriving elsewhere); Both mode (lists,
+entry, pinned); the home tile (3 with one needing you, 2 quiet, 1).
+
+### Decisions to confirm
+
+- **The pin ends when the panel closes.** The alternative — holding it while
+  collapsed — makes the island show a chosen session over the ranking with
+  nothing on screen saying so.
+- **Only needing you overrides a pin**, not a session starting work, though
+  working outranks done in selection.
+- **States are the list's own words**: "Error" (as the face says it, not
+  "Failed"), "Usage limit", "Question", and "Done" persists after the face
+  has eased to Ready.
+- **Two sessions in the same project** show the same name; the detail tells
+  them apart. The CLI's `name` ("isle-cf") could disambiguate.
+- **The row's Jump is an icon**, unlike the eyebrow's named chip — the same
+  app name down every row was noise.
+
+## Island motion — the proximity swell and a shaped collapse
+
+From Field scan 2's polish note: Apple's island reacts to the pointer
+approaching, and iPhone's collapses with a genie-like motion. Built on
+`feature/island-motion`; numbers in `IslandMotion.swift`, checked by
+`scripts/test-island-motion.sh`.
+
+- **Swell.** Within 56pt of the collapsed island it grows by up to 3pt a side
+  and 2pt down, and leans up to 1.5pt toward the pointer. The top never moves.
+  It's a `scaleEffect` on the black fill, outside the clip, so the hover
+  zones, the hit rect and the open timing don't see it. The reading is
+  stepped (8 levels, 3 of lean) and published only on a change, from the
+  pointer monitor that already runs. Out of reach it costs one rect test. A
+  sideways sweep, a drag, an open or settling island, and Reduce Motion all
+  hold it at rest.
+- **Collapse.** Corners lead (0.18s), then width (0.24s, ζ 0.78, settling
+  ~2% past its target), then height on the old close spring, which is
+  critically damped and so never shorter than the housing. While the width
+  leads, the walls pinch toward the bottom (up to ~8pt). The pinch never
+  reaches into the camera band, and the outline is never narrower than the
+  band. Each channel is a SwiftUI spring picked by a transaction flag set only
+  on the open→collapsed change. There's no clock. Reduce Motion gets a plain
+  0.18s ease.
+- **Still to judge on the real screen:** whether the swell reads at all over a
+  dark menu bar, and whether sweeping along the menu bar beside the notch
+  pulses it too often.
+
+## Milestone 17 — Guarded commands
+
+From Field scan 2 ("every git push waits for your click, even in auto
+mode"). A short list, the user's own, of commands that always ask: in auto
+mode, with edits accepted, past an allow rule, with permissions bypassed.
+**A speed bump for honest mistakes, not a sandbox**, and the UI says so.
+
+### How it works
+
+- **The hook.** A third PreToolUse entry, matched to `Bash|Monitor`, runs
+  `isle-cli guard` (timeout 10s). With no list file it exits before reading
+  stdin. Otherwise it reads the command the way a shell splits it (words,
+  quotes off, simple commands at `;` `&&` `||` `|` `&`, newlines, parens,
+  `$(…)`, backticks, `bash -c`, `eval`, a heredoc fed to a shell, through
+  `env`, `sudo`, `xargs`, `nohup`, `timeout`…), and on a match answers
+  `permissionDecision: "ask"` with the reason "Guarded in Isle: matches
+  `git push`, which always asks." It can't see through an alias, a variable
+  in command position, a script file, or a name built at run time.
+- **Patterns** are words: the program (by name, so `/usr/bin/git` is git),
+  its subcommand words in order, flags anywhere. An option's value may sit
+  between program and subcommand (`git -C dir push`). Short-flag clusters
+  match in any grouping (`rm -rf` = `rm -fr` = `rm -r -f`), exactly as
+  written (`-R` isn't `-r`).
+- **Over 16 KB** (unescaped), a command isn't read word by word: if every
+  word of a pattern appears in it, it asks ("too long to read, and it
+  mentions `git push`"). Reading 16 KB in bash takes up to ~1.3s, and a hook
+  that hits its 10s timeout lets the call through unasked, so the guard errs
+  toward asking.
+- **The list** lives at `~/.isle/guarded-commands`, written by rename from
+  Settings (`GuardedCommands.sync`) only while the toggle is on and the list
+  isn't empty. Off by default.
+- **The notch's reason.** The PermissionRequest that follows a hook's ask
+  carries no reason and no `tool_use_id`, so the guard leaves
+  `~/.isle/guarded/<session>.json` (pattern + command). The watcher reads it
+  from beside its own requests folder and marks the approval guarded only
+  when the record names this exact command and was written within 60s
+  before the request. A "Guarded" chip sits beside the headline; the pattern
+  and the speed-bump line are its tooltip. The record goes at SessionEnd.
+
+### Always… never covers a guarded command
+
+Three layers, each tested:
+
+1. **Claude Code sends no `permission_suggestions`** with the
+   PermissionRequest after a hook's ask (every guarded run below; 2.1.318
+   and 2.1.319). The notch only offers Always… when there are suggestions,
+   and its terminal dialog shows only Yes / No.
+2. **The app** clears `remember` on an approval it marks guarded, so even
+   with suggestions the face shows no Always…, and `respond(.allowRemembering)`
+   writes nothing.
+3. **The hook** is the last word: `ask` re-runs the matcher on a Bash or
+   Monitor request and, when the notch's answer carries `updatedPermissions`
+   for a guarded command, replaces it with a plain allow. Verified live: an
+   auto-mode session where the stand-in for Isle answered Always… with a
+   `localSettings` rule ran the command once and wrote no
+   `settings.local.json`. The control (an unguarded `python3 -c`, same
+   answer) did write the rules, so the strip is what stopped it.
+
+The guard also holds against a rule saved some other way: a hook's ask
+beats an allow rule (row "manual + allow rule" below).
+
+### Permission modes vs the guard (Claude Code 2.1.319, 2026-11-06)
+
+Nested `env -u CLAUDECODE claude` sessions (haiku), `--setting-sources
+project,local` plus a scratch `--settings` whose hooks ran the real
+`isle-cli guard` and `isle-cli ask` from this branch under a scratch HOME.
+"Isle" was a stand-in: a live pid in `run/answering` and a script that
+answered each request file as the app would. Harness:
+`scratchpad/m17/matrix/` (`run.sh`, `drive.exp`, `responder.py`,
+`matrix-summary.txt`).
+
+| Mode | Command / pattern | Answered by | Guard asked | Prompt | Outcome |
+|---|---|---|---|---|---|
+| `manual` | `echo GUARDED-1` | notch: allow | yes | Yes / No | ran |
+| `default` (reported as `default`, shown as "manual mode") | same | notch: allow | yes | Yes / No | ran |
+| `acceptEdits` + allow rules | same | notch: allow | yes | Yes / No | ran |
+| `plan` | same | notch: allow | yes | Yes / No | ran |
+| `auto` | same | notch: **Always…** | yes | Yes / No | ran once; answer stripped to allow; no rule saved |
+| `auto`, Monitor tool | same | notch: allow | yes | Yes / No | ran |
+| `bypassPermissions` | same | notch: allow | yes | Yes / No | ran |
+| `bypassPermissions` | `cd repo && git push origin main` / `git push` | notch: deny | yes | Yes / No | denied; the scratch remote got nothing |
+| `bypassPermissions`, Isle not running | `echo GUARDED-1` | terminal (Enter) | yes | Claude Code's own Yes / No | ran after Yes |
+| `dontAsk` | same | notch: allow | yes | Yes / No | ran |
+| `manual` + `Bash(python3:*)` allowed | `python3 -c …` / `python3 -c` | notch: allow | yes | Yes / No | ran (the rule alone runs it unasked) |
+| `claude -p`, `bypassPermissions` | `echo GUARDED-1` | nobody can | yes | none (no PermissionRequest) | refused: the tool error is the guard's reason |
+| control: `-p`, bypass, guard off | `echo GUARDED-1` | — | no | none | ran unasked |
+| control: `-p`, default, unguarded | `python3 -c …` | notch: Always… | no | — | suggestions sent; rules written to `settings.local.json` |
+
+In every guarded run the PermissionRequest carried no
+`permission_suggestions`, and the record matched the request's command
+(lead 0.08–0.13s), so the notch would have shown the chip. 2.1.319's modes
+are `acceptEdits`, `auto`, `bypassPermissions`, `manual`, `dontAsk`, `plan`;
+`default` is still accepted and is the same mode as `manual`.
+
+### Cost per Bash call
+
+`isle-cli guard` (bash 3.2, builtins on the common path): off 5ms (the bash
+process floor is 3ms); on with five patterns, `ls -la` 6ms; a near miss 9ms;
+a match 21ms; an 11 KB heredoc 36–52ms; 85 KB 0.2s; 350 KB 1.1s; the worst
+case under the 16 KB cap (16 KB on one line) 1.3s. The WIP used
+`${x//[…]/}` and a rescanning unescape, which took 11s at 11 KB and over an
+hour at 85 KB; both now split once with IFS.
+
+### Tests
+
+- `scripts/test-guarded-commands.sh`: 124 checks of the real `isle-cli`
+  under a scratch HOME (nothing is executed; every command is text in a
+  payload): the matcher (compound commands, quoting, prefixes, shells and
+  eval, heredocs, flags, what it can't see), JSON unescaping, the 16 KB
+  path, the record and its removal at SessionEnd, the exact ask payload,
+  and `ask` stripping Always… for guarded Bash and Monitor commands while
+  passing every other answer through.
+- A harness compiled with every Isle source (`scratchpad/m17/tests`), 35
+  checks: pattern normalizing; `sync` writing and removing the list, read
+  back by the real hook; the record lookup on real 2.1.319 bytes; and a
+  real `ClaudeRequestWatcher` on a scratch folder — guarded marks, no
+  Always…, an Always… reply refused, the controls offering and writing it,
+  stale and mismatched records ignored, other tools never marked.
+
+### Renders
+
+`scratchpad/m17/render/png/{before,after}_*.png` (before = c2c38e8, after =
+this branch), sheets `sheet_faces_{before,after}.png` and
+`settings_strip.png`: guarded approvals (git push, a long chain, rm, a long
+pattern, Monitor, a crowded eyebrow, Both mode), the ordinary approvals
+unchanged (Always… still there with suggestions), and Settings (off, on and
+empty, a list, every suggestion used, the hook not installed).
+
+### Decisions to confirm
+
+- **Off by default, empty list**; the five suggestions are one click each.
+- **The chip says "Guarded", not the pattern.** "Guarded · git push" never
+  fit beside "Needs your approval"; the pattern is in the tooltip.
+- **Over 16 KB, a mention is enough to ask.** The alternative is reading it
+  and risking the 10s timeout, which lets it through.
+- **`claude -p` refuses a guarded command** rather than running it: Claude
+  Code's own behaviour for a hook's ask with nobody to answer.
+- **Monitor is guarded too**, since it runs a shell command and never asks on
+  its own.
+
+## Milestone 21 — Background sessions in the list
+
+From Field scan 3. Claude Code's agent view runs sessions with no terminal
+(`claude --bg`, `claude agents`), hosted by a supervisor. Isle couldn't see
+most of them: a blocked one (since June, its process long gone) was in
+`claude agents` and nowhere on the notch.
+
+### What we found (2.1.319, 2026-11-07)
+
+Two short `claude --bg` runs (haiku, a scratch project, a scratch
+`--settings` that dumped every hook's stdin), both removed afterwards.
+
+- **A live background session is an ordinary session to the bridge.** Its
+  process (`claude bg-spare`, under `claude daemon run`) writes
+  `~/.claude/sessions/<pid>.json` with `kind: "bg"` and its `jobId`, and fires
+  the user's hooks: SessionStart, UserPromptSubmit, PreToolUse,
+  PermissionRequest, Notification (`permission_prompt`), PostToolUse, Stop,
+  SessionEnd. Isle's real `isle-cli` wrote `~/.isle/sessions/<id>.json`
+  (`done`, "ok") for the first run. The hook `session_id` is the
+  `sessionId` `claude agents` prints; the job's short id is its first eight
+  characters. No tty (`CLAUDE_CODE_SESSION_ATTENDED=0`, `CLAUDE_JOB_DIR` set).
+- **The approval handshake works with no terminal.** The second run's
+  PermissionRequest went to the worktree's `isle-cli ask` under a scratch
+  HOME, with a stand-in for Isle answering by rename after 10s: the hook
+  blocked, `claude agents` said `state: blocked, status: waiting, waitingFor:
+  "permission prompt"` throughout, the answer was honoured, `touch` ran,
+  PostToolUse fired the same second. So the notch's Approve/Deny reach a
+  background session; nothing new is needed for them.
+- **What the bridge can't see** is everything after the process: `claude
+  stop` (or the supervisor's ~1h idle stop) fires SessionEnd, `isle-cli end`
+  deletes the record, and `claude agents` keeps listing the session (`done`,
+  no pid). A session blocked on you can sit there for days. Nor does any
+  hook say *blocked* when a turn ends on a question — the hooks say Done.
+- **`claude agents --json --all`**: 0.09–0.15s wall, ~0.12s CPU, ~150 MB
+  peak RSS (short-lived), 1 KB for four sessions. It doesn't start the
+  supervisor. Background entries carry `id`, `state`, `name`, and while the
+  process lives `pid`, `status`, `waitingFor`; interactive ones `pid`,
+  `status`, `waitingFor` and no `state`.
+- **What to watch.** `~/.claude/jobs/<id>/state.json` is replaced by rename
+  on every change (inode changed at start, blocked and done), so a directory
+  watch on each job's folder sees it; `~/.claude/jobs` itself sees jobs come
+  and go. The docs say those files aren't a stable interface, so Isle never
+  parses them — they're only the cue.
+- **Attach** is `claude attach <id|name>` (CLI help and the docs); it restarts
+  a stopped session from its conversation.
+
+### What it does
+
+- **The list** gets every background session `claude agents` reports, merged
+  with the hook rows by session id (then the registry's `jobId`, then pid),
+  so nothing is listed twice. A row goes by Claude Code's own name for the
+  session (up to 170pt, against a project's 120). A live one keeps its
+  hook detail; one only agent view knows of says the state in Claude Code's
+  words (Working, Needs you, Needs approval, Done, Failed, Stopped, or an
+  unknown word verbatim) and, as its detail, what it's waiting for when
+  Claude Code names it, then the project. No age: no hook wrote it. The
+  header says "N sessions" instead of "N live" when a row may have no process.
+- **Blocked beats a hook's Done.** When the hooks saw a turn end and Claude
+  Code says the session is blocked, the row and the island say Needs you,
+  with Claude's last words (usually the question). Every other disagreement
+  goes to the hook, which is fresher.
+- **Finished ones are quieter** (dimmer name, grey state) and listed while
+  their process is alive — Claude Code keeps it about an hour — or for an
+  hour after Isle saw them finish. Done/failed/stopped seen only after the
+  fact (at launch) aren't listed.
+- **Counts.** `otherSessions` and the home tile count them (blocked needs you,
+  working is working). The 5s reselect tick doesn't run for them.
+- **The island** is never taken by a session only agent view knows of; it can
+  be picked from the list and pinned, under M16's rules. The face then says
+  Needs you / Needs your approval / Stopped… with its name in the eyebrow and
+  an **Attach in Terminal** pill. No reply field: there's no terminal.
+- **Jump** prefers the M11 path (a terminal the pid's tree resolves to); a
+  background session with a known id otherwise opens Terminal.app running
+  `cd -- '<cwd>' 2>/dev/null; claude attach <id>` (the id must be
+  `[A-Za-z0-9_-]`, ≤64, no leading `-`). No id, no Jump.
+- **With nothing live** but agent view's sessions, the face says "One session
+  in the background" with the marks as the way in, and the home tile "Needs
+  you · 1 session · 1 needs you".
+
+### Cost and cues
+
+Read on a cue only: a `~/.claude/jobs` change, a job folder's change, a
+background session's registry record changing, the panel opening (Claude
+showing), and the list opening. Coalesced (0.4s) and at most once every 3s,
+however many cues arrive. No timer, fast or slow: every change Claude Code
+makes to a background session's state renames its `state.json`, so there's
+nothing a timer would catch that the watch doesn't, and an hour's expiry of
+a finished row is checked at the next read. `claude` is found in the usual
+install places, then once via the login shell; a miss is retried after ten
+minutes. A failed read empties the background half rather than keeping a
+stale one.
+
+### Tests
+
+`scripts/test-background-sessions.sh`, 174 checks, compiled with every Isle
+source: the parser against the real `claude agents --json --all` output from
+this Mac and the probe's shapes (`scripts/fixtures/`), malformed and partial
+JSON, unknown states, wrong types; attach-id safety; the merge (by id,
+jobId, pid; registry-only; listing rules; blocked over Done); the rows; the
+attach command line; and through the view model — counts, the pin, a
+background session going away, nothing live, and a live one turning blocked.
+
+### Renders
+
+`scratchpad/m21/render/png/{before,after}_*.png` and `sheet_*.png`:
+terminal-only lists (unchanged), mixed lists of 4 and 7, Both mode, the way
+in, pinned (blocked with a long name, on a permission prompt, working and
+done with hooks, Both), the home tile, and background-only face/list/tile.
+
+### Not verified
+
+- In the running app: Terminal's attach window, the jobs watch firing in
+  Isle (the rename was seen from the shell), and the `claude` lookup from a
+  launchd-started app.
+- A session sent to the background from a terminal with `←`: assumed the
+  same `kind: "bg"` record; not run.
+- Being attached to a background session elsewhere: its worker's process
+  tree has no terminal, so Jump opens a second attach.
+
+### Decisions to confirm
+
+- **Agent-only sessions never take the island by themselves.** The list's
+  first row can then be one the island isn't showing (it's lit, so it's
+  visible). The alternative puts a session blocked for days on the island for
+  days.
+- **Finished background sessions**: listed while their process lives or an
+  hour after Isle saw them finish, quieter; else hidden.
+- **Blocked over a hook's Done** for a live background session.
+- **"Failed"** for Claude Code's failed (the hooks' API error stays "Error").
+- **Attach always opens Terminal.app**, whatever terminal the user prefers —
+  it's the one Isle already scripts for Start Claude.
+
+## Shortcuts — act on Claude without the pointer
+
+Matthew asked for easy keys (one modifier, not ⌃⌥ chords) to approve, deny
+and open the island. Built 2026-11-08.
+
+### What a key does
+
+| Default | What | Held |
+|---|---|---|
+| ⌥Tab | Open or close the island | always |
+| ⌃' | Approve · Always…'s Confirm · Done on a multi-select | only while a request waits |
+| ⌃Esc | Deny · Always…'s Back | only while an approval waits |
+| ⌥1…⌥4 | Pick (single-select) or toggle (multi-select) an option | only while a question waits, one per option |
+
+- **Carbon `RegisterEventHotKey`**, no permission at all (a global key-down
+  monitor would need Input Monitoring). Registered exclusive, so an app that
+  holds a combo exclusively is reported. `HotKeyCenter` diffs what it's told
+  to hold against what it holds; the Carbon calls sit behind
+  `HotKeyRegistrar` so tests use a recording fake and never take a key.
+- **Pending-only keys** are held only while the island's request is
+  unanswered and no field is taking keys, and let go the moment it's
+  answered, withdrawn or gone. They're taken **0.5s after the request
+  appears**, so a keystroke already on its way to another app as an approval
+  lands reaches that app instead of approving something unseen. A safety
+  arm, not hover: hover stays timer-free.
+- **⌃' and ⌃Esc, not ⌥Return and ⌥Esc** (the first defaults). A request waits up to
+  300s with Approve held system-wide, so the keys must be ones nobody types
+  for their meaning — ⌥Return is Claude Code's newline, and one typed in another
+  session's terminal approved the waiting request instead. Every
+  one-modifier Return is someone's: ⌃Return is Claude Code's `chat:sendNow`, ⌘⏎
+  submits on the web and toggles full screen in iTerm2 and Ghostty. ⌃' is
+  the key beside Return; ⌃Esc sits with Esc as Deny. Neither types anything,
+  neither is a macOS or Claude Code binding. Recording ⌥Return or ⌃Return shows a note
+  saying whose they are. The store is versioned (`"v":2`): anyone who never
+  recorded Approve or Deny gets the new keys, anyone who did keeps theirs.
+- **⌥Tab, not ⌥Space.** ⌥Space is ChatGPT's default (installed here), and
+  Claude's, Raycast's and Alfred's usual pick. Option-Tab types nothing and
+  macOS doesn't use it; AltTab users would clash, and Settings says so.
+- **⌥Esc**, if recorded, registers fine (probed); macOS's Speak Selection also
+  uses it when that's switched on, which Settings notes.
+
+### Mirrors the face
+
+A press calls the face's own method (`decide(allow:)`, `allowRemembering`,
+`pickOption`, `advanceQuestion`) and does what the face would, or opens the
+island to it where the face needs a look first (`ShortcutPlan.command`):
+
+- **In front of the user** (`ShortcutFaceTracker`): an island is open on
+  the Claude face with this request on it, and it's on the pointer's
+  display — or the user went to it (hovered it, or opened it by shortcut),
+  after which its auto-opened panel stays "in front" when the pointer moves
+  to another display. An alert's auto-open on a display the pointer isn't
+  on, never visited, is not. **Seen** is in front for 0.5s; the clock starts
+  when it comes up and again when it goes down, a new request takes its
+  place, or a press had to reveal it.
+- **Plain approval**: ⌃' approves in one press when the request is in front
+  of the user. Closed, or auto-opened elsewhere: the first press opens it
+  where the pointer is and approves nothing.
+- **Guarded command (M17)**: ⌃' approves only once it's been seen; before
+  that a press reveals it and restarts the half second. So neither
+  expandOnAlert's auto-open nor a fast double-tap on a closed island (the
+  panel is "open" synchronously, long before it's legible) approves it
+  unread. A guard exists so someone looks. ⌃Esc stays one press.
+- **Always…'s review**: ⌃' is Confirm and ⌃Esc is Back, only once the review
+  has been seen; before that either just reveals it. Saving a rule is never
+  a blind press.
+- **Questions**: a number key picks only once the question has been seen;
+  before that it opens the island to it.
+- **Which request**: always `pendingRequest`, the one on the island's
+  session, the same one the face's Approve answers. With several sessions
+  waiting, selection already puts the most pressing on the island; the rest
+  are "+N need you" and a key never reaches them.
+
+### Feedback
+
+A press that answers says so in the collapsed island for 2.5s: "isle ·
+approved" (green), "· denied" (red), "· always allowed", "· answered", or
+"· not sent" (orange: the hook let go first). Unlike a toast it may sit over
+the live alert it answered. A reveal is its own feedback: the island opens.
+
+### Open by shortcut
+
+⌥Tab opens the island on the pointer's screen (else the built-in display's),
+**held**: it stays wherever the pointer is, until ⌥Tab again or a click in
+another app. No Esc: it was held with no timeout while the hold lasted,
+taking it from vim and from Claude Code's interrupt. The first time the pointer enters the panel's stay-open zone
+the hold ends and it's an ordinary hover — leaving closes it. ⌥Tab on an open
+island closes it: a hover ends, a field's draft is kept, and an alert's
+auto-open is dismissed as a click would (if "Dismiss alert panel" is on).
+
+### The keys on the buttons (decided 2026-11-08: "show the hint")
+
+Approve and Deny carry their keys after the word, in place of the ✓ and ✕
+("Approve ⌃'", "Deny ⌃Esc"); the review's Confirm and Back carry Approve's and
+Deny's, a multi-select's Done carries Approve's, and each of the first four
+options has its own at the row's end ("⌥1"). 10pt, `.islandSecondary` (0.6
+on a pill, 0.45 on an option), so it lifts on glass.
+
+- **The user's keys.** From the bindings, live: rebinding in Settings changes
+  the hint at once; a shortcut turned off has no hint, and its pill gets its
+  symbol back. So does one macOS refused (another app holds the keys): a
+  press there never reaches Isle, so no room is kept for a hint that can't
+  come.
+- **Keys by name** (decided 2026-11-08: "just write tab"). Everywhere a combo
+  is shown — Settings' recorders and notes, the hints, conflict notices —
+  the modifiers keep their glyphs (⌃⌥⇧⌘) and the key is a word: Tab, Esc,
+  Return, Enter, Space, Delete, Fwd Del, Home, End, Pg Up, Pg Dn. Arrows
+  stay arrows; F keys are F1…F20. ⌥Tab, ⌃Esc.
+- **Shown only while a press would do it** (`ShortcutHints`,
+  `ShortcutPlan.live`): the key is held (not refused by another app), the
+  request is armed, no field has the keys, and for a guarded command,
+  Always…'s review and a question's options the face has been seen. Before
+  that a press would reach another app or only reveal the request, so a hint
+  then would say something untrue. Its room is kept from the start, so it
+  fading in half a second later moves nothing. A one-shot look at the seen
+  moment brings it up, like the arm's; nothing polls.
+- **Never a wider row.** The row tries the hints at 8pt spacing, then 6pt
+  (Always…'s five pills fit that way with the default keys), then goes
+  without them (keys rebound to long chords), and as a last resort squeezes
+  the pills rather than spill out of the panel. A multi-select's Done drops
+  its key the same way rather than squeeze the row's other pills. An
+  option's key sits beside a one-line row's text (which is cut anyway) or
+  over a stacked row's corner, whose label keeps the key's measured width
+  clear (`ClaudePanelLayout.keyHintClearance(for:)`); a key wider than 64pt
+  (four modifiers and a word) is left off a stacked row. Descriptions wrap
+  to the lines the fit measured. Nothing is near the camera band. The
+  hints go faint while Settings' recorder holds every key.
+- Renders: `scratchpad/key-hints/key-hints-contact-sheet.png`.
+
+### Settings › Shortcuts
+
+Each shortcut with a recorder (click, type the keys; Esc cancels), a reset
+and an on/off; the four option keys share a row. The recorder refuses a key
+without ⌥, ⌃ or ⌘, a combo another Isle shortcut has, and one a probe
+registration says another app holds. A pending-only key refused the last
+time a request waited shows in orange under its row, as does a known owner
+(⌥Space, ⌘Space, ⌥Tab, ⌥Esc, ⌥Return, ⌃Return, ⌃⌫). Stored as JSON in `isle.shortcuts`, only what
+differs from the defaults.
+
+### Tests and renders
+
+- `scripts/test-shortcuts.sh` (194): combos, storage, bindings and clashes,
+  the held set across a request's life (on the real view model, with a fake
+  registrar), every press decision, refusals and probes, persistence.
+- Renders: Settings › Shortcuts (dark, light, music-only, changed + refused)
+  and the notices on the collapsed island (`scratchpad/shortcuts/render`).
+
+### Not verified
+
+- In the running app: no key was pressed (Matthew's test build was
+  running); everything above is from tests and renders.
+- Whether another app's non-exclusive registration of the same combo wins
+  the press: Carbon reports only exclusive holders.
+
+### Decisions to confirm
+
+- ⌥Tab for the island (vs ⌥Space, or ⌥\`).
+- A guarded command needing a second press, half a second after it's in
+  view (the face itself approves it in one tap), and a plain approval
+  needing one when the island is closed or open on another display.
+- The pointer's display as the proxy for where Matthew is looking.
+- No Esc for a held island (it was taken system-wide while the hold lasted,
+  so it couldn't interrupt Claude in the terminal); ⌥Tab, a click elsewhere or
+  a visit and leaving put it away.
+- ⌃' and ⌃Esc for Approve and Deny (⌃Return was the first pick, but it's Claude
+  Code's send-now).
+- Hints on the buttons appear only once a press would act (up to half a
+  second after the face is up), rather than from the start. Rebound keys too
+  long for Always…'s row show no hints there.
+
+## Settings previews on the island
+
+Matthew asked (2026-11-08): "when ur configuring the settings, it can open
+the isle to show the changes occurring". Built on `feature/settings-live-preview`.
+
+- **A change opens it, nothing else.** Made while Settings is the window in
+  front (Isle active, Settings key — or the colour panel its accent well
+  opened). Opening Settings doesn't. Settings that count: the mode, Panel
+  background, the glow, the accent; Music's waveform, scrubber,
+  shuffle/repeat; Claude's option descriptions and answering from the notch;
+  Pomodoro's switch and lengths; Calendar's switches and lead time. Not:
+  shortcut bindings, updates, sounds, alert behaviour, keep-awake, the guard,
+  which displays, or what the collapsed island says (an open island would
+  hide it). A test reads AppSettings' published properties and fails if a
+  new one is in neither list.
+- **The face it's about**: Music's to Music, Claude's to Claude, Pomodoro's
+  to the timer, Calendar's to the agenda; the look and the mode stay on the
+  face that's up (or Home). A face the change took away leaves it there too.
+- **Never over activity**: a Claude approval or question on screen keeps
+  its face; a drop under way or a field taking keys wins outright.
+- **Held like ⌥Tab's hold**, on the notched display's island (else the one
+  Settings is on). Moving about in Settings can't close it, and a click in
+  Settings is Isle's own, so the global click monitor never sees it. It
+  ends when Settings closes, when Isle stops being the active app, or when
+  the pointer visits it and leaves (an ordinary hover from the visit on).
+  Only a hold the preview made is the preview's to end. Nothing is timed.
+- Pure parts in `Isle/Core/SettingsPreview.swift`, wired in
+  `NotchWindowController` (`watchSettingsWindow`) from `AppDelegate.openSettings`;
+  tests in `scripts/test-settings-preview.sh`.
 
 ## Milestone 8 — Multi-Display  ✅
 
@@ -669,9 +1978,37 @@ moves the island while you are reaching for it.
 
 ## Milestone 9 — Power & Charging Activities
 
+**Status: built and on main (September 2026, eeb78d0 / 5ce9646).** Everything
+is in `Isle/Power/`:
+
+- `PowerMonitor` — the Mac's battery from `IOPSCopyPowerSourcesInfo`, driven by
+  the `IOPSNotificationCreateRunLoopSource` callback plus the Low Power Mode
+  notification; no polling, no permission prompt. A pure
+  `events(from:to:)` diff turns two snapshots into toasts: plugged in (with
+  time to full when IOKit has one), unplugged (with time left), fully charged,
+  low battery on the way down past 20% and 10% (battery only), and Low Power
+  Mode on/off. Nothing for the first reading after `start()`.
+- `BluetoothBatteryMonitor` — IOBluetooth connect notifications, then
+  `system_profiler SPBluetoothDataType -json` off the main thread (5s
+  timeout), 2s after a connect so the levels have arrived; a 3s launch grace
+  swallows the notifications IOBluetooth fires for devices already connected.
+  A device's level is the lower of its left/right (the case excluded). A
+  connect reports the device; a charger plug-in re-reads them all and reports
+  only the lowest at or below 20%.
+- `PowerToast` — the toast factories, their copy and colours (charge green,
+  warning orange, alarm red; a device in warning orange at or below 20%), the
+  device glyph from its model (`DeviceSymbol`) or `device_minorType`;
+  `BluetoothRune` draws the Bluetooth mark SF Symbols lacks for a device
+  macOS won't name; `GlyphInk` centres each symbol on its measured ink.
+- Two Settings switches, both on by default: `showBatteryEvents` (the Mac) and
+  `showDeviceBattery` (peripherals — the half that costs a subprocess, and
+  that stops being watched when off). Toasts last `toastSeconds` (4s) in the
+  collapsed island and coalesce by kind.
+
+The rest of this section is the plan as written, then what shipped.
+
 *Plugged in. 42%.* A third thing worth reporting, alongside music and Claude:
 the Mac's own power state, and the batteries of the devices attached to it.
-Nothing exists today — there is no `IOPowerSources` use anywhere in `Isle/`.
 
 ### Goal
 Connecting a charger, crossing a low-battery threshold, or connecting a device
@@ -765,6 +2102,85 @@ estimating one. Same rule as the Claude island's silence: no inferred state.
 
 ---
 
+## Milestone 10 — Apple Music Compatibility
+
+**Status: built (0.4.1 branch, September 2026).** `MediaPlayerController` +
+`AppleMusicController`; the adapter passes Music through; the view model
+routes commands, the poll clock, the artwork fallback and the audio tap to the
+player whose track is showing. Decisions taken as recommended: repeat is a
+toggle in both players; with the adapter silent the playing player wins, then
+the one last routed, then Spotify. Verified so far: build, and every Music
+script compiles against Music's dictionary; not yet exercised against a
+running Music.app.
+
+*Same island, different player.* Isle is Spotify-scoped by construction: the
+adapter reads whatever owns the system now-playing session, but every transport
+command, the position poll, and the artwork fetch go to
+`application "Spotify"` by name. Apple Music users already see their track
+(the empty state even says "Start something in Spotify or Music") and then hit
+a play button that launches Spotify.
+
+### Goal
+Music mode works end to end with Apple Music as the player — read, transport,
+scrub, shuffle/repeat, artwork — with no Spotify installed at all, and picks
+the right target when both are running.
+
+### Scope
+- Lift the Spotify-specific half of `SpotifyController` behind a
+  `MediaPlayerController` protocol (poll, `playPause`, `nextTrack`,
+  `previousTrack`, `seek`, `toggleShuffle`, `toggleRepeat`, `fetchArtworkIfNeeded`,
+  `bundleID`). Spotify keeps its implementation unchanged.
+- New `Isle/Media/AppleMusicController.swift` over AppleScript to
+  `application "Music"` (`com.apple.Music`): `player state`, `player position`,
+  `current track` name/artist/album/duration, `shuffle enabled`,
+  `song repeat` (three-state: `off`/`one`/`all`), and `artwork 1 of current
+  track` for the cover when the adapter doesn't carry one.
+- **Routing.** Commands go to the app that owns the track the island is
+  showing, keyed on `MediaPlaybackModel.bundleIdentifier` from the adapter;
+  when the adapter is silent, fall back to whichever supported player is
+  running. Never launch a player: the process-exists guard from
+  `SpotifyController` applies to both.
+- Empty-state copy and the "open in player" affordance follow the routed
+  player, not Spotify.
+- Automation permission is per target app in TCC, so the first Music command
+  raises its own prompt. Onboarding's permission step should say which player
+  it is asking for and skip a player that isn't installed.
+
+### Files
+- New `Isle/Media/MediaPlayerController.swift` (protocol), new
+  `Isle/Media/AppleMusicController.swift`.
+- `Isle/Media/SpotifyController.swift` — conform, no behaviour change.
+- `Isle/Notch/NotchViewModel.swift` — replace the single `spotify` owner and
+  `spotifyModel` merge with a routed player; the adapter-preferred /
+  poll-fallback rule in `recomputeSource` stays, generalised per player.
+- `Isle/Notch/ExpandedNotchView.swift` — repeat control becomes three-state
+  when the routed player is Music.
+- `Isle/Onboarding/` — Automation step names the player.
+
+### Acceptance
+- With Spotify uninstalled, playing a song in Music shows the track, cover,
+  and a scrubber that tracks the real position; play/pause, next, previous,
+  seek, shuffle, and repeat all act on Music.
+- With both running, the island controls the one whose track it is showing,
+  and never launches the other.
+- Nothing about the Spotify path changes: same poll cadence, same artwork
+  rule, same permission prompt.
+
+### Decisions to lock
+- **Repeat in Music is three-state**, Spotify's AppleScript is boolean. Either
+  the control cycles off → all → one for Music, or it stays a toggle
+  (off ↔ all) everywhere. *Recommend the toggle: one control that means the same
+  thing in both players.*
+- **Which player wins when both are running and the adapter is silent.**
+  *Recommend the most recently playing one, falling back to Spotify (the
+  existing behaviour) on a cold start.*
+- **Artwork for Music** comes from the adapter when it has it, else from
+  `artwork 1 of current track` — a data blob over AppleScript, so fetched on
+  track change only, the same way `wantsArtwork` gates the Spotify CDN fetch.
+  Palette extraction from the cover is unchanged.
+
+---
+
 ## Suggested sequencing
 
 ```
@@ -774,7 +2190,8 @@ M1 Mode archetype ─┬─> M2 Onboarding
                    └───────────────────────> M5 Settings ──────┴─> M6 Launch
                                               │                     │
                                               ├─> M8 Display picker │
-                                              └─> M9 Power/charging │
+                                              ├─> M9 Power/charging │
+                                              └─> M10 Apple Music   │
                                      M7 unblocks ──> Scheduled Prompts (Parked)
 ```
 
@@ -787,6 +2204,8 @@ M1 Mode archetype ─┬─> M2 Onboarding
 - **M8 and M9 sit off the Claude track entirely.** Each is an engine plus a
   Settings section, so both want M5 to exist first — but neither blocks anything
   downstream, and neither gates a release.
+- **M10 (Apple Music) is a media-track change only** — it touches nothing on
+  the Claude side and can ship in any release after M5.
 - A credible public build = **M1 + M2 + M3 + M4** (the full three-mode island),
   with **M5**, **M7**, and **M6** finishing it for release.
 
@@ -802,6 +2221,653 @@ M1 Mode archetype ─┬─> M2 Onboarding
    *Recommend segmented pill.*
 
 ---
+
+### M13 — Synced lyrics — built, then removed (2026-11-04)
+
+Built: the current line from LRCLIB, timed to the playhead, as a third row
+of the music face's text block, opt-in in Settings. Removed at the user's
+call the same day: they tried it and didn't want it. The music face is back
+to its design without lyrics; the setting is gone, and nothing is sent to
+LRCLIB. Lookups already made sit in `~/Library/Caches/<bundle id>/Lyrics`,
+left for the user to delete. The code is in `db371db`, `b22f5fb`, `fb55728`
+and `b1980fb` if it's ever wanted back.
+
+---
+
+## Field scan — what notch apps ship (X, 2026-11-04)
+
+A sweep of X for notch apps and feature requests. Two things changed the
+landscape since the milestones above were written.
+
+**Apple shipped the baseline.** macOS 27.3 beta adds a system Dynamic Island,
+and the new OLED MacBook Pro has one in hardware. On an M5 it's reported as a
+pill in the menu bar that drops a player down, not something drawn around the
+notch. Plain now-playing is no longer a reason to install Isle. The Claude
+side, the real-signal waveform, and polish are.
+
+**The Claude-in-the-notch category got crowded.** Ten or more apps (Notchy,
+look alive, CrewNotch, Lookout, Drop Notch, Halo, earshot, ClaudeNotch,
+kishinotch, plus a multi-agent app at 6.6K likes) and they converge on the same
+set:
+
+| Feature | Seen in | Isle |
+|---|---|---|
+| Approve / deny tool calls in the notch | Nearly all | **M7**, specced, not built |
+| Answer the agent in the notch | look alive, Drop Notch | M7 covers `AskUserQuestion` options; free text stays out (M7 boundary) |
+| 5h / weekly plan usage | Halo, CrewNotch, Lookout, Codenotch | Shown only after a usage-limit failure |
+| Click → back to that exact session | Multi-agent app | No → **M11** |
+| Keep the Mac awake while an agent works | Notchy | No → small, below |
+| Chime on finish | Notchy | Has `NotificationSound` |
+| Several agents (Codex, Cursor, …) | Most | Codex on `backup/codex-and-apple-music` |
+| Drop a folder on the notch to launch an agent there | ClaudeNotch | — |
+
+Music-side asks that recur: **synced lyrics** (the most visible), **switching
+output to AirPods** from the island, Up Next reordering, a per-app volume mixer.
+Popular but off-identity, and not pursued: teleprompter (6.1K), clipboard
+drawer, file shelf / AirDrop, system stats, scores and tickers, a plugin SDK.
+
+### Priority
+
+**M7 first.** It's the one feature every competitor has and Isle lacks, and it
+is already specced with verified findings. Then the candidates below, in order.
+
+### M11 — Jump to the session (candidate)
+
+Click the Claude panel (or the session row) → the terminal window or tab that
+hosts that session comes to the front. The registry already has the CLI's pid;
+walk its parent chain to the hosting app, and for Terminal / iTerm2 select the
+tab by the session's tty. **Says nothing it can't back up:** if the host can't
+be resolved, there is no affordance, rather than one that activates the wrong
+window.
+
+### M12 — Plan usage meter (dropped)
+
+**Dropped 2026-11-05 at Matthew's call:** not worth taking over the
+status-line slot for. The research below stays as the record of how it
+would be done.
+
+5h and weekly percentages in the Claude panel. **Blocked on a real source.**
+Before anything is drawn, find out whether Claude Code exposes the numbers
+anywhere Isle can read without scraping or guessing (status-line input,
+a local file, the `/usage` path). A computed estimate is exactly what Isle
+doesn't show; if no real number exists, this stays parked.
+
+**Researched 2026-11-04 (Claude Code 2.1.318). Verdict: buildable with caveats.**
+
+- **The real source is the status line.** Its stdin carries
+  `rate_limits.five_hour` and `rate_limits.seven_day`, each with
+  `used_percentage` (0–100) and `resets_at` (epoch seconds). These are the
+  numbers `/usage` shows; see the docs' "Rate limit usage" section.
+  - Present only for Pro, Max and Ultra subscribers, and only after a
+    session's first API response. Each window can be absent on its own.
+  - Updates on each assistant message, on resume, after `/compact`, and on
+    the optional `refreshInterval`.
+  - The status line doesn't run in `-p` mode, so this can't be observed
+    headless.
+- **Hooks, files under `~/.claude`, and the CLI carry none of it.** A Stop
+  hook's input has no usage fields. Headless `stream-json` emits a
+  `rate_limit_event` with `utilization` on a 0–1 scale, but only on a request
+  that spends quota.
+- **How competitors get it.**
+  - Lookout and eater-altria/ClaudeNotch wrap the status line.
+  - CrewNotch, Codenotch and CraftStick/ClaudeNotch read Claude Code's OAuth
+    token from the Keychain and call the undocumented `/api/oauth/usage`.
+    Isle won't do that: the legal page bars collecting or intermediating
+    Claude.ai tokens, it causes Keychain prompts, and it's beta-header
+    dependent.
+  - ccusage estimates from transcripts.
+- **Shape, if built.**
+  - An `isle-cli statusline` verb atomically writes
+    `~/.isle/claude-rate-limits.json` (`observed_at`, `session_id`,
+    `rate_limits`) and passes stdin through to any status line it wraps.
+  - HookInstaller sets `statusLine` only with consent, restores a wrapped one
+    on Remove, and detects being replaced by `/statusline`.
+  - The panel shows the percentage with its reset time and the reading's age.
+    A window disappears once `resets_at` passes, and everything hides when the
+    reading is stale. Usage only climbs within a window, so an old reading
+    understates and never overstates.
+- **Decision to lock.** Taking over (or wrapping) the user's single
+  `statusLine` slot. Unverified: whether the IDE extensions and the Desktop
+  Code tab run the user status line at all.
+
+### M13 — Synced lyrics (candidate)
+
+The current line in the expanded music view, time-synced to the playhead.
+Neither Spotify nor Apple Music has a public lyrics API; LRCLIB serves synced
+LRC keyed by title / artist / album / duration. Only *synced* lyrics are shown.
+No line at all when there is no match, never plain lyrics paced by guesswork.
+Opt-in in Settings, since it sends track metadata to a third party.
+
+### M14 — Output device switcher (candidate)
+
+The expanded player lists output devices (Core Audio default output) and
+switches with a click. The process tap follows the player process across
+output switches (see the 0.4.2 notes), so the waveform should survive. Verify
+that on hardware. AirPods noise-control modes are private API; out of scope.
+
+### Navigation (decided 2026-11-05)
+
+Researched in `design/notch-navigation-2` (16e3307 holds debug mockups;
+the proposal was written alongside it). Matthew's decisions:
+
+- **Home grid.** A row of tiles, one per face, each with a live glance
+  (track, Claude state, next event, timer, shelf count). Click a tile to go
+  into its face. Inside a face, a "Home › Music" crumb in the band leads back.
+  This replaces the corner toggle and the top strip.
+- **Two-finger horizontal swipe inside a face moves to the neighbouring
+  face**, tracking the fingers part-way and settling on the gesture's own
+  end phase, never on a timer. Vertical swipes stay with Agenda's list.
+- **The notch opens on the last face chosen.** Only an approval, a question,
+  a failure or a file drag picks the face for you, and those open the
+  Claude face or the drop face directly.
+- **"Start Claude here"** (from a folder dropped on the notch) opens
+  Terminal.app in that folder.
+- **The shelf** (quick storage and AirDrop) is in scope. Its tile shows only
+  while it holds something.
+- **Reply and Jump** live in the Claude face's action row, each shown only
+  when it can actually reach the session.
+
+### Small ones
+
+- **Keep awake while working.** An `IOPMAssertion` held while any session is
+  `working`, released on every exit from it. Opt-in.
+
+---
+
+## Field scan 2 — more from X (2026-11-05)
+
+What's new since the first scan, filtered for what fits Isle:
+
+- **"When an agent finishes, a banner shows what it did"** (Halo 3.0). The
+  Stop hook already carries `last_assistant_message`, so the Done face, or a
+  short toast, can show the first line of what Claude actually said. That's
+  real data, not a summary Isle invents. **Candidate: M15, Done says what
+  happened.**
+- **Every session at once, each with a face** (Notch Island, look alive,
+  NotchNudge). With jump-to-session landing, a session list in the Claude
+  face (state, project, a click to jump) is the next step from "+2 working".
+  **Candidate: M16, session list.**
+- **More agents** (Halo: Claude Code, Codex, OpenCode). Codex support
+  already exists on `backup/codex-and-apple-music` (b4be955) and was never
+  merged. **Candidate: bring Codex back** onto the current hook bridge.
+- **"Every git push waits for your click, even in auto mode"** (earshot). A
+  short, user-set list of commands that always ask in the notch, via a
+  PreToolUse `ask`. A safety net for auto mode. **Candidate: M17, guarded
+  commands.**
+- Seen but not pursued:
+  - one-click 2FA codes (needs Full Disk Access to Messages)
+  - email in the notch
+  - tasks and notes
+  - Live Activities through MenuBarAgent (needs SIP off)
+  - an on-device voice assistant
+- Polish noted: Apple's new Dynamic Island reacts to the pointer approaching,
+  and iPhone's has a genie-like collapse. Worth a look once the faces settle.
+- Context: macOS 27.3 puts Live Activity pills in the menu bar on Macs
+  without a Dynamic Island (MacRumors, 2026-11-04). Apple's island is a
+  menu-bar pill on most Macs, so the notch stays Isle's to own.
+
+---
+
+## Field scan 3 — Claude Code moved under the bridge (2026-11-07)
+
+Searched the web, Product Hunt, GitHub, Apple press, and the Claude Code docs
+and changelog (2.1.319). X and Reddit came back thin, and launch dates are
+index estimates.
+
+**Apple.**
+- The OLED MacBook Pro (Oct 28) has a hardware Dynamic Island. It holds
+  Spotlight, Siri, Live Activities, calls, music and AirDrop.
+- macOS 27.3 beta 1 (Nov 3) puts Live Activities in the menu bar on every
+  Apple silicon Mac, and ActivityKit is open to third-party Mac apps. It ships
+  in December.
+- Still unknown: whether that model keeps a notch for Isle to draw around.
+
+**The category keeps converging.** Approvals, reply, folder drop, cost meters,
+pets and phone companions, in Pushary Isle, Drop Notch, CodeIsland, Glint,
+AgentPeek, Buddi, Chimlo and Runnock. **Name collision:** Pushary Isle is a
+notch app for Claude Code, about two weeks old. Worth knowing before a launch
+post.
+
+**Claude Code.**
+- Agent view and background sessions (`claude --bg`, `claude agents --json`).
+- Stop carries `background_tasks` and `session_crons`.
+- Usage limits auto-continue by default, with `quota_auto_resume_*`
+  notification types.
+- New hooks: `SubagentStart`, `PermissionDenied`, `TaskCreated`,
+  `TaskCompleted`.
+- 2.1.319 adds `permissions.denyInsteadOfPrompting`, which may stop approvals
+  ever reaching the notch. Checked under M23: it doesn't, while Isle answers.
+
+### M19 — Usage limit, said straight · S · built (`feature/usage-limit`, helper v12), not yet tested in the app
+
+The limit face gives the exact reset time and says what Claude will do when it
+comes.
+
+**Both suspected bugs were real** (checked by feeding the v11 helper the
+payloads under a scratch HOME, `scratchpad/m19/verify-before.txt`):
+
+- **No reset, ever, on 2.1.318+.** StopFailure says `error: "rate_limit"` and
+  `last_assistant_message: "You've hit your 5-hour limit · resets 3:50am
+  (America/Toronto)"`. The 2.1.319 binary builds that message with no
+  `errorDetails`, so `error_details` is absent, and the words have no epoch.
+  The helper's 10–13 digit search found nothing; the island said "Error".
+- **`notify` never read `notification_type`.** auth_success,
+  auth_storage_failure, elicitation_complete, elicitation_response,
+  agent_needs_input, agent_completed and plugin_notification all became
+  `needs_question` ("Question" on the island). `quota_auto_resume_fired`
+  ("Usage limit reset — Claude is continuing your task") and `_stale` became a
+  fresh usage limit with no reset; `_disabled` became a question.
+
+**Where each field comes from**, best first:
+
+| Field | Source |
+|---|---|
+| Reset | `error_details` epoch (none today) → transcript `quotaLimits.resetsAt` (then `apiErrorParams.rate_limit_info.resetsAt`) on the failed turn's record, if written in the last 2 minutes → an epoch in the message (the old `…reached\|1719849600` form) → the words |
+| Window | transcript `rateLimitType` (`five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet`) → the words ("5-hour", "session", "weekly", "Opus", "Sonnet") |
+| Continues automatically | only the transcript's `system`/`informational` "Usage limit reached · continuing automatically at …" within 10s of the failed turn's record. Not the setting: `autoContinueAtUsageLimit` is necessary but not sufficient (no wait past 24h, Remote Control, model family) |
+| Waiting for Enter / won't continue | `quota_auto_resume_stale` / `_disabled`, keeping the limit's window and reset from its record |
+| Resumed | `quota_auto_resume_fired`, or Claude Code's continuation prompt ("Your claude.ai usage limit has reset. Continue the task…", or "…is available again before the usage-limit reset…") on UserPromptSubmit, carried through the turn's tool calls; dropped at its Stop or your own prompt |
+
+- **The words**: "resets 6:50pm (Zone)" is the next time that wall clock
+  comes round in that zone (within 5 minutes past counts as now; tomorrow's
+  date from today's noon, so DST can't skip a day); "resets Nov 9 at 8pm
+  (Zone)" and "Jan 2, 2027 at 8pm" are that moment. An unknown zone, or
+  anything not a time, gives no reset. Checked against the two real hits:
+  "3:50am (America/Toronto)" at 05:31Z on Nov 5 → 1793868600, and "Nov 9 at
+  8pm" → 1794272400, both equal to the transcript's `resetsAt`.
+- **The transcript race.** Claude Code writes the "continuing automatically"
+  record a few ms either side of the failed turn's (before it on "reached
+  again"). The hook looks again every 0.1s for up to 2s, stopping at that
+  record, the turn's `turn_duration`, or a reset more than a day out. In a
+  `-p` probe the failed turn's record was already in the transcript when
+  StopFailure ran. A hook that wrote meanwhile (your next prompt) wins: the
+  limit is written only if the status file is the same inode and bytes as
+  when it started.
+- **Routing.** permission_prompt, elicitation_dialog and
+  elicitation_url_dialog are questions; idle_prompt is waiting; the three
+  quota types as above; no type at all (an old Claude Code) is the old
+  message rule. Every other type, including ones newer than the helper, leaves
+  the status untouched. "API Error: Rate limit reached" (the transient 429) is
+  no longer read as the usage limit.
+
+**What it says.** Face: "5-hour limit" / "Resets 11:08pm · continues
+automatically", with "in 2h 14m" in the eyebrow where "… ago" was; "Weekly
+limit" / "Resets Tue 9:00am"; "Limit reset" / "Press Enter in Terminal to
+continue" (the host's name, else "its terminal"), which opens the panel and
+rings the alert sound like a question; "Won't continue on its own · resets
+11:08pm"; "Resumed after the 5-hour limit" on the working face until a tool
+runs. Missing parts: "Usage limit" / "Limit reached". Island: "Limit ·
+11:08pm", "Press Enter", "Limit". Home tile and session rows use the same
+words (`ClaudeLimit`).
+
+**Also in v12:** a Bash or Monitor target is the program's name, read from the
+whole command (first 4 KB) with `ClaudeActivity.program(ofCommand:)`'s rules,
+so a long `cd`, a quoted path or a comment line no longer leaves the app
+"Running a command". It costs about 4 ms a Bash hook over v11 (≈40 ms
+against 36 for a short command; ≈46 ms for a 12 KB heredoc).
+
+**Tests.** `scripts/test-usage-limit.sh` (101), `scripts/test-claude-activity.sh`
+(95), `scripts/test-guarded-commands.sh` (124).
+
+**Renders.** `scratchpad/m19/render/png/{before,after}_{face,island}_*.png`
+(before = 435b7d1).
+
+**Decisions to confirm.**
+- **The island names the limit** ("Limit · 11:08pm"), where since 9a0b93e
+  every failure has said "Error". A clock, not a ticking count, so the island
+  keeps one width; the live count is the face's.
+- **Waiting for Enter is a needs-you**: it opens the panel and plays the
+  alert sound if that's on.
+- **The window is shown** ("5-hour limit", "Weekly limit"): it's the
+  transcript's own field.
+- **agent_needs_input leaves the state alone.** It fires for a *background*
+  session in agent view as well as for prompts in this terminal; saying "this
+  session needs you" would be wrong half the time. M21 is the place for it.
+- **The stale face keeps the rate-limited marker**, not the question's.
+
+**Unverified.** No real limit was hit for this; the StopFailure and
+Notification shapes are from a model_not_found and a permission_prompt
+captured from 2.1.319 plus the docs and the binary. Whether UserPromptSubmit
+fires for the continuation prompt, and the hook-vs-transcript timing in an
+interactive session, are untested.
+
+### M20 — Done, unless it isn't · S–M · built (`feature/done-leftovers`, helper v15), not yet tested in the app
+
+Done says when Claude left work running or a wake-up scheduled: "Left
+running: npm run dev · Explore agent", "Wakes Mon 9:00am, every hour".
+
+**The payloads** (2.1.319, two `claude -p` runs with haiku, a scratch project
+and a dump hook; `scratchpad/m20/probe/`):
+
+- `Stop` ends with `background_tasks` and `session_crons`, after
+  `last_assistant_message`. Both are `[]` when there's nothing.
+- A task has `id`, `type`, `status`, `description`, plus `command` for a
+  shell, `agent_type` for an agent, `server` and `tool` for a monitor or an
+  MCP task, and `name` for a workflow. The binary's labels for `type` are
+  shell, subagent, monitor, workflow, MCP task, teammate, cloud session,
+  dream, auto-mode scan and memory import. Only running or pending work that
+  was backgrounded is listed. Seen: `{"type":"shell","status":"running",
+  "description":"Sleep 120 seconds in /tmp in background","command":"cd /tmp
+  && sleep 120"}` and `{"type":"subagent","status":"running","description":
+  "List root directory","agent_type":"Explore"}`.
+- A cron has `id`, `schedule` (five fields, local time), `recurring` and
+  `prompt`. A one-shot CronCreate for 9am tomorrow came as `"0 9 9 11 *"`,
+  `recurring: false`. An hourly one came as `"0 * * * *"`, `recurring: true`.
+  ScheduleWakeup and /loop land here too.
+- `SubagentStop` carries the same two arrays, with the stopping agent still
+  listed as running. Isle ignores them there.
+- **A task's end does wake the session.** When the background shell
+  finished, Claude Code submitted a `<task-notification>` prompt, so
+  UserPromptSubmit fired, then a new turn ran and a new Stop came with the
+  shorter list. The same happened when the background agent finished. So the
+  line goes away when a task ends, and the next Stop says what's left. The
+  risk was smaller than written here before.
+
+**What was built:**
+
+- **isle-cli v15.** No new hook entry. At Stop, `set-state done` reads both
+  arrays without jq. `,"` can't occur inside a JSON string, so the first
+  `,"background_tasks":[` is the key, and the arrays are walked value by
+  value. If any value isn't the flat shape, the turn is said to have left
+  nothing. The result goes to `~/.isle/left/<session>.json`, and every record
+  carries it as `left`. A Stop with both arrays empty costs two pattern
+  tests.
+- **A shell's name.** It's the program and its own words, read from the whole
+  command with M19's `bash_program`, up to a redirection, `&&` or `|`. So
+  `cd ~/web && npm run dev > log` is "npm run dev". The name is cut on a
+  whole word at 48 characters, and `cut` says when words were left off.
+  Claude Code's own clip mark, `… [+N chars]`, counts as a cut. An agent is
+  named by its type, a monitor or MCP task by its tool, a workflow by its
+  name. Claude Code's housekeeping (dream, auto-mode scan, memory import) is
+  left out. At most eight tasks and four wake-ups are kept, and `more` counts
+  the rest.
+- **When it clears.** The next prompt (a task's own notification included),
+  a non-compaction SessionStart, StopFailure (it carries no list) and
+  SessionEnd clear it. The idle nudge and a compaction keep it.
+- **No double show with M22.** Since v17 the record carries a background
+  agent both ways at Stop (`left` as of the turn's end, `subagents` until
+  its own stop). The face shows `left` in preference on Done and Waiting,
+  and a row or tile counts agents only while working, so it's said once.
+- **App side.** `ClaudeStatus.left` and `ClaudeLeftovers` build the line.
+  Same names are grouped as "×N" in listed order. The view tries all names
+  in full, then programs alone, then fewer names with "+N", then "Left 3
+  tasks running". Wake-ups come after a " · ", in the reset's own style
+  ("9:00am", "Mon 9:00am", "Nov 18 9:00am"). Recurring ones read "every
+  hour", "every 5 min", "every 2 hours", "daily 9:00am", "weekdays 8:30am"
+  or "Fridays 6:00pm", and anything else reads "on a schedule". On the hour,
+  ":00" drops before a name does. A one-shot whose time has passed isn't
+  said.
+- **The face.** On Done, Waiting for you and the Ready it eases to, the line
+  sits under Claude's words at the subagent line's 0.5 `.islandSecondary`.
+  Claude's words then get one line, as with M23's block, so the action row
+  doesn't move: it stays 8pt off the panel's bottom, the same rows as
+  `m23_done`. A block, if there is one, keeps the line. The tooltip has the
+  whole list, says it's as of the turn's end, and says that a task's end
+  wakes the session.
+- **Home tile and session rows.** The Claude tile's second line shows the
+  leftovers in place of Claude's words, as much as fits ("Left running: npm",
+  "Left 8 running", "Wakes Mon 9am"). It doesn't when several sessions are
+  listed. A done, waiting or ready row reads "Left npm running · <words>".
+- **Tests.** `scripts/test-done-leftovers.sh` has 33 isle-cli cases,
+  including both real payloads, and 51 Swift cases.
+
+**Keep-awake.** Not changed. The data could support it: at Stop, Isle knows a
+shell or an agent is still in flight, and the task's own notification ends
+the hold with the next Stop. It can't see a task killed outside Claude Code,
+or a session closed with work left behind. That's fine for a hold that only
+stops idle sleep, but it's Matthew's call. A wake-up hours away shouldn't
+hold the Mac.
+
+**Open:**
+
+- **Tile.** The tile shows the leftovers instead of Claude's words. Is that
+  right, or should the words win?
+- **A block and leftovers both.** The block keeps the face's one spare line,
+  and the leftovers show only on the tile and in the row.
+- **Separators.** Tasks and the wake-up clause are both joined with " · ".
+  Commas between tasks (as M22 does) would keep the clauses apart.
+
+### M21 — Background sessions in the list (candidate) · M
+
+`claude --bg` and agent-view sessions in the session list, with their real
+state. Jump opens `claude attach <id>`.
+
+- **Data.** `claude agents --json --all` is the documented interface. It took
+  0.45s and showed a blocked background session that Isle can't see today.
+- **Shape.** Re-poll on a cue (a `~/.claude/jobs` watch, a hook write, the
+  panel opening), never on a fast timer.
+- **Unverified.** Whether bg sessions write `~/.claude/sessions` records, and
+  whether `ask` works with no terminal.
+- **Note.** No competitor handles it. `agent_needs_input` and
+  `agent_completed` notifications (left alone by M19) belong here.
+- **Stale rule (decided 2026-11-08).** A background session with no process
+  that hasn't changed in over a day is hidden, working and blocked included;
+  its age is the later of its state file's `updatedAt` and modification date,
+  and with no age to go on it stays listed.
+
+### M22 — Subagents, counted · S–M · built (`feature/subagent-count`, helper v13), not yet tested in the app
+
+"3 agents · Explore ×2, Plan" under what Claude is doing, from `SubagentStart`
+and `SubagentStop`.
+
+**The payloads** (2.1.319, one `claude -p` run with two parallel Explore
+agents and a dump hook):
+
+- `SubagentStart`: `session_id` (the parent's), `transcript_path`, `cwd`,
+  `prompt_id`, `agent_id` (`a70394980b44198b6`), `agent_type` (`Explore`),
+  `hook_event_name`.
+- `SubagentStop`: the same, plus `permission_mode`, `effort`,
+  `stop_hook_active`, `agent_transcript_path` (`…/subagents/agent-<id>.jsonl`),
+  `last_assistant_message`, `background_tasks` and `session_crons`.
+- Every hook fired inside a subagent (its PreToolUse, say) carries the
+  parent's `session_id` plus `agent_id` and `agent_type`. So the island's
+  "Running ls" while agents run is one of theirs.
+- 2.1.319 skips a hook event it doesn't know, with a warning, and keeps the
+  rest of the file ("Unknown hook event … was ignored"). An older Claude Code
+  that predates `SubagentStart` should do the same. It then never sends one,
+  and nothing shows. There's no version check.
+
+**What was built:**
+
+- **isle-cli v13.** It has two new verbs, `subagent-start` and
+  `subagent-stop`. Each running agent is a file at
+  `~/.isle/subagents/<session>/<agent_id>` that holds its type. A file per
+  agent means parallel agents never rewrite each other.
+- A stop with no file changes nothing, not even the record's inode. That
+  covers internal agents and stops after the turn ended.
+- Every record now carries `subagents`, the types oldest first. It is read
+  from the files on each write and checked again afterwards, so a start that
+  lands mid-write isn't lost. A subagent event rewrites the record line by
+  line and keeps everything else, including a request id an `ask` is waiting
+  under.
+- **When the count clears.** Since v17 (decided 2026-11-08, "keep counting
+  it"): an agent is counted until its own SubagentStop, across turns, so a
+  background agent still running at Stop or at the next prompt stays in
+  "2 agents". SessionEnd clears the session's agents, and so does a
+  SessionStart other than a compaction (a new process taking up the id, as
+  a resume does). A session whose process is gone shows none: selection
+  passes a record's agents only for a session id the registry lists alive
+  (`ClaudeSubagents.counted`), and the existing 5s re-select tick also runs
+  while agents are counted, so a SIGKILL is seen. (v13–v16 cleared at Stop,
+  StopFailure and UserPromptSubmit.)
+- **App side.** `ClaudeStatus.subagents` and `ClaudeSubagents` build the line.
+  Types are grouped by count, most first, and ties go to the first started.
+  A plugin's agent goes by its own name. Kinds that don't fit become "+N",
+  where N counts the agents not named, so the numbers add up. An untyped
+  agent is counted but never named.
+- **The face.** The line sits under the detail on a status face, one line at
+  0.5 white. The view picks the fullest form that fits.
+- **Home tile and session rows.** The home tile's Working glance uses the same
+  forms unless several sessions are listed. A working session row reads
+  "3 agents · Running rg".
+- The view model drops the agents wherever it eases a state to Ready
+  (interrupt, stale compaction or question). It never shows agents past a
+  turn it knows ended.
+- **Tests.** `scripts/test-subagent-count.sh`: 28 isle-cli cases, including
+  ten starts and stops in parallel, and 27 Swift cases.
+
+**Open:**
+
+- **Interrupts (measured, fixed in v18).** An Esc that kills a foreground
+  agent fires no SubagentStop (2.1.319, probed in a scratch session: Stop
+  came, the agent's stop never did). Stop's `background_tasks` lists each
+  agent still running with `type: "subagent"` and `id` equal to its
+  SubagentStart's `agent_id`, so v18 drops at Stop every counted agent the
+  list doesn't name. A list the parser can't read to the end keeps the
+  count as it was; a Stop with no list at all (older Claude Code) lets them
+  all go, as before v17 (v19).
+- **Background agents.** Counted until their own stop (v17). On Done, M20's
+  "Left running: Explore agent" takes the line, so the face says it once.
+- **The action row.** The row moves down one line while agents run, like a
+  two-line "said".
+
+### M23 — Auto mode's blocks, shown · S · built (`feature/auto-mode-blocks`, helper v14), not yet tested in the app
+
+"Auto mode blocked rm · Shared Scratch Sweep" on the Claude face, and a
+toast on the collapsed island, from the `PermissionDenied` hook. There's no
+Approve: the real approval is Claude Code's `/permissions › Recently
+blocked`, which the line's tooltip names. The face's own Jump is the way to
+the session. Pairs with M17.
+
+**The payload** (2.1.319, `claude -p --permission-mode auto`, haiku, a
+scratch project and a dump hook; `scratchpad/m23/payloads/`). It took a
+prompt-injected TODO.md to get a block: the classifier allows what the user
+asks for in so many words (`rm -rf` outside the project, `git remote add`, a
+`find /tmp … -delete` all ran when asked directly).
+
+- `PermissionDenied`: `session_id`, `transcript_path`, `cwd`, `prompt_id`,
+  `permission_mode` (`auto`), `effort`, `hook_event_name`, `tool_name`,
+  `tool_input` (the call's input as sent), `tool_use_id` and `reason`. Inside
+  a subagent the base fields carry `agent_id`; an MCP tool adds `mcp_server`.
+  No `permission_suggestions`, no `message`.
+- `reason` is auto mode's own, in brackets when the classifier judged the
+  call: `"[Shared Scratch Sweep]"` (the categories are `claude auto-mode
+  defaults`' soft_deny names, e.g. "Irreversible Local Destruction", "Git
+  Destructive", "Code from External"). When it couldn't judge, a sentence:
+  "Classifier unavailable", "Auto mode classifier transcript exceeded
+  context window — …", "Auto mode unavailable — stopped after repeated
+  responses with no safety verdict". With no reason at all, Claude Code
+  sends "Permission denied".
+- It fires **only** for a denial whose decision reason is auto mode's
+  classifier (the binary checks `type === "classifier" && classifier ===
+  "auto-mode"`). Not for a deny rule, a hook's deny, a person's No, the
+  built-in `rm` safety check (seen: the stream said `permission_denied` with
+  `decision_reason_type: "safetyCheck"`, and the hook didn't fire), or a
+  prompt `denyInsteadOfPrompting` refused.
+- The call's `PreToolUse` fires first (8s before, while the classifier ran),
+  and no `PostToolUse` follows. Output `{"hookSpecificOutput":
+  {"hookEventName":"PermissionDenied","retry":true}}` would tell the model it
+  may retry; Isle prints nothing.
+
+**`permissions.denyInsteadOfPrompting` doesn't stop approvals reaching the
+notch.** Its own description in the binary: "Allow rules, the permission
+mode, auto mode's classifier and PermissionRequest hooks decide first, as
+they do without it; it only ever denies." Checked with two interactive
+sessions (expect, manual mode, the setting in `--settings`, the real
+`isle-cli ask` under a scratch HOME, M17's responder standing in for Isle;
+`scratchpad/m23/deny/`):
+
+| Isle | PermissionRequest | Terminal prompt | Outcome | PermissionDenied |
+|---|---|---|---|---|
+| answering, Approve | fired; `ask` blocked, notch answered | none | ran | — |
+| not running | fired; `ask` returned nothing | none | denied at once, the turn went on | not fired |
+
+So with Isle answering, a session with the setting is answered from the
+notch exactly as before. Without it there's no terminal prompt to fall back
+to: the call is refused and Claude carries on. M23 doesn't show that refusal,
+since no hook reports it. The text for the two cases doesn't need to differ:
+every PermissionDenied is auto mode's.
+
+One wrinkle, not new: with Isle not answering (not running, or the toggle
+off), `ask` writes the "needs you" state on its way out, and under this
+setting nothing then asks; the island says Question until the next hook
+(Claude's next tool call or its Stop, usually seconds). Isle can't see the
+setting (`--settings` and managed settings count, and the hook payload
+doesn't say), so it's left alone.
+
+**What was built:**
+
+- **isle-cli v14.** A PermissionDenied entry runs `denied`. It keeps the
+  session's last block at `~/.isle/blocked/<session>.json`, one line of
+  JSON: `id` (tool_use_id), `tool`, `target` (the program for Bash and
+  Monitor, read from the whole command as in v12; a file's name, a URL),
+  `command` (a Bash or Monitor call's first line, 48 characters at most, cut
+  on whole JSON tokens like the Done excerpt), `cut`, `reason` (the last
+  `reason` key, 120 tokens at most, so a tool input's own can't stand in),
+  `count` (blocks since the last prompt; the same call twice counts once) and
+  `at`. Every record carries it as `blocked` (`null` without one), one file
+  test a write.
+- **The state stays.** `denied` rewrites the record line by line like the
+  subagent verbs. When the record's tool and target are the blocked call's
+  (its PreToolUse wrote them), they're cleared and `tool_active` goes false,
+  so the face says "Thinking…" rather than "Running rm" for a command that
+  never ran. Another call's (a parallel one, an approval waiting) are left
+  alone. About 70ms a block.
+- **When it clears.** The next prompt (UserPromptSubmit), a new session
+  (SessionStart other than a compaction) and SessionEnd. Not Stop, so the
+  Done face can still say why Claude skipped something.
+- **The app.** `ClaudeStatus.blocked` and `ClaudeBlock` (Isle/Claude/
+  ClaudeBlock.swift). A block that doesn't decode is no block, never a lost
+  record.
+- **The face.** One line under the detail, in the guard chip's pale orange
+  with a raised hand: "Auto mode blocked rm · Shared Scratch Sweep". It
+  takes the subagents' line while it's there, and on a Done face Claude's
+  words give up their second line to it. The fullest form that fits, in
+  order: the command itself (only when it starts with its program, so a long
+  `cd …` never stands in), the program with the reason, "Blocked rm · …",
+  then without the reason. Two or more: "Auto mode blocked 2 calls, last git
+  · Git Destructive". A refusal without a judgment: "· couldn't check it".
+  Any other reason gives none. The tooltip has the command, the rule, the
+  count and "To allow it, use /permissions › Recently blocked in Claude
+  Code."
+- **The toast.** "Auto mode blocked rm" for the island's own session,
+  "isle-website · blocked git" for another, in the same pale orange (not the
+  approval's full orange, which would read as a needs-you). A second block in
+  the same session replaces the one up. Only between two readings that both
+  saw the session, so nothing is announced at launch. A live alert drops it,
+  as it drops every toast.
+- **Session rows.** A working row reads "Blocked git · Thinking…" ("2
+  blocked · …" for more), which is where a block is seen when an approval
+  elsewhere held the island and the toast was dropped.
+
+**Tests.** `scripts/test-auto-mode-blocks.sh`: 28 isle-cli cases on the
+real payload's shape (the cut, the count, carrying, clearing, a hostile
+reason, another tool, an older record, a parallel call, an approval
+waiting, other sessions) and 92 Swift cases (the parser on those records,
+the reason, the line's forms, the toast, rows, when it's announced).
+
+**Renders.** `scratchpad/m23/render/png/`, sheet
+`scratchpad/m23/render/m23_contact_sheet.png`: Black and Glass (a flat
+stand-in), short and long commands, a cd in front, no reason, couldn't
+check, two in a row, another tool, with agents, Done, Both mode, the toasts,
+and a block while an approval waits in another session (island, face, the
+blocked session pinned, the list).
+
+**Decisions to confirm.**
+- **The program, not the command, in practice.** The face's line fits the
+  command only when it's short and there's no reason; the program and the
+  rule almost always win. The command is in the tooltip.
+- **No approval-style orange.** Pale orange for the toast and line.
+- **Toasts for the island's own session too**, since nothing else on the
+  island changes after a block.
+- **Kept until the next prompt**, through Done and the idle nudge.
+- **Dropped under a live alert**, like every toast; the row and the face
+  keep it.
+
+### Seen but not pursued
+
+- **Task checklist.** Task tools are off by default since 2.1.268.
+- **Token and cost meters, context meter.** The status-line slot again, or
+  estimates.
+- **Phone and Watch approvals.** A product of its own.
+- **Publishing as a 27.3 Live Activity.** It lands in Apple's pill, not the
+  notch. Revisit if the OLED MBP has no notch.
+- **PR status per session.** Would be guessed.
+- **Quiet hours.** Fold into a sounds pass.
+- **Pets, voice, dev servers, lyrics.** Off-identity or dropped.
+
+**Order.** M19 first, since it's small and was a live bug. Then M21 as the
+bigger bet.
 
 ## Parked — pending research
 

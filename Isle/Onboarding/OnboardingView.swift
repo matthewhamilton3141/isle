@@ -122,13 +122,16 @@ struct OnboardingView: View {
     /// Audio capture is deliberately not listed here — it is its own choice on
     /// the next step, and saying so is what makes that step expected.
     private func consequence(for mode: IsleMode) -> String {
+        // Names the players actually installed: Automation permission is per
+        // app, so the prompt the user will see is for exactly these.
+        let players = MediaPlayers.installedList
         switch mode {
         case .music:
-            return "Asks to control Spotify. Listening for the waveform is a separate choice, next."
+            return "Asks to control \(players). Listening for the waveform is a separate choice, next."
         case .claude:
             return "Adds a hook to your Claude Code settings. No media permissions."
         case .both:
-            return "Spotify control plus the Claude Code hook. Listening for the waveform is a separate choice, next."
+            return "\(players) control plus the Claude Code hook. Listening for the waveform is a separate choice, next."
         }
     }
 

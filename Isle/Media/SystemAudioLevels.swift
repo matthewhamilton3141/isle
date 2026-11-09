@@ -3,21 +3,25 @@
 //
 //  Real audio-reactive levels for the notch waveform.
 //
-//  Taps Spotify's audio with Core Audio's process-tap API (macOS 14.4+),
+//  Taps the player's audio with Core Audio's process-tap API (macOS 14.4+),
 //  runs an FFT over the captured samples, and reduces the spectrum to a
 //  handful of log-spaced bands.
 //
-//  A process-scoped tap rather than a global one: Isle is Spotify-only, so
-//  the waveform must reflect Spotify and nothing else. A global tap made the
+//  A process-scoped tap rather than a global one: the waveform must reflect
+//  the player the island is showing and nothing else. A global tap made the
 //  bars react to any audible sound — a YouTube tab, a system alert — which
-//  read as wrong for a Spotify overlay. The tap is bound to Spotify's audio
-//  process object, resolved from its PID, and rebuilt when Spotify launches
-//  or relaunches (its PID, and therefore the process object, changes). It is
-//  also rebuilt when the default output device changes: the aggregate device
-//  the tap is read through is built on the output device of the moment, and
-//  does not survive that device going away.
+//  read as wrong for a now-playing overlay. The tap is bound to the target
+//  player's audio process object, resolved from its PID, and rebuilt when
+//  that player launches or relaunches (its PID, and therefore the process
+//  object, changes) — or when the owner routes the island to the other
+//  player (`setTarget`).
 //
-//  Everything here fails soft. If the OS is too old, Spotify isn't running,
+//  The aggregate device the tap is read through holds the tap and nothing
+//  else — no real output device — so the meter never runs IO on the
+//  speakers or the AirPods, and a change of output is none of its business.
+//  See `CaptureSession.startCapture` for why that matters.
+//
+//  Everything here fails soft. If the OS is too old, the player isn't running,
 //  the user declines the audio-capture prompt, or the device can't be
 //  tapped, `levels` simply stays empty and EqualizerView falls back to its
 //  procedural pattern.
@@ -125,11 +129,28 @@ final class SystemAudioLevels: ObservableObject {
             return
         }
         wantsCapture = true
-        // Rebuild the tap whenever Spotify comes or goes — its PID, and so its
-        // audio process object, changes across launches — and whenever the
-        // default output device does. Both registered once.
-        observeSpotifyLifecycle()
+        // Rebuild the tap whenever the player comes or goes — its PID, and so
+        // its audio process object, changes across launches — and check on it
+        // when the default output device changes. Both registered once.
+        observePlayerLifecycle()
         observeOutputDevice()
+        beginCaptureIfNeeded()
+    }
+
+    /// The player whose process the tap is bound to. Spotify until the owner
+    /// says otherwise, which it does whenever the island routes to a
+    /// different player (see `NotchViewModel.recomputeSource`).
+    private(set) var targetBundleID = MediaPlayers.spotifyBundleID
+
+    /// Re-aims the tap at another player. A no-op for the same target; for a
+    /// new one the current tap is torn down and, if capture is still wanted,
+    /// rebuilt against the new process — same path as a relaunch.
+    func setTarget(_ bundleID: String) {
+        guard bundleID != targetBundleID else { return }
+        targetBundleID = bundleID
+        guard wantsCapture else { return }
+        endCapture()
+        levels = []
         beginCaptureIfNeeded()
     }
 
@@ -218,9 +239,9 @@ final class SystemAudioLevels: ObservableObject {
         }
     }
 
-    /// Brings the tap up if the owner wants it, Spotify is running, and it
-    /// isn't already up. Every path that can start capture goes through here
-    /// so the gates can't be skipped.
+    /// Brings the tap up if the owner wants it, the target player is running,
+    /// and it isn't already up. Every path that can start capture goes through
+    /// here so the gates can't be skipped.
     ///
     /// Not gated on playback: the tap is built whenever it *could* be needed
     /// and merely suspended while nothing plays, so that pressing play is
@@ -232,9 +253,9 @@ final class SystemAudioLevels: ObservableObject {
         // Which pid to tap is a cheap local lookup and stays here. Everything
         // after it is Core Audio, and goes to the queue.
         guard let app = NSRunningApplication
-            .runningApplications(withBundleIdentifier: SpotifyController.bundleID)
+            .runningApplications(withBundleIdentifier: targetBundleID)
             .first, app.processIdentifier > 0 else {
-            // Spotify isn't running yet. Not an error — the launch observer
+            // The player isn't running yet. Not an error — the launch observer
             // will start capture once it appears. Leave `levels` empty so the
             // waveform rests as dots rather than reacting to other apps.
             return
@@ -287,11 +308,14 @@ final class SystemAudioLevels: ObservableObject {
         }
     }
 
-    // MARK: - Spotify lifecycle
+    // MARK: - Player lifecycle
 
     private var lifecycleObservers: [NSObjectProtocol] = []
 
-    private func observeSpotifyLifecycle() {
+    /// Watches every supported player's launch and exit, and acts only on the
+    /// one the tap is aimed at — the target can change after the observers
+    /// are registered, so the filter is applied at delivery, not at setup.
+    private func observePlayerLifecycle() {
         guard lifecycleObservers.isEmpty else { return }
         let center = NSWorkspace.shared.notificationCenter
 
@@ -299,32 +323,39 @@ final class SystemAudioLevels: ObservableObject {
             forName: NSWorkspace.didLaunchApplicationNotification,
             object: nil, queue: .main
         ) { [weak self] note in
-            guard Self.isSpotify(note) else { return }
-            Task { @MainActor in self?.restart() }
+            guard let id = Self.playerBundleID(note) else { return }
+            Task { @MainActor in
+                guard let self, id == self.targetBundleID else { return }
+                self.restart()
+            }
         })
 
         lifecycleObservers.append(center.addObserver(
             forName: NSWorkspace.didTerminateApplicationNotification,
             object: nil, queue: .main
         ) { [weak self] note in
-            guard Self.isSpotify(note) else { return }
+            guard let id = Self.playerBundleID(note) else { return }
             // Tap is bound to the now-dead process; tear it down so the bars
             // rest rather than freezing on the last frame. The owner's ask
             // stands, so a relaunch brings it back.
             Task { @MainActor in
-                self?.endCapture()
-                self?.levels = []
+                guard let self, id == self.targetBundleID else { return }
+                self.endCapture()
+                self.levels = []
             }
         })
     }
 
-    private nonisolated static func isSpotify(_ note: Notification) -> Bool {
-        (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
-            .bundleIdentifier == SpotifyController.bundleID
+    /// The bundle id of the app the notification is about, when it is one of
+    /// the supported players.
+    private nonisolated static func playerBundleID(_ note: Notification) -> String? {
+        guard let id = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
+            .bundleIdentifier, MediaPlayers.supported.contains(id) else { return nil }
+        return id
     }
 
-    /// Tear down and bring capture back up against Spotify's current process —
-    /// if the owner still wants it, which `beginCaptureIfNeeded` checks.
+    /// Tear down and bring capture back up against the target player's current
+    /// process — if the owner still wants it, which `beginCaptureIfNeeded` checks.
     private func restart() {
         endCapture()
         beginCaptureIfNeeded()
@@ -336,8 +367,16 @@ final class SystemAudioLevels: ObservableObject {
     /// kept so it can be removed again in `deinit`.
     private var outputDeviceListener: AudioObjectPropertyListenerBlock?
 
-    /// Coalesces a burst of change notifications into one rebuild.
+    /// The check that follows an output change, restarted by each change in
+    /// a burst so it runs once, after the last.
     private var outputDeviceChangeTask: Task<Void, Never>?
+
+    /// How long an output change is given to settle before the meter is
+    /// checked. Long enough for a Bluetooth device to finish switching
+    /// profiles and for the player's stream to come back up on the new
+    /// output; short enough that a meter that really did stop is back
+    /// before anyone wonders why the bars froze.
+    private static let outputSettle: Duration = .milliseconds(1500)
 
     private nonisolated static func defaultOutputDeviceAddress() -> AudioObjectPropertyAddress {
         AudioObjectPropertyAddress(
@@ -347,19 +386,31 @@ final class SystemAudioLevels: ObservableObject {
         )
     }
 
-    /// Rebuilds the tap when the default output device changes.
+    /// Watches the default output device, as a safety net and nothing more.
     ///
-    /// The aggregate device is built on the output device of the moment
-    /// (`CaptureSession.startCapture`). A process tap follows the process, so
-    /// merely switching output between two present devices keeps the meter
-    /// running — but when the device the aggregate was built on goes away
-    /// (AirPods disconnecting, a display unplugged) the aggregate loses its
-    /// sub-device, the IOProc stops firing, and the bars freeze on their last
-    /// frame: the release decay runs in the audio callback, so nothing brings
-    /// them down. The meter then looks stuck until something else — a
-    /// relaunch, a screen lock — happens to rebuild it. Same path as a
-    /// relaunch, and gated the same way: nothing is built unless the owner
-    /// still wants it.
+    /// This used to rebuild the tap on every change. The aggregate was then
+    /// built on the output device of the moment, and when that device went
+    /// away (AirPods disconnecting) the IOProc stopped and the bars froze on
+    /// their last frame — the release decay runs in the audio callback, so
+    /// nothing brings them down. The rebuild fixed that, and is what made
+    /// switching away from AirPods bounce straight back to them: tearing
+    /// down an aggregate that was still running on the AirPods, and starting
+    /// a new one, is an audio stop and an audio start that macOS's AirPods
+    /// automatic switching attributes to Isle, and it answers by routing the
+    /// in-ear AirPods back to the Mac. In the unified log, seven of eight
+    /// switches to the speakers made from Isle with the meter running came
+    /// back within a second, each as audioaccessoryd's "Tipi device hijack
+    /// was successful" for a routing request from com.matthewhamilton.Isle;
+    /// the eighth was made with the meter idle and held. The same request
+    /// after a Control Center switch is refused ("too soon since last
+    /// manual route"), which is why switching there seemed fine.
+    ///
+    /// The aggregate now holds only the tap (see `startCapture`), and a
+    /// process tap follows the process across outputs, so there is nothing
+    /// to rebuild. What's left is a check: once the change has settled, if
+    /// the meter should be running and its callback hasn't fired since the
+    /// change, rebuild it — the old fix, kept for a failure that should no
+    /// longer happen rather than performed on every switch.
     private func observeOutputDevice() {
         guard outputDeviceListener == nil else { return }
         let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
@@ -379,14 +430,23 @@ final class SystemAudioLevels: ObservableObject {
     private func outputDeviceDidChange() {
         guard wantsCapture else { return }
         outputDeviceChangeTask?.cancel()
-        // A switch can arrive as a small burst — the device, then its stream
-        // format settling — and the new device may still be coming up on the
-        // first one. A short wait folds the burst into one rebuild against a
-        // device that is ready.
+        // A switch arrives as a burst — the default, the system output, the
+        // Bluetooth profile settling — so each change restarts the wait and
+        // the check runs once, after the last. Counted from here, so a meter
+        // that kept running through the switch is left alone.
+        let callbacks = analyzer.callbackCount()
         outputDeviceChangeTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(300))
+            try? await Task.sleep(for: Self.outputSettle)
             guard !Task.isCancelled, let self else { return }
             self.outputDeviceChangeTask = nil
+            // Only a meter that is up and publishing can be said to have
+            // stalled: suspended or paused, its callback is meant to be
+            // quiet, and one still being built hasn't started yet.
+            guard self.isCapturing, !self.isSuspended, !self.playbackPaused,
+                  self.displayTimer != nil,
+                  self.analyzer.callbackCount() == callbacks
+            else { return }
+            NSLog("Isle: level meter stalled after an output change; rebuilding")
             self.restart()
         }
     }
@@ -626,8 +686,6 @@ private final class CaptureSession: @unchecked Sendable {
 
     @available(macOS 14.4, *)
     private func startCapture(tapping processObject: AudioObjectID, analyzer: AudioAnalyzer) throws {
-        let outputUID = try defaultOutputDeviceUID()
-
         // Scoped to Spotify's process alone, so the meter follows Spotify and
         // ignores every other sound on the system.
         let tapDescription = CATapDescription(monoMixdownOfProcesses: [processObject])
@@ -641,21 +699,27 @@ private final class CaptureSession: @unchecked Sendable {
         }
         tapID = tap
 
-        // The tap can only be read through an aggregate device that includes
-        // both it and the real output device.
+        // A tap is read through an aggregate device, and this one holds the
+        // tap alone. It used to include the default output device as well
+        // (and as its clock), which meant the meter ran its own IO on the
+        // speakers or the AirPods: it kept a Bluetooth stream open on
+        // AirPods the user had just switched away from, and it had to be
+        // rebuilt on every output change, which macOS's AirPods automatic
+        // switching took as Isle starting audio and answered by routing the
+        // AirPods straight back (see `observeOutputDevice`). Without a real
+        // sub-device the IO context names only the aggregate — no device is
+        // started for it — and the tap still delivers: measured against a
+        // second process playing to AirPods, 92-95 callbacks a second at
+        // 48kHz carrying the exact signal, same as the old build.
         let aggregateUID = UUID().uuidString
         let description: [String: Any] = [
             kAudioAggregateDeviceNameKey: "Isle Level Meter",
             kAudioAggregateDeviceUIDKey: aggregateUID,
-            kAudioAggregateDeviceMainSubDeviceKey: outputUID,
             // Private keeps it out of the user's Sound settings — this is an
             // implementation detail, not a device they chose to create.
             kAudioAggregateDeviceIsPrivateKey: true,
             kAudioAggregateDeviceIsStackedKey: false,
             kAudioAggregateDeviceTapAutoStartKey: true,
-            kAudioAggregateDeviceSubDeviceListKey: [
-                [kAudioSubDeviceUIDKey: outputUID]
-            ],
             kAudioAggregateDeviceTapListKey: [
                 [
                     kAudioSubTapDriftCompensationKey: true,
@@ -710,35 +774,6 @@ private final class CaptureSession: @unchecked Sendable {
             throw AudioLevelError.startFailed(startStatus)
         }
     }
-
-    private func defaultOutputDeviceUID() throws -> String {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var deviceID = AudioObjectID(kAudioObjectUnknown)
-        var size = UInt32(MemoryLayout<AudioObjectID>.size)
-        let status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID
-        )
-        guard status == noErr, deviceID != kAudioObjectUnknown else {
-            throw AudioLevelError.noOutputDevice
-        }
-
-        address.mSelector = kAudioDevicePropertyDeviceUID
-        var uid: CFString = "" as CFString
-        var uidSize = UInt32(MemoryLayout<CFString>.size)
-        let uidStatus = withUnsafeMutablePointer(to: &uid) { pointer in
-            AudioObjectGetPropertyData(deviceID, &address, 0, nil, &uidSize, pointer)
-        }
-        guard uidStatus == noErr else {
-            throw AudioLevelError.noOutputDevice
-        }
-        return uid as String
-    }
-
 }
 
 // MARK: - Analysis
@@ -876,6 +911,14 @@ private final class AudioAnalyzer: @unchecked Sendable {
     private let lock = NSLock()
     private var smoothed: [Double]
 
+    /// Callbacks analysed since the analyzer was made, under `lock`. Only
+    /// ever compared with an earlier reading of itself, to tell a meter
+    /// that is running from one that has stopped (see
+    /// `SystemAudioLevels.outputDeviceDidChange`). Counted in `smooth`,
+    /// which already holds the lock once a callback, so it costs the
+    /// audio thread an increment.
+    private var callbacks = 0
+
     /// Diagnostics, guarded by the same lock as `smoothed`.
     private var callCount = 0
     private var peak: Float = 0
@@ -914,6 +957,12 @@ private final class AudioAnalyzer: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return smoothed
+    }
+
+    func callbackCount() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return callbacks
     }
 
     /// Callback count and peak sample seen since the last call, then reset.
@@ -1126,6 +1175,7 @@ private final class AudioAnalyzer: @unchecked Sendable {
     /// way. `targets` is the audio-thread scratch, never retained.
     private func smooth(toward targets: [Double]) {
         lock.lock()
+        callbacks &+= 1
         #if DEBUG
         referenceReadout = reference
         #endif
@@ -1152,7 +1202,6 @@ private final class AudioAnalyzer: @unchecked Sendable {
 }
 
 enum AudioLevelError: LocalizedError {
-    case noOutputDevice
     case tapCreationFailed(OSStatus)
     case aggregateCreationFailed(OSStatus)
     case ioProcFailed(OSStatus)
@@ -1160,8 +1209,6 @@ enum AudioLevelError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .noOutputDevice:
-            return "No default output device."
         case .tapCreationFailed(let status):
             return "Could not tap system audio (\(status)). Check Privacy & Security › Audio Recording."
         case .aggregateCreationFailed(let status):

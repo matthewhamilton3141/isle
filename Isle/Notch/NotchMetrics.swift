@@ -52,6 +52,56 @@ struct NotchMetrics {
     /// there — see the x-span note in ExpandedNotchView).
     static let expandedSize = CGSize(width: 520, height: 146)
 
+    /// The tallest the panel ever gets, whichever face asks. Most faces keep
+    /// `expandedSize`; a face with more to show reports the content height
+    /// it wants (`NotchViewModel.faceContentHeight`) — the question face
+    /// while an `AskUserQuestion` is live, the agenda always, the shelf by
+    /// its rows — and gets it up to this cap. One cap for every face that
+    /// grows, so the window, which is sized to hold it from the start (see
+    /// `maximumFrame`) and never resized while drawing, needs no per-face
+    /// case.
+    static let panelMaxHeight: CGFloat = 230
+
+    /// How far either side of the open panel the pointer may stray before it
+    /// closes — the side half of `NotchWindowController.stayOpenPad`. Here
+    /// because the window has to reach it too (see `maximumFrame`).
+    static let stayOpenSidePad: CGFloat = 16
+
+    /// Panel height for a face whose content wants `contentHeight`, below a
+    /// camera housing `bandHeight` tall. Never shorter than the standard
+    /// panel, never taller than the cap. A face fits its content to
+    /// `contentRoom` before it gets here — the question face shortens its
+    /// descriptions so every option fits — so it is only ever cut by the cap
+    /// past what that face can give up.
+    static func panelHeight(contentHeight: CGFloat, bandHeight: CGFloat) -> CGFloat {
+        min(panelMaxHeight, max(expandedSize.height, contentInsets(bandHeight: bandHeight) + ceil(contentHeight)))
+    }
+
+    /// The content area a face wanting `contentHeight` (nil: the standard
+    /// panel) is laid out in: its panel's height less the content's insets.
+    static func contentAreaHeight(contentHeight: CGFloat?, bandHeight: CGFloat) -> CGFloat {
+        let panel = contentHeight.map { panelHeight(contentHeight: $0, bandHeight: bandHeight) } ?? expandedSize.height
+        return panel - contentInsets(bandHeight: bandHeight)
+    }
+
+    /// The most a face's content can have: the cap, less the expanded
+    /// content's insets.
+    static func contentRoom(bandHeight: CGFloat) -> CGFloat {
+        panelMaxHeight - contentInsets(bandHeight: bandHeight)
+    }
+
+    /// The content's height in the standard panel — Home's, and the height
+    /// its tiles are laid out in (see `HomeTileSlot`).
+    static func standardContentHeight(bandHeight: CGFloat) -> CGFloat {
+        expandedSize.height - contentInsets(bandHeight: bandHeight)
+    }
+
+    /// The expanded content's top inset (band + 2) and bottom inset (8), from
+    /// NotchRootView.
+    private static func contentInsets(bandHeight: CGFloat) -> CGFloat {
+        bandHeight + 2 + 8
+    }
+
     /// Fraction of the collapsed width given to music when both music and a
     /// Claude Code activity are live. See the split-view rule in spec 3.1 —
     /// kept here as a constant so a future "cycle instead of split" setting
@@ -145,6 +195,22 @@ struct NotchMetrics {
     var maximumFrame: NSRect {
         let expanded = windowFrame(for: .hoverExpanded)
         let collapsed = windowFrame(for: .collapsed)
-        return expanded.union(collapsed)
+        // Room for the tallest a face can grow the panel — every face that
+        // grows shares the one cap. Transparent and click-through like the
+        // rest of the window outside the drawn notch.
+        let grown = NSRect(
+            x: expanded.minX,
+            y: screen.frame.maxY - Self.panelMaxHeight,
+            width: expanded.width,
+            height: Self.panelMaxHeight
+        )
+        // And the stay-open pad either side of the open panel. A hover reads
+        // the pad off the global pointer monitor and doesn't need the window
+        // there, but a file drag over the drop face does: AppKit hands a drag
+        // to the window only inside its frame, so a pad outside it is a drag
+        // leaving, and the drop face shut the moment a drag overshot the
+        // panel's edge. Transparent and click-through like the rest.
+        let pad = expanded.insetBy(dx: -Self.stayOpenSidePad, dy: 0)
+        return expanded.union(collapsed).union(grown).union(pad)
     }
 }

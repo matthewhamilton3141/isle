@@ -48,7 +48,7 @@ struct CollapsedNotchView: View {
 
     @ViewBuilder
     private var leading: some View {
-        if let toast = viewModel.activeToast, viewModel.showsToast {
+        if let toast = viewModel.collapsedToast {
             // A toast borrows the whole island rather than taking a third
             // seat: its symbol sits in the album cover's footprint, so
             // whatever was there slides back into exactly the same spot when
@@ -60,9 +60,12 @@ struct CollapsedNotchView: View {
             // right rather than displacing the music.
             HStack(spacing: CollapsedSize.gap) {
                 artworkThumbnail
-                // The slot stays even with the waveform off, so the album
-                // doesn't move — see NotchViewModel.waveSlot.
-                waveformSlot
+                // No held seat here: Claude is already on the other side of
+                // the camera, so with the waveform off the space goes back and
+                // the island narrows — see NotchViewModel.waveSlot.
+                if viewModel.showsWaveform {
+                    equalizer(width: CollapsedSize.wave)
+                }
             }
         } else if viewModel.isClaudeSolo {
             // Claude solo: the dot glyph sits to the left of the camera, in the
@@ -82,7 +85,7 @@ struct CollapsedNotchView: View {
 
     @ViewBuilder
     private var trailing: some View {
-        if let toast = viewModel.activeToast, viewModel.showsToast {
+        if let toast = viewModel.collapsedToast {
             toastText(toast)
         } else if viewModel.shouldSplitCollapsed {
             // Split: the Claude cluster rides on the right beside the music —
@@ -117,7 +120,8 @@ struct CollapsedNotchView: View {
     }
 
     /// The waveform, or an empty frame of the same size when it's switched
-    /// off — so the layout is identical either way and nothing shifts.
+    /// off. Music-solo only: the empty seat is what keeps the album and the
+    /// waveform's place even either side of the camera.
     @ViewBuilder
     private var waveformSlot: some View {
         if viewModel.showsWaveform {
@@ -138,15 +142,16 @@ struct CollapsedNotchView: View {
     /// 44% taller than the battery beside it. A point size is the size every
     /// symbol in the set is designed to agree at.
     ///
-    /// 12 is the ceiling for a 22pt slot: at 13 the widest glyph
-    /// (`battery.100percent.bolt`) measures 23pt and overhangs.
+    /// 12 is the ceiling for a 22pt slot: the widest glyph, `beats.studiobuds`,
+    /// is 20.4pt of ink at 12 and 22.1 at 13, which overhangs. This Mac's
+    /// `macbook.gen2` is 17.6.
     private static let toastGlyphPointSize: CGFloat = 12
 
     /// The slot every glyph is centred in, so the wide ones and the narrow
     /// ones share one optical centre — which lands where the album artwork's
     /// centre is, so nothing shifts when a toast takes the island and gives it
-    /// back. Tall enough for the tallest glyph at this point size (`bolt.fill`,
-    /// 17pt) without clipping.
+    /// back. Tall enough for the tallest glyphs at this point size
+    /// (`computermouse.fill`, `airpodsmax`, 16pt) without clipping.
     private static let toastGlyphSlot = CGSize(width: CollapsedSize.album, height: 18)
 
     /// The rune is hand-drawn, so it has no point size to inherit — 16 puts it
@@ -156,8 +161,7 @@ struct CollapsedNotchView: View {
 
     private func toastSymbol(_ toast: IslandToast) -> some View {
         Group {
-            switch toast.glyph {
-            case .symbol(let name):
+            if let name = toast.symbolName {
                 // Nudged onto its own ink rather than its layout box — see
                 // GlyphInk for why the two aren't the same place.
                 let ink = GlyphInk.centeringOffset(
@@ -167,7 +171,7 @@ struct CollapsedNotchView: View {
                     .font(.system(size: Self.toastGlyphPointSize, weight: .semibold))
                     .foregroundStyle(toast.tint)
                     .offset(x: -ink.width, y: -ink.height)
-            case .bluetoothRune:
+            } else {
                 BluetoothRune.view(height: Self.toastRuneHeight, tint: toast.tint)
             }
         }

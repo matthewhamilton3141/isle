@@ -243,21 +243,20 @@ final class MediaRemoteAdapterClient {
         return DecodedLine(envelope: envelope, artwork: artwork)
     }
 
-    /// Isle is scoped to Spotify. MediaRemote reports whichever app owns the
-    /// system now-playing session — Music, a browser tab, anything — so any
-    /// non-Spotify owner is treated as "nothing playing" and collapses the
-    /// notch rather than surfacing another app's track.
-    private static let spotifyBundleID = "com.spotify.client"
-
+    /// Isle is scoped to the players it can control. MediaRemote reports
+    /// whichever app owns the system now-playing session — a browser tab,
+    /// anything — so an owner outside `MediaPlayers.supported` is treated as
+    /// "nothing playing" and collapses the notch rather than surfacing a
+    /// track the island couldn't act on.
     private func handle(_ line: DecodedLine) {
         let envelope = line.envelope
         merge(envelope.payload, artwork: line.artwork, isDiff: envelope.diff ?? false)
 
         // `current` still tracks the true system owner (merged from diffs), but
-        // we only publish it when that owner is Spotify. Publishing an empty
-        // model otherwise keeps stale non-Spotify data off screen without
+        // we only publish it when that owner is a supported player. Publishing
+        // an empty model otherwise keeps stale data off screen without
         // discarding what we know about the current session.
-        if current.bundleIdentifier == Self.spotifyBundleID {
+        if MediaPlayers.supported.contains(current.bundleIdentifier) {
             onUpdate?(current)
         } else {
             onUpdate?(MediaPlaybackModel())

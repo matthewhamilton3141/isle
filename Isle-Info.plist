@@ -24,11 +24,17 @@
 	<!--
 	  Required to send Apple Events. Spotify ignores MediaRemote's
 	  shuffle/repeat commands, so those two controls are routed to it
-	  over AppleScript instead (see MediaRemoteCommands). Without this
-	  key the automation request is denied silently on current macOS.
+	  over AppleScript instead (see MediaRemoteCommands), and Music is
+	  read and driven the same way. Terminal and iTerm2 are scripted too:
+	  "Start Claude here" opens a Terminal window in the dropped folder
+	  (see ClaudeLauncher), and a Claude Code session's tab is brought
+	  forward, or a reply typed into it, by tty (see TerminalBridge). The
+	  prompt names the app being controlled and shows this one string for
+	  all of them, so it covers each. Without this key the automation
+	  request is denied silently on current macOS.
 	-->
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Isle controls shuffle and repeat in Spotify from the notch.</string>
+	<string>Isle controls Spotify and Music from the notch, opens Terminal to start Claude in a folder you drop on it, and shows or replies to a Claude Code session in its terminal.</string>
 	<!--
 	  Required to observe Bluetooth devices. BluetoothBatteryMonitor registers
 	  for IOBluetooth connect notifications, which counts as a Bluetooth access
@@ -45,15 +51,19 @@
 
 	<!--
 	  Required to read upcoming calendar events and due reminders for the
-	  agenda toasts (see AgendaMonitor). macOS 14 introduced the *FullAccess*
-	  keys; without the matching key, requestFullAccessToEvents /
-	  requestFullAccessToReminders never prompts and simply reports denied.
-	  Isle only asks when the corresponding Setup/Settings switch is on.
+	  agenda face and toasts, and to write the two things the face writes on
+	  a click: a reminder ticked off, and an event or reminder confirmed in
+	  quick add (see AgendaMonitor). Full access covers both; macOS 14
+	  introduced the *FullAccess* keys, and without the matching key,
+	  requestFullAccessToEvents / requestFullAccessToReminders never prompts
+	  and simply reports denied. Isle asks when the corresponding
+	  Setup/Settings switch is on, or the first time quick add needs a kind
+	  it has never asked for.
 	-->
 	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>Isle shows a calendar event in the notch shortly before it starts. Events are read on this Mac and never sent anywhere.</string>
+	<string>Isle shows your events in the notch, and adds an event when you confirm one in its quick-add field. Events stay on this Mac and are never sent anywhere.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>
-	<string>Isle shows a reminder in the notch when it comes due. Reminders are read on this Mac and never sent anywhere.</string>
+	<string>Isle shows your reminders in the notch, completes one when you tick it, and adds one when you confirm it in its quick-add field. Reminders stay on this Mac and are never sent anywhere.</string>
 
 </dict>
 </plist>

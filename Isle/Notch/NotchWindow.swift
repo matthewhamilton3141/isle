@@ -56,7 +56,70 @@ final class NotchWindow: NSPanel {
     }
 
     // Isle's controls are hover/click driven and it should never pull focus
-    // out of the frontmost app, so key and main status are both refused.
-    override var canBecomeKey: Bool { false }
+    // out of the frontmost app, so key status is refused — except while a
+    // field on the Claude face is taking a reply. Then, and only then, the
+    // panel can become key; `.nonactivatingPanel` means it does so without
+    // activating Isle, so the frontmost app stays frontmost and gets its keys
+    // back the moment composing ends (see NotchWindowController). Main status
+    // is never wanted.
+    var allowsKey = false
+    override var canBecomeKey: Bool { allowsKey }
     override var canBecomeMain: Bool { false }
+
+    /// Offered every scroll event before the views under the pointer see it.
+    /// Returns true to keep it from them.
+    ///
+    /// Scroll events need no key status: the window server sends them to the
+    /// window under the pointer, key or not, which is how the Agenda list
+    /// already scrolls in a panel that never takes focus. They arrive here
+    /// first, on their way to that list, so this is where a horizontal swipe
+    /// between faces is told from a vertical scroll and taken out before the
+    /// list sees it.
+    var scrollInterceptor: (@MainActor (NSEvent) -> Bool)?
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .scrollWheel, let scrollInterceptor, scrollInterceptor(event) {
+            return
+        }
+        super.sendEvent(event)
+    }
+
+    /// Where a drag over this window goes. The window, not a view, is the
+    /// destination: nothing in the notch registers a SwiftUI drop, so AppKit
+    /// hands every file drag over the window's frame to the window itself,
+    /// and the handler decides what part of that frame counts — the island
+    /// and its lip, or the open panel and its pad.
+    weak var dropHandler: NotchDropHandler?
+}
+
+/// The drag callbacks of one notch window, passed on with the window they
+/// arrived at.
+@MainActor
+protocol NotchDropHandler: AnyObject {
+    func dragUpdated(_ info: any NSDraggingInfo, in window: NotchWindow) -> NSDragOperation
+    func dragExited(_ window: NotchWindow)
+    func performDrop(_ info: any NSDraggingInfo, in window: NotchWindow) -> Bool
+    func dragEnded(_ window: NotchWindow)
+}
+
+extension NotchWindow: NSDraggingDestination {
+    func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        dropHandler?.dragUpdated(sender, in: self) ?? []
+    }
+
+    func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        dropHandler?.dragUpdated(sender, in: self) ?? []
+    }
+
+    func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        dropHandler?.dragExited(self)
+    }
+
+    func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        dropHandler?.performDrop(sender, in: self) ?? false
+    }
+
+    func draggingEnded(_ sender: any NSDraggingInfo) {
+        dropHandler?.dragEnded(self)
+    }
 }

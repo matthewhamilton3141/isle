@@ -38,10 +38,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         setUpStatusItem()
 
+        // The gear on the island's home grid asks for Settings this way: the
+        // notch views don't hold the app delegate.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(openSettings), name: .isleOpenSettings, object: nil
+        )
+
         // If Isle's hooks were installed by an older build, quietly bring the
         // helper and hook set up to date (e.g. to pick up the SessionEnd hook
         // that clears the island when a session closes). No-op if not installed.
         HookInstaller.refreshIfNeeded()
+
+        // A marker left by a crash names a dead pid, which already gates the
+        // hooks off — but clear it anyway before anything decides whether to
+        // write a fresh one, so the file on disk only ever names this process.
+        ClaudeAnsweringMarker.remove()
+
+        // The guarded-commands list, where `isle-cli guard` reads it: written
+        // while the feature is on with something on the list, removed
+        // otherwise. Independent of the mode and of Isle running — the guard
+        // lives in Claude Code's hook, and a quit Isle leaves it holding, with
+        // the terminal to answer it.
+        let settings = AppSettings.shared
+        guardSync = settings.$guardCommands
+            .combineLatest(settings.$guardedCommands)
+            .receive(on: RunLoop.main)
+            .sink { enabled, patterns in
+                GuardedCommands.sync(enabled: enabled, patterns: patterns)
+            }
 
         notchController = NotchWindowController()
 
@@ -76,6 +100,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         notchController?.shutdown()
+        // Stopping the Claude bridge already removes it; this is the backstop,
+        // because a marker that outlives Isle is what would keep a hook waiting
+        // on a notch that can no longer answer. (Its pid would be dead within
+        // the moment anyway — this just doesn't rely on that.)
+        ClaudeAnsweringMarker.remove()
     }
 
     // MARK: - Menu bar
@@ -189,6 +218,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Live only on a first launch, until Setup names a mode.
     private var firstModeChoice: AnyCancellable?
 
+    /// Keeps ~/.isle/guarded-commands in step with Settings.
+    private var guardSync: AnyCancellable?
+
     @objc private func openSetup() {
         if let setupWindow {
             setupWindow.makeKeyAndOrderFront(nil)
@@ -280,6 +312,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         if let settingsWindow {
+            notchController?.watchSettingsWindow(settingsWindow)
             settingsWindow.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -296,6 +329,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.center()
         window.isReleasedWhenClosed = false
         settingsWindow = window
+        // While it's in front, a change made in it opens the island to show
+        // it — no hovering the notch after every click.
+        notchController?.watchSettingsWindow(window)
 
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

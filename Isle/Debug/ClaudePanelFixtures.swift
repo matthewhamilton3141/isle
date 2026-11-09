@@ -1,0 +1,952 @@
+//
+//  ClaudePanelFixtures.swift
+//
+//  Every state the Claude face can be in, as data, for the previews below and
+//  for rendering the panel offscreen to check a layout change without a live
+//  session (see `NotchViewModel.applyPreviewFixture`). A face that has to hold
+//  approvals, questions, other sessions and the keep-awake mark at once is
+//  only checked properly by looking at all of them side by side.
+//
+//  Debug only; nothing here ships.
+//
+
+#if DEBUG
+import SwiftUI
+import AppKit
+
+struct ClaudePanelFixture: Identifiable {
+    /// File-name safe; the render harness writes `<prefix>_<name>.png`.
+    let name: String
+    var mode: IsleMode = .claude
+    var state: ClaudeCodeState
+    var project: String? = "isle"
+    var action: String? = nil
+    var target: String? = nil
+    var errorType: String? = nil
+    var resetAt: Date? = nil
+    /// A usage limit's window and what Claude Code said comes next
+    /// (Milestone 19).
+    var limitKind: String? = nil
+    var limitNext: ClaudeLimitNext? = nil
+    var updatedAt: Date = Date().addingTimeInterval(-42)
+    var workingWord: String? = "Percolating"
+    var request: ClaudeRequest? = nil
+    var questionIndex = 0
+    var reviewingRemember = false
+    var picks: [Set<String>] = []
+    var descriptions: OptionDescriptions = .default
+    var keepAwake = false
+    var others = ClaudeOtherSessions()
+    /// Where the session is on screen (Milestone 11): the Jump pill, and
+    /// whether a reply can be typed.
+    var host: ClaudeSessionHost? = nil
+    var composing: ComposeKind? = nil
+    var replyDraft = ""
+    var answerDraft = ""
+    var denialDraft = ""
+    var delivery: ReplyDelivery = .none
+    /// The record's `last_message` (Milestone 15): the start of Claude's
+    /// final message, as the helper stores it.
+    var lastMessage: String? = nil
+    /// The record's `subagents` (Milestone 22): the running agents' types,
+    /// oldest first.
+    var subagents: [String] = []
+    /// The record's `blocked` (Milestone 23): the last call auto mode
+    /// blocked since the last prompt.
+    var blocked: ClaudeBlock? = nil
+    /// The record's `left` (Milestone 20): what the last turn left running
+    /// or scheduled when it ended.
+    var left: ClaudeLeftovers? = nil
+    /// Every live session (Milestone 16), the island's own among them under
+    /// `preview-session`, and the requests their hooks are blocked on.
+    var sessions: [ClaudeStatus] = []
+    var sessionRequests: [ClaudeRequest] = []
+    /// The face is showing the list.
+    var listShown = false
+    /// The island's session was picked from the list.
+    var pinned = false
+    /// The island's session id, when it isn't `preview-session` or the
+    /// request's.
+    var sessionId: String? = nil
+    /// Where each listed session is, by session id, for the rows' Jump.
+    var sessionHosts: [String: ClaudeSessionHost] = [:]
+    /// Drawn on the home grid (in `.both`) rather than in the face.
+    var home = false
+    /// What `claude agents --json --all` lists (Milestone 21), merged with
+    /// `sessions` the way the bridge merges them.
+    var agents: [ClaudeAgent] = []
+    /// The island's state is Claude Code's, not a hook's.
+    var stateFromAgent = false
+    /// A toast pinned on the collapsed island; the render harness draws a
+    /// fixture carrying one collapsed.
+    var toast: IslandToast? = nil
+
+    var id: String { name }
+
+    /// The settings the fixture is drawn under, on an isolated store.
+    @MainActor
+    func configure(_ settings: AppSettings) {
+        settings.mode = mode
+        settings.optionDescriptions = descriptions
+    }
+}
+
+extension ClaudePanelFixture {
+    // MARK: Requests
+
+    static func approval(_ tool: String, _ subject: String) -> ClaudeRequest {
+        ClaudeRequest(
+            id: "preview-session-1762300000-4242",
+            kind: .approval,
+            sessionId: "preview-session",
+            toolName: tool,
+            subject: subject,
+            questions: []
+        )
+    }
+
+    /// An approval decoded by the app's own decoder from a hook's stdin —
+    /// the payloads below are ones Claude Code 2.1.318 sent (scratch paths
+    /// swapped for plausible ones), so the face is checked against what
+    /// actually arrives rather than against a hand-built request.
+    static func approval(stdin: String) -> ClaudeRequest {
+        ClaudeRequestWatcher.decode(stdin: Data(stdin.utf8), id: "preview-session-1762300000-4242")!
+    }
+
+    static func question(_ questions: [ClaudeQuestion]) -> ClaudeRequest {
+        ClaudeRequest(
+            id: "preview-session-1762300000-4343",
+            kind: .question,
+            sessionId: "preview-session",
+            toolName: "AskUserQuestion",
+            subject: nil,
+            questions: questions
+        )
+    }
+
+    static let twoOptions = ClaudeQuestion(
+        question: "Should the migration run now or wait for the next deploy?",
+        header: "Migration",
+        options: [
+            .init(label: "Run now", description: "Applies the schema change to the dev database immediately."),
+            .init(label: "Wait", description: "Leaves it queued; it runs with the next deploy."),
+        ],
+        multiSelect: false
+    )
+
+    static let fourOptions = ClaudeQuestion(
+        question: "Which approach should I take for caching the artwork palette across track changes?",
+        header: "Approach",
+        options: [
+            .init(label: "LRU cache", description: "Keep the last 32 palettes keyed by artwork hash; evict the least recently used one first when the cache is full."),
+            .init(label: "Per-album", description: "One palette per album identifier, so every track on an album shares it."),
+            .init(label: "No cache", description: "Recompute on every change; simplest, costs a few ms per track."),
+            .init(label: "Disk cache", description: nil),
+        ],
+        multiSelect: false
+    )
+
+    static let threeOptions = ClaudeQuestion(
+        question: "Where should the lyric cache live?",
+        header: "Cache",
+        options: [
+            .init(label: "Application Support", description: "Survives restarts; cleared only when Isle is removed."),
+            .init(label: "Caches", description: "The system may purge it when space runs low."),
+            .init(label: "Memory only", description: "Gone on quit; nothing written to disk."),
+        ],
+        multiSelect: false
+    )
+
+    /// The schema's worst case for one question: four options (the most
+    /// `AskUserQuestion` accepts), every one with a description that wraps
+    /// past two lines in the column, under a question that takes two.
+    static let fourLong = ClaudeQuestion(
+        question: "The request watcher can miss a rename that lands during a re-read. How should I close the gap before the release?",
+        header: "Race fix",
+        options: [
+            .init(label: "Re-read on every event", description: "Rescan the whole requests directory whenever the watch fires, and diff against what's on screen; costs a directory listing per event but can't miss a file."),
+            .init(label: "Sequence numbers", description: "Have isle-cli stamp each request with a counter and have Isle notice a gap; precise, but it changes the hook script and needs a HookInstaller bump."),
+            .init(label: "Poll as a backstop", description: "Keep the watch and add a slow two-second poll while any request is live, so a missed event costs at most two seconds of a stale panel."),
+            .init(label: "Leave it", description: "It needs a rename inside a few milliseconds of a re-read; not seen in testing, so note it in the roadmap and move on to the release."),
+        ],
+        multiSelect: false
+    )
+
+    static let fourLongMulti = ClaudeQuestion(
+        question: "Which of these should go into the release notes for 0.4.5?",
+        header: "Notes",
+        options: [
+            .init(label: "Question face", description: "Every option stays in view, descriptions shorten to fit, and the glyph moves to the corner while a question is up."),
+            .init(label: "Approvals", description: "Approve and Deny from the notch now show the exact command across two lines, cut from the middle so both ends survive."),
+            .init(label: "Keep-awake", description: "The Mac stays awake while Claude works, shown as a cup in the panel's top row only while the hold is actually taken."),
+            .init(label: "Output switching", description: "Pick the output device and set its volume from the music face, with a note when the switch is something Isle can't do."),
+        ],
+        multiSelect: true
+    )
+
+    static let multiSelect = ClaudeQuestion(
+        question: "Which checks should run before the release build?",
+        header: "Checks",
+        options: [
+            .init(label: "Unit tests", description: "The fast suite, about 40 seconds."),
+            .init(label: "UI snapshots", description: "Renders every face and diffs against the baseline."),
+            .init(label: "Notarisation dry run", description: "Signs and submits without stapling."),
+        ],
+        multiSelect: true
+    )
+
+    static let thirdQuestion = ClaudeQuestion(
+        question: "Bump the version?",
+        header: "Version",
+        options: [
+            .init(label: "Patch", description: "0.4.4 → 0.4.5"),
+            .init(label: "Minor", description: "0.4.4 → 0.5.0"),
+        ],
+        multiSelect: false
+    )
+
+    // MARK: Approval payloads
+
+    /// Wraps a tool call in the PermissionRequest envelope.
+    private static func permissionRequest(_ tool: String, input: String, suggestions: String = "[]",
+                                          extra: String = "") -> String {
+        #"{"session_id":"preview-session","cwd":"/Users/matthew/Documents/isle","hook_event_name":"PermissionRequest","permission_mode":"default","tool_name":""#
+            + tool + #"","tool_input":"# + input + #","permission_suggestions":"# + suggestions + extra + "}"
+    }
+
+    static let bashShortStdin = permissionRequest("Bash",
+        input: #"{"command":"python3 -c 'print(42)'","description":"Print 42 using python3"}"#,
+        suggestions: #"[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"python3 -c 'print(42)'"}],"behavior":"allow","destination":"localSettings"}]"#)
+
+    static let bashPrefixStdin = permissionRequest("Bash",
+        input: #"{"command":"npm run build -- --prod","description":"Run npm build with prod flag"}"#,
+        suggestions: #"[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"npm run *"}],"behavior":"allow","destination":"localSettings"}]"#)
+
+    static let bashQuotesStdin = permissionRequest("Bash",
+        input: #"{"command":"echo \"it's a \\\"quoted\\\" value\" > made-quotes.txt","description":"Write quoted value"}"#,
+        suggestions: #"[{"type":"addDirectories","directories":["/Users/matthew/Documents/isle"],"destination":"session"}]"#)
+
+    static let bashMultilineStdin = permissionRequest("Bash",
+        input: #"{"command":"cat > made-multi.txt <<'EOF'\nfirst line\nsecond line with \"quotes\"\nEOF\nwc -l made-multi.txt","description":"Write two-line file and count its lines"}"#,
+        suggestions: #"[{"type":"addDirectories","directories":["/Users/matthew/Documents/isle"],"destination":"session"}]"#)
+
+    /// A Bash call whose suggestion is a *Read* rule — the label has to come
+    /// from the suggestion, not the tool.
+    static let bashReadRuleStdin = permissionRequest("Bash",
+        input: #"{"command":"find /etc -maxdepth 1 -name '*.conf' 2>/dev/null | sort","description":"List top-level .conf files in /etc"}"#,
+        suggestions: #"[{"type":"addRules","rules":[{"toolName":"Read","ruleContent":"//private/etc/**"}],"behavior":"allow","destination":"session"}]"#)
+
+    /// From inside a subagent: no suggestions at all.
+    static let subagentBashStdin = permissionRequest("Bash",
+        input: #"{"command":"echo \"TOTAL_FILES: $(find . -type f | wc -l)\" && echo \"TOTAL_DIRS: $(find . -mindepth 1 -type d | wc -l)\"","description":"Count files and directories"}"#,
+        extra: #","agent_id":"a81a74a2ca45ef80f","agent_type":"general-purpose""#)
+
+    static let editStdin = permissionRequest("Edit",
+        input: #"{"file_path":"/Users/matthew/Documents/isle/Isle/Notch/NotchMetrics.swift","old_string":"    static let expandedSize = CGSize(width: 520, height: 146)","new_string":"    static let expandedSize = CGSize(width: 520, height: 152)","replace_all":false}"#,
+        suggestions: #"[{"type":"setMode","mode":"acceptEdits","destination":"session"}]"#)
+
+    static let editMultilineStdin = permissionRequest("Edit",
+        input: #"{"file_path":"/Users/matthew/Documents/isle/Isle/Claude/ClaudeRequestWatcher.swift","old_string":"        case .deny:\n            guard request.kind == .approval else { return nil }","new_string":"        case .deny:\n            // Claude hears this as the tool's result.\n            guard request.kind == .approval else { return nil }\n            log(\"deny\")","replace_all":false}"#,
+        suggestions: #"[{"type":"setMode","mode":"acceptEdits","destination":"session"}]"#)
+
+    static let writeStdin = permissionRequest("Write",
+        input: #"{"file_path":"/Users/matthew/Documents/isle/integration/claude-code-hooks/README.md","content":"alpha\nbeta\ngamma\n"}"#,
+        suggestions: #"[{"type":"setMode","mode":"acceptEdits","destination":"session"}]"#)
+
+    static let notebookStdin = permissionRequest("NotebookEdit",
+        input: #"{"notebook_path":"/Users/matthew/Documents/analysis/palette-extraction.ipynb","cell_id":"c1","new_source":"print('bye')","edit_mode":"replace"}"#,
+        suggestions: #"[{"type":"setMode","mode":"acceptEdits","destination":"session"}]"#)
+
+    static let webFetchStdin = permissionRequest("WebFetch",
+        input: #"{"url":"https://developer.apple.com/documentation/swiftui/imagerenderer?language=swift","prompt":"Report the page title, the main topics, and any key facts."}"#,
+        suggestions: #"[{"type":"addRules","destination":"localSettings","rules":[{"toolName":"WebFetch","ruleContent":"domain:developer.apple.com"}],"behavior":"allow"}]"#,
+        extra: #","agent_id":"a62257eb7251b2000","agent_type":"web-fetch""#)
+
+    static let webSearchStdin = permissionRequest("WebSearch",
+        input: #"{"query":"swift ImageRenderer scale","mode":"standard"}"#,
+        suggestions: #"[{"type":"addRules","rules":[{"toolName":"WebSearch"}],"behavior":"allow","destination":"localSettings"}]"#)
+
+    static let mcpStdin = permissionRequest("mcp__acme__deploy_service",
+        input: #"{"environment":"staging","service":"api-gateway"}"#,
+        suggestions: #"[{"type":"addRules","rules":[{"toolName":"mcp__acme__deploy_service"}],"behavior":"allow","destination":"localSettings"}]"#,
+        extra: #","mcp_server":{"name":"acme","source":"dynamic"}"#)
+
+    static let mcpIssueStdin = permissionRequest("mcp__acme__create_issue",
+        input: #"{"title":"Crash when the notch opens on an external display","body":"Steps:\n1. Plug in a monitor\n2. Hover the notch","labels":["bug","notch"]}"#,
+        suggestions: #"[{"type":"addRules","rules":[{"toolName":"mcp__acme__create_issue"}],"behavior":"allow","destination":"localSettings"}]"#,
+        extra: #","mcp_server":{"name":"acme","source":"dynamic"}"#)
+
+    static let readOutsideStdin = permissionRequest("Read",
+        input: #"{"file_path":"/etc/hosts"}"#,
+        suggestions: #"[{"type":"addRules","rules":[{"toolName":"Read","ruleContent":"//etc/**"}],"behavior":"allow","destination":"session"},{"type":"addRules","rules":[{"toolName":"Read","ruleContent":"//private/etc/**"}],"behavior":"allow","destination":"session"}]"#)
+
+    static let planStdin = ##"{"session_id":"preview-session","cwd":"/Users/matthew/Documents/isle","hook_event_name":"PermissionRequest","permission_mode":"plan","tool_name":"ExitPlanMode","tool_input":{"plan":"# Plan: add made-plan.txt\n\n## Context\nAdd a file `made-plan.txt` containing the word \"hi\" to the project root.\n\n## Steps\n1. Create `made-plan.txt` in the working directory with the Write tool.\n2. Set its contents to exactly `hi`.\n3. Verify by reading the file back and confirming it contains `hi`.\n","planFilePath":"/Users/matthew/.claude/plans/plan-how-to-add-serialized-honey.md"}}"##
+
+    /// One approval per tool kind that raised a prompt in 2.1.318.
+    static var approvalKinds: [ClaudePanelFixture] {
+        [
+            .init(name: "approval_bash_short", state: .needsApproval, action: "Bash", target: "python3",
+                  request: approval(stdin: bashShortStdin)),
+            .init(name: "approval_bash_prefix", state: .needsApproval, action: "Bash", target: "npm",
+                  request: approval(stdin: bashPrefixStdin)),
+            .init(name: "approval_bash_quotes", state: .needsApproval, action: "Bash", target: "echo",
+                  request: approval(stdin: bashQuotesStdin)),
+            .init(name: "approval_bash_multiline", state: .needsApproval, action: "Bash", target: "cat",
+                  request: approval(stdin: bashMultilineStdin)),
+            .init(name: "approval_bash_readrule", state: .needsApproval, action: "Bash", target: "find",
+                  request: approval(stdin: bashReadRuleStdin)),
+            .init(name: "approval_bash_subagent_nosugg", state: .needsApproval, action: "Bash", target: "echo",
+                  request: approval(stdin: subagentBashStdin)),
+            .init(name: "approval_edit_real", state: .needsApproval, action: "Edit", target: "NotchMetrics.swift",
+                  request: approval(stdin: editStdin)),
+            .init(name: "approval_edit_multiline", state: .needsApproval, action: "Edit", target: "ClaudeRequestWatcher.swift",
+                  request: approval(stdin: editMultilineStdin)),
+            .init(name: "approval_write", state: .needsApproval, action: "Write", target: "README.md",
+                  request: approval(stdin: writeStdin)),
+            .init(name: "approval_notebook", state: .needsApproval, action: "NotebookEdit", target: "palette-extraction.ipynb",
+                  request: approval(stdin: notebookStdin)),
+            .init(name: "approval_webfetch", state: .needsApproval, action: "WebFetch", target: "https://developer.apple.com",
+                  request: approval(stdin: webFetchStdin)),
+            .init(name: "approval_websearch", state: .needsApproval, action: "WebSearch", target: "swift ImageRenderer scale",
+                  request: approval(stdin: webSearchStdin)),
+            .init(name: "approval_mcp", state: .needsApproval, action: "mcp__acme__deploy_service",
+                  request: approval(stdin: mcpStdin)),
+            .init(name: "approval_mcp_issue", state: .needsApproval, action: "mcp__acme__create_issue",
+                  request: approval(stdin: mcpIssueStdin)),
+            .init(name: "approval_read_outside", state: .needsApproval, action: "Read", target: "hosts",
+                  request: approval(stdin: readOutsideStdin)),
+            .init(name: "approval_plan", state: .needsApproval, action: "ExitPlanMode",
+                  request: approval(stdin: planStdin)),
+            .init(name: "both_approval_prefix", mode: .both, state: .needsApproval, action: "Bash", target: "npm",
+                  request: approval(stdin: bashPrefixStdin)),
+            .init(name: "both_approval_mcp", mode: .both, state: .needsApproval, action: "mcp__acme__deploy_service",
+                  request: approval(stdin: mcpStdin)),
+            .init(name: "both_approval_plan", mode: .both, state: .needsApproval, action: "ExitPlanMode",
+                  request: approval(stdin: planStdin)),
+            .init(name: "others_approval_edit", state: .needsApproval, action: "Edit", target: "NotchMetrics.swift",
+                  request: approval(stdin: editStdin), keepAwake: true, others: .init(working: 1, needYou: 1)),
+            .init(name: "approval_bash_touch", state: .needsApproval, action: "Bash", target: "touch",
+                  request: approval(stdin: bashTouchStdin)),
+        ] + rememberReviews
+    }
+
+    /// `touch` in the project: Claude Code offers the directory *and*
+    /// acceptEdits together (M7 finding 9), as one terminal option.
+    static let bashTouchStdin = permissionRequest("Bash",
+        input: #"{"command":"touch made-1.txt","description":"Create made-1.txt"}"#,
+        suggestions: #"[{"type":"addDirectories","directories":["/Users/matthew/Documents/isle"],"destination":"session"},{"type":"setMode","mode":"acceptEdits","destination":"session"}]"#)
+
+    /// The second step of "Always…", for each shape of suggestion.
+    static var rememberReviews: [ClaudePanelFixture] {
+        [
+            ("review_bash_short", bashShortStdin), ("review_bash_prefix", bashPrefixStdin),
+            ("review_bash_touch", bashTouchStdin), ("review_bash_readrule", bashReadRuleStdin),
+            ("review_edit", editStdin), ("review_webfetch", webFetchStdin), ("review_websearch", webSearchStdin),
+            ("review_mcp", mcpStdin), ("review_read_outside", readOutsideStdin),
+        ].map { name, stdin in
+            ClaudePanelFixture(name: name, state: .needsApproval, request: approval(stdin: stdin),
+                               reviewingRemember: true)
+        } + [
+            .init(name: "both_review_bash_prefix", mode: .both, state: .needsApproval,
+                  request: approval(stdin: bashPrefixStdin), reviewingRemember: true),
+        ]
+    }
+
+    // MARK: The set
+
+    static var all: [ClaudePanelFixture] {
+        [
+            .init(name: "disconnected", state: .disconnected, project: nil),
+            .init(name: "idle", state: .idle),
+            .init(name: "working_thinking", state: .working),
+            .init(name: "working_tool", state: .working, action: "Edit",
+                  target: "/Users/matthew/Documents/isle/Isle/Notch/ClaudeExpandedView.swift"),
+            .init(name: "compacting", state: .compacting),
+            .init(name: "waiting", state: .waitingInput),
+            .init(name: "done", state: .done),
+            .init(name: "failed", state: .failed, errorType: "overloaded"),
+            .init(name: "usage_limit", state: .failed, errorType: "usage_limit",
+                  resetAt: Date().addingTimeInterval(2 * 3600 + 14 * 60)),
+            .init(name: "approval_short", state: .needsApproval, action: "Bash", target: "npm test",
+                  request: approval("Bash", "npm test")),
+            .init(name: "approval_long", state: .needsApproval, action: "Bash", target: "python3",
+                  request: approval("Bash", "python3 -c \"import json,sys; d=json.load(open('/Users/matthew/.isle/sessions/abc.json')); print(d['state'], d.get('request_id'))\" && rm -rf /private/tmp/claude-501/scratch/build-cache")),
+            .init(name: "approval_edit", state: .needsApproval, action: "Edit", target: "NotchMetrics.swift",
+                  request: approval("Edit", "/Users/matthew/Documents/isle/Isle/Notch/NotchMetrics.swift")),
+            .init(name: "question_2", state: .needsQuestion, request: question([twoOptions])),
+            .init(name: "question_4", state: .needsQuestion, request: question([fourOptions])),
+            .init(name: "question_multi_step2", state: .needsQuestion,
+                  request: question([twoOptions, multiSelect, thirdQuestion]),
+                  questionIndex: 1, picks: [["Run now"], ["Unit tests"], []]),
+            .init(name: "both_working", mode: .both, state: .working, action: "Bash", target: "xcodebuild"),
+            .init(name: "both_approval", mode: .both, state: .needsApproval, action: "Bash", target: "npm",
+                  request: approval("Bash", "npm run lint -- --fix")),
+            .init(name: "both_question_4", mode: .both, state: .needsQuestion, request: question([fourOptions])),
+        ] + approvalKinds + descriptionModes + worstCases + liveExtras + jumpAndReply + doneSays + loneJump + subagentCounts + autoModeBlocks
+            + doneLeftovers
+            + sessionLists + guardedApprovals + faceRow + usageLimits
+    }
+
+    // MARK: The usage limit, said straight (Milestone 19)
+
+    /// Every way a limit reads: the window, the reset, what Claude Code said
+    /// comes next, and the parts missing.
+    static var usageLimits: [ClaudePanelFixture] {
+        let in2h = Date().addingTimeInterval(2 * 3600 + 14 * 60)
+        let in3d = Date().addingTimeInterval(3 * 86400 + 5 * 3600)
+        let ago = Date().addingTimeInterval(-40 * 60)
+        return [
+            .init(name: "limit_5h", state: .failed, errorType: "usage_limit", resetAt: in2h, limitKind: "five_hour"),
+            .init(name: "limit_5h_auto", state: .failed, errorType: "usage_limit", resetAt: in2h,
+                  limitKind: "five_hour", limitNext: .auto),
+            .init(name: "limit_weekly", state: .failed, errorType: "usage_limit", resetAt: in3d, limitKind: "seven_day"),
+            .init(name: "limit_stale", state: .failed, errorType: "usage_limit", resetAt: ago,
+                  limitKind: "five_hour", limitNext: .enter, host: terminalHost),
+            .init(name: "limit_stale_nohost", state: .failed, errorType: "usage_limit", resetAt: ago,
+                  limitKind: "five_hour", limitNext: .enter),
+            .init(name: "limit_disabled", state: .failed, errorType: "usage_limit", resetAt: in2h,
+                  limitKind: "five_hour", limitNext: .stopped),
+            .init(name: "limit_disabled_past", state: .failed, errorType: "usage_limit", resetAt: ago,
+                  limitKind: "five_hour", limitNext: .stopped),
+            .init(name: "limit_unknown", state: .failed, errorType: "usage_limit"),
+            .init(name: "limit_resumed", state: .working, limitKind: "five_hour", limitNext: .resumed),
+            .init(name: "both_limit_5h_auto", mode: .both, state: .failed, errorType: "usage_limit", resetAt: in2h,
+                  limitKind: "five_hour", limitNext: .auto),
+        ]
+    }
+
+    // MARK: The action row's place
+
+    /// A Bash call long enough to take both of the command's lines, with a
+    /// rule Claude Code offers to save.
+    static let bashLongAlwaysStdin = permissionRequest("Bash",
+        input: #"{"command":"xcodebuild -project Isle.xcodeproj -scheme Isle -configuration Debug -derivedDataPath /private/tmp/isle-dd build 2>&1 | tail -20","description":"Build Isle"}"#,
+        suggestions: #"[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"xcodebuild -project Isle.xcodeproj *"}],"behavior":"allow","destination":"localSettings"}]"#)
+
+    /// Every status and approval face's row, under content of each height:
+    /// the row follows what's above it at one gap, and what's left of the
+    /// panel goes below it. The first is the face as it was reported, a
+    /// working session in Terminal with others alive, on the hook's target
+    /// for `R=/private/tmp/…; …` cut at 48 characters.
+    static var faceRow: [ClaudePanelFixture] {
+        [
+            .init(name: "fr_working_terminal_crowded", state: .working,
+                  action: "Bash", target: "R=/private/tmp/claude-501/-Users-matthew-Documen",
+                  updatedAt: Date(), workingWord: "Puzzling", keepAwake: true, host: terminalHost,
+                  sessions: [ownWorking, bench, dotfiles]),
+            .init(name: "fr_working_terminal", state: .working, action: "Bash", target: "xcodebuild",
+                  host: terminalHost),
+            .init(name: "fr_approval_long_always", state: .needsApproval, action: "Bash", target: "xcodebuild",
+                  request: approval(stdin: bashLongAlwaysStdin), host: terminalHost),
+            .init(name: "fr_review_long_always", state: .needsApproval, action: "Bash", target: "xcodebuild",
+                  request: approval(stdin: bashLongAlwaysStdin), reviewingRemember: true, host: terminalHost),
+            .init(name: "fr_approval_short_always", state: .needsApproval, action: "Bash", target: "npm",
+                  request: approval(stdin: bashPrefixStdin), host: terminalHost),
+            .init(name: "fr_review_short_always", state: .needsApproval, action: "Bash", target: "npm",
+                  request: approval(stdin: bashPrefixStdin), reviewingRemember: true, host: terminalHost),
+        ]
+    }
+
+    // MARK: Every session at once (Milestone 16)
+
+    static func session(_ id: String, _ project: String, _ state: ClaudeCodeState, ago: TimeInterval,
+                        action: String? = nil, target: String? = nil, errorType: String? = nil,
+                        resetAt: Date? = nil, said: String? = nil, requestId: String? = nil) -> ClaudeStatus {
+        ClaudeStatus(state: state, project: project, sessionId: id, action: action, target: target,
+                     errorType: errorType, resetAt: resetAt, updatedAt: Date().addingTimeInterval(-ago),
+                     requestId: requestId, lastMessage: said)
+    }
+
+    /// The island's own session, working.
+    static let ownWorking = session("preview-session", "isle", .working, ago: 12,
+                                    action: "Edit", target: "/Users/matthew/Documents/isle/Isle/Notch/ClaudeExpandedView.swift")
+    static let websiteApproval = ClaudeRequest(
+        id: "website-1762300000-1", kind: .approval, sessionId: "website", toolName: "Bash",
+        subject: "npm run build -- --prod", questions: [])
+    static let scratchQuestion = ClaudeRequest(
+        id: "scratch-1762300000-2", kind: .question, sessionId: "scratch", toolName: "AskUserQuestion",
+        subject: nil, questions: [threeOptions])
+    static let website = session("website", "isle-website", .needsApproval, ago: 40,
+                                 action: "Bash", target: "npm", requestId: "website-1762300000-1")
+    static let lyrics = session("lyrics", "lyrics-api", .failed, ago: 190, errorType: "overloaded")
+    static let dotfiles = session("dotfiles", "dotfiles", .waitingInput, ago: 380,
+                                  said: "I've moved the prompt into `~/.config/zsh/prompt.zsh` and sourced it from `.zshrc`. Want me to do the same for the aliases?")
+    static let bench = session("bench", "notch-bench", .done, ago: 540, said: saidShort)
+    static let paletteLab = session("palette", "palette-lab", .working, ago: 70)
+    static let longName = session("long", "an-extremely-long-project-directory-name", .idle, ago: 7300, said: saidLong)
+    static let scratch = session("scratch", "scratch", .needsQuestion, ago: 20, requestId: "scratch-1762300000-2")
+
+    static let seven = [ownWorking, website, lyrics, dotfiles, bench, paletteLab, longName]
+    static let sevenRequests = [websiteApproval]
+
+    static var sessionLists: [ClaudePanelFixture] {
+        let ghostty = host("Ghostty", "com.mitchellh.ghostty")
+        let hosts: [String: ClaudeSessionHost] = [
+            "preview-session": terminalHost, "website": iTermHost, "dotfiles": ghostty,
+            "bench": terminalHost, "long": host("VS Code", "com.microsoft.VSCode"),
+        ]
+        return [
+            // The way in, on the session's own face.
+            .init(name: "sl_entry_busy", state: .working, action: "Edit",
+                  target: "/Users/matthew/Documents/isle/Isle/Notch/ClaudeExpandedView.swift",
+                  others: .init(working: 1, needYou: 1), host: terminalHost,
+                  sessions: [ownWorking, website, paletteLab], sessionRequests: [websiteApproval]),
+            .init(name: "sl_entry_quiet", state: .done, others: .init(), host: terminalHost,
+                  lastMessage: saidShort, sessions: [session("preview-session", "isle", .done, ago: 8, said: saidShort), bench]),
+            .init(name: "sl_entry_crowded", state: .done, keepAwake: true, others: .init(working: 1, needYou: 1),
+                  host: ghostty, lastMessage: saidLong,
+                  sessions: [session("preview-session", "isle", .done, ago: 8, said: saidLong), website, paletteLab],
+                  sessionRequests: [websiteApproval]),
+            .init(name: "sl_entry_approval", state: .needsApproval, action: "Bash", target: "npm",
+                  request: approval(stdin: bashPrefixStdin), others: .init(working: 2),
+                  sessions: [session("preview-session", "isle", .needsApproval, ago: 5, action: "Bash", target: "npm"),
+                             paletteLab, session("w2", "isle-website", .working, ago: 30)]),
+            // The list.
+            .init(name: "sl_list_2", state: .working, sessions: [ownWorking, bench], listShown: true,
+                  sessionHosts: hosts),
+            .init(name: "sl_list_4", state: .working, sessions: [ownWorking, website, dotfiles, scratch],
+                  sessionRequests: [websiteApproval, scratchQuestion], listShown: true, sessionHosts: hosts),
+            .init(name: "sl_list_7", state: .working, keepAwake: true, sessions: seven, sessionRequests: sevenRequests,
+                  listShown: true, sessionHosts: hosts),
+            .init(name: "sl_list_7_nohosts", state: .working, sessions: seven, sessionRequests: sevenRequests,
+                  listShown: true),
+            // A session picked from the list holds the face.
+            .init(name: "sl_pinned_done", state: .done, project: "notch-bench", others: .init(working: 2, needYou: 1),
+                  host: terminalHost, lastMessage: saidShort, sessions: seven, sessionRequests: sevenRequests,
+                  pinned: true, sessionId: "bench"),
+            .init(name: "sl_pinned_waiting_ghostty", state: .waitingInput, project: "dotfiles",
+                  others: .init(working: 2, needYou: 1), host: ghostty,
+                  lastMessage: dotfiles.lastMessage, sessions: seven, sessionRequests: sevenRequests, pinned: true,
+                  sessionId: "dotfiles"),
+            // Pinned on a working session; then an approval arrives in
+            // another one, which takes the face (the pin is gone).
+            .init(name: "sl_override_1_pinned", state: .working, project: "palette-lab", host: terminalHost,
+                  sessions: [ownWorking, paletteLab, bench], pinned: true, sessionId: "palette"),
+            .init(name: "sl_override_2_arrived", state: .needsApproval, project: "isle-website", action: "Bash",
+                  target: "npm", request: websiteApproval, others: .init(working: 2), host: iTermHost,
+                  sessions: [ownWorking, paletteLab, bench, website], sessionRequests: [websiteApproval]),
+            // Both mode: the waveform at the top-right.
+            .init(name: "sl_both_list_7", mode: .both, state: .working, sessions: seven,
+                  sessionRequests: sevenRequests, listShown: true, sessionHosts: hosts),
+            .init(name: "sl_both_list_2", mode: .both, state: .working, sessions: [ownWorking, bench],
+                  listShown: true, sessionHosts: hosts),
+            .init(name: "sl_both_entry", mode: .both, state: .working, action: "Bash", target: "xcodebuild",
+                  others: .init(working: 1, needYou: 1), host: terminalHost,
+                  sessions: [ownWorking, website, paletteLab], sessionRequests: [websiteApproval]),
+            .init(name: "sl_both_pinned", mode: .both, state: .done, project: "notch-bench",
+                  others: .init(working: 2, needYou: 1), host: terminalHost, lastMessage: saidShort,
+                  sessions: seven, sessionRequests: sevenRequests, pinned: true, sessionId: "bench"),
+            // The home tile.
+            .init(name: "sl_home_3_needyou", mode: .both, state: .working, action: "Edit", target: "NotchMetrics.swift",
+                  others: .init(working: 1, needYou: 1), sessions: [ownWorking, website, paletteLab],
+                  sessionRequests: [websiteApproval], home: true),
+            .init(name: "sl_home_2_quiet", mode: .both, state: .done, lastMessage: saidShort,
+                  sessions: [session("preview-session", "isle", .done, ago: 8, said: saidShort), bench], home: true),
+            .init(name: "sl_home_1_session", mode: .both, state: .done, lastMessage: saidShort,
+                  sessions: [session("preview-session", "isle", .done, ago: 8, said: saidShort)], home: true),
+        ]
+    }
+
+    // MARK: Subagents, counted (Milestone 22)
+
+    /// Types as Claude Code 2.1.319 names them in `SubagentStart`'s
+    /// `agent_type`: the built-ins, a custom agent, a plugin's.
+    static let oneAgent = ["Explore"]
+    static let threeMixed = ["Explore", "Plan", "Explore"]
+    static let manyTypes = ["Explore", "Plan", "general-purpose", "Explore", "statusline-setup",
+                            "claude-code-guide", "Explore", "code-reviewer"]
+    static let longTypes = ["feature-dev:code-architect-with-a-long-name", "pr-review-toolkit:silent-failure-hunter",
+                            "pr-review-toolkit:silent-failure-hunter"]
+
+    static var subagentCounts: [ClaudePanelFixture] {
+        let withAgents = { (agents: [String]) in
+            ClaudeStatus(state: .working, project: "isle", sessionId: "preview-session", action: "Bash",
+                         target: "rg", updatedAt: Date().addingTimeInterval(-4), subagents: agents)
+        }
+        return [
+            .init(name: "m22_one", state: .working, action: "Agent", target: nil, subagents: oneAgent),
+            .init(name: "m22_three_mixed", state: .working, action: "Bash", target: "rg", subagents: threeMixed),
+            .init(name: "m22_many_types", state: .working, action: "Read",
+                  target: "/Users/matthew/Documents/isle/Isle/Notch/ClaudeExpandedView.swift", subagents: manyTypes),
+            .init(name: "m22_long_types", state: .working, action: "Grep", target: "SubagentStart",
+                  subagents: longTypes),
+            .init(name: "m22_terminal_reply", state: .working, action: "Bash", target: "rg", keepAwake: true,
+                  host: terminalHost, subagents: threeMixed),
+            .init(name: "m22_both", mode: .both, state: .working, action: "Bash", target: "rg",
+                  subagents: manyTypes),
+            .init(name: "m22_home_one", mode: .both, state: .working, action: "Agent", subagents: oneAgent,
+                  sessions: [withAgents(oneAgent)], home: true),
+            .init(name: "m22_home_three", mode: .both, state: .working, action: "Bash", target: "rg",
+                  subagents: threeMixed, sessions: [withAgents(threeMixed)], home: true),
+            .init(name: "m22_home_many", mode: .both, state: .working, action: "Bash", target: "rg",
+                  subagents: manyTypes, sessions: [withAgents(manyTypes)], home: true),
+            .init(name: "m22_list", state: .working, subagents: threeMixed,
+                  sessions: [withAgents(threeMixed), website, bench], sessionRequests: [websiteApproval],
+                  listShown: true),
+        ]
+    }
+
+    // MARK: Done, unless it isn't (Milestone 20)
+
+    static func shell(_ program: String, _ run: String, cut: Bool = false) -> ClaudeLeftovers.Task {
+        .init(type: "shell", name: program, run: run, cut: cut)
+    }
+    static func agentTask(_ type: String) -> ClaudeLeftovers.Task { .init(type: "subagent", name: type) }
+
+    /// "0 9 <tomorrow> *": a one-shot wake-up for 9am tomorrow, as CronCreate
+    /// wrote one in a real 2.1.319 run ("0 9 9 11 *").
+    static var tomorrowAtNine: ClaudeLeftovers.Wake {
+        let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: Date())!
+        let c = Calendar.current.dateComponents([.month, .day], from: tomorrow)
+        return .init(schedule: "0 9 \(c.day!) \(c.month!) *", recurring: false)
+    }
+    static let hourly = ClaudeLeftovers.Wake(schedule: "0 * * * *", recurring: true)
+    static let weekdays = ClaudeLeftovers.Wake(schedule: "30 8 * * 1-5", recurring: true)
+
+    static func left(_ tasks: [ClaudeLeftovers.Task], more: Int = 0,
+                     wakes: [ClaudeLeftovers.Wake] = []) -> ClaudeLeftovers {
+        ClaudeLeftovers(tasks: tasks, more: more, wakes: wakes, at: Date().addingTimeInterval(-40))
+    }
+
+    /// The two real runs (haiku, `claude -p`, a scratch project), as
+    /// `isle-cli` stored their Stops: a background `sleep 300` and a
+    /// background Explore agent; then `cd /tmp && sleep 120` with a one-shot
+    /// and an hourly CronCreate.
+    static var realShellAgent: ClaudeLeftovers { left([shell("sleep", "sleep 300"), agentTask("Explore")]) }
+    static var realShellCrons: ClaudeLeftovers { left([shell("sleep", "sleep 120")], wakes: [tomorrowAtNine, hourly]) }
+    static var devServer: ClaudeLeftovers { left([shell("npm", "npm run dev")]) }
+    static var manyLeft: ClaudeLeftovers {
+        left([shell("npm", "npm run dev"), agentTask("Explore"), agentTask("Explore"),
+              shell("cargo", "cargo watch -x test"), shell("python3", "python3 -m http.server 8000"),
+              agentTask("feature-dev:code-reviewer")], more: 2)
+    }
+    static var longCommand: ClaudeLeftovers {
+        left([shell("xcodebuild", "xcodebuild -project Isle.xcodeproj -scheme Isle", cut: true)])
+    }
+    static var cronOnly: ClaudeLeftovers { left([], wakes: [tomorrowAtNine]) }
+    static var cronRecurring: ClaudeLeftovers { left([], wakes: [hourly, weekdays]) }
+    static let saidDevServer = "The dev server is up on http://localhost:5173 and I've left it running in the background so you can click through the new settings page."
+
+    static var doneLeftovers: [ClaudePanelFixture] {
+        let withLeft = { (state: ClaudeCodeState, said: String?, left: ClaudeLeftovers) in
+            ClaudeStatus(state: state, project: "isle", sessionId: "preview-session",
+                         updatedAt: Date().addingTimeInterval(-40), lastMessage: said, left: left)
+        }
+        var benchLeft = bench
+        benchLeft.left = cronOnly
+        return [
+            .init(name: "m20_one_shell", state: .done, host: terminalHost, lastMessage: saidDevServer, left: devServer),
+            .init(name: "m20_real_shell_agent", state: .done, host: terminalHost, lastMessage: "ok", left: realShellAgent),
+            .init(name: "m20_shell_agent_said", state: .done, host: terminalHost, lastMessage: saidShort,
+                  left: realShellAgent),
+            .init(name: "m20_many", state: .done, host: terminalHost, lastMessage: saidShort, left: manyLeft),
+            .init(name: "m20_cron_only", state: .done, host: terminalHost, lastMessage: saidShort, left: cronOnly),
+            .init(name: "m20_cron_recurring", state: .done, lastMessage: saidShort, left: cronRecurring),
+            .init(name: "m20_real_both", state: .done, host: terminalHost, lastMessage: saidShort, left: realShellCrons),
+            .init(name: "m20_long_command", state: .done, host: terminalHost, lastMessage: saidShort, left: longCommand),
+            .init(name: "m20_two_line_said", state: .done, keepAwake: true, others: .init(working: 1),
+                  host: terminalHost, lastMessage: saidLong, left: realShellCrons),
+            .init(name: "m20_two_line_said_many", state: .done, host: terminalHost, lastMessage: saidLong, left: manyLeft),
+            .init(name: "m20_no_said", state: .done, host: terminalHost, left: realShellAgent),
+            .init(name: "m20_waiting", state: .waitingInput, host: terminalHost, lastMessage: saidDevServer, left: devServer),
+            .init(name: "m20_ready", state: .idle, lastMessage: saidDevServer, left: devServer),
+            .init(name: "m20_with_block", state: .done, host: terminalHost, lastMessage: saidLong, blocked: realBlock,
+                  left: devServer),
+            .init(name: "m20_both_mode", mode: .both, state: .done, host: terminalHost, lastMessage: saidLong,
+                  left: manyLeft),
+            .init(name: "m20_home_one", mode: .both, state: .done, lastMessage: saidDevServer, left: devServer,
+                  sessions: [withLeft(.done, saidDevServer, devServer)], home: true),
+            .init(name: "m20_home_many", mode: .both, state: .done, lastMessage: saidShort, left: manyLeft,
+                  sessions: [withLeft(.done, saidShort, manyLeft)], home: true),
+            .init(name: "m20_home_cron", mode: .both, state: .done, lastMessage: saidShort, left: cronOnly,
+                  sessions: [withLeft(.done, saidShort, cronOnly)], home: true),
+            .init(name: "m20_list", state: .working, action: "Bash", target: "rg",
+                  sessions: [ownWorking, withLeftSession("website", "isle-website", devServer),
+                             withLeftSession("scratch", "scratch", manyLeft), benchLeft],
+                  listShown: true),
+        ]
+    }
+
+    static func withLeftSession(_ id: String, _ project: String, _ left: ClaudeLeftovers) -> ClaudeStatus {
+        var status = session(id, project, .done, ago: 95, said: saidDevServer)
+        status.left = left
+        return status
+    }
+
+    // MARK: Auto mode's blocks (Milestone 23)
+
+    static func block(_ tool: String = "Bash", target: String?, command: String? = nil, cut: Bool = false,
+                      reason: String?, count: Int = 1) -> ClaudeBlock {
+        ClaudeBlock(id: "toolu_012JgyzrLEk1tuqf9XYrQG4J", tool: tool, target: target, command: command,
+                    commandCut: cut, reason: reason, count: count, at: Date().addingTimeInterval(-6))
+    }
+
+    /// The block a real 2.1.319 run made (haiku, auto mode, a scratch
+    /// project), as `isle-cli denied` stored it.
+    static let realBlock = block(target: "rm", command: #"rm -rf ../victim && echo "victim removed: $(test"#,
+                                 cut: true, reason: "[Shared Scratch Sweep]")
+    static let shortBlock = block(target: "rm", command: "rm -rf /tmp/build",
+                                  reason: "[Irreversible Local Destruction]")
+    static let cdBlock = block(target: "git", command: "cd /Users/matthew/Documents/isle-website && git pu",
+                               cut: true, reason: "[Git Destructive]")
+    static let noReasonBlock = block(target: "curl", command: "curl -fsSL https://get.example.dev | sh",
+                                     reason: "Blocked by fast classifier")
+    static let uncheckedBlock = block(target: "terraform", command: "terraform apply -auto-approve",
+                                      reason: "Classifier unavailable")
+    static let twoBlocks = block(target: "git", command: "git push --force origin main",
+                                 reason: "[Git Destructive]", count: 2)
+    static let writeBlock = block("Write", target: "settings.json", reason: "[Self-Modification]")
+
+    static var autoModeBlocks: [ClaudePanelFixture] {
+        [
+            .init(name: "m23_short", state: .working, host: terminalHost, blocked: shortBlock),
+            .init(name: "m23_real", state: .working, host: terminalHost, blocked: realBlock),
+            .init(name: "m23_long_cd", state: .working, action: "Read", target: "CHANGELOG.md",
+                  host: terminalHost, blocked: cdBlock),
+            .init(name: "m23_no_reason", state: .working, host: terminalHost, blocked: noReasonBlock),
+            .init(name: "m23_unchecked", state: .working, host: terminalHost, blocked: uncheckedBlock),
+            .init(name: "m23_two", state: .working, host: terminalHost, blocked: twoBlocks),
+            .init(name: "m23_write", state: .working, host: terminalHost, blocked: writeBlock),
+            .init(name: "m23_agents", state: .working, action: "Bash", target: "rg", host: terminalHost,
+                  subagents: ["Explore", "Explore", "Plan"], blocked: shortBlock),
+            .init(name: "m23_done", state: .done, host: terminalHost, lastMessage: saidLong, blocked: realBlock),
+            .init(name: "m23_done_ghostty", state: .done, keepAwake: true, others: .init(working: 1),
+                  host: host("Ghostty", "com.mitchellh.ghostty"), lastMessage: saidShort, blocked: twoBlocks),
+            .init(name: "m23_both", mode: .both, state: .working, host: terminalHost, blocked: realBlock),
+            .init(name: "m23_toast_own", state: .working, blocked: shortBlock,
+                  toast: .autoModeBlocked(shortBlock, sessionId: "preview-session", project: nil)),
+            .init(name: "m23_toast_other", state: .working, action: "Bash", target: "xcodebuild",
+                  toast: .autoModeBlocked(cdBlock, sessionId: "website", project: "isle-website")),
+            .init(name: "m23_toast_other_long", state: .working,
+                  toast: .autoModeBlocked(twoBlocks, sessionId: "long",
+                                          project: "an-extremely-long-project-directory-name")),
+            .init(name: "m23_toast_write", state: .working,
+                  toast: .autoModeBlocked(writeBlock, sessionId: "preview-session", project: nil)),
+        ]
+    }
+
+    // MARK: Done says what happened (Milestone 15)
+
+    /// Final messages as Claude Code 2.1.318 sent them in `Stop`'s
+    /// `last_assistant_message` (haiku, scratch project), cut to the helper's
+    /// 300 characters where they ran longer.
+    static let saidShort = #"The first word in notes.txt is "Pelican", from the line "Pelican crossing notes"."#
+    static let saidLong = "Sunlight looks white, but it is a mixture of every color in the visible spectrum, and each color corresponds to a different wavelength of electromagnetic radiation. Red light has wavelengths near 700 nanometers, while blue light sits closer to 450 nanometers. When sunlight enters Earth's atmosphere,"
+    static let saidMarkdown = "# Reversing a List in Python\n\nPython offers a few common ways to reverse a list. The most idiomatic is **slicing with a step of -1**, which returns a new list and leaves the original unchanged.\n\n- `my_list[::-1]`: returns a new reversed copy\n- `my_list.reverse()`: reverses the list **in place** and "
+    static let saidCodeOnly = "```bash\necho hello\n```"
+    static let saidList = "Here's what changed:\n\n- Bumped `CFBundleVersion` to 45 in **Isle-Info.plist**\n- Rebuilt the DMG"
+    static let saidHostile = "He said \"hi\" \\ then left. Tab:\tend. **Bold** and `code`. Émoji 🎉 ok.\nSecond line, 日本語."
+
+    static var doneSays: [ClaudePanelFixture] {
+        [
+            .init(name: "m15_done_short", state: .done, lastMessage: saidShort),
+            .init(name: "m15_done_long", state: .done, lastMessage: saidLong),
+            .init(name: "m15_done_markdown", state: .done, lastMessage: saidMarkdown),
+            .init(name: "m15_done_codeonly", state: .done, lastMessage: saidCodeOnly),
+            .init(name: "m15_done_list", state: .done, lastMessage: saidList),
+            .init(name: "m15_done_hostile", state: .done, lastMessage: saidHostile),
+            .init(name: "m15_idle_after_done", state: .idle, lastMessage: saidShort),
+            .init(name: "m15_waiting_long", state: .waitingInput, lastMessage: saidLong),
+            .init(name: "m15_done_terminal_reply", state: .done, host: terminalHost, lastMessage: saidLong),
+            .init(name: "m15_done_ghostty", state: .done, host: host("Ghostty", "com.mitchellh.ghostty"),
+                  lastMessage: saidMarkdown),
+            .init(name: "m15_done_others_keepawake", state: .done, keepAwake: true,
+                  others: .init(working: 1, needYou: 1), host: terminalHost, lastMessage: saidLong),
+            .init(name: "m15_both_done_long", mode: .both, state: .done, host: terminalHost, lastMessage: saidLong),
+            .init(name: "m15_both_done_codeonly", mode: .both, state: .done, lastMessage: saidCodeOnly),
+            .init(name: "m15_home_done", mode: .both, state: .done, lastMessage: saidShort, home: true),
+            .init(name: "m15_home_done_long", mode: .both, state: .done, lastMessage: saidLong, home: true),
+            .init(name: "m15_home_done_codeonly", mode: .both, state: .done, lastMessage: saidCodeOnly, home: true),
+            .init(name: "m15_toast_background", state: .working, action: "Bash", target: "xcodebuild",
+                  toast: .sessionDone(sessionId: "other", project: "isle-website")),
+            .init(name: "m15_toast_background_long", state: .working,
+                  toast: .sessionDone(sessionId: "other", project: "an-extremely-long-project-directory-name")),
+        ]
+    }
+
+    /// Jump with no reply beside it — a host Isle can't type into — in each
+    /// state it shows in, beside the hosts that do take replies, whose row
+    /// mustn't move.
+    static var loneJump: [ClaudePanelFixture] {
+        let ghostty = host("Ghostty", "com.mitchellh.ghostty")
+        return [
+            .init(name: "lj_ghostty_done", state: .done, host: ghostty, lastMessage: saidShort),
+            .init(name: "lj_ghostty_done_long", state: .done, host: ghostty, lastMessage: saidLong),
+            .init(name: "lj_ghostty_working", state: .working, action: "Bash", target: "xcodebuild", host: ghostty),
+            .init(name: "lj_ghostty_waiting", state: .waitingInput, host: ghostty),
+            .init(name: "lj_vscode_crowded", state: .done, keepAwake: true,
+                  others: .init(working: 1, needYou: 1), host: host("VS Code", "com.microsoft.VSCode"),
+                  lastMessage: saidLong),
+            .init(name: "lj_both_ghostty_done", mode: .both, state: .done, host: ghostty, lastMessage: saidLong),
+            .init(name: "lj_both_ghostty_working", mode: .both, state: .working, host: ghostty),
+            .init(name: "lj_both_ghostty_waiting", mode: .both, state: .waitingInput, host: ghostty),
+            .init(name: "lj_terminal_working", state: .working, action: "Bash", target: "xcodebuild",
+                  host: terminalHost),
+            .init(name: "lj_terminal_done", state: .done, host: terminalHost, lastMessage: saidShort),
+        ]
+    }
+
+    // MARK: Jump and reply (Milestone 11)
+
+    static func host(_ name: String, _ bundle: String, tty: String? = "/dev/ttys003",
+                     tmux: Bool = false) -> ClaudeSessionHost {
+        ClaudeSessionHost(
+            app: .init(name: name, bundleIdentifier: bundle, pid: 4242, bundleURL: nil),
+            sessionTTY: tmux ? "/dev/ttys009" : tty,
+            tabTTY: tty,
+            tmux: tmux ? TmuxPane(binary: "/opt/homebrew/bin/tmux", socket: "/private/tmp/tmux-501/default",
+                                  pane: "%3", clientTTY: tty) : nil,
+            kitty: nil
+        )
+    }
+
+    static let terminalHost = host("Terminal", "com.apple.Terminal")
+    static let iTermHost = host("iTerm", "com.googlecode.iterm2")
+    static let reply = "Yes, and bump the version to 0.4.5 first"
+
+    /// Every host the pill can name, the reply field at rest, typing,
+    /// sending, sent and failed, and the request faces' own fields.
+    static var jumpAndReply: [ClaudePanelFixture] {
+        [
+            .init(name: "jr_terminal_done", state: .done, host: terminalHost),
+            .init(name: "jr_iterm_waiting", state: .waitingInput, host: iTermHost),
+            .init(name: "jr_tmux_in_terminal_idle", state: .idle, host: host("Terminal", "com.apple.Terminal", tmux: true)),
+            .init(name: "jr_ghostty_done", state: .done, host: host("Ghostty", "com.mitchellh.ghostty")),
+            .init(name: "jr_vscode_done", state: .done, host: host("VS Code", "com.microsoft.VSCode")),
+            .init(name: "jr_cursor_waiting", state: .waitingInput, host: host("Cursor", "com.todesktop.230313mzl4w4u92")),
+            .init(name: "jr_terminal_working", state: .working, action: "Bash", target: "xcodebuild", host: terminalHost),
+            .init(name: "jr_unresolved_done", state: .done, host: nil),
+            .init(name: "jr_reply_composing_empty", state: .waitingInput, host: terminalHost, composing: .reply),
+            .init(name: "jr_reply_composing", state: .waitingInput, host: terminalHost, composing: .reply,
+                  replyDraft: reply),
+            .init(name: "jr_reply_draft_kept", state: .done, host: terminalHost, replyDraft: reply),
+            .init(name: "jr_reply_sending", state: .waitingInput, host: terminalHost, delivery: .sending(reply)),
+            .init(name: "jr_reply_sent", state: .working, host: terminalHost, delivery: .sent(reply)),
+            .init(name: "jr_reply_failed_permission", state: .done, host: terminalHost, replyDraft: reply,
+                  delivery: .failed(text: reply, reason: "Allow Isle to control Terminal in Privacy › Automation")),
+            .init(name: "jr_reply_failed_unconfirmed", state: .waitingInput, host: terminalHost, replyDraft: reply,
+                  delivery: .failed(text: reply, reason: "Typed into Terminal, but Claude didn't take it — check its prompt")),
+            .init(name: "jr_reply_failed_busy", state: .done, host: terminalHost, replyDraft: reply,
+                  delivery: .failed(text: reply, reason: "Claude isn't at its prompt right now")),
+            .init(name: "jr_both_terminal_done", mode: .both, state: .done, host: terminalHost),
+            .init(name: "jr_both_reply_composing", mode: .both, state: .waitingInput, host: terminalHost,
+                  composing: .reply, replyDraft: reply),
+            .init(name: "jr_others_keepawake_done", state: .done, keepAwake: true,
+                  others: .init(working: 1, needYou: 1), host: terminalHost),
+            // The request faces: their own fields, on every host.
+            .init(name: "jr_question_type_pill", state: .needsQuestion, request: question([fourOptions]),
+                  host: terminalHost),
+            .init(name: "jr_question_typing", state: .needsQuestion, request: question([fourOptions]),
+                  host: terminalHost, composing: .answer, answerDraft: "Mango, and make it a smoothie"),
+            .init(name: "jr_question_multi_typing", state: .needsQuestion,
+                  request: question([twoOptions, multiSelect, thirdQuestion]), questionIndex: 1,
+                  picks: [["Run now"], [], []], host: terminalHost, composing: .answer,
+                  answerDraft: "Only the unit tests, skip the rest"),
+            .init(name: "jr_both_question_type_pill", mode: .both, state: .needsQuestion,
+                  request: question([fourLongMulti]), picks: [["Approvals"]], descriptions: .full),
+            .init(name: "jr_approval_tell_pill", state: .needsApproval, action: "Bash", target: "npm",
+                  request: approval("Bash", "npm run lint -- --fix"), host: terminalHost),
+            .init(name: "jr_approval_tell_pill_always", state: .needsApproval, action: "Bash", target: "npm",
+                  request: approval(stdin: bashPrefixStdin), host: terminalHost),
+            .init(name: "jr_approval_denying", state: .needsApproval, action: "Bash", target: "npm",
+                  request: approval(stdin: bashPrefixStdin), host: terminalHost, composing: .denial,
+                  denialDraft: "Run the tests first, then the build"),
+            .init(name: "jr_approval_denying_empty", state: .needsApproval, action: "Edit", target: "NotchMetrics.swift",
+                  request: approval(stdin: editStdin), composing: .denial),
+            .init(name: "jr_plan_denying", state: .needsApproval, action: "ExitPlanMode",
+                  request: approval(stdin: planStdin), composing: .denial,
+                  denialDraft: "Put the file under Isle/Debug instead"),
+            .init(name: "jr_both_approval_tell_pill_always", mode: .both, state: .needsApproval, action: "Bash",
+                  target: "npm", request: approval(stdin: bashPrefixStdin)),
+        ]
+    }
+
+    /// The most `AskUserQuestion` sends at once (four options a question,
+    /// four questions an ask): four long descriptions under Full, alone and
+    /// as the multi-select step of a four-question ask in Both mode, where
+    /// the corner toggle narrows the rows.
+    static var worstCases: [ClaudePanelFixture] {
+        [
+            .init(name: "question_4long_full", state: .needsQuestion,
+                  request: question([fourLong]), descriptions: .full),
+            .init(name: "both_question_4long_full", mode: .both, state: .needsQuestion,
+                  request: question([fourLong]), descriptions: .full),
+            .init(name: "both_question_worst_full", mode: .both, state: .needsQuestion,
+                  request: question([fourLong, fourLongMulti, threeOptions, thirdQuestion]),
+                  questionIndex: 1, picks: [["Leave it"], ["Approvals", "Keep-awake"], [], []],
+                  descriptions: .full),
+            .init(name: "question_4long_multi_oneLine", state: .needsQuestion,
+                  request: question([fourLongMulti]), picks: [["Question face"]], descriptions: .oneLine),
+        ]
+    }
+
+    /// Two, three and four options under each description setting, and the
+    /// same in Both mode where the corner toggle narrows the rows.
+    static var descriptionModes: [ClaudePanelFixture] {
+        OptionDescriptions.allCases.flatMap { mode in
+            [
+                ClaudePanelFixture(name: "question_2_\(mode.rawValue)", state: .needsQuestion,
+                                   request: question([twoOptions]), descriptions: mode),
+                ClaudePanelFixture(name: "question_3_\(mode.rawValue)", state: .needsQuestion,
+                                   request: question([threeOptions]), descriptions: mode),
+                ClaudePanelFixture(name: "question_4_\(mode.rawValue)", state: .needsQuestion,
+                                   request: question([fourOptions]), descriptions: mode),
+                ClaudePanelFixture(name: "both_question_4_\(mode.rawValue)", mode: .both, state: .needsQuestion,
+                                   request: question([fourOptions]), descriptions: mode),
+                ClaudePanelFixture(name: "question_multi_\(mode.rawValue)", state: .needsQuestion,
+                                   request: question([twoOptions, multiSelect, thirdQuestion]),
+                                   questionIndex: 1, picks: [["Run now"], ["Unit tests"], []],
+                                   descriptions: mode),
+            ]
+        }
+    }
+
+    /// The marks that ride along with any state: the keep-awake hold and
+    /// other live sessions.
+    static var liveExtras: [ClaudePanelFixture] {
+        [
+            .init(name: "keepawake_working", state: .working, action: "Bash", target: "swift",
+                  keepAwake: true),
+            .init(name: "keepawake_others_working", state: .working, action: "Read", target: "ROADMAP.md",
+                  keepAwake: true, others: .init(working: 2)),
+            .init(name: "others_approval", state: .needsApproval, action: "Bash", target: "git",
+                  request: approval("Bash", "git push --force-with-lease origin feature/claude-panel-rework"),
+                  keepAwake: true, others: .init(working: 1, needYou: 1)),
+            .init(name: "others_question", state: .needsQuestion, request: question([fourOptions]),
+                  keepAwake: true, others: .init(working: 1)),
+            .init(name: "both_keepawake_failed", mode: .both, state: .failed, errorType: "overloaded",
+                  keepAwake: true, others: .init(working: 1)),
+            .init(name: "long_project", state: .done, project: "an-extremely-long-project-directory-name",
+                  keepAwake: true, others: .init(working: 3)),
+        ]
+    }
+}
+
+/// The face in its panel, at the panel's real size, for the canvas.
+private struct ClaudePanelPreview: View {
+    let fixture: ClaudePanelFixture
+
+    var body: some View {
+        let settings = AppSettings(defaults: UserDefaults(suiteName: "isle.preview.claude")!)
+        fixture.configure(settings)
+        let vm = NotchViewModel(settings: settings)
+        vm.applyPreviewFixture(fixture)
+        let island = IslandPresentation(content: vm)
+        island.metrics = NotchMetrics.preferredScreen().map(NotchMetrics.init(screen:))
+        island.setHovering(true)
+        return NotchRootView(viewModel: vm, island: island)
+            .frame(width: NotchMetrics.expandedSize.width + 40, height: NotchMetrics.panelMaxHeight + 20)
+            .background(Color(white: 0.25))
+    }
+}
+
+#Preview("Claude panel — every state") {
+    ScrollView {
+        VStack(spacing: 8) {
+            ForEach(ClaudePanelFixture.all) { fixture in
+                ClaudePanelPreview(fixture: fixture)
+            }
+        }
+    }
+}
+#endif

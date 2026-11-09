@@ -1,0 +1,367 @@
+//
+//  ClaudePanelLayout.swift
+//
+//  The Claude face's one layout, as numbers. Every face — a status, an
+//  approval, a question — is the same four regions in the same column:
+//
+//    eyebrow   where it is and what else is going on: the project and how
+//              long ago, or the question's header and step; on the right,
+//              the other live sessions and the keep-awake mark.
+//    title     the state as a headline, or the question itself.
+//    body      what Claude is doing, the exact command to approve, or the
+//              options to pick from.
+//    actions   one row of pills: Approve / Deny / Terminal, Answer in
+//              terminal / Next, or Jump and the reply field. Held empty on a
+//              status face with nothing to offer, at its usual height.
+//
+//  The eyebrow and title sit at the same height on every face, so moving
+//  between states cross-fades text in place rather than shuffling rows. On a
+//  status or approval face the action row follows the body at `bodyGap`, and
+//  the panel's spare room goes below it; a request that can switch its body
+//  between one line and two (an edit's note, Always…'s review) holds two, so
+//  its buttons don't move under the pointer.
+//
+//  The question face is the one that grows, and the one that rearranges: the
+//  glyph leaves, and the eyebrow, the question and the options take the
+//  face's whole width. The panel is sized from these same numbers before it's drawn
+//  (`questionContentHeight`, read by `NotchMetrics.panelHeight`), and
+//  the view lays the rows out from the same `OptionsFit`, so the two can't
+//  disagree.
+//
+//  Every option is always in view. `AskUserQuestion` sends at most four, and
+//  when the panel's cap can't hold them as the description setting draws
+//  them, the descriptions give way — shorter, then beside the label, then
+//  gone — never the options themselves (see `fit`).
+//
+
+import SwiftUI
+import AppKit
+
+@MainActor
+enum ClaudePanelLayout {
+    // MARK: - Columns
+
+    /// The marker: the album cover's footprint on the music face, raised the
+    /// same distance into the housing band (safe there — no hardware left of
+    /// the cutout). Top-aligned, so it lands on one spot on every face, and
+    /// its top-left corner stays put when the question face shrinks it.
+    /// The album is centred in the 104pt content area and raised 11, so its
+    /// top is 16 above the content's: the glyph is raised that far to match.
+    static let glyphSize: CGFloat = 114
+    static let glyphRaise: CGFloat = 16
+    static let glyphGap: CGFloat = 14
+
+    /// The text column, fixed so the glyph + column pair centres in the panel
+    /// exactly as the music face's album + text pair does.
+    static let columnWidth: CGFloat = 340
+
+    /// The glyph and the column together: the whole face. The question face
+    /// spends all of it on the options.
+    static let faceWidth = glyphSize + glyphGap + columnWidth
+
+    // MARK: - Rows
+
+    static let eyebrowHeight: CGFloat = 14
+    /// Eyebrow → title.
+    static let eyebrowGap: CGFloat = 4
+    /// Headline → detail on a status face.
+    static let headlineGap: CGFloat = 2
+    /// Question → options.
+    static let questionGap: CGFloat = 6
+    /// The least room above the question face's action row.
+    static let actionGap: CGFloat = 6
+    /// Body → action row on a status or approval face: one gap whatever the
+    /// body's height, with the panel's spare room below the row.
+    static let bodyGap: CGFloat = 10
+    static let actionHeight: CGFloat = 22
+    /// Under the action row, on top of the panel's own bottom inset.
+    static let bottomInset: CGFloat = 4
+
+    // MARK: - Type
+
+    static let eyebrowSize: CGFloat = 10.5
+    static let headlineSize: CGFloat = 20
+    static let questionSize: CGFloat = 13
+    static let detailSize: CGFloat = 12
+    static let commandSize: CGFloat = 11
+    static let optionLabelSize: CGFloat = 12
+    static let optionDescriptionSize: CGFloat = 11
+    static let pillSize: CGFloat = 11.5
+    /// A shortcut's keys on a button (`ShortcutHints`).
+    static let keyHintSize: CGFloat = 10
+    /// Kept clear for a key over a stacked option's top corner, at the
+    /// least — what ⌥1 takes, so the default keys' rows are as they were.
+    static let keyHintClearance: CGFloat = 26
+    /// The widest key a stacked option row carries over its corner: three
+    /// modifiers and a word ("⌃⌥⇧Space", 60pt) fit. A longer chord
+    /// ("⌃⌥⇧⌘Space") would take a fifth of the label; the row drops it
+    /// instead, and the key still works.
+    static let keyHintMaxWidth: CGFloat = 64
+    /// Between a stacked option's label and the key over its corner.
+    static let keyHintGap: CGFloat = 10
+
+    static var eyebrowFont: Font { .system(size: eyebrowSize, weight: .semibold) }
+    static var headlineFont: Font { .system(size: headlineSize, weight: .bold) }
+    static var questionFont: Font { .system(size: questionSize, weight: .semibold) }
+    static var detailFont: Font { .system(size: detailSize, weight: .regular) }
+    static var commandFont: Font { .system(size: commandSize, design: .monospaced) }
+    static var optionLabelFont: Font { .system(size: optionLabelSize, weight: .semibold) }
+    static var optionDescriptionFont: Font { .system(size: optionDescriptionSize, weight: .regular) }
+    static var pillFont: Font { .system(size: pillSize, weight: .semibold) }
+    static var keyHintFont: Font { .system(size: keyHintSize, weight: .medium) }
+
+    // MARK: - Line heights
+
+    /// Measured by laying the fonts out in SwiftUI itself, once, so a row
+    /// framed to `n * line` holds exactly `n` lines. Not derived from
+    /// `NSFont` metrics: SwiftUI rounds each line to whole points by a rule
+    /// of its own (11pt is 14, 20pt bold is 24), and a frame a point short
+    /// silently drops the last line.
+    static let headlineLine = lineHeight(headlineFont)
+    static let questionLine = lineHeight(questionFont)
+    static let detailLine = lineHeight(detailFont)
+    static let commandLine = lineHeight(commandFont)
+    static let optionLabelLine = lineHeight(optionLabelFont)
+    static let optionDescriptionLine = lineHeight(optionDescriptionFont)
+
+    private static func lineHeight(_ font: Font) -> CGFloat {
+        textHeight("Wg", font: font, width: nil)
+    }
+
+    /// The most lines the approval's command takes.
+    static let commandLines = 2
+
+    /// What Claude said last, on a status face (Milestone 15): two lines at
+    /// most, which the status face's standard panel seats above its row.
+    static let saidLines = 2
+
+    // MARK: - Session list (Milestone 16)
+
+    /// One line a session: its marker, project, state, what it's doing, how
+    /// long since it moved, and its Jump. Four fit the standard panel under
+    /// the list's eyebrow, with a 32pt housing; more scroll.
+    static let sessionRowHeight: CGFloat = 20
+    static let sessionRowGap: CGFloat = 1
+    static let sessionGlyphSize: CGFloat = 12
+    static let sessionRowPadding: CGFloat = 6
+    static let sessionTextSize: CGFloat = 11.5
+    /// Under the last row. Less than the action row's `bottomInset`: there's
+    /// no pill here to sit clear of the panel's rounded foot, and the two
+    /// points are what seat the fourth row.
+    static let sessionListBottomInset: CGFloat = 2
+    /// The Jump chip at a row's end, and the room held for it on a row
+    /// without one, so the times stay in one column.
+    static let sessionJumpWidth: CGFloat = 24
+    /// A background session's own name (Milestone 21) — a sentence, often,
+    /// like "Redesign grid system and modernize app chrome" — gets more of
+    /// the row than a project folder, since its detail is short.
+    static let sessionNameMaxWidth: CGFloat = 170
+
+    static var sessionProjectFont: Font { .system(size: sessionTextSize, weight: .semibold) }
+    static var sessionStateFont: Font { .system(size: sessionTextSize, weight: .semibold) }
+    static var sessionDetailFont: Font { .system(size: sessionTextSize, weight: .regular) }
+
+    /// The rows' height, for `count` of them.
+    static func sessionRowsHeight(_ count: Int) -> CGFloat {
+        CGFloat(count) * sessionRowHeight + CGFloat(max(0, count - 1)) * sessionRowGap
+    }
+
+    // MARK: - Options
+
+    static let optionGap: CGFloat = 3
+    static let optionHorizontalPadding: CGFloat = 8
+    /// A row with a single line of text: the label, or label and description
+    /// side by side.
+    static let optionRowHeight: CGFloat = 22
+    /// A label-only row, under `.hidden`: two points shorter, the densest
+    /// form a row takes.
+    static let optionRowHeightHidden: CGFloat = 20
+    /// Above and below a stacked row's text, under `.full`.
+    static let optionStackedPadding: CGFloat = 5
+    /// Label → description in a stacked row.
+    static let optionStackedGap: CGFloat = 1
+    /// The most a description wraps to under `.full` before it's cut off.
+    static let fullDescriptionLines = 3
+    /// Checkbox and its gap, ahead of a multi-select label.
+    static let checkboxWidth: CGFloat = 18
+
+    /// The height of one row drawn in `style`, with its description wrapped
+    /// to `descriptionLines` lines when the style is `.full`.
+    static func optionRowHeight(style: OptionDescriptions, descriptionLines: Int) -> CGFloat {
+        switch style {
+        case .hidden:
+            return optionRowHeightHidden
+        case .oneLine:
+            return optionRowHeight
+        case .full:
+            guard descriptionLines > 0 else { return optionRowHeight }
+            return optionStackedPadding * 2 + optionLabelLine + optionStackedGap
+                + CGFloat(descriptionLines) * optionDescriptionLine
+        }
+    }
+
+    /// The width a row's text has: the face, less the toggle's corner, the
+    /// row's own padding, and the checkbox of a multi-select.
+    static func optionTextWidth(multiSelect: Bool, trailingClearance: CGFloat) -> CGFloat {
+        faceWidth - trailingClearance - optionHorizontalPadding * 2 - (multiSelect ? checkboxWidth : 0)
+    }
+
+    /// How many lines a description wraps to under `.full`, up to the most a
+    /// row shows; 0 for an option without one.
+    private static func naturalDescriptionLines(_ option: ClaudeQuestion.Option, width: CGFloat) -> Int {
+        guard let text = option.description, !text.isEmpty else { return 0 }
+        return min(fullDescriptionLines, lineCount(text, font: optionDescriptionFont, size: optionDescriptionSize,
+                                                   line: optionDescriptionLine, width: width))
+    }
+
+    // MARK: - Question face
+
+    /// One line or two: what the question needs across the face.
+    static func naturalQuestionLines(_ question: ClaudeQuestion) -> Int {
+        min(2, lineCount(question.question, font: questionFont, size: questionSize, line: questionLine,
+                         width: faceWidth))
+    }
+
+    /// Everything on the question face but the options, for a question of
+    /// `questionLines` lines.
+    static func questionChromeHeight(questionLines: Int) -> CGFloat {
+        eyebrowHeight + eyebrowGap + CGFloat(questionLines) * questionLine + questionGap
+            + actionGap + actionHeight + bottomInset
+    }
+
+    /// How one question is drawn in the room it has: the question's lines,
+    /// the row form, and each description's lines. Computed once for the
+    /// panel's height (with no limit) and again by the face in the room the
+    /// capped panel gives it.
+    struct OptionsFit: Equatable {
+        var questionLines: Int
+        /// The form the rows are drawn in: the setting's, or a denser one
+        /// when the setting's doesn't fit.
+        var style: OptionDescriptions
+        /// Per option, the lines its description wraps to under `.full`.
+        var descriptionLines: [Int]
+        var optionsHeight: CGFloat
+        /// The whole face: the options and everything around them.
+        var contentHeight: CGFloat
+        /// Even label-only rows under a one-line question don't fit, so the
+        /// options scroll. Out of reach while `AskUserQuestion` caps a
+        /// question at four options (five label-only rows fit at the cap);
+        /// kept so a schema change degrades to a scroll rather than a clip.
+        var scrolls = false
+    }
+
+    /// The fullest drawing of `question` that fits in `room`, giving way in
+    /// order of what matters least:
+    ///
+    /// 1. under `.full`, the longest description loses a line (from the
+    ///    bottom of the list on a tie, since Claude leads with the option it
+    ///    recommends), until every description is down to one;
+    /// 2. the descriptions move beside their labels, as under `.oneLine`;
+    /// 3. the descriptions go, as under `.hidden`;
+    /// 4. the question gives up its second line.
+    ///
+    /// The setting is where this starts, never something it exceeds: `.hidden`
+    /// starts at 3. Four options fit at step 2 under a two-line question below
+    /// a 32pt housing, and at step 3 below any.
+    static func fit(_ question: ClaudeQuestion,
+                    descriptions: OptionDescriptions,
+                    trailingClearance: CGFloat,
+                    room: CGFloat = .infinity) -> OptionsFit {
+        let width = optionTextWidth(multiSelect: question.multiSelect, trailingClearance: trailingClearance)
+        let natural = question.options.map { naturalDescriptionLines($0, width: width) }
+
+        func layout(_ style: OptionDescriptions, _ lines: [Int], questionLines: Int) -> OptionsFit {
+            let rows = lines.map { optionRowHeight(style: style, descriptionLines: style == .full ? $0 : 0) }
+            let height = rows.reduce(0, +) + optionGap * CGFloat(max(0, rows.count - 1))
+            return OptionsFit(questionLines: questionLines, style: style, descriptionLines: lines,
+                              optionsHeight: height,
+                              contentHeight: questionChromeHeight(questionLines: questionLines) + height)
+        }
+
+        var last: OptionsFit?
+        for questionLines in Set([naturalQuestionLines(question), 1]).sorted(by: >) {
+            var tries: [OptionsFit] = []
+            if descriptions == .full {
+                var lines = natural
+                tries.append(layout(.full, lines, questionLines: questionLines))
+                while let longest = lines.indices.reversed().max(by: { lines[$0] < lines[$1] }),
+                      lines[longest] > 1 {
+                    lines[longest] -= 1
+                    tries.append(layout(.full, lines, questionLines: questionLines))
+                }
+            }
+            if descriptions != .hidden {
+                tries.append(layout(.oneLine, natural, questionLines: questionLines))
+            }
+            tries.append(layout(.hidden, natural, questionLines: questionLines))
+
+            if let fits = tries.first(where: { $0.contentHeight <= room + 0.5 }) { return fits }
+            last = tries.last
+        }
+        var scrolling = last!
+        scrolling.scrolls = true
+        return scrolling
+    }
+
+    /// The content height the question face wants for `question` in a panel
+    /// whose content can be at most `room` tall — the height of the fullest
+    /// drawing that fits, so a face whose descriptions had to give way doesn't
+    /// keep the room they'd have taken.
+    static func questionContentHeight(_ question: ClaudeQuestion,
+                                      descriptions: OptionDescriptions,
+                                      trailingClearance: CGFloat,
+                                      room: CGFloat) -> CGFloat {
+        fit(question, descriptions: descriptions, trailingClearance: trailingClearance, room: room).contentHeight
+    }
+
+    // MARK: - Measuring
+
+    /// Line counts already measured. Read on every layout of the root view
+    /// while a question is live (the panel's height comes from them), and
+    /// the inputs come from one request's handful of strings.
+    private static var lineCache: [String: Int] = [:]
+
+    /// How many lines `text` wraps to at `width`, as SwiftUI wraps it — the
+    /// same layout engine the row is drawn by, so the count and the drawing
+    /// can't disagree about where a line breaks.
+    private static func lineCount(_ text: String, font: Font, size: CGFloat, line: CGFloat, width: CGFloat) -> Int {
+        let key = "\(size)|\(width)|\(text)"
+        if let cached = lineCache[key] { return cached }
+        let height = textHeight(text, font: font, width: width)
+        let count = max(1, Int((height / line).rounded()))
+        if lineCache.count > 256 { lineCache.removeAll() }
+        lineCache[key] = count
+        return count
+    }
+
+    /// How wide a key hint draws — measured by SwiftUI, like the lines.
+    static func keyHintWidth(_ key: String) -> CGFloat {
+        if let cached = keyWidthCache[key] { return cached }
+        let width = ceil(NSHostingView(rootView: Text(key).font(keyHintFont).fixedSize()).fittingSize.width)
+        if keyWidthCache.count > 64 { keyWidthCache.removeAll() }
+        keyWidthCache[key] = width
+        return width
+    }
+
+    /// What a stacked option's label keeps clear for `key` over its corner:
+    /// the key's own width and a gap, never less than the default keys
+    /// take. Nil when the key is too long for an option row to carry.
+    static func keyHintClearance(for key: String) -> CGFloat? {
+        let width = keyHintWidth(key)
+        guard width <= keyHintMaxWidth else { return nil }
+        return max(keyHintClearance, width + keyHintGap)
+    }
+
+    private static var keyWidthCache: [String: CGFloat] = [:]
+
+    /// The height SwiftUI lays `text` out at, unwrapped or wrapped to `width`.
+    private static func textHeight(_ text: String, font: Font, width: CGFloat?) -> CGFloat {
+        let host = NSHostingView(rootView:
+            Text(text)
+                .font(font)
+                .frame(width: width)
+                .fixedSize(horizontal: width == nil, vertical: true)
+        )
+        return host.fittingSize.height
+    }
+}

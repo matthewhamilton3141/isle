@@ -4,12 +4,17 @@
       { "hooks": [{ "type": "command", "command": "isle-cli set-state working" }] }
     ],
     "PreToolUse": [
-      { "hooks": [{ "type": "command", "command": "isle-cli set-state working" }] }
+      { "hooks": [{ "type": "command", "command": "isle-cli set-state working" }] },
+      { "matcher": "AskUserQuestion", "hooks": [{ "type": "command", "command": "isle-cli ask-question", "timeout": 60 }] },
+      { "matcher": "Bash|Monitor", "hooks": [{ "type": "command", "command": "isle-cli guard", "timeout": 10 }] }
     ],
     "PermissionRequest": [
-      { "hooks": [{ "type": "command", "command": "isle-cli ask" }] }
+      { "hooks": [{ "type": "command", "command": "isle-cli ask", "timeout": 330 }] }
     ],
     "PostToolUse": [
+      { "hooks": [{ "type": "command", "command": "isle-cli set-state working" }] }
+    ],
+    "PostToolUseFailure": [
       { "hooks": [{ "type": "command", "command": "isle-cli set-state working" }] }
     ],
     "Notification": [
@@ -26,6 +31,15 @@
     ],
     "SessionStart": [
       { "hooks": [{ "type": "command", "command": "isle-cli set-state idle" }] }
+    ],
+    "SubagentStart": [
+      { "hooks": [{ "type": "command", "command": "isle-cli subagent-start" }] }
+    ],
+    "SubagentStop": [
+      { "hooks": [{ "type": "command", "command": "isle-cli subagent-stop" }] }
+    ],
+    "PermissionDenied": [
+      { "hooks": [{ "type": "command", "command": "isle-cli denied" }] }
     ],
     "SessionEnd": [
       { "hooks": [{ "type": "command", "command": "isle-cli end" }] }

@@ -22,15 +22,23 @@ final class AppSettings: ObservableObject {
     private let defaults: UserDefaults
     private static let modeKey = "isle.mode"
     private static let tabKey = "isle.lastTab"
+    private static let onHomeKey = "isle.lastOnHome"
     private static let showScrubberKey = "isle.showScrubber"
     private static let showShuffleRepeatKey = "isle.showShuffleRepeat"
     private static let waveformSourceKey = "isle.waveformSource"
     private static let doneToastKey = "isle.doneToastSeconds"
     private static let hapticsKey = "isle.haptics"
     private static let displayScopeKey = "isle.displayScope"
+    private static let panelBackgroundKey = "isle.panelBackground"
+    private static let panelNotchGlowKey = "isle.panelNotchGlow"
     private static let expandOnAlertKey = "isle.expandOnAlert"
     private static let dismissAlertPanelKey = "isle.dismissAlertPanel"
     private static let showWaitingKey = "isle.showWaiting"
+    private static let keepAwakeWhileWorkingKey = "isle.keepAwakeWhileWorking"
+    private static let answerFromNotchKey = "isle.answerFromNotch"
+    private static let optionDescriptionsKey = "isle.optionDescriptions"
+    private static let guardCommandsKey = "isle.guardCommands"
+    private static let guardedCommandsKey = "isle.guardedCommands"
     private static let claudeAccentKey = "isle.claudeAccent"
     private static let claudeAccentHexKey = "isle.claudeAccentHex"
     private static let showBatteryEventsKey = "isle.showBatteryEvents"
@@ -54,6 +62,8 @@ final class AppSettings: ObservableObject {
     private static let claudeDoneSoundKey = "isle.claudeDoneSound"
     private static let agendaSoundEnabledKey = "isle.agendaSoundEnabled"
     private static let agendaSoundKey = "isle.agendaSound"
+    private static let shelfPathsKey = "isle.shelf.paths"
+    private static let shortcutsKey = "isle.shortcuts"
 
     /// The user's chosen mode, or `nil` until onboarding sets one
     /// (Milestone 2). Persisted on change.
@@ -68,11 +78,20 @@ final class AppSettings: ObservableObject {
         }
     }
 
-    /// Last tab the user selected in `.both` mode, restored across launches.
+    /// Last face the user went into, restored across launches.
     @Published var lastTab: IsleTab {
         didSet {
             guard lastTab != oldValue else { return }
             defaults.set(lastTab.rawValue, forKey: Self.tabKey)
+        }
+    }
+
+    /// The user last went back to the home grid rather than into a face, so
+    /// the panel opens there. With `lastTab`, this is "the last place chosen".
+    @Published var lastOnHome: Bool {
+        didSet {
+            guard lastOnHome != oldValue else { return }
+            defaults.set(lastOnHome, forKey: Self.onHomeKey)
         }
     }
 
@@ -94,6 +113,23 @@ final class AppSettings: ObservableObject {
             guard displayScope != oldValue else { return }
             defaults.set(displayScope.rawValue, forKey: Self.displayScopeKey)
         }
+    }
+
+    /// What the opened panel is drawn on. Black by default — the look Isle
+    /// has always had. See `PanelBackground`.
+    @Published var panelBackground: PanelBackground {
+        didSet {
+            guard panelBackground != oldValue else { return }
+            defaults.set(panelBackground.rawValue, forKey: Self.panelBackgroundKey)
+        }
+    }
+
+    /// With a glass background, black grows out of the camera housing and
+    /// fades into the glass, so the notch melts into the panel instead of
+    /// biting into it. On by default; only drawn on a screen with a notch,
+    /// and Black ignores it.
+    @Published var panelNotchGlow: Bool {
+        didSet { defaults.set(panelNotchGlow, forKey: Self.panelNotchGlowKey) }
     }
 
     // MARK: - Media controls (spec 3.4)
@@ -154,6 +190,53 @@ final class AppSettings: ObservableObject {
     /// state (working, questions, errors) is unaffected.
     @Published var showWaitingStatus: Bool {
         didSet { defaults.set(showWaitingStatus, forKey: Self.showWaitingKey) }
+    }
+
+    /// Whether Isle holds a power assertion that stops the Mac idling to sleep
+    /// while any Claude Code session is working. Off by default: keeping a
+    /// machine awake is a change to the user's power behaviour, so it's asked
+    /// for, never assumed. See `ClaudeKeepAwake`.
+    @Published var keepAwakeWhileWorking: Bool {
+        didSet { defaults.set(keepAwakeWhileWorking, forKey: Self.keepAwakeWhileWorkingKey) }
+    }
+
+    /// Whether a permission prompt or an `AskUserQuestion` can be answered from
+    /// the notch (Milestone 7). This is what puts Isle's `run/answering` marker
+    /// down; without it every hook returns at once and the terminal is the only
+    /// place to answer, exactly as before. On by default: nothing blocks until
+    /// Isle is running with it on, and the terminal prompt is always the
+    /// fallback.
+    @Published var answerFromNotch: Bool {
+        didSet { defaults.set(answerFromNotch, forKey: Self.answerFromNotchKey) }
+    }
+
+    /// Whether the guarded-commands list is in force (Milestone 17): the
+    /// commands on it always ask, whatever Claude Code would otherwise do.
+    /// Off by default, with an empty list — it changes how every session
+    /// behaves, so it's asked for, never assumed. The file the hook reads is
+    /// kept in step by the app delegate (`GuardedCommands.sync`), not here,
+    /// so a scratch `AppSettings` can never rewrite the real one.
+    @Published var guardCommands: Bool {
+        didSet { defaults.set(guardCommands, forKey: Self.guardCommandsKey) }
+    }
+
+    /// The guarded patterns, in the order they were added, each as the hook
+    /// will read it (`GuardedCommands.normalized`).
+    @Published var guardedCommands: [String] {
+        didSet {
+            guard guardedCommands != oldValue else { return }
+            defaults.set(guardedCommands, forKey: Self.guardedCommandsKey)
+        }
+    }
+
+    /// How much of each question option's description the notch shows. One
+    /// line by default — the layout the question face shipped with. See
+    /// `OptionDescriptions`.
+    @Published var optionDescriptions: OptionDescriptions {
+        didSet {
+            guard optionDescriptions != oldValue else { return }
+            defaults.set(optionDescriptions.rawValue, forKey: Self.optionDescriptionsKey)
+        }
     }
 
     /// The colour a Claude-only island draws itself in — it supplies the
@@ -348,6 +431,35 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    // MARK: - Shelf
+
+    /// The paths on the shelf, oldest first. References, not copies: the
+    /// shelf holds what the user dropped where it already lives, and drops
+    /// anything that has gone from there (see `ShelfStore`). Not published:
+    /// the store publishes its own items, and this is only its disk.
+    var shelfPaths: [String] {
+        didSet {
+            guard shelfPaths != oldValue else { return }
+            defaults.set(shelfPaths, forKey: Self.shelfPathsKey)
+        }
+    }
+
+    // MARK: - Shortcuts
+
+    /// The global keyboard shortcuts — their keys and whether each is on.
+    /// Only what differs from the defaults is stored. See `Shortcuts.swift`.
+    @Published var shortcuts: ShortcutBindings {
+        didSet {
+            guard shortcuts != oldValue else { return }
+            // A JSON string, not data, so `defaults read` shows it as text.
+            if let data = shortcuts.encoded(), let json = String(data: data, encoding: .utf8) {
+                defaults.set(json, forKey: Self.shortcutsKey)
+            } else {
+                defaults.removeObject(forKey: Self.shortcutsKey)
+            }
+        }
+    }
+
     /// Whether the user has ever picked a mode. Onboarding keys off this.
     var hasChosenMode: Bool { mode != nil }
 
@@ -365,9 +477,14 @@ final class AppSettings: ObservableObject {
             mode = IsleMode(rawValue: raw)
         }
         lastTab = IsleTab(rawValue: defaults.string(forKey: Self.tabKey) ?? "") ?? .music
+        // Home until the user picks a face: the grid is where the faces are
+        // found.
+        lastOnHome = defaults.object(forKey: Self.onHomeKey) as? Bool ?? true
         haptics = defaults.object(forKey: Self.hapticsKey) as? Bool ?? true
         displayScope = DisplayScope(rawValue: defaults.string(forKey: Self.displayScopeKey) ?? "")
             ?? .builtIn
+        panelBackground = PanelBackground.stored(defaults.string(forKey: Self.panelBackgroundKey))
+        panelNotchGlow = defaults.object(forKey: Self.panelNotchGlowKey) as? Bool ?? true
         showScrubber = defaults.object(forKey: Self.showScrubberKey) as? Bool ?? true
         showShuffleRepeat = defaults.object(forKey: Self.showShuffleRepeatKey) as? Bool ?? true
         waveformSource = WaveformSource(rawValue: defaults.string(forKey: Self.waveformSourceKey) ?? "")
@@ -376,6 +493,12 @@ final class AppSettings: ObservableObject {
         expandOnAlert = defaults.object(forKey: Self.expandOnAlertKey) as? Bool ?? true
         dismissAlertPanel = defaults.object(forKey: Self.dismissAlertPanelKey) as? Bool ?? true
         showWaitingStatus = defaults.object(forKey: Self.showWaitingKey) as? Bool ?? true
+        keepAwakeWhileWorking = defaults.object(forKey: Self.keepAwakeWhileWorkingKey) as? Bool ?? false
+        answerFromNotch = defaults.object(forKey: Self.answerFromNotchKey) as? Bool ?? true
+        optionDescriptions = OptionDescriptions(rawValue: defaults.string(forKey: Self.optionDescriptionsKey) ?? "")
+            ?? .default
+        guardCommands = defaults.object(forKey: Self.guardCommandsKey) as? Bool ?? false
+        guardedCommands = defaults.stringArray(forKey: Self.guardedCommandsKey) ?? []
         claudeAccent = ClaudeAccent(rawValue: defaults.string(forKey: Self.claudeAccentKey) ?? "")
             ?? .system
         claudeAccentHex = defaults.string(forKey: Self.claudeAccentHexKey) ?? "#9438E0"
@@ -404,6 +527,8 @@ final class AppSettings: ObservableObject {
             ?? (defaults.object(forKey: Self.legacyPomodoroSoundKey) as? Bool ?? true)
         pomodoroSound = NotificationSound(rawValue: defaults.string(forKey: Self.pomodoroSoundKey) ?? "")
             ?? .fanfare
+        shelfPaths = defaults.stringArray(forKey: Self.shelfPathsKey) ?? []
+        shortcuts = ShortcutBindings.decode(defaults.string(forKey: Self.shortcutsKey).map { Data($0.utf8) })
 
         // A change to the system accent in System Settings changes what
         // `.system` resolves to without either cache key moving. Drop the cache

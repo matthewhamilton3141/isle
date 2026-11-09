@@ -5,6 +5,11 @@
 //  `PowerMonitor` and `BluetoothBatteryMonitor` report — plus the two
 //  snapshots the monitors diff to produce them.
 //
+//  Each toast leads with the device whose battery it is, in Apple's own
+//  drawing where the device says what it is: this Mac, a pair of AirPods
+//  Pro, a Magic Mouse (see `DeviceSymbol`). The state is in the words and
+//  the tint, so the glyph never has to stand for it.
+//
 //  Everything here reports what the APIs actually returned. Time-to-full and
 //  time-to-empty are IOKit values, and IOKit says "still calculating" for the
 //  first minutes after a plug-in — so those are `nil` then and simply absent
@@ -25,7 +30,7 @@ extension IslandToast {
     static func pluggedIn(percent: Int, minutesToFull: Int?) -> IslandToast {
         IslandToast(
             kind: .pluggedIn,
-            glyph: .symbol("bolt.fill"),
+            glyph: .thisMac,
             text: fit(
                 short: "Charging · \(percent)%",
                 long: minutesToFull.map { "Charging · \(percent)% · \(clock($0)) to full" }
@@ -38,7 +43,7 @@ extension IslandToast {
     static func unplugged(percent: Int, minutesToEmpty: Int?) -> IslandToast {
         IslandToast(
             kind: .unplugged,
-            glyph: .symbol(batterySymbol(for: percent)),
+            glyph: .thisMac,
             text: fit(
                 short: "On battery · \(percent)%",
                 long: minutesToEmpty.map { "On battery · \(percent)% · \(clock($0)) left" }
@@ -51,7 +56,7 @@ extension IslandToast {
     static func fullyCharged() -> IslandToast {
         IslandToast(
             kind: .fullyCharged,
-            glyph: .symbol("battery.100percent.bolt"),
+            glyph: .thisMac,
             text: "Fully charged",
             tint: charge,
             gate: .macBattery
@@ -61,31 +66,21 @@ extension IslandToast {
     static func lowBattery(percent: Int) -> IslandToast {
         IslandToast(
             kind: .lowBattery,
-            glyph: .symbol(batterySymbol(for: percent)),
+            glyph: .thisMac,
             text: "Low battery · \(percent)%",
             tint: percent <= 10 ? alarm : warn,
             gate: .macBattery
         )
     }
 
-    /// A filled battery, no bolt. The bolt is macOS's glyph for *plugged in
-    /// and charging*, so wearing it here made a Low Power Mode toast read as a
-    /// charging one — the island appearing to think a battery-powered Mac was
-    /// on the adapter. macOS's own Low Power Mode indicator is the ordinary
-    /// battery tinted yellow for the same reason: the bolt means charging and
-    /// nothing else.
-    ///
-    /// Orange rather than that yellow, matching the warm tint Isle already
-    /// uses for "worth noticing, not urgent" — the same one a peripheral under
-    /// 20% gets.
-    /// Takes the level so the glyph tracks the real battery through the same
-    /// `batterySymbol` ladder the on-battery and low-battery toasts use — a
-    /// Mac at 30% shows a nearly empty battery here too, rather than a full
-    /// one that contradicts the reason Low Power Mode came on.
-    static func lowPowerMode(on: Bool, percent: Int) -> IslandToast {
+    /// Orange while on, matching the warm tint Isle already uses for "worth
+    /// noticing, not urgent" — the same one a peripheral under 20% gets.
+    /// macOS's own Low Power Mode indicator is a yellow battery for the same
+    /// reason.
+    static func lowPowerMode(on: Bool) -> IslandToast {
         IslandToast(
             kind: .lowPowerMode,
-            glyph: .symbol(batterySymbol(for: percent)),
+            glyph: .thisMac,
             text: on ? "Low Power On" : "Low Power Off",
             tint: on ? warn : neutral,
             gate: .macBattery
@@ -109,18 +104,6 @@ extension IslandToast {
     /// `h:mm`, matching how macOS's own battery menu writes a duration.
     private static func clock(_ minutes: Int) -> String {
         String(format: "%d:%02d", minutes / 60, minutes % 60)
-    }
-
-    /// Rounded down to the nearest fifth, which is how SF Symbols quantises
-    /// its battery glyphs — there is no `battery.42percent`.
-    private static func batterySymbol(for percent: Int) -> String {
-        switch percent {
-        case 88...: return "battery.100percent"
-        case 63...: return "battery.75percent"
-        case 38...: return "battery.50percent"
-        case 13...: return "battery.25percent"
-        default:    return "battery.0percent"
-        }
     }
 }
 
@@ -170,21 +153,32 @@ struct PeripheralBattery: Equatable {
     var percent: Int
     /// `system_profiler`'s `device_minorType`, when it gives one.
     var minorType: String?
+    /// `device_vendorID` and `device_productID`, when it gives them. Apple
+    /// and Beats accessories do, and they're what names the model.
+    var vendorID: Int? = nil
+    var productID: Int? = nil
 
     /// At or below this, a peripheral is worth mentioning unprompted (i.e. on
     /// a charger plug-in, not just on connect).
     static let lowThreshold = 20
 
+    /// The model's own symbol when the device names it — the same one the
+    /// output list draws (see `DeviceSymbol`) — else the glyph for its kind.
     var glyph: ToastGlyph {
+        if let model = DeviceSymbol.accessory(name: name, vendorID: vendorID, productID: productID) {
+            return .symbol(model)
+        }
         switch minorType?.lowercased() {
         case let type? where type.contains("headphone") || type.contains("headset"):
             return .symbol("headphones")
         case let type? where type.contains("keyboard"):
             return .symbol("keyboard")
         case let type? where type.contains("mouse"):
-            return .symbol("computermouse.fill")
+            return .symbol(DeviceSymbol.mouse(name: name, vendorID: vendorID))
         case let type? where type.contains("speaker"):
             return .symbol("hifispeaker.fill")
+        case let type? where type.contains("gamepad") || type.contains("joystick"):
+            return .symbol("gamecontroller.fill")
         default:
             // A device macOS won't name gets the Bluetooth mark itself — the
             // one thing that is certainly true about it. Hand-drawn, because

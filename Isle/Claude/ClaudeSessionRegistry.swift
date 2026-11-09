@@ -35,8 +35,9 @@
 //  flip, or a session id changing under the same pid, is invisible to it. A
 //  SIGKILLed CLI leaves its record behind and fires nothing either. So the
 //  watch is only the cue for start/exit — anyone about to act on `status`,
-//  `sessionId` or liveness calls `refresh()` first rather than trusting the
-//  last snapshot.
+//  `sessionId` or liveness re-reads (`scan`) first rather than trusting the
+//  last snapshot. The view model does that on its background pass (see
+//  `NotchViewModel.requestClaudeReading`).
 //
 
 import Foundation
@@ -72,26 +73,42 @@ struct ClaudeSession: Equatable, Identifiable {
     let statusUpdatedAt: Date?
     let startedAt: Date?
     let cliVersion: String?
+    /// A background session's job id (agent view, Milestone 21): the short id
+    /// `claude attach` takes. Only on a `kind: "bg"` record.
+    var jobId: String? = nil
 
     var id: pid_t { pid }
 
     /// Interactive sessions are the ones the island is about; an SDK or print
     /// run isn't something the user is sitting in front of.
     var isInteractive: Bool { kind == nil || kind == "interactive" }
+
+    /// A session agent view hosts — `claude --bg`, or one sent to the
+    /// background — whose process is alive. It writes this record and runs
+    /// the user's hooks like any other (verified on 2.1.319), with `kind`
+    /// "bg" and its `jobId`.
+    var isBackground: Bool { kind == "bg" || kind == "background" }
+
+    /// `jobId`, when it's safe to put on a command line.
+    var attachId: String? {
+        guard let jobId else { return nil }
+        return ClaudeAgent(id: jobId, cwd: cwd, kind: "background").attachId
+    }
 }
 
 @MainActor
 final class ClaudeSessionRegistry {
-    /// Called on the main actor whenever the set of live sessions changes.
-    var onSessions: (([ClaudeSession]) -> Void)?
+    /// Called on the main actor when a session record appears or goes — the
+    /// cue to re-read (see `scan`). Coalesced, so a burst is one call.
+    var onChange: (() -> Void)?
 
-    private let directoryURL: URL
+    /// Where the records live. Readable from any thread, so the scan can run
+    /// off the main one.
+    nonisolated let directoryURL: URL
     private let queue = DispatchQueue(label: "isle.claude-session-registry", qos: .utility)
 
-    private var directorySource: DispatchSourceFileSystemObject?
+    private var watch: DirectoryWatch?
     private var coalesceTask: Task<Void, Never>?
-
-    private var lastSessions: [ClaudeSession] = []
     private var isRunning = false
 
     /// Several sessions can start or exit at once (and each start creates a
@@ -109,11 +126,20 @@ final class ClaudeSessionRegistry {
 
     // MARK: - Lifecycle
 
+    /// Watches the directory rather than individual files: records appear and
+    /// vanish as sessions start and exit, so there's no stable inode to hold.
+    /// By path, too: Claude Code creates the directory on its first run, so
+    /// before then this waits on the nearest folder that exists, and a
+    /// directory deleted and made again is picked up rather than leaving the
+    /// watch on the dead one.
     func start() {
         guard !isRunning else { return }
         isRunning = true
-        startDirectoryWatch()
-        refresh()
+        let watch = DirectoryWatch(url: directoryURL, queue: queue) { [weak self] _ in
+            Task { @MainActor in self?.scheduleChange() }
+        }
+        self.watch = watch
+        watch.start()
     }
 
     func stop() {
@@ -121,73 +147,48 @@ final class ClaudeSessionRegistry {
         isRunning = false
         coalesceTask?.cancel()
         coalesceTask = nil
-        directorySource?.cancel()   // cancel handler closes the fd
-        directorySource = nil
-        lastSessions = []
+        watch?.stop()
+        watch = nil
     }
 
-    // MARK: - Watch
-
-    /// Watches the directory rather than individual files: records appear and
-    /// vanish as sessions start and exit, so there's no stable inode to hold.
-    /// Unlike the status file there's no single file to fall back to, so a
-    /// missing directory just means no watch until `start` is called again —
-    /// Claude Code creates it on first run.
-    private func startDirectoryWatch() {
-        guard directorySource == nil else { return }
-        let fd = open(directoryURL.path, O_EVTONLY)
-        guard fd >= 0 else { return }
-
-        let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: fd,
-            eventMask: [.write, .delete, .rename],
-            queue: queue
-        )
-        source.setEventHandler { [weak self] in
-            Task { @MainActor in self?.scheduleRefresh() }
-        }
-        source.setCancelHandler { close(fd) }
-        directorySource = source
-        source.resume()
-    }
-
-    // MARK: - Refresh
-
-    private func scheduleRefresh() {
+    private func scheduleChange() {
         guard isRunning else { return }
         coalesceTask?.cancel()
         coalesceTask = Task { [weak self] in
             try? await Task.sleep(for: Self.coalesceInterval)
-            guard !Task.isCancelled else { return }
-            self?.refresh()
+            guard !Task.isCancelled, let self, self.isRunning else { return }
+            self.onChange?()
         }
     }
 
-    /// Rescans the directory and publishes the live sessions, synchronously,
-    /// if anything changed. Every event funnels here, so it must be
-    /// idempotent. Callable from outside because the directory watch can't see
-    /// records being rewritten in place — see the freshness note above. Cheap:
-    /// one small record per live session.
-    func refresh() {
-        guard isRunning else { return }
+    // MARK: - Reading
 
+    /// Every live session, read now, on the calling thread. Cheap — one small
+    /// record per live session — but still file I/O: the view model reads it
+    /// on its background pass, and on the main thread only at a click that
+    /// has to act on fresh state.
+    func currentSessions() -> [ClaudeSession] {
+        guard isRunning else { return [] }
+        return Self.scan(directoryURL)
+    }
+
+    /// The live sessions recorded in `directoryURL`, by pid. Every reader goes
+    /// through here, since the directory watch can't see records being
+    /// rewritten in place — see the freshness note above.
+    nonisolated static func scan(_ directoryURL: URL) -> [ClaudeSession] {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: directoryURL.path)) ?? []
-        let sessions = names
-            .compactMap(record(named:))
+        return names
+            .compactMap { record(named: $0, in: directoryURL) }
             // A record outlives its process when the CLI is killed rather than
             // exiting, so the file's existence proves nothing — the pid does.
-            .filter { Self.isAlive($0.pid) }
+            .filter { isAlive($0.pid) }
             .sorted { $0.pid < $1.pid }
-
-        guard sessions != lastSessions else { return }
-        lastSessions = sessions
-        onSessions?(sessions)
     }
 
     /// Parses one `<pid>.json`. Returns nil for anything else in the directory
     /// — the per-session `.key` files live here too — and for a record that
     /// won't decode.
-    private func record(named name: String) -> ClaudeSession? {
+    nonisolated private static func record(named name: String, in directoryURL: URL) -> ClaudeSession? {
         let url = URL(fileURLWithPath: name, relativeTo: directoryURL)
         guard url.pathExtension == "json",
               // `<pid>.json`, not `<pid>.<hash>.key` — guard the stem so a
@@ -206,22 +207,23 @@ final class ClaudeSessionRegistry {
             kind: payload.kind,
             status: payload.status.flatMap(ClaudeSession.Status.init(rawValue:)) ?? .unknown,
             waitingFor: payload.waitingFor.flatMap { $0.isEmpty ? nil : $0 },
-            statusUpdatedAt: payload.statusUpdatedAt.map(Self.date(fromMillis:)),
-            startedAt: payload.startedAt.map(Self.date(fromMillis:)),
-            cliVersion: payload.version
+            statusUpdatedAt: payload.statusUpdatedAt.map(date(fromMillis:)),
+            startedAt: payload.startedAt.map(date(fromMillis:)),
+            cliVersion: payload.version,
+            jobId: payload.jobId.flatMap { $0.isEmpty ? nil : $0 }
         )
     }
 
     /// Signal 0 performs the permission and existence checks without delivering
     /// anything. EPERM means the process is alive but owned by someone else —
     /// still alive, so it counts.
-    private static func isAlive(_ pid: pid_t) -> Bool {
+    nonisolated private static func isAlive(_ pid: pid_t) -> Bool {
         guard pid > 0 else { return false }
         if kill(pid, 0) == 0 { return true }
         return errno == EPERM
     }
 
-    private static func date(fromMillis millis: Double) -> Date {
+    nonisolated private static func date(fromMillis millis: Double) -> Date {
         Date(timeIntervalSince1970: millis / 1000)
     }
 }
@@ -241,4 +243,5 @@ private struct RecordPayload: Decodable {
     let statusUpdatedAt: Double?
     let startedAt: Double?
     let version: String?
+    let jobId: String?
 }
