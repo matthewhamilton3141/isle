@@ -271,7 +271,17 @@ final class DotMatrixLayerView: NSView {
         let animation = CAKeyframeAnimation(keyPath: keyPath)
         animation.values = values
         animation.duration = max(duration, 0.001)
-        animation.calculationMode = .linear
+        // A loop steps through its values rather than blending between them.
+        // They're already sampled 30 a second, and every dot shares the loop's
+        // start, period and sample count, so all of them change together 30
+        // times a second and the window server has 30 frames to composite. A
+        // blended loop changes every display refresh: on a ProMotion MacBook
+        // that's 120 recomposites of the notch and the translucent menu bar
+        // behind it. Measured on a 14" MacBook Pro with Claude working: the
+        // window server at ~41% CPU blended, ~23% stepped, ~9% with nothing
+        // looping. (`preferredFrameRateRange` on the animations changed
+        // nothing.) The one-shot morphs stay blended: they're brief.
+        animation.calculationMode = repeats ? .discrete : .linear
         animation.beginTime = beginTime
         animation.repeatCount = repeats ? .greatestFiniteMagnitude : 1
         // Never `.backwards`. The loop's `beginTime` sits after the morph, and a
