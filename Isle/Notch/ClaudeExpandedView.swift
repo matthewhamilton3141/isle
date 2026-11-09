@@ -223,13 +223,13 @@ struct ClaudeExpandedView: View {
         VStack(alignment: .leading, spacing: 0) {
             hero
             Spacer().frame(height: L.heroGap)
-            metaLine
+            metaLine()
             if approval == nil {
                 extraLine
             }
             if approval != nil || viewModel.claudeHasActions {
                 Spacer(minLength: L.bodyGap)
-                actionRow {
+                actionRow(fixed: viewModel.composing != .reply) {
                     if approval != nil {
                         approvalActions
                     } else {
@@ -275,12 +275,34 @@ struct ClaudeExpandedView: View {
                 .animation(.easeOut(duration: 0.22), value: rows.map(\.id))
             }
             Spacer(minLength: L.heroGap)
+            workingFoot
+                .padding(.bottom, L.bottomInset)
+        }
+    }
+
+    /// The working face's foot: where the session is, the reply — sent now,
+    /// Claude Code queues it for its next step — and the terminal. While the
+    /// reply is being written, its field takes the row, and grows upward.
+    @ViewBuilder
+    private var workingFoot: some View {
+        if viewModel.composing == .reply {
+            replyField
+        } else {
+            let gate = viewModel.replyGate
             HStack(spacing: 8) {
-                metaLine
+                if gate == .unavailable {
+                    metaLine()
+                } else {
+                    metaLine(fills: false)
+                    if case .dialog(let reason) = gate {
+                        replyLocked(reason)
+                    } else {
+                        replyPrompt
+                    }
+                }
                 jumpChip
             }
             .frame(height: L.chipHeight)
-            .padding(.bottom, L.bottomInset)
         }
     }
 
@@ -289,6 +311,9 @@ struct ClaudeExpandedView: View {
         /// A kind of agent running, how many, and on the last agent row
         /// how many more aren't named.
         case agents(type: String, count: Int, more: Int)
+        /// A reply Claude Code queued, and on the last such row how many
+        /// more there are.
+        case queued(NotchViewModel.QueuedReply, more: Int)
         case block
         case delivery
         /// A finished call; `age` 0 is the newest.
@@ -297,6 +322,7 @@ struct ClaudeExpandedView: View {
         var id: String {
             switch self {
             case .agents(let type, _, _): return "agents-\(type)"
+            case .queued(let reply, _): return "queued-\(reply.id)"
             case .block: return "block"
             case .delivery: return "delivery"
             case .step(let step, _): return "step-\(step.id)"
@@ -312,6 +338,13 @@ struct ClaudeExpandedView: View {
         switch viewModel.replyDelivery {
         case .sending, .sent: rows.append(.delivery)
         default: break
+        }
+        let queued = viewModel.claudeQueued
+        if !queued.isEmpty {
+            let shown = Array(queued.prefix(L.queuedRows))
+            for (index, reply) in shown.enumerated() {
+                rows.append(.queued(reply, more: index == shown.count - 1 ? queued.count - shown.count : 0))
+            }
         }
         let running = viewModel.claudeSubagents
         if !running.isEmpty {
@@ -354,6 +387,26 @@ struct ClaudeExpandedView: View {
             .font(IsleType.meta)
             .lineLimit(1)
             .help(ClaudeSubagents.lines(viewModel.claudeSubagents).first ?? "")
+            .accessibilityElement(children: .combine)
+        case .queued(let reply, let more):
+            HStack(spacing: 6) {
+                rowSymbol("clock.arrow.circlepath")
+                    .foregroundStyle(.islandSecondary(IsleType.Tone.secondary))
+                Text("Queued")
+                    .font(IsleType.metaStrong)
+                    .foregroundStyle(.white.opacity(0.8))
+                Text(reply.text.replacingOccurrences(of: "\n", with: " ⏎ "))
+                    .foregroundStyle(.islandSecondary(IsleType.Tone.secondary))
+                    .truncationMode(.tail)
+                if more > 0 {
+                    Text("· +\(more) more")
+                        .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
+                        .fixedSize()
+                }
+            }
+            .font(IsleType.meta)
+            .lineLimit(1)
+            .help("Typed into the terminal while Claude was working; it takes it at its next step")
             .accessibilityElement(children: .combine)
         case .block:
             blockLine
@@ -483,7 +536,7 @@ struct ClaudeExpandedView: View {
     /// way from the end, down to the project alone. A reply that didn't
     /// land takes the whole line.
     @ViewBuilder
-    private var metaLine: some View {
+    private func metaLine(fills: Bool = true) -> some View {
         Group {
             if case .failed(_, let reason) = viewModel.replyDelivery {
                 Label(reason, systemImage: "exclamationmark.triangle.fill")
@@ -502,7 +555,8 @@ struct ClaudeExpandedView: View {
         .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
         .lineLimit(1)
         .frame(height: L.metaHeight, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: fills ? .infinity : nil, alignment: .leading)
+        .fixedSize(horizontal: !fills, vertical: false)
     }
 
     /// The meta line in full, or (`full` false) the project alone, cut
@@ -1293,15 +1347,7 @@ struct ClaudeExpandedView: View {
     @ViewBuilder
     private var statusActions: some View {
         if viewModel.composing == .reply {
-            ComposeField(
-                text: $viewModel.replyDraft,
-                prompt: "Reply to Claude…",
-                sendTitle: "Send",
-                sendFill: .white,
-                sendForeground: .black,
-                onSend: { viewModel.sendCompose() },
-                onCancel: { viewModel.endCompose() }
-            )
+            replyField
         } else {
             // The session's app by name, beside the reply field on a
             // terminal Isle can type into and alone on any other. Attaching
@@ -1325,11 +1371,51 @@ struct ClaudeExpandedView: View {
             default:
                 if viewModel.canReply {
                     replyPrompt
+                } else if case .dialog(let reason) = viewModel.replyGate {
+                    replyLocked(reason)
                 } else {
                     Spacer(minLength: 0)
                 }
             }
         }
+    }
+
+    /// The reply being written: up to four lines, then it scrolls; Return
+    /// sends, Shift-Return starts a new line. The panel grows with it — the
+    /// field reports how much taller than a line it is drawn.
+    private var replyField: some View {
+        ComposeField(
+            text: $viewModel.replyDraft,
+            prompt: viewModel.replyGate == .queues ? "Reply to Claude — it takes it at its next step…" : "Reply to Claude…",
+            sendTitle: "Send",
+            sendFill: .white,
+            sendForeground: .black,
+            maxLines: L.replyMaxLines,
+            onHeight: { viewModel.setReplyFieldExtra($0 - L.actionHeight) },
+            onSend: { viewModel.sendCompose() },
+            onCancel: { viewModel.endCompose() }
+        )
+    }
+
+    /// The reply while a prompt is up in the terminal, where typing would
+    /// answer it: the field's shape, disabled, saying why.
+    private func replyLocked(_ reason: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 9, weight: .semibold))
+            Text(reason)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
+        }
+        .font(L.pillFont)
+        .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
+        .padding(.horizontal, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(Capsule().inset(by: 0.5).stroke(.white.opacity(0.12), style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
+        .help(reason)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Reply unavailable: \(reason)")
     }
 
     /// "Reply to Claude…" at rest: a button shaped like the field it opens
@@ -1343,7 +1429,9 @@ struct ClaudeExpandedView: View {
                 Image(systemName: "arrowshape.turn.up.left.fill")
                     .font(.system(size: 9.5, weight: .semibold))
                     .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
-                Text(draft.isEmpty ? "Reply to Claude…" : draft)
+                Text(draft.isEmpty
+                     ? (viewModel.replyGate == .queues ? "Reply — Claude takes it at its next step…" : "Reply to Claude…")
+                     : draft.replacingOccurrences(of: "\n", with: " ⏎ "))
                     .foregroundStyle(.white.opacity(draft.isEmpty ? 0.55 : 0.9))
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -1651,11 +1739,14 @@ struct ClaudeExpandedView: View {
 
     /// The row every face shares: one height. A status or approval face
     /// sets it `bodyGap` below its body; the question face's grows to it.
-    private func actionRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        HStack(spacing: 8) {
+    /// Not `fixed` while a field that grows is in it: the row is then the
+    /// field's height.
+    private func actionRow<Content: View>(fixed: Bool = true, @ViewBuilder content: () -> Content) -> some View {
+        HStack(alignment: .bottom, spacing: 8) {
             content()
         }
-        .frame(height: L.actionHeight)
+        .frame(height: fixed ? L.actionHeight : nil)
+        .frame(minHeight: L.actionHeight)
         .padding(.trailing, switcherClearance)
         .padding(.bottom, L.bottomInset)
     }
@@ -1919,6 +2010,11 @@ private struct ComposeField: View {
     let sendTitle: String
     let sendFill: Color
     let sendForeground: Color
+    /// More than one, and the field grows a line at a time to this many as
+    /// the text wraps or Shift-Return starts a line, then scrolls.
+    var maxLines = 1
+    /// The height it's drawn at, as it changes.
+    var onHeight: ((CGFloat) -> Void)? = nil
     let onSend: () -> Void
     let onCancel: () -> Void
 
@@ -1929,16 +2025,31 @@ private struct ComposeField: View {
     }
 
     var body: some View {
-        HStack(spacing: 6) {
-            TextField(text: $text, prompt: Text(prompt).foregroundStyle(.white.opacity(0.4))) {
+        HStack(alignment: .bottom, spacing: 6) {
+            TextField(text: $text, prompt: Text(prompt).foregroundStyle(.white.opacity(0.4)),
+                      axis: maxLines > 1 ? .vertical : .horizontal) {
                 Text(prompt)
             }
+            .lineLimit(1...max(1, maxLines))
             .textFieldStyle(.plain)
             .font(IsleType.body)
             .foregroundStyle(.white)
             .focused($focused)
+            // Return sends; Shift-Return (or Option-Return) is a new line
+            // in a field that takes more than one.
+            .onKeyPress(keys: [.return], phases: .down) { press in
+                if press.modifiers.contains(.shift) || press.modifiers.contains(.option) {
+                    if maxLines > 1 {
+                        NSApp.sendAction(#selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)), to: nil, from: nil)
+                    }
+                    return .handled
+                }
+                if !isEmpty { onSend() }
+                return .handled
+            }
             .onSubmit { if !isEmpty { onSend() } }
             .onExitCommand(perform: onCancel)
+            .padding(.vertical, (ClaudePanelLayout.actionHeight - ClaudePanelLayout.detailLine) / 2)
 
             Button(action: onSend) {
                 HStack(spacing: 4) {
@@ -1949,20 +2060,29 @@ private struct ComposeField: View {
                 .font(ClaudePanelLayout.pillFont)
                 .foregroundStyle(sendForeground)
                 .padding(.horizontal, 9)
-                .frame(maxHeight: .infinity)
+                .frame(height: ClaudePanelLayout.actionHeight - 4)
                 .background(Capsule().fill(sendFill))
                 .contentShape(Capsule())
             }
             .buttonStyle(.plain)
             .disabled(isEmpty)
             .opacity(isEmpty ? 0.5 : 1)
-            .padding(.vertical, 2)
+            .padding(.bottom, 2)
         }
         .padding(.leading, 10)
         .padding(.trailing, 2)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Capsule().fill(.white.opacity(0.08)))
-        .overlay(Capsule().inset(by: 0.5).stroke(.white.opacity(0.4), lineWidth: 1))
+        .frame(maxWidth: .infinity, minHeight: ClaudePanelLayout.actionHeight)
+        .background(RoundedRectangle(cornerRadius: ClaudePanelLayout.actionHeight / 2, style: .continuous)
+            .fill(.white.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: ClaudePanelLayout.actionHeight / 2, style: .continuous)
+            .inset(by: 0.5).stroke(.white.opacity(0.4), lineWidth: 1))
+        .background {
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { onHeight?(proxy.size.height) }
+                    .onChange(of: proxy.size.height) { _, height in onHeight?(height) }
+            }
+        }
         .onAppear {
             // After the panel has been made key, which the window controller
             // does on the same turn of the run loop that put this on screen.
@@ -1971,6 +2091,9 @@ private struct ComposeField: View {
         // Gone from the face for any reason — a swipe to another face, an
         // approval taking this one — and the keys go back with it, rather
         // than the panel holding focus for a field nobody can see.
-        .onDisappear(perform: onCancel)
+        .onDisappear {
+            onHeight?(ClaudePanelLayout.actionHeight)
+            onCancel()
+        }
     }
 }

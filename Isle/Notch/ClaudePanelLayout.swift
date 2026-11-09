@@ -183,6 +183,11 @@ enum ClaudePanelLayout {
     /// on its way, the finished calls): this many slots, held whole once
     /// there's one row, so a row arriving moves nothing.
     static let workSlots = 3
+    /// The most of the slots replies queued mid-turn take, the rest counted
+    /// on the last.
+    static let queuedRows = 2
+    /// The reply field grows to this many lines, then scrolls.
+    static let replyMaxLines = 4
     static let workRowHeight: CGFloat = 15
     /// The most of the slots the agents take, the rest counted on the last.
     static let agentRows = 2
