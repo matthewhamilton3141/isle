@@ -120,7 +120,8 @@ enum TerminalBridge {
 
     /// Types `text` followed by Return into the session's input, without
     /// focusing anything. The caller has already checked the session is at
-    /// its prompt — this only delivers keys.
+    /// its prompt, or mid-turn where Claude Code queues what's typed — never
+    /// showing a dialog. This only delivers keys.
     ///
     /// The text goes in as an explicit bracketed paste, then one carriage
     /// return. Claude Code takes an unmarked burst of typing as a paste once
@@ -141,11 +142,15 @@ enum TerminalBridge {
     }
 
     /// `text` between the bracketed-paste markers, with every control
-    /// character dropped first: the reply is one line, and an ESC of its own
-    /// could end the paste early.
+    /// character but the newline dropped first: an ESC of its own could end
+    /// the paste early. A newline inside the paste is a line of the prompt,
+    /// not Return — the one CR after the paste is what submits (measured on
+    /// 2.1.321: a two-line reply arrived as one prompt with its newline).
+    /// Any CR is made a newline, so none can submit half the text.
     nonisolated static func bracketedPaste(_ text: String) -> String {
-        let clean = String(String.UnicodeScalarView(text.unicodeScalars.filter {
-            !($0.value < 0x20 || (0x7F...0x9F).contains($0.value))
+        let lines = text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        let clean = String(String.UnicodeScalarView(lines.unicodeScalars.filter {
+            $0.value == 0x0A || !($0.value < 0x20 || (0x7F...0x9F).contains($0.value))
         }))
         return "\u{1B}[200~" + clean + "\u{1B}[201~"
     }

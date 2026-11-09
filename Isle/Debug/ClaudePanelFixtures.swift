@@ -45,6 +45,8 @@ struct ClaudePanelFixture: Identifiable {
     var answerDraft = ""
     var denialDraft = ""
     var delivery: ReplyDelivery = .none
+    /// Replies Isle typed mid-turn that Claude Code has queued.
+    var queued: [String] = []
     /// The record's `last_message` (Milestone 15): the start of Claude's
     /// final message, as the helper stores it.
     var lastMessage: String? = nil
@@ -396,7 +398,45 @@ extension ClaudePanelFixture {
             .init(name: "both_question_4", mode: .both, state: .needsQuestion, request: question([fourOptions])),
         ] + approvalKinds + descriptionModes + worstCases + liveExtras + jumpAndReply + doneSays + loneJump + subagentCounts + autoModeBlocks
             + doneLeftovers
-            + sessionLists + guardedApprovals + faceRow + usageLimits + wingFaces + workingFaces
+            + sessionLists + guardedApprovals + faceRow + usageLimits + wingFaces + workingFaces + replyFaces
+    }
+
+    // MARK: Replying any time
+
+    /// The reply on a terminal Isle can type into: offered at rest and
+    /// mid-turn, written over one to five lines, queued, and locked while a
+    /// prompt is up in the terminal.
+    static var replyFaces: [ClaudePanelFixture] {
+        let steps = [Step("Read", "/Users/matthew/Documents/isle/Isle/Notch/NotchMetrics.swift"),
+                     Step("Bash", "xcodebuild"),
+                     Step("Edit", "/Users/matthew/Documents/isle/Isle/Notch/ClaudeExpandedView.swift")]
+        let three = "Yes, and bump the version to 0.4.5 first.\nThen run the tests again,\nand open a PR when they pass."
+        let five = three + "\nUse the release template for the body.\nDon't merge it yourself."
+        let others = [ownWorking, website, paletteLab]
+        func reply(_ name: String, state: ClaudeCodeState = .working, steps: [Step] = steps, action: String? = "Bash",
+                   target: String? = "xcodebuild", composing: Bool = false, draft: String = "",
+                   queued: [String] = [], lastMessage: String? = nil, mode: IsleMode = .both) -> ClaudePanelFixture {
+            .init(name: name, mode: mode, state: state, action: action, target: target, updatedAt: Date(),
+                  keepAwake: true, host: terminalHost, composing: composing ? .reply : nil, replyDraft: draft,
+                  queued: queued, lastMessage: lastMessage, steps: steps, sessions: others,
+                  sessionRequests: [websiteApproval])
+        }
+        return [
+            reply("rp_working_empty"),
+            reply("rp_working_empty_nosteps", steps: []),
+            reply("rp_working_typing1", composing: true, draft: "Also run the snapshot tests"),
+            reply("rp_working_typing3", composing: true, draft: three),
+            reply("rp_working_typing5", composing: true, draft: five),
+            reply("rp_working_queued1", queued: ["Also run the snapshot tests"]),
+            reply("rp_working_queued2", queued: ["Also run the snapshot tests", three]),
+            reply("rp_working_queued3", queued: ["Also run the snapshot tests", three, "And update the changelog"]),
+            reply("rp_done_empty", state: .done, steps: [], lastMessage: saidShort),
+            reply("rp_done_typing3", state: .done, steps: [], composing: true, draft: three, lastMessage: saidShort),
+            reply("rp_done_typing5", state: .done, steps: [], composing: true, draft: five, lastMessage: saidShort),
+            reply("rp_locked_approval", state: .needsApproval, steps: [], action: "Bash", target: "npm"),
+            reply("rp_locked_question", state: .needsQuestion, steps: [], action: nil, target: nil),
+            reply("rp_claude_typing3", composing: true, draft: three, mode: .claude),
+        ]
     }
 
     // MARK: The working face's rows

@@ -99,6 +99,12 @@ struct NotchMetrics {
         expandedSize.height - contentInsets(bandHeight: bandHeight)
     }
 
+    /// The standard panel's content height, from the most a face can have
+    /// (`contentRoom`) — for a face that knows the room and not the band.
+    static func standardContentHeight(room: CGFloat) -> CGFloat {
+        room - (panelMaxHeight - expandedSize.height)
+    }
+
     /// The expanded content's top inset (band + `contentTopGap`) and bottom
     /// inset (8), from NotchRootView.
     private static func contentInsets(bandHeight: CGFloat) -> CGFloat {
