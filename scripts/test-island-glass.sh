@@ -1,5 +1,6 @@
 #!/bin/zsh
-# Builds and runs the glass panel tests (scripts/island-glass-tests.swift)
+# Builds and runs the glass panel tests (scripts/island-glass-tests.swift):
+# Glass, Smoked and Fade, the blend, the glow and the lifts,
 # against Isle/Notch/IslandGlass.swift and Isle/Core/PanelBackground.swift
 # alone. No app, no window.
 set -e

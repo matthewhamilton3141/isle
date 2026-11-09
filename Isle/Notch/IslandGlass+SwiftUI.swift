@@ -5,8 +5,9 @@
 //  the numbers are in IslandGlass.swift):
 //
 //  - `IslandGlassFill`, the glass half of `IslandFill`: the system material,
-//    its tint, the notch glow and the black that covers it all while
-//    the island is closed, blended away on the open's progress.
+//    its tint (Fade's solid band and gradient, in Fade), the notch glow and
+//    the black that covers it all while the island is closed, blended away
+//    on the open's progress.
 //  - The material: Liquid Glass on macOS 26, an `NSVisualEffectView` behind
 //    the window on 14 and 15. Both are window-server effects — an offscreen
 //    render draws neither — and both are forced dark, so the white content
@@ -16,7 +17,10 @@
 //
 //  Nothing here runs on a clock. The blend is `Animatable`, interpolated by
 //  the same spring that moves the outline and only for as long as it runs;
-//  at rest it doesn't evaluate. The glow is a bitmap built once.
+//  at rest it doesn't evaluate. The glow is a bitmap built once. Fade's
+//  shade is laid out, not measured: a fixed band and a gradient that takes
+//  whatever height is left, so it follows the outline's frame with no
+//  geometry reader and nothing to redraw at rest.
 //
 
 import SwiftUI
@@ -42,6 +46,10 @@ struct IslandGlassFill: View {
     /// How far the outline sits right of the housing's centre (NotchRootView's
     /// `collapsedShift`), so the glow can stay on the camera.
     var housingShift: CGFloat
+    /// The band the open panel's content starts under — the camera
+    /// housing's height, or the fallback band without one — which Fade
+    /// keeps solid black and a little more (`IslandGlass.fadeBand`).
+    var bandHeight: CGFloat
 
     var body: some View {
         IslandGlassBlend(
@@ -49,7 +57,8 @@ struct IslandGlassFill: View {
             background: background,
             shape: shape,
             housing: housing,
-            housingShift: housingShift
+            housingShift: housingShift,
+            bandHeight: bandHeight
         )
         // The blend runs on the width's spring during a collapse — the
         // channel `expandProgress`, and so the content's fade, read off —
@@ -68,6 +77,7 @@ private struct IslandGlassBlend: View, Animatable {
     var shape: NotchShape
     var housing: CGSize?
     var housingShift: CGFloat
+    var bandHeight: CGFloat
 
     var animatableData: Double {
         get { progress }
@@ -78,7 +88,7 @@ private struct IslandGlassBlend: View, Animatable {
         ZStack(alignment: .top) {
             if IslandGlass.showsGlass(progress: progress) {
                 IslandGlassMaterial(shape: shape)
-                    .overlay(Color.black.opacity(IslandGlass.tint(for: background)))
+                    .overlay(alignment: .top) { IslandGlassShade(background: background, bandHeight: bandHeight) }
                     .transition(.identity)
             }
             if let housing {
@@ -92,6 +102,46 @@ private struct IslandGlassBlend: View, Animatable {
                 .fill(.black)
                 .opacity(IslandGlass.blackCover(progress: progress))
         }
+    }
+}
+
+/// The black laid over the material: a flat tint in Glass and Smoked; in
+/// Fade, solid over the band and easing to `IslandGlass.fadeEndTint` at the
+/// bottom edge.
+///
+/// Fade's shade is a fixed-height black band over a gradient that fills the
+/// rest, so the ease always spans from the band's foot to the outline's
+/// current bottom edge — as the panel opens, collapses or changes height,
+/// layout hands the gradient its new height and nothing is measured or
+/// stretched from a stale one. In an overlay on a flexible clear view, so
+/// it never sets the fill's size: while the outline is shallower than the
+/// band (the first frames of an open, the last of a collapse) the band
+/// simply runs past the clip, and that whole while the cover is solid
+/// black anyway.
+private struct IslandGlassShade: View {
+    var background: PanelBackground
+    var bandHeight: CGFloat
+
+    var body: some View {
+        if background == .fade {
+            Color.clear.overlay(alignment: .top) {
+                VStack(spacing: 0) {
+                    Rectangle()
+                        .fill(.black)
+                        .frame(height: IslandGlass.fadeBand(notchHeight: bandHeight))
+                    LinearGradient(stops: FadeStops.stops, startPoint: .top, endPoint: .bottom)
+                }
+            }
+        } else {
+            Color.black.opacity(IslandGlass.tint(for: background))
+        }
+    }
+}
+
+/// Fade's gradient stops, sampled from the curve once.
+private enum FadeStops {
+    static let stops: [Gradient.Stop] = IslandGlass.fadeStops().map {
+        Gradient.Stop(color: .black.opacity($0.alpha), location: $0.location)
     }
 }
 

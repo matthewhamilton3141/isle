@@ -2,7 +2,8 @@
 //  island-glass-tests.swift
 //
 //  Tests for the glass panel backgrounds' arithmetic — the black-to-glass
-//  blend, the notch glow, the tints and the legibility lifts — and the
+//  blend, the notch glow, the tints, Fade's band and curve, and the
+//  legibility lifts — and the
 //  stored setting's default, compiled against Isle/Notch/IslandGlass.swift
 //  and Isle/Core/PanelBackground.swift alone. Run with
 //  scripts/test-island-glass.sh.
@@ -35,10 +36,12 @@ do {
     for b in PanelBackground.allCases {
         check(PanelBackground.stored(b.rawValue) == b, "\(b.rawValue) round-trips")
     }
-    check(PanelBackground.allCases == [.black, .glass, .smoked], "picker order: Black, Glass, Smoked")
+    check(PanelBackground.allCases == [.black, .glass, .smoked, .fade], "picker order: Black, Glass, Smoked, Fade")
     check(!PanelBackground.black.isGlass, "Black isn't glass")
-    check(PanelBackground.allCases.filter(\.isGlass).count == 2, "the other two are glass")
-    check(Set(PanelBackground.allCases.map(\.title)).count == 3, "titles distinct")
+    check(PanelBackground.allCases.filter(\.isGlass).count == 3, "the other three are glass")
+    check(Set(PanelBackground.allCases.map(\.title)).count == 4, "titles distinct")
+    check(PanelBackground.stored("fade") == .fade, "Fade is stored as \"fade\"")
+    check(PanelBackground.allCases.filter(\.growsNotchGlow) == [.glass, .smoked], "the notch glow is Glass's and Smoked's alone")
     check(PanelBackground.stored("glassNotchFade") == .black && PanelBackground.stored("glassNotchGlow") == .black, "unshipped interim values read as Black")
 }
 
@@ -49,6 +52,65 @@ do {
     check(IslandGlass.tint(for: .smoked) == IslandGlass.smokedTint, "Smoked uses smokedTint")
     check(near(IslandGlass.smokedTint, 0.48), "Smoked is the mockups' 48%")
     check(IslandGlass.smokedTint > IslandGlass.glassTint, "Smoked is darker than Glass")
+    check(IslandGlass.tint(for: .fade) == IslandGlass.fadeEndTint, "Fade's tint is the one at its bottom edge")
+}
+
+print("fade")
+do {
+    let notch: CGFloat = 32, height: CGFloat = 146
+    let band = IslandGlass.fadeBand(notchHeight: notch)
+    func a(_ y: CGFloat, _ h: CGFloat = height) -> Double { IslandGlass.fadeAlpha(y: y, height: h, band: band) }
+    check(band >= notch + 4, "the solid band reaches past the camera housing", "band \(band)")
+    check(band == notch + IslandGlass.fadeBandExtra, "band: the housing plus fadeBandExtra")
+    check(IslandGlass.fadeBand(notchHeight: 24) < band, "a shallower housing (or none) gets a shallower band")
+    check(a(0) == 1 && a(notch) == 1 && a(band) == 1, "solid black over the housing and down to the band's foot")
+    check(near(a(height), IslandGlass.fadeEndTint), "the end tint at the bottom edge")
+    check(near(a(band + (height - band) / 2), 1 - (1 - IslandGlass.fadeEndTint) / 2), "half way down the ease, half way to the end tint")
+    // Legible at the bottom: never lighter than Glass, which is legible on
+    // its own, and lighter than Smoked, or it wouldn't read as glass.
+    check(IslandGlass.fadeEndTint > IslandGlass.glassTint && IslandGlass.fadeEndTint < IslandGlass.smokedTint,
+          "the end tint sits between Glass and Smoked", "\(IslandGlass.fadeEndTint)")
+    // The action row's band, the panel's last ~30pt: everywhere darker
+    // than Glass and no lighter than the end tint.
+    var rowOK = true
+    for y in stride(from: height - 30, through: height, by: 0.5) {
+        let v = a(y)
+        if v < IslandGlass.fadeEndTint - 1e-12 || v <= IslandGlass.glassTint { rowOK = false }
+    }
+    check(rowOK, "the action row sits on more black than Glass gives it", "\(a(height - 30))")
+    var mono = true, prev = 2.0, maxStep = 0.0
+    for i in 0...1460 {
+        let v = a(CGFloat(i) / 10)
+        if v > prev + 1e-12 { mono = false }
+        if prev <= 1 { maxStep = max(maxStep, prev - v) }
+        prev = v
+    }
+    check(mono, "only ever lightens toward the bottom")
+    check(maxStep < 0.005, "no step anywhere down the panel (per 0.1pt)", "max step \(maxStep)")
+    // No slope where the band ends or at the bottom: smoothstep's ends.
+    let eps: CGFloat = 0.01
+    check((1 - a(band + eps)) < 1e-5, "leaves the band with no edge")
+    check(abs(a(height - eps) - a(height)) < 1e-5, "arrives at the bottom with no edge")
+    // It follows the panel's height: the same fraction of the ease at any
+    // height, never a fixed-height gradient stretched.
+    check(near(a(band + (230 - band) / 2, 230), a(band + (height - band) / 2)), "the ease spans the panel's current height")
+    check(a(band + 50, 230) > a(band + 50, 146), "a taller panel eases more slowly")
+    check(a(20, 30) == 1 && a(40, 30) == 1, "a panel shallower than the band (mid-collapse) is all black")
+    // The gradient's stops sample the curve and end at the band and bottom.
+    let stops = IslandGlass.fadeStops()
+    check(stops.count == IslandGlass.fadeStopCount + 1, "stop count")
+    check(stops.first!.location == 0 && stops.first!.alpha == 1, "first stop: solid at the band's foot")
+    check(stops.last!.location == 1 && near(stops.last!.alpha, IslandGlass.fadeEndTint), "last stop: the end tint at the bottom")
+    var worst = 0.0
+    for i in 0...1000 {
+        let t = Double(i) / 1000
+        let k = min(Int(t * Double(IslandGlass.fadeStopCount)), IslandGlass.fadeStopCount - 1)
+        let s0 = stops[k], s1 = stops[k + 1]
+        let lerp = s0.alpha + (s1.alpha - s0.alpha) * (t - s0.location) / (s1.location - s0.location)
+        worst = max(worst, abs(lerp - (1 - (1 - IslandGlass.fadeEndTint) * IslandGlass.fadeEase(t))))
+    }
+    check(worst < 0.003, "the stops' linear gradient is within 0.3% of the curve", "\(worst)")
+    check(IslandGlass.fadeEase(-1) == 0 && IslandGlass.fadeEase(2) == 1, "the ease clamps")
 }
 
 print("blend")

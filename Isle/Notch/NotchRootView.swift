@@ -47,10 +47,11 @@ struct NotchRootView: View {
         reduceTransparency ? .black : viewModel.panelBackground
     }
 
-    /// The camera housing the notch glow grows from: with the glow on, and
-    /// only on a screen with a real notch.
+    /// The camera housing the notch glow grows from: with the glow on, in a
+    /// mode that has one, and only on a screen with a real notch.
     private var glowHousing: CGSize? {
-        guard viewModel.panelNotchGlow, let metrics = island.metrics, metrics.hasPhysicalNotch else { return nil }
+        guard viewModel.panelNotchGlow, panelBackground.growsNotchGlow,
+              let metrics = island.metrics, metrics.hasPhysicalNotch else { return nil }
         return metrics.notchSize
     }
 
@@ -311,7 +312,8 @@ struct NotchRootView: View {
                 background: panelBackground,
                 opened: state.isExpanded,
                 housing: glowHousing,
-                housingShift: collapsedShift
+                housingShift: collapsedShift,
+                bandHeight: notchBandHeight
             )
         }
         // The corners lead the collapse: the clip's and the fill's radii.

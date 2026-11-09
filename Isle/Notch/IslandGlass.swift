@@ -12,6 +12,8 @@
 //    grows out of the physical camera housing, solid over it and fading
 //    outward, wider sideways than down.
 //  - The tints laid over the system material, one per mode.
+//  - Fade's shade: solid black over a band as deep as the notch and a little
+//    more, then easing to a light tint at the panel's bottom edge.
 //  - The legibility lifts for content on glass: secondary text a little
 //    brighter, artwork colours held above a lightness floor.
 //
@@ -38,6 +40,63 @@ enum IslandGlass {
         case .black: return 0
         case .glass: return glassTint
         case .smoked: return smokedTint
+        case .fade: return fadeEndTint
+        }
+    }
+
+    // MARK: - Fade
+
+    /// How far below the camera housing (or, on a display without one, the
+    /// band the panel's content starts under) Fade stays solid black, in
+    /// points. The open panel's first row of content starts 2pt under the
+    /// housing, so its top sits on black too, and the menu bar's hairline
+    /// below the housing never shows a glass seam. Tune here.
+    static let fadeBandExtra: CGFloat = 8
+
+    /// Black left over the glass at the panel's bottom edge, where the fade
+    /// ends. Between Glass's 0.25 and Smoked's 0.48: the bottom reads as
+    /// glass, but the action row near it (Terminal, the reply field,
+    /// Approve and Deny, a question's options) sits on more than Glass gives
+    /// it, because a smoothstep is already all but flat by then. Tune here.
+    static let fadeEndTint: Double = 0.36
+
+    /// The solid band's depth for a camera housing (or content band)
+    /// `notchHeight` tall.
+    static func fadeBand(notchHeight: CGFloat) -> CGFloat {
+        max(notchHeight, 0) + fadeBandExtra
+    }
+
+    /// The ease from the band to the bottom edge, `t` 0 at the band's foot
+    /// and 1 at the bottom: smoothstep, so it leaves the band and arrives at
+    /// the end tint with no slope — no visible edge at either end.
+    static func fadeEase(_ t: Double) -> Double {
+        let u = min(max(t, 0), 1)
+        return u * u * (3 - 2 * u)
+    }
+
+    /// Fade's black at `y` points from the top of a panel `height` tall
+    /// whose solid band is `band` deep: 1 down to the band's foot, then
+    /// eased to `fadeEndTint` at the bottom edge. Measured against the
+    /// panel's current height, so it follows the outline as it grows and
+    /// shrinks rather than being stretched from a fixed one.
+    static func fadeAlpha(y: CGFloat, height: CGFloat, band: CGFloat) -> Double {
+        guard y > band else { return 1 }
+        let span = height - band
+        guard span > 0 else { return 1 }
+        return 1 - (1 - fadeEndTint) * fadeEase(Double((y - band) / span))
+    }
+
+    /// Stops sampled along the ease, for the gradient that draws it below
+    /// the band: enough that the piecewise-linear gradient between them is
+    /// within a fraction of a percent of the curve.
+    static let fadeStopCount = 16
+
+    /// The ease from the band's foot (location 0) to the bottom edge
+    /// (location 1), as (location, black's alpha) stops.
+    static func fadeStops() -> [(location: Double, alpha: Double)] {
+        (0...fadeStopCount).map {
+            let t = Double($0) / Double(fadeStopCount)
+            return (t, 1 - (1 - fadeEndTint) * fadeEase(t))
         }
     }
 

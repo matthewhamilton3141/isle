@@ -333,8 +333,9 @@ struct SettingsView: View {
             }
             .pickerStyle(.segmented)
 
-            // Only glass has anything to glow into.
-            if settings.panelBackground.isGlass {
+            // Only Glass and Smoked have anything to glow into; Fade is
+            // already black around the camera.
+            if settings.panelBackground.growsNotchGlow {
                 toggleRow("Glow from the notch", notchGlowCaption, isOn: $settings.panelNotchGlow)
             }
         }
