@@ -207,6 +207,7 @@ struct IslandFill: View {
     var lightPalette: ArtworkPalette? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.islandGlassLayer) private var glassLayer
 
     var body: some View {
         let reading = active && !reduceMotion ? proximity.reading : .rest
@@ -235,6 +236,9 @@ struct IslandFill: View {
                 bandHeight: bandHeight,
                 lightPalette: lightPalette
             )
+        } else if glassLayer == .materialOnly {
+            // The glass window has no glass to draw in Black.
+            Color.clear
         } else {
             shape.fill(.black)
         }

@@ -16,6 +16,10 @@
 //    the window on 14 and 15. Both are window-server effects — an offscreen
 //    render draws neither — and both are forced dark, so the white content
 //    stays readable whatever the light/dark setting.
+//  - Where the material is drawn (`IslandGlassLayer`): in the island's own
+//    window, or, as Isle runs, in a window of its own under it that never
+//    becomes key, because Liquid Glass changes its look with its window's
+//    key status (see `IslandGlassWindow`).
 //  - The content's legibility lifts on glass, read from the environment so
 //    Black mode resolves to exactly the colours it always drew.
 //
@@ -119,6 +123,8 @@ private struct IslandGlassBlend: View, Animatable {
     var lightPalette: ArtworkPalette?
     var sweepAt: Date?
 
+    @Environment(\.islandGlassLayer) private var layer
+
     var animatableData: Double {
         get { progress }
         set { progress = newValue }
@@ -127,15 +133,42 @@ private struct IslandGlassBlend: View, Animatable {
     var body: some View {
         ZStack(alignment: .top) {
             if IslandGlass.showsGlass(progress: progress) {
-                IslandGlassMaterial(shape: shape)
-                    .overlay(alignment: .top) { IslandGlassShade(background: background, bandHeight: bandHeight) }
+                material
                     .overlay(alignment: .top) {
-                        if background == .fade {
+                        if layer != .materialOnly {
+                            IslandGlassShade(background: background, bandHeight: bandHeight)
+                        }
+                    }
+                    .overlay(alignment: .top) {
+                        if background == .fade, layer != .materialOnly {
                             FadeLens(shape: shape, bandHeight: bandHeight, light: FadeLight.resolve(lightPalette), sweepAt: sweepAt)
                         }
                     }
                     .transition(.identity)
             }
+            // Everything from here up is the panel's, never the material's
+            // window's: there, under full black, there's simply no glass yet.
+            if layer != .materialOnly {
+                cover
+            }
+        }
+    }
+
+    /// The material itself, or a stand-in that takes its place in the
+    /// layout when another window draws it.
+    @ViewBuilder
+    private var material: some View {
+        if layer == .withoutMaterial {
+            Color.clear
+        } else {
+            IslandGlassMaterial(shape: shape, clear: background == .fade)
+        }
+    }
+
+    /// The notch glow and the black that blends away on the open.
+    @ViewBuilder
+    private var cover: some View {
+        ZStack(alignment: .top) {
             if let housing {
                 NotchGlow(housing: housing, shift: housingShift)
                     // Hidden rather than removed under full black, so its
@@ -147,6 +180,47 @@ private struct IslandGlassBlend: View, Animatable {
                 .fill(.black)
                 .opacity(IslandGlass.blackCover(progress: progress))
         }
+    }
+}
+
+// MARK: - Where the material is drawn
+
+/// Which part of the island's fill a view tree draws.
+///
+/// Liquid Glass renders differently in a key window: there the system turns
+/// on its full lens — the refraction layer and its sampling margin — and
+/// what's behind the panel comes through nearly sharp; in a window that
+/// isn't key, it's the frosted glass Isle is designed on. The panel window
+/// becomes key while the reply field takes typing, which flipped the glass
+/// from one to the other mid-reply. Neither the SwiftUI environment
+/// (`appearsActive`, `controlActiveState`) nor `NSGlassEffectView` pins it:
+/// the switch happens in `NSWindow.becomeKey()`, for the window's own glass.
+///
+/// So as Isle runs, the material is drawn in a window of its own that never
+/// becomes key (`IslandGlassWindow`, a child of the panel, ordered just
+/// below it), from the same view tree with `.materialOnly`, while the panel
+/// draws everything else with `.withoutMaterial`: the shade, Fade's lens,
+/// the glow and the black that blends away on the open all lie over the
+/// glass exactly as before. Both trees follow the same state on the same
+/// springs, so the two windows move as one.
+enum IslandGlassLayer {
+    /// The material and everything over it, in one window: previews, renders.
+    case all
+    /// The material alone, in the outline: the glass window.
+    case materialOnly
+    /// Everything but the material: the panel, over the glass window.
+    case withoutMaterial
+}
+
+private struct IslandGlassLayerKey: EnvironmentKey {
+    static let defaultValue = IslandGlassLayer.all
+}
+
+extension EnvironmentValues {
+    /// Which part of the fill this tree draws (`IslandGlassLayer`).
+    var islandGlassLayer: IslandGlassLayer {
+        get { self[IslandGlassLayerKey.self] }
+        set { self[IslandGlassLayerKey.self] = newValue }
     }
 }
 
@@ -506,12 +580,13 @@ private enum NotchGlowImage {
 /// desktop — the panel usually sits over app windows, and the material
 /// reads whatever is really there.
 ///
-/// The frosted `.regular` variant in every mode, Fade included. Fade was
-/// briefly on `.clear`, which passes far more of what's behind — over a
-/// white page about twice the light — and with text, video or a scrolling
-/// page under the panel that read as busy, competing with Isle's own text.
-/// The frosted glass keeps the backdrop's colour and leaves its detail
-/// behind; Fade's rim, glint and sweep are what make it read as glass.
+/// Glass and Smoked draw the frosted `.regular` variant; Fade the
+/// `.clear`, which lets more of the backdrop's colour and light through. In
+/// the window it's drawn in, which never becomes key (`IslandGlassLayer`),
+/// both stay frosted: the backdrop's shapes and colours come through, its
+/// detail doesn't. (In a key window the system lenses the backdrop nearly
+/// sharp, `.clear` most of all — which is what a focused reply field used
+/// to show for as long as it was focused.)
 /// It is never tinted through `Glass.tint` — black there lightens the glass
 /// to grey rather than darkening it — so the shade over it does that. Not
 /// `.interactive()`: the panel is a surface with buttons on it, not a
@@ -520,11 +595,13 @@ private struct IslandGlassMaterial: View {
     /// The outline, so Liquid Glass's rim follows it. The fill clips to it
     /// as well, which is what holds the edge exact while it moves.
     var shape: NotchShape
+    /// Liquid Glass's clear variant rather than the frosted.
+    var clear: Bool = false
 
     var body: some View {
         if #available(macOS 26.0, *) {
             Color.clear
-                .glassEffect(.regular, in: shape)
+                .glassEffect(clear ? .clear : .regular, in: shape)
                 .environment(\.colorScheme, .dark)
         } else {
             IslandVisualEffect()

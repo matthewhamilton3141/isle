@@ -53,6 +53,56 @@ final class NotchWindow: NSPanel {
 
         // Keep it out of screenshots' window lists and Exposé clutter.
         isExcludedFromWindowsMenu = true
+
+        glassWindow.level = level
+        glassWindow.collectionBehavior = collectionBehavior
+    }
+
+    // MARK: - The glass window
+
+    /// Where the glass panel backgrounds' material is drawn: a window of its
+    /// own, a child of this one just below it, that never becomes key.
+    /// Liquid Glass turns on its full lens in a key window — what's behind
+    /// comes through nearly sharp — and this panel becomes key while a reply
+    /// is typed, so glass drawn here would change its look mid-reply. See
+    /// `IslandGlassLayer`. It follows this window's frame and ordering.
+    let glassWindow = IslandGlassWindow()
+
+    /// Gives the glass window its content: the island's tree drawing the
+    /// material alone.
+    func attachGlass(_ view: NSView) {
+        glassWindow.contentView = view
+        hasGlass = true
+        glassWindow.setFrame(frame, display: false)
+        if isVisible { showGlass() }
+    }
+
+    /// Whether `attachGlass` has given the glass window anything to draw.
+    private var hasGlass = false
+
+    private func showGlass() {
+        guard hasGlass else { return }
+        glassWindow.setFrame(frame, display: false)
+        if glassWindow.parent == nil {
+            // Ordered in, just below this window, and kept there.
+            addChildWindow(glassWindow, ordered: .below)
+        }
+    }
+
+    override func setFrame(_ frameRect: NSRect, display flag: Bool) {
+        super.setFrame(frameRect, display: flag)
+        glassWindow.setFrame(frameRect, display: flag)
+    }
+
+    override func orderFrontRegardless() {
+        super.orderFrontRegardless()
+        showGlass()
+    }
+
+    override func orderOut(_ sender: Any?) {
+        if glassWindow.parent != nil { removeChildWindow(glassWindow) }
+        glassWindow.orderOut(sender)
+        super.orderOut(sender)
     }
 
     // Isle's controls are hover/click driven and it should never pull focus
@@ -122,4 +172,28 @@ extension NotchWindow: NSDraggingDestination {
     func draggingEnded(_ sender: any NSDraggingInfo) {
         dropHandler?.dragEnded(self)
     }
+}
+
+/// The window the island's glass is drawn in (see `NotchWindow.glassWindow`):
+/// borderless, transparent, click-through, and never key or main, so its
+/// glass keeps the look it has at rest whatever the panel over it does.
+final class IslandGlassWindow: NSPanel {
+    init() {
+        super.init(
+            contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = false
+        ignoresMouseEvents = true
+        isMovable = false
+        hidesOnDeactivate = false
+        isExcludedFromWindowsMenu = true
+    }
+
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
 }

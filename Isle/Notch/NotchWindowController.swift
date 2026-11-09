@@ -258,10 +258,18 @@ final class NotchWindowController {
         window.registerForDraggedTypes([.fileURL])
         window.dropHandler = self
         let hosting = NotchHostingView(
-            rootView: NotchRootView(viewModel: viewModel, island: presentation) { [weak self] rect in
+            rootView: NotchRootView(viewModel: viewModel, island: presentation, glassLayer: .withoutMaterial) { [weak self] rect in
                 self?.updateActiveRect(rect, on: id)
             }
         )
+        // The glass material, in its own window under the panel, which never
+        // becomes key (see `IslandGlassLayer`). Sized by the window alone,
+        // like the panel's.
+        let glassHosting = NSHostingView(
+            rootView: NotchRootView(viewModel: viewModel, island: presentation, glassLayer: .materialOnly)
+        )
+        glassHosting.sizingOptions = []
+        window.attachGlass(glassHosting)
         // The window is sized and placed by `maximumFrame` alone. Left to its
         // defaults the hosting view also sizes it, to the SwiftUI content's
         // ideal width (the 520pt panel), keeping the origin: with the side
