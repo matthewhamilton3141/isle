@@ -2,30 +2,32 @@
 //  ClaudePanelLayout.swift
 //
 //  The Claude face's one layout, as numbers. Every face — a status, an
-//  approval, a question — is the same four regions in the same column:
+//  approval, a question — is the same regions in the same column:
 //
-//    eyebrow   where it is and what else is going on: the project and how
-//              long ago, or the question's header and step; on the right,
-//              the other live sessions and the keep-awake mark.
-//    title     the state as a headline, or the question itself.
-//    body      what Claude is doing, the exact command to approve, or the
-//              options to pick from.
-//    actions   one row of pills: Approve / Deny / Terminal, Answer in
-//              terminal / Next, or Jump and the reply field. Held empty on a
-//              status face with nothing to offer, at its usual height.
+//    wings     the housing band either side of the camera. Left: the
+//              marker and the state in its colour, or the question's
+//              header and step. Right: the other live sessions, ahead of
+//              the crumb. Nothing within `wingClearance` of the cutout.
+//    hero      right under the housing: the exact command to approve (on a
+//              card), what Claude said when its turn ended, what it's doing,
+//              or the question itself.
+//    meta      one quiet line: the project, how long ago, the agents, the
+//              keep-awake cup, a guard's chip; and at most one line more
+//              for a block, what the turn left running, or the agents.
+//    actions   one row of pills at the face's foot: Approve / Deny /
+//              Terminal, Answer in terminal / Next, or the terminal and the
+//              reply field.
 //
-//  The eyebrow and title sit at the same height on every face, so moving
-//  between states cross-fades text in place rather than shuffling rows. On a
-//  status or approval face the action row follows the body at `bodyGap`, and
-//  the panel's spare room goes below it; a request that can switch its body
-//  between one line and two (an edit's note, Always…'s review) holds two, so
-//  its buttons don't move under the pointer.
+//  The wings and the hero sit at the same height on every face, so moving
+//  between states cross-fades text in place rather than shuffling rows; the
+//  action row sits at the foot of the face, so it's where the pointer left
+//  it whatever the body above holds.
 //
-//  The question face is the one that grows: the marker before the title
-//  leaves, and the question and its options run the face's width. The panel is sized from these same numbers before it's drawn
-//  (`questionContentHeight`, read by `NotchMetrics.panelHeight`), and
-//  the view lays the rows out from the same `OptionsFit`, so the two can't
-//  disagree.
+//  The question face is the one that grows: the question and its options
+//  run the face's width, and the panel is sized from these same numbers
+//  before it's drawn (`questionContentHeight`, read by
+//  `NotchMetrics.panelHeight`); the view lays the rows out from the same
+//  `OptionsFit`, so the two can't disagree.
 //
 //  Every option is always in view. `AskUserQuestion` sends at most four, and
 //  when the panel's cap can't hold them as the description setting draws
@@ -42,33 +44,99 @@ enum ClaudePanelLayout {
 
     /// The face: one column, the width the music face's album and text
     /// take together, centred in the panel. Every face — status, approval,
-    /// question, the session list — spends all of it, so the eyebrow and
-    /// the title sit at one place whichever is up.
+    /// question, the session list — spends all of it, so the wings and
+    /// the hero sit at one place whichever is up.
     static let faceWidth: CGFloat = 468
+
+    // MARK: - Wings
+
+    /// The housing band either side of the camera: as tall as the cutout,
+    /// ordinary screen to its left and right. The face puts what it's about
+    /// there — its status and where it is on the left, the other sessions on
+    /// the right, ahead of the crumb — so the body starts right under the
+    /// housing. Nothing is drawn within `wingClearance` of the cutout.
+    static let wingClearance: CGFloat = 12
+    /// On a screen with no notch there's no cutout to clear: the wings are
+    /// one top row, split by this much air.
+    static let wingGutter: CGFloat = 24
+    /// Between a wing's content and the crumb (or the gear) at its end.
+    static let crumbGap: CGFloat = 10
+    /// A control in a wing — the sessions chip — and a tag in the body.
+    static let chipHeight: CGFloat = 20
+
+    struct Wings: Equatable {
+        /// The left wing's width, from the face's leading edge.
+        var left: CGFloat
+        /// The right wing's width, ending `trailing` short of the face's
+        /// trailing edge.
+        var right: CGFloat
+        /// Held for the crumb or the gear, which `NotchRootView` draws at
+        /// the face's trailing edge.
+        var trailing: CGFloat
+        var band: CGFloat
+    }
+
+    /// The wings for a housing `notch` wide and `band` tall, or for a screen
+    /// with none. `crumb` is the width of what sits at the right wing's end.
+    static func wings(notch: CGFloat, band: CGFloat, physical: Bool, crumb: CGFloat) -> Wings {
+        let gap = physical ? notch + wingClearance * 2 : wingGutter
+        let side = max(0, (faceWidth - gap) / 2)
+        let trailing = crumb > 0 ? crumb + crumbGap : 0
+        return Wings(left: side, right: max(0, side - trailing), trailing: trailing, band: band)
+    }
+
+    /// How far the crumb (`⊞ › Claude`) reaches in from the face's trailing
+    /// edge, or the gear on an island with no Home. Measured from the views
+    /// themselves, once.
+    static func crumbWidth(showsHome: Bool) -> CGFloat {
+        if let cached = crumbWidthCache[showsHome] { return cached }
+        let width: CGFloat
+        if showsHome {
+            width = ceil(NSHostingView(rootView: NotchCrumb(face: .claude, attention: false, goHome: {})).fittingSize.width)
+        } else {
+            // The gear's 22pt target, centred 5pt further out than the
+            // crumb's end (see `NotchRootView`).
+            width = 22 - 5
+        }
+        crumbWidthCache[showsHome] = width
+        return width
+    }
+
+    private static var crumbWidthCache: [Bool: CGFloat] = [:]
 
     // MARK: - Rows
 
-    static let eyebrowHeight: CGFloat = 14
-    /// Eyebrow → title.
-    static let eyebrowGap: CGFloat = 4
-    /// Headline → detail on a status face.
-    static let headlineGap: CGFloat = 2
+    /// The meta line under the hero: project · time · agents, and a
+    /// guard chip's 17pt.
+    static let metaHeight: CGFloat = 18
+    /// Hero → meta line on a status or approval face.
+    static let heroGap: CGFloat = 4
     /// Question → options.
     static let questionGap: CGFloat = 6
     /// The least room above the question face's action row.
     static let actionGap: CGFloat = 6
-    /// Body → action row on a status or approval face: one gap whatever the
-    /// body's height, with the panel's spare room below the row.
+    /// The least room between a status or approval face's body and its
+    /// action row, which sits at the face's foot.
     static let bodyGap: CGFloat = 10
     static let actionHeight: CGFloat = 22
+
+    /// A status face with no action row (`NotchViewModel.claudeHasActions`):
+    /// the hero and the meta line, and room for the tallest of what can sit
+    /// with them — two lines of what Claude said, or a title and a line
+    /// under the meta. One height for all of them, so the panel doesn't bob
+    /// as the line comes and goes.
+    static var bareStatusHeight: CGFloat {
+        max(CGFloat(saidLines) * saidLine, headlineLine + detailLine) + heroGap + metaHeight + bottomInset
+    }
     /// Under the action row, on top of the panel's own bottom inset.
     static let bottomInset: CGFloat = 4
 
     // MARK: - Type
     //
-    // From the island's one scale (`IsleType`): the face's headline is a
-    // title, the question a headline, what Claude is doing body text, the
-    // eyebrow and every meta line meta, options and pills labels.
+    // From the island's one scale (`IsleType`): what Claude is doing is a
+    // title, what it said the lead, the state in the wing and the question
+    // headlines, the command mono, every meta line meta, options and pills
+    // labels.
 
     static let questionSize: CGFloat = IsleType.Size.headline
     static let optionDescriptionSize: CGFloat = IsleType.Size.meta
@@ -85,8 +153,12 @@ enum ClaudePanelLayout {
     /// Between a stacked option's label and the key over its corner.
     static let keyHintGap: CGFloat = 10
 
-    static var eyebrowFont: Font { IsleType.meta }
+    static var metaFont: Font { IsleType.meta }
+    /// The state in the left wing, and a question's header.
+    static var statusFont: Font { IsleType.headline }
     static var headlineFont: Font { IsleType.title }
+    /// What Claude said, as the hero of the faces after a turn.
+    static var saidFont: Font { IsleType.lead }
     static var questionFont: Font { IsleType.headline }
     static var detailFont: Font { IsleType.body }
     static var commandFont: Font { IsleType.mono }
@@ -95,12 +167,15 @@ enum ClaudePanelLayout {
     static var pillFont: Font { IsleType.label }
     static var keyHintFont: Font { IsleType.note }
 
-    /// The working marker, inline before the headline: the collapsed
+    /// The marker, in the left wing before the state: the collapsed
     /// island's marker at the collapsed island's size (`CollapsedSize.dots`),
-    /// so the open face carries the same mark the pill does, as a status
-    /// beside the words rather than a block that takes a third of the face.
+    /// so opening the island grows the pill's mark and word into the wing.
     static let glyphSize: CGFloat = 16
-    static let glyphGap: CGFloat = 8
+    static let glyphGap: CGFloat = 7
+
+    /// The approval's command card.
+    static let cardPadding = CGSize(width: 10, height: 6)
+    static let cardRadius: CGFloat = 9
 
     // MARK: - Line heights
 
@@ -110,6 +185,7 @@ enum ClaudePanelLayout {
     /// of its own (11pt is 14, 20pt bold is 24), and a frame a point short
     /// silently drops the last line.
     static let headlineLine = lineHeight(headlineFont)
+    static let saidLine = lineHeight(saidFont)
     static let questionLine = lineHeight(questionFont)
     static let detailLine = lineHeight(detailFont)
     static let commandLine = lineHeight(commandFont)
@@ -130,8 +206,9 @@ enum ClaudePanelLayout {
     // MARK: - Session list (Milestone 16)
 
     /// One line a session: its marker, project, state, what it's doing, how
-    /// long since it moved, and its Jump. Four fit the standard panel under
-    /// the list's eyebrow, with a 32pt housing; more scroll.
+    /// long since it moved, and its Jump. Five fit the standard panel under
+    /// a 32pt housing, the list's back and count up in the wings; more
+    /// scroll.
     static let sessionRowHeight: CGFloat = 20
     static let sessionRowGap: CGFloat = 1
     static let sessionGlyphSize: CGFloat = 12
@@ -216,7 +293,7 @@ enum ClaudePanelLayout {
     /// Everything on the question face but the options, for a question of
     /// `questionLines` lines.
     static func questionChromeHeight(questionLines: Int) -> CGFloat {
-        eyebrowHeight + eyebrowGap + CGFloat(questionLines) * questionLine + questionGap
+        CGFloat(questionLines) * questionLine + questionGap
             + actionGap + actionHeight + bottomInset
     }
 
