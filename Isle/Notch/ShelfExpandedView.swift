@@ -53,8 +53,8 @@ struct ShelfExpandedView: View {
             VStack(alignment: .leading, spacing: 0) {
                 if rows == 1 {
                     Text(headline)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.islandSecondary(0.5))
+                        .font(IsleType.meta)
+                        .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
                         .lineLimit(1)
                         .frame(height: ShelfLayout.headlineHeight, alignment: .top)
                         .padding(.bottom, ShelfLayout.headlineGap)
@@ -222,11 +222,11 @@ private struct ShelfCount: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 4) {
             Text("\(shelf.items.count)")
-                .font(.system(size: 18, weight: .bold).monospacedDigit())
+                .font(IsleType.numeral(18))
                 .contentTransition(.numericText())
             Text(shelf.isFull ? "· full" : shelf.items.count == 1 ? "item" : "items")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.islandSecondary(0.6))
+                .font(IsleType.label)
+                .foregroundStyle(.islandSecondary(IsleType.Tone.secondary))
         }
         .animation(.easeInOut(duration: 0.2), value: shelf.items.count)
     }
@@ -249,7 +249,7 @@ private struct ShelfCell: View {
             // two lines whether the name needs them or not, so every cell is
             // one height and the panel's is the rows' (see `ShelfLayout`).
             Text(item.name)
-                .font(.system(size: cell.nameSize, weight: .medium))
+                .font(.system(size: cell.nameSize, weight: .medium))  // note size, micro when full
                 .lineLimit(2)
                 .truncationMode(.middle)
                 .multilineTextAlignment(.center)
@@ -326,7 +326,7 @@ private struct ShelfButton: View {
                 Image(systemName: symbol)
                     .font(.system(size: 10, weight: .bold))
                 Text(title)
-                    .font(.system(size: 11.5, weight: .semibold))
+                    .font(IsleType.label)
                     .lineLimit(1)
             }
             .padding(.horizontal, 10)

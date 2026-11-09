@@ -21,9 +21,8 @@
 //  between one line and two (an edit's note, Always…'s review) holds two, so
 //  its buttons don't move under the pointer.
 //
-//  The question face is the one that grows, and the one that rearranges: the
-//  glyph leaves, and the eyebrow, the question and the options take the
-//  face's whole width. The panel is sized from these same numbers before it's drawn
+//  The question face is the one that grows: the marker before the title
+//  leaves, and the question and its options run the face's width. The panel is sized from these same numbers before it's drawn
 //  (`questionContentHeight`, read by `NotchMetrics.panelHeight`), and
 //  the view lays the rows out from the same `OptionsFit`, so the two can't
 //  disagree.
@@ -41,23 +40,11 @@ import AppKit
 enum ClaudePanelLayout {
     // MARK: - Columns
 
-    /// The marker: the album cover's footprint on the music face, raised the
-    /// same distance into the housing band (safe there — no hardware left of
-    /// the cutout). Top-aligned, so it lands on one spot on every face, and
-    /// its top-left corner stays put when the question face shrinks it.
-    /// The album is centred in the 104pt content area and raised 11, so its
-    /// top is 16 above the content's: the glyph is raised that far to match.
-    static let glyphSize: CGFloat = 114
-    static let glyphRaise: CGFloat = 16
-    static let glyphGap: CGFloat = 14
-
-    /// The text column, fixed so the glyph + column pair centres in the panel
-    /// exactly as the music face's album + text pair does.
-    static let columnWidth: CGFloat = 340
-
-    /// The glyph and the column together: the whole face. The question face
-    /// spends all of it on the options.
-    static let faceWidth = glyphSize + glyphGap + columnWidth
+    /// The face: one column, the width the music face's album and text
+    /// take together, centred in the panel. Every face — status, approval,
+    /// question, the session list — spends all of it, so the eyebrow and
+    /// the title sit at one place whichever is up.
+    static let faceWidth: CGFloat = 468
 
     // MARK: - Rows
 
@@ -78,17 +65,15 @@ enum ClaudePanelLayout {
     static let bottomInset: CGFloat = 4
 
     // MARK: - Type
+    //
+    // From the island's one scale (`IsleType`): the face's headline is a
+    // title, the question a headline, what Claude is doing body text, the
+    // eyebrow and every meta line meta, options and pills labels.
 
-    static let eyebrowSize: CGFloat = 10.5
-    static let headlineSize: CGFloat = 20
-    static let questionSize: CGFloat = 13
-    static let detailSize: CGFloat = 12
-    static let commandSize: CGFloat = 11
-    static let optionLabelSize: CGFloat = 12
-    static let optionDescriptionSize: CGFloat = 11
-    static let pillSize: CGFloat = 11.5
+    static let questionSize: CGFloat = IsleType.Size.headline
+    static let optionDescriptionSize: CGFloat = IsleType.Size.meta
     /// A shortcut's keys on a button (`ShortcutHints`).
-    static let keyHintSize: CGFloat = 10
+    static let keyHintSize: CGFloat = IsleType.Size.caption
     /// Kept clear for a key over a stacked option's top corner, at the
     /// least — what ⌥1 takes, so the default keys' rows are as they were.
     static let keyHintClearance: CGFloat = 26
@@ -100,15 +85,22 @@ enum ClaudePanelLayout {
     /// Between a stacked option's label and the key over its corner.
     static let keyHintGap: CGFloat = 10
 
-    static var eyebrowFont: Font { .system(size: eyebrowSize, weight: .semibold) }
-    static var headlineFont: Font { .system(size: headlineSize, weight: .bold) }
-    static var questionFont: Font { .system(size: questionSize, weight: .semibold) }
-    static var detailFont: Font { .system(size: detailSize, weight: .regular) }
-    static var commandFont: Font { .system(size: commandSize, design: .monospaced) }
-    static var optionLabelFont: Font { .system(size: optionLabelSize, weight: .semibold) }
-    static var optionDescriptionFont: Font { .system(size: optionDescriptionSize, weight: .regular) }
-    static var pillFont: Font { .system(size: pillSize, weight: .semibold) }
-    static var keyHintFont: Font { .system(size: keyHintSize, weight: .medium) }
+    static var eyebrowFont: Font { IsleType.meta }
+    static var headlineFont: Font { IsleType.title }
+    static var questionFont: Font { IsleType.headline }
+    static var detailFont: Font { IsleType.body }
+    static var commandFont: Font { IsleType.mono }
+    static var optionLabelFont: Font { IsleType.label }
+    static var optionDescriptionFont: Font { IsleType.fine }
+    static var pillFont: Font { IsleType.label }
+    static var keyHintFont: Font { IsleType.note }
+
+    /// The working marker, inline before the headline: the collapsed
+    /// island's marker at the collapsed island's size (`CollapsedSize.dots`),
+    /// so the open face carries the same mark the pill does, as a status
+    /// beside the words rather than a block that takes a third of the face.
+    static let glyphSize: CGFloat = 16
+    static let glyphGap: CGFloat = 8
 
     // MARK: - Line heights
 
@@ -144,7 +136,6 @@ enum ClaudePanelLayout {
     static let sessionRowGap: CGFloat = 1
     static let sessionGlyphSize: CGFloat = 12
     static let sessionRowPadding: CGFloat = 6
-    static let sessionTextSize: CGFloat = 11.5
     /// Under the last row. Less than the action row's `bottomInset`: there's
     /// no pill here to sit clear of the panel's rounded foot, and the two
     /// points are what seat the fourth row.
@@ -157,9 +148,9 @@ enum ClaudePanelLayout {
     /// the row than a project folder, since its detail is short.
     static let sessionNameMaxWidth: CGFloat = 170
 
-    static var sessionProjectFont: Font { .system(size: sessionTextSize, weight: .semibold) }
-    static var sessionStateFont: Font { .system(size: sessionTextSize, weight: .semibold) }
-    static var sessionDetailFont: Font { .system(size: sessionTextSize, weight: .regular) }
+    static var sessionProjectFont: Font { IsleType.metaStrong }
+    static var sessionStateFont: Font { IsleType.metaStrong }
+    static var sessionDetailFont: Font { IsleType.meta }
 
     /// The rows' height, for `count` of them.
     static func sessionRowsHeight(_ count: Int) -> CGFloat {
