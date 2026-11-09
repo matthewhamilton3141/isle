@@ -68,19 +68,22 @@ struct NotchMetrics {
     static let stayOpenSidePad: CGFloat = 16
 
     /// Panel height for a face whose content wants `contentHeight`, below a
-    /// camera housing `bandHeight` tall. Never shorter than the standard
-    /// panel, never taller than the cap. A face fits its content to
-    /// `contentRoom` before it gets here — the question face shortens its
-    /// descriptions so every option fits — so it is only ever cut by the cap
-    /// past what that face can give up.
-    static func panelHeight(contentHeight: CGFloat, bandHeight: CGFloat) -> CGFloat {
-        min(panelMaxHeight, max(expandedSize.height, contentInsets(bandHeight: bandHeight) + ceil(contentHeight)))
+    /// camera housing `bandHeight` tall. Never taller than the cap, and
+    /// never shorter than the standard panel unless the face `shrinks` — the
+    /// Claude face with nothing to press, which is its hero and meta alone.
+    /// A face fits its content to `contentRoom` before it gets here — the
+    /// question face shortens its descriptions so every option fits — so it
+    /// is only ever cut by the cap past what that face can give up.
+    static func panelHeight(contentHeight: CGFloat, bandHeight: CGFloat, shrinks: Bool = false) -> CGFloat {
+        let floor = shrinks ? 0 : expandedSize.height
+        return min(panelMaxHeight, max(floor, contentInsets(bandHeight: bandHeight) + ceil(contentHeight)))
     }
 
     /// The content area a face wanting `contentHeight` (nil: the standard
     /// panel) is laid out in: its panel's height less the content's insets.
-    static func contentAreaHeight(contentHeight: CGFloat?, bandHeight: CGFloat) -> CGFloat {
-        let panel = contentHeight.map { panelHeight(contentHeight: $0, bandHeight: bandHeight) } ?? expandedSize.height
+    static func contentAreaHeight(contentHeight: CGFloat?, bandHeight: CGFloat, shrinks: Bool = false) -> CGFloat {
+        let panel = contentHeight.map { panelHeight(contentHeight: $0, bandHeight: bandHeight, shrinks: shrinks) }
+            ?? expandedSize.height
         return panel - contentInsets(bandHeight: bandHeight)
     }
 
@@ -96,11 +99,16 @@ struct NotchMetrics {
         expandedSize.height - contentInsets(bandHeight: bandHeight)
     }
 
-    /// The expanded content's top inset (band + 2) and bottom inset (8), from
-    /// NotchRootView.
+    /// The expanded content's top inset (band + `contentTopGap`) and bottom
+    /// inset (8), from NotchRootView.
     private static func contentInsets(bandHeight: CGFloat) -> CGFloat {
-        bandHeight + 2 + 8
+        bandHeight + contentTopGap + 8
     }
+
+    /// Between the housing band and the top of a face's content box. A face
+    /// that draws up into the band (the album, the Claude face's wings)
+    /// reaches back over it.
+    static let contentTopGap: CGFloat = 2
 
     /// Fraction of the collapsed width given to music when both music and a
     /// Claude Code activity are live. See the split-view rule in spec 3.1 —
