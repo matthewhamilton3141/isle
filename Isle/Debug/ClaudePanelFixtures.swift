@@ -56,6 +56,9 @@ struct ClaudePanelFixture: Identifiable {
     /// The calls the turn has finished, oldest first, as the trail would
     /// have taken them from the session's records (`ClaudeTrail`).
     var steps: [Step] = []
+    /// The first line of the prompt that started the turn, as the trail
+    /// read it from the transcript.
+    var prompt: String? = nil
     /// The record's `blocked` (Milestone 23): the last call auto mode
     /// blocked since the last prompt.
     var blocked: ClaudeBlock? = nil
@@ -453,13 +456,14 @@ extension ClaudePanelFixture {
             Step("Read", "/Users/matthew/Documents/isle/Isle/Notch/ClaudePanelLayout.swift"),
         ]
         let others = [ownWorking, website, paletteLab]
+        let promptLine = "Tighten the working face so the panel doesn't feel empty at the start of a turn"
         func working(_ name: String, steps: [Step], subagents: [String] = [], action: String? = "Edit",
                      target: String? = editing.target, state: ClaudeCodeState = .working,
                      blocked: ClaudeBlock? = nil, delivery: ReplyDelivery = .none,
-                     mode: IsleMode = .both) -> ClaudePanelFixture {
+                     prompt: String? = nil, mode: IsleMode = .both) -> ClaudePanelFixture {
             .init(name: name, mode: mode, state: state, action: action, target: target, updatedAt: Date(),
                   keepAwake: true, others: .init(working: 1, needYou: 1), host: terminalHost, delivery: delivery,
-                  subagents: subagents, steps: steps, blocked: blocked, sessions: others,
+                  subagents: subagents, steps: steps, prompt: prompt, blocked: blocked, sessions: others,
                   sessionRequests: [websiteApproval])
         }
         return [
@@ -478,6 +482,12 @@ extension ClaudePanelFixture {
                     blocked: shortBlock),
             working("wk_sent", steps: earlier + [editing], action: nil, target: nil,
                     delivery: .sent("Yes, and bump the version to 0.4.5 first")),
+            working("wk_prompt_only", steps: [], prompt: promptLine),
+            working("wk_prompt_thinking", steps: [], action: nil, target: nil, prompt: promptLine),
+            working("wk_prompt_steps1", steps: [earlier[3], editing], prompt: promptLine),
+            working("wk_prompt_steps2", steps: [earlier[2], earlier[3], editing], prompt: promptLine),
+            working("wk_prompt_steps3", steps: earlier + [editing], prompt: promptLine),
+            working("wk_prompt_agents", steps: [earlier[3], editing], subagents: ["Explore"], prompt: promptLine),
             working("wk_claude_steps3", steps: earlier + [editing], mode: .claude),
             working("wk_claude_steps0", steps: [], mode: .claude),
         ]
