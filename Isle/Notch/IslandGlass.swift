@@ -13,7 +13,11 @@
 //    outward, wider sideways than down.
 //  - The tints laid over the system material, one per mode.
 //  - Fade's shade: solid black over a band as deep as the notch and a little
-//    more, then easing to a light tint at the panel's bottom edge.
+//    more, then easing to a light tint at the panel's bottom edge, over the
+//    clear glass rather than the frosted.
+//  - Fade's lens: a soft dark scrim behind the content that leaves a rim of
+//    lighter glass round the sides and bottom, a specular line on that rim,
+//    and a thin band of spectral light along the bottom edge.
 //  - The legibility lifts for content on glass: secondary text a little
 //    brighter, artwork colours held above a lightness floor.
 //
@@ -54,11 +58,12 @@ enum IslandGlass {
     static let fadeBandExtra: CGFloat = 8
 
     /// Black left over the glass at the panel's bottom edge, where the fade
-    /// ends. Between Glass's 0.25 and Smoked's 0.48: the bottom reads as
-    /// glass, but the action row near it (Terminal, the reply field,
-    /// Approve and Deny, a question's options) sits on more than Glass gives
-    /// it, because a smoothstep is already all but flat by then. Tune here.
-    static let fadeEndTint: Double = 0.36
+    /// ends, across the panel's full width: what the rim sees. Fade is drawn
+    /// on the clear glass, which is lighter than the frosted under Glass and
+    /// Smoked, but light is the point here: the rim is where the glass
+    /// should read as glass. The content gets its darkness from the scrim
+    /// on top (`fadeScrim`). Tune here.
+    static let fadeEndTint: Double = 0.14
 
     /// The solid band's depth for a camera housing (or content band)
     /// `notchHeight` tall.
@@ -66,9 +71,17 @@ enum IslandGlass {
         max(notchHeight, 0) + fadeBandExtra
     }
 
-    /// The ease from the band to the bottom edge, `t` 0 at the band's foot
-    /// and 1 at the bottom: smoothstep, so it leaves the band and arrives at
-    /// the end tint with no slope — no visible edge at either end.
+    /// How much of the way from the band's foot to the bottom edge the ease
+    /// takes, as a fraction: past it the shade is the end tint all the way
+    /// down. Half, so the lower half of the panel is plainly glass rather
+    /// than still on its way there; the content keeps its dark from the
+    /// scrim. Tune here.
+    static let fadeReach: Double = 0.5
+
+    /// The ease from the band to the end tint, `t` 0 at the band's foot
+    /// and 1 where it ends (`fadeReach` of the way down): smoothstep, so it
+    /// leaves the band and arrives at the end tint with no slope — no
+    /// visible edge at either end.
     static func fadeEase(_ t: Double) -> Double {
         let u = min(max(t, 0), 1)
         return u * u * (3 - 2 * u)
@@ -76,14 +89,15 @@ enum IslandGlass {
 
     /// Fade's black at `y` points from the top of a panel `height` tall
     /// whose solid band is `band` deep: 1 down to the band's foot, then
-    /// eased to `fadeEndTint` at the bottom edge. Measured against the
-    /// panel's current height, so it follows the outline as it grows and
-    /// shrinks rather than being stretched from a fixed one.
+    /// eased to `fadeEndTint` `fadeReach` of the way to the bottom edge, and
+    /// that from there down. Measured against the panel's current height, so
+    /// it follows the outline as it grows and shrinks rather than being
+    /// stretched from a fixed one.
     static func fadeAlpha(y: CGFloat, height: CGFloat, band: CGFloat) -> Double {
         guard y > band else { return 1 }
         let span = height - band
         guard span > 0 else { return 1 }
-        return 1 - (1 - fadeEndTint) * fadeEase(Double((y - band) / span))
+        return 1 - (1 - fadeEndTint) * fadeEase(Double((y - band) / span) / fadeReach)
     }
 
     /// Stops sampled along the ease, for the gradient that draws it below
@@ -91,14 +105,112 @@ enum IslandGlass {
     /// within a fraction of a percent of the curve.
     static let fadeStopCount = 16
 
-    /// The ease from the band's foot (location 0) to the bottom edge
-    /// (location 1), as (location, black's alpha) stops.
+    /// The shade from the band's foot (location 0) to the bottom edge
+    /// (location 1), as (location, black's alpha) stops: the ease sampled
+    /// over its reach, then held at the end tint to the bottom.
     static func fadeStops() -> [(location: Double, alpha: Double)] {
+        let ease = (0...fadeStopCount).map {
+            let t = Double($0) / Double(fadeStopCount)
+            return (t * fadeReach, 1 - (1 - fadeEndTint) * fadeEase(t))
+        }
+        return fadeReach < 1 ? ease + [(1, fadeEndTint)] : ease
+    }
+
+    // MARK: - Fade's lens
+
+    /// Black laid behind the content, on top of the shade: a soft-edged
+    /// panel inset from the glass's walls and bottom edge, so the content
+    /// always sits on at least `fadeContentAlpha` black while a rim of
+    /// lighter glass runs round it. Above, it disappears into the band.
+    /// Tune here.
+    static let fadeScrim: Double = 0.30
+
+    /// How far inside the glass's side walls and bottom edge the scrim's
+    /// edge sits, in points, before its feather. The walls are the open
+    /// outline's flare radius in from the frame, and the content starts
+    /// 10pt inside them: the scrim's edge is at the wall plus this, and is
+    /// soft over `fadeScrimFeather` either side of it. Tune here.
+    static let fadeScrimInset: CGFloat = 5
+
+    /// The scrim's feather: the blur radius that softens its edge into the
+    /// rim. Tune here.
+    static let fadeScrimFeather: CGFloat = 5
+
+    /// Black over the clear glass where the content sits, once the shade's
+    /// ease has all but flattened: the shade's end tint and the scrim
+    /// composited.
+    static var fadeContentAlpha: Double { over(fadeEndTint, fadeScrim) }
+
+    /// Black `a` with black `b` drawn over it, as one alpha.
+    static func over(_ a: Double, _ b: Double) -> Double {
+        1 - (1 - a) * (1 - b)
+    }
+
+    /// The specular rim: white drawn along the outline below the band,
+    /// strongest at the bottom corners where a rounded edge catches the
+    /// light, added to what's under it (plus-lighter). `fadeRimPeak` at the
+    /// corners, `fadeRimFloor` along the bottom between them; it fades in
+    /// up the walls from nothing at the band's foot. Tune here.
+    static let fadeRimPeak: Double = 0.6
+    static let fadeRimFloor: Double = 0.2
+
+    /// The rim's stroke, centred on the outline and clipped to it, so half
+    /// of it shows: a 1pt line.
+    static let fadeRimWidth: CGFloat = 2
+
+    /// The rim's brightness across the panel, `x` 0 at its left edge and 1
+    /// at its right: the floor along the bottom, rising to the peak at each
+    /// corner, smooth both ways.
+    static func fadeRimAlpha(x: Double) -> Double {
+        let u = min(max(x, 0), 1)
+        // Distance into the corner zone at either end, 0...1.
+        let edge = max(0, 1 - min(u, 1 - u) / fadeRimCornerSpan)
+        return fadeRimFloor + (fadeRimPeak - fadeRimFloor) * fadeEase(edge)
+    }
+
+    /// How far in from each end, as a fraction of the panel's width, the
+    /// rim stays brighter than its floor.
+    static let fadeRimCornerSpan: Double = 0.16
+
+    /// The rim's brightness as horizontal gradient stops.
+    static func fadeRimStops() -> [(location: Double, alpha: Double)] {
         (0...fadeStopCount).map {
             let t = Double($0) / Double(fadeStopCount)
-            return (t, 1 - (1 - fadeEndTint) * fadeEase(t))
+            return (t, fadeRimAlpha(x: t))
         }
     }
+
+    /// The spectral glint: a thin band of split light along the bottom edge,
+    /// as hues (0...1, red at 0) laid across the middle of the panel, cool
+    /// on the left warming to the right, and nothing at either end where
+    /// the white corners of the rim take over. Isle's own: no prism, no
+    /// motion, just the colour a thick clear edge throws. Each stop is
+    /// (location across the panel, hue, strength 0...1).
+    static let fadeGlintStops: [(location: Double, hue: Double, strength: Double)] = [
+        (0.14, 0.52, 0),
+        (0.26, 0.55, 0.7),
+        (0.40, 0.64, 1),
+        (0.52, 0.76, 1),
+        (0.64, 0.88, 1),
+        (0.76, 0.02, 0.8),
+        (0.86, 0.10, 0),
+    ]
+
+    /// The glint's line at full strength (added light, plus-lighter), and
+    /// its stroke, half of which shows inside the outline: 1.25pt. Tune here.
+    static let fadeGlintAlpha: Double = 0.85
+    static let fadeGlintWidth: CGFloat = 2.5
+
+    /// The glint's glow: the same colours as a soft haze rising from the
+    /// bottom edge, `fadeHazeHeight` deep and `fadeHazeAlpha` strong at the
+    /// edge, gone by its top. Stops short of the action row's text, which
+    /// sits 8pt above the edge. Tune here.
+    static let fadeHazeAlpha: Double = 0.2
+    static let fadeHazeHeight: CGFloat = 12
+
+    /// How far up from the bottom edge the glint's line shows before it has
+    /// faded out up the walls, in points.
+    static let fadeGlintReach: CGFloat = 26
 
     // MARK: - The blend
 

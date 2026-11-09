@@ -2,8 +2,8 @@
 //  PanelBackground.swift
 //
 //  What the opened panel is drawn on: the flat black Isle has always had,
-//  frosted glass, light or smoked, or black that fades into glass toward
-//  the panel's bottom edge. Only the open panel changes — the
+//  frosted glass, light or smoked, or black that fades into clear glass
+//  toward the panel's bottom edge. Only the open panel changes — the
 //  collapsed pill stays flat black in every mode, because as glass it would
 //  be a sliver with the camera's black bite in the middle of it.
 //
@@ -23,9 +23,11 @@ enum PanelBackground: String, CaseIterable, Identifiable {
     /// The same glass with a fixed heavy black tint: darker and steadier
     /// than `.glass`, at the cost of seeing less through it.
     case smoked
-    /// Black where the panel meets the notch, easing into the glass toward
+    /// Black where the panel meets the notch, easing into clear glass toward
     /// its bottom edge (`IslandGlass.fadeAlpha`): the top stays fused with
-    /// the hardware, the bottom shows what's under it.
+    /// the hardware, the bottom shows what's under it, with a lit rim and a
+    /// thin spectral glint along the bottom edge (the lens in
+    /// IslandGlass+SwiftUI.swift).
     case fade
 
     var id: String { rawValue }
@@ -56,7 +58,7 @@ enum PanelBackground: String, CaseIterable, Identifiable {
         case .smoked:
             return "Glass with a heavy dark tint when open: steadier over busy windows."
         case .fade:
-            return "Black at the notch, easing into frosted glass toward the bottom edge."
+            return "Black at the notch, easing into clear glass with a lit rim toward the bottom edge."
         }
     }
 

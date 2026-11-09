@@ -8,7 +8,10 @@
 //    its tint (Fade's solid band and gradient, in Fade), the notch glow and
 //    the black that covers it all while the island is closed, blended away
 //    on the open's progress.
-//  - The material: Liquid Glass on macOS 26, an `NSVisualEffectView` behind
+//  - Fade's lens, over its shade: the scrim behind the content, the
+//    specular rim and the spectral glint along the bottom edge.
+//  - The material: Liquid Glass on macOS 26 (the frosted variant for Glass
+//    and Smoked, the clear one for Fade), an `NSVisualEffectView` behind
 //    the window on 14 and 15. Both are window-server effects — an offscreen
 //    render draws neither — and both are forced dark, so the white content
 //    stays readable whatever the light/dark setting.
@@ -20,7 +23,9 @@
 //  at rest it doesn't evaluate. The glow is a bitmap built once. Fade's
 //  shade is laid out, not measured: a fixed band and a gradient that takes
 //  whatever height is left, so it follows the outline's frame with no
-//  geometry reader and nothing to redraw at rest.
+//  geometry reader and nothing to redraw at rest. Its lens is the same:
+//  strokes, gradients and one blur flattened to a bitmap, all static — it
+//  is redrawn only while the outline's size is changing.
 //
 
 import SwiftUI
@@ -87,8 +92,13 @@ private struct IslandGlassBlend: View, Animatable {
     var body: some View {
         ZStack(alignment: .top) {
             if IslandGlass.showsGlass(progress: progress) {
-                IslandGlassMaterial(shape: shape)
+                IslandGlassMaterial(shape: shape, clear: background == .fade)
                     .overlay(alignment: .top) { IslandGlassShade(background: background, bandHeight: bandHeight) }
+                    .overlay(alignment: .top) {
+                        if background == .fade {
+                            FadeLens(shape: shape, bandHeight: bandHeight)
+                        }
+                    }
                     .transition(.identity)
             }
             if let housing {
@@ -142,6 +152,110 @@ private struct IslandGlassShade: View {
 private enum FadeStops {
     static let stops: [Gradient.Stop] = IslandGlass.fadeStops().map {
         Gradient.Stop(color: .black.opacity($0.alpha), location: $0.location)
+    }
+}
+
+/// Fade's lens, drawn over its shade and under the content: what makes the
+/// clear glass below the band read as a piece of glass rather than a tinted
+/// window.
+///
+/// - The scrim: black behind the content (`IslandGlass.fadeScrim`), inset
+///   from the walls and bottom edge with a soft edge, so text and the action
+///   row near the bottom sit on enough dark over a bright or busy backdrop,
+///   while a rim of lighter glass runs round them.
+/// - The rim: a 1pt specular line along the outline, white at the bottom
+///   corners and fainter between, fading out up the walls before the band.
+/// - The glint: a thin spectral line across the middle of the bottom edge
+///   and a low haze of the same colours rising a few points from it.
+///
+/// The light is added (plus-lighter), as light on glass is. Everything is
+/// static and laid out against the outline's current frame, with the band
+/// as the only fixed length, so it follows the panel as it opens, collapses
+/// and changes height, and the closed pill's black cover hides it all.
+private struct FadeLens: View {
+    var shape: NotchShape
+    var bandHeight: CGFloat
+
+    var body: some View {
+        let band = IslandGlass.fadeBand(notchHeight: bandHeight)
+        ZStack {
+            scrim(band: band)
+            rim(band: band)
+            glint
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// The outline's walls stand its top flare's radius in from the frame.
+    private var wall: CGFloat { shape.topCornerRadius }
+
+    /// Soft-edged black behind the content. Its top runs up under the band,
+    /// where it can't be seen, so only the sides and bottom are soft.
+    /// Flattened to one bitmap, so the blur costs nothing at rest.
+    private func scrim(band: CGFloat) -> some View {
+        let inset = wall + IslandGlass.fadeScrimInset
+        let radius = max(shape.bottomCornerRadius - IslandGlass.fadeScrimInset, 0)
+        return Color.clear.overlay {
+            UnevenRoundedRectangle(bottomLeadingRadius: radius, bottomTrailingRadius: radius, style: .continuous)
+                .fill(.black.opacity(IslandGlass.fadeScrim))
+                .padding(.horizontal, inset)
+                .padding(.bottom, IslandGlass.fadeScrimInset)
+                .padding(.top, -2 * IslandGlass.fadeScrimFeather)
+                .blur(radius: IslandGlass.fadeScrimFeather)
+        }
+        .drawingGroup()
+    }
+
+    /// The specular line round the lower outline.
+    private func rim(band: CGFloat) -> some View {
+        shape
+            .stroke(LinearGradient(stops: FadeLensStops.rim, startPoint: .leading, endPoint: .trailing),
+                    lineWidth: IslandGlass.fadeRimWidth)
+            .mask {
+                // Nothing over the band, then up to full by the bottom.
+                VStack(spacing: 0) {
+                    Color.clear.frame(height: band)
+                    LinearGradient(colors: [.clear, .white], startPoint: .top, endPoint: .bottom)
+                }
+            }
+            .blendMode(.plusLighter)
+    }
+
+    /// The spectral line and its haze along the bottom edge.
+    private var glint: some View {
+        let colors = LinearGradient(stops: FadeLensStops.glint, startPoint: .leading, endPoint: .trailing)
+        return ZStack(alignment: .bottom) {
+            shape
+                .stroke(colors, lineWidth: IslandGlass.fadeGlintWidth)
+                .opacity(IslandGlass.fadeGlintAlpha)
+                .mask {
+                    VStack(spacing: 0) {
+                        Color.clear
+                        LinearGradient(colors: [.clear, .white], startPoint: .top, endPoint: .bottom)
+                            .frame(height: IslandGlass.fadeGlintReach)
+                    }
+                }
+            Rectangle()
+                .fill(colors)
+                .frame(height: IslandGlass.fadeHazeHeight)
+                .mask(LinearGradient(colors: [.clear, .white], startPoint: .top, endPoint: .bottom))
+                .opacity(IslandGlass.fadeHazeAlpha)
+        }
+        .blendMode(.plusLighter)
+    }
+}
+
+/// Fade's lens gradients, built from the numbers once.
+private enum FadeLensStops {
+    static let rim: [Gradient.Stop] = IslandGlass.fadeRimStops().map {
+        Gradient.Stop(color: .white.opacity($0.alpha), location: $0.location)
+    }
+
+    static let glint: [Gradient.Stop] = IslandGlass.fadeGlintStops.map {
+        Gradient.Stop(
+            color: Color(hue: $0.hue, saturation: 0.75, brightness: 1).opacity($0.strength),
+            location: $0.location
+        )
     }
 }
 
@@ -203,19 +317,31 @@ private enum NotchGlowImage {
 
 // MARK: - The material
 
-/// Frosted glass, dark: Liquid Glass where there is any, else the HUD
-/// material blurred from behind the window. Never sampled or tinted by
-/// Isle from the desktop — the panel usually sits over app windows, and the
-/// material reads whatever is really there.
+/// Glass, dark: Liquid Glass where there is any, else the HUD material
+/// blurred from behind the window. Never sampled or tinted by Isle from the
+/// desktop — the panel usually sits over app windows, and the material
+/// reads whatever is really there.
+///
+/// Fade asks for Liquid Glass's clear variant, which lets more of what's
+/// behind through, its colour and light, than the frosted `.regular` under
+/// Glass and Smoked. It still softens it on macOS: it isn't the sharp lens
+/// of the iPhone's island. It is never tinted through `Glass.tint` — black
+/// there lightens the glass to grey rather than darkening it — so the
+/// shade over it does that. Not `.interactive()`: the panel is a surface
+/// with buttons on it, not a control, and shouldn't flex under a click.
+/// Before 26 there's no clear variant: the HUD material is already about
+/// as light as the clear glass, and Fade's lens is drawn over it the same.
 private struct IslandGlassMaterial: View {
     /// The outline, so Liquid Glass's rim follows it. The fill clips to it
     /// as well, which is what holds the edge exact while it moves.
     var shape: NotchShape
+    /// Liquid Glass's clear variant rather than the frosted.
+    var clear: Bool = false
 
     var body: some View {
         if #available(macOS 26.0, *) {
             Color.clear
-                .glassEffect(.regular, in: shape)
+                .glassEffect(clear ? .clear : .regular, in: shape)
                 .environment(\.colorScheme, .dark)
         } else {
             IslandVisualEffect()

@@ -2,7 +2,7 @@
 //  island-glass-tests.swift
 //
 //  Tests for the glass panel backgrounds' arithmetic — the black-to-glass
-//  blend, the notch glow, the tints, Fade's band and curve, and the
+//  blend, the notch glow, the tints, Fade's band, curve and lens, and the
 //  legibility lifts — and the
 //  stored setting's default, compiled against Isle/Notch/IslandGlass.swift
 //  and Isle/Core/PanelBackground.swift alone. Run with
@@ -65,19 +65,28 @@ do {
     check(IslandGlass.fadeBand(notchHeight: 24) < band, "a shallower housing (or none) gets a shallower band")
     check(a(0) == 1 && a(notch) == 1 && a(band) == 1, "solid black over the housing and down to the band's foot")
     check(near(a(height), IslandGlass.fadeEndTint), "the end tint at the bottom edge")
-    check(near(a(band + (height - band) / 2), 1 - (1 - IslandGlass.fadeEndTint) / 2), "half way down the ease, half way to the end tint")
-    // Legible at the bottom: never lighter than Glass, which is legible on
-    // its own, and lighter than Smoked, or it wouldn't read as glass.
-    check(IslandGlass.fadeEndTint > IslandGlass.glassTint && IslandGlass.fadeEndTint < IslandGlass.smokedTint,
-          "the end tint sits between Glass and Smoked", "\(IslandGlass.fadeEndTint)")
-    // The action row's band, the panel's last ~30pt: everywhere darker
-    // than Glass and no lighter than the end tint.
+    let reach = IslandGlass.fadeReach
+    let easeEnd = band + (height - band) * CGFloat(reach)
+    check(reach >= 0.4 && reach <= 1, "the ease takes a good part of the way down", "\(reach)")
+    check(near(a(band + (easeEnd - band) / 2), 1 - (1 - IslandGlass.fadeEndTint) / 2), "half way down the ease, half way to the end tint")
+    check(near(a(easeEnd), IslandGlass.fadeEndTint) && near(a((easeEnd + height) / 2), IslandGlass.fadeEndTint),
+          "past the ease's reach, the end tint all the way down")
+    // Fade is clear glass: the shade's end is lighter than Glass's flat tint
+    // over the frosted, so the rim reads as glass…
+    check(IslandGlass.fadeEndTint < IslandGlass.glassTint, "the end tint is lighter than Glass's", "\(IslandGlass.fadeEndTint)")
+    // …and the content gets its dark from the scrim: with it, the content
+    // sits on more black than Glass gives it, short of Smoked's.
+    check(near(IslandGlass.fadeContentAlpha, IslandGlass.over(IslandGlass.fadeEndTint, IslandGlass.fadeScrim)), "content alpha: the end tint with the scrim over it")
+    check(IslandGlass.fadeContentAlpha > IslandGlass.glassTint && IslandGlass.fadeContentAlpha < IslandGlass.smokedTint,
+          "the content's black sits between Glass and Smoked", "\(IslandGlass.fadeContentAlpha)")
+    // The action row's band, the panel's last ~30pt: never lighter than the
+    // end tint, and with the scrim, darker than Glass.
     var rowOK = true
     for y in stride(from: height - 30, through: height, by: 0.5) {
         let v = a(y)
-        if v < IslandGlass.fadeEndTint - 1e-12 || v <= IslandGlass.glassTint { rowOK = false }
+        if v < IslandGlass.fadeEndTint - 1e-12 || IslandGlass.over(v, IslandGlass.fadeScrim) <= IslandGlass.glassTint { rowOK = false }
     }
-    check(rowOK, "the action row sits on more black than Glass gives it", "\(a(height - 30))")
+    check(rowOK, "the action row, under the scrim, sits on more black than Glass gives it", "\(a(height - 30))")
     var mono = true, prev = 2.0, maxStep = 0.0
     for i in 0...1460 {
         let v = a(CGFloat(i) / 10)
@@ -93,24 +102,66 @@ do {
     check(abs(a(height - eps) - a(height)) < 1e-5, "arrives at the bottom with no edge")
     // It follows the panel's height: the same fraction of the ease at any
     // height, never a fixed-height gradient stretched.
-    check(near(a(band + (230 - band) / 2, 230), a(band + (height - band) / 2)), "the ease spans the panel's current height")
+    check(near(a(band + (230 - band) / 3, 230), a(band + (height - band) / 3)), "the ease spans the panel's current height")
     check(a(band + 50, 230) > a(band + 50, 146), "a taller panel eases more slowly")
     check(a(20, 30) == 1 && a(40, 30) == 1, "a panel shallower than the band (mid-collapse) is all black")
     // The gradient's stops sample the curve and end at the band and bottom.
     let stops = IslandGlass.fadeStops()
-    check(stops.count == IslandGlass.fadeStopCount + 1, "stop count")
+    check(stops.count == IslandGlass.fadeStopCount + (reach < 1 ? 2 : 1), "stop count")
     check(stops.first!.location == 0 && stops.first!.alpha == 1, "first stop: solid at the band's foot")
     check(stops.last!.location == 1 && near(stops.last!.alpha, IslandGlass.fadeEndTint), "last stop: the end tint at the bottom")
+    check(zip(stops, stops.dropFirst()).allSatisfy { $0.location < $1.location }, "stops in order")
+    // The gradient between the stops, against the curve, down the whole span.
     var worst = 0.0
     for i in 0...1000 {
         let t = Double(i) / 1000
-        let k = min(Int(t * Double(IslandGlass.fadeStopCount)), IslandGlass.fadeStopCount - 1)
-        let s0 = stops[k], s1 = stops[k + 1]
+        let k = (stops.lastIndex { $0.location <= t } ?? 0)
+        let s0 = stops[min(k, stops.count - 2)], s1 = stops[min(k, stops.count - 2) + 1]
         let lerp = s0.alpha + (s1.alpha - s0.alpha) * (t - s0.location) / (s1.location - s0.location)
-        worst = max(worst, abs(lerp - (1 - (1 - IslandGlass.fadeEndTint) * IslandGlass.fadeEase(t))))
+        worst = max(worst, abs(lerp - a(band + (height - band) * CGFloat(t))))
     }
     check(worst < 0.003, "the stops' linear gradient is within 0.3% of the curve", "\(worst)")
     check(IslandGlass.fadeEase(-1) == 0 && IslandGlass.fadeEase(2) == 1, "the ease clamps")
+}
+
+print("fade lens")
+do {
+    // The scrim leaves a rim of glass inside the walls, and stops short of
+    // where the content starts (10pt inside them) once feathered.
+    check(IslandGlass.fadeScrimInset > 0 && IslandGlass.fadeScrimInset + IslandGlass.fadeScrimFeather <= 10,
+          "the scrim is full strength by the content's edge, 10pt inside the walls")
+    check(IslandGlass.fadeScrim > 0 && IslandGlass.fadeScrim < 0.5, "the scrim is a scrim, not a fill", "\(IslandGlass.fadeScrim)")
+    // The rim: brightest at the corners, its floor between, symmetric and
+    // smooth.
+    check(near(IslandGlass.fadeRimAlpha(x: 0), IslandGlass.fadeRimPeak) && near(IslandGlass.fadeRimAlpha(x: 1), IslandGlass.fadeRimPeak),
+          "the rim peaks at both corners")
+    check(near(IslandGlass.fadeRimAlpha(x: 0.5), IslandGlass.fadeRimFloor), "the rim sits at its floor mid-panel")
+    check(IslandGlass.fadeRimPeak > IslandGlass.fadeRimFloor && IslandGlass.fadeRimPeak <= 1, "peak above floor, and a real alpha")
+    var symmetric = true, rimStep = 0.0, prevRim = IslandGlass.fadeRimAlpha(x: 0)
+    for i in 0...1000 {
+        let x = Double(i) / 1000
+        let v = IslandGlass.fadeRimAlpha(x: x)
+        if !near(v, IslandGlass.fadeRimAlpha(x: 1 - x), 1e-12) { symmetric = false }
+        rimStep = max(rimStep, abs(v - prevRim)); prevRim = v
+    }
+    check(symmetric, "the rim is symmetric")
+    check(rimStep < 0.005, "no step along the rim", "\(rimStep)")
+    let rimStops = IslandGlass.fadeRimStops()
+    check(rimStops.first!.location == 0 && rimStops.last!.location == 1, "rim stops span the panel")
+    // The glint: in order, nothing at either end (the rim's white corners
+    // take over there), clear of the corners, hues and strengths in range.
+    let g = IslandGlass.fadeGlintStops
+    check(zip(g, g.dropFirst()).allSatisfy { $0.location < $1.location }, "glint stops in order")
+    check(g.first!.strength == 0 && g.last!.strength == 0, "the glint fades to nothing at both ends")
+    check(g.first!.location >= IslandGlass.fadeRimCornerSpan * 0.5 && g.last!.location <= 1 - IslandGlass.fadeRimCornerSpan * 0.5,
+          "the glint stays off the corners")
+    check(g.allSatisfy { (0...1).contains($0.hue) && (0...1).contains($0.strength) }, "glint hues and strengths in 0...1")
+    check(Set(g.map(\.hue)).count >= 5, "the glint is spectral, not one colour")
+    check(IslandGlass.fadeGlintAlpha > 0 && IslandGlass.fadeGlintAlpha <= 1, "glint alpha")
+    // The haze stays under the action row's text, 8pt above the edge.
+    check(IslandGlass.fadeHazeHeight <= 14 && IslandGlass.fadeHazeAlpha <= 0.25, "the haze is low and faint",
+          "\(IslandGlass.fadeHazeHeight)pt at \(IslandGlass.fadeHazeAlpha)")
+    check(near(IslandGlass.over(0, 0.3), 0.3) && near(IslandGlass.over(0.5, 0.5), 0.75) && IslandGlass.over(1, 0) == 1, "over composites")
 }
 
 print("blend")
