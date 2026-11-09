@@ -10,7 +10,8 @@
 //    on the open's progress.
 //  - Fade's lens, over its shade: the scrim behind the content, the
 //    specular rim and the spectral glint along the bottom edge, which take
-//    the current cover's colours while a track is up (`FadeLight`).
+//    the current cover's colours while a track is up (`FadeLight`), and
+//    the sweep that runs along the rim once as the island opens.
 //  - The material: Liquid Glass on macOS 26 (the frosted variant for Glass
 //    and Smoked, the clear one for Fade), an `NSVisualEffectView` behind
 //    the window on 14 and 15. Both are window-server effects — an offscreen
@@ -60,6 +61,17 @@ struct IslandGlassFill: View {
     /// track or no cover, which leaves it spectral.
     var lightPalette: ArtworkPalette? = nil
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// When the island last closed, and when Fade's sweep last started, for
+    /// the rule that decides whether an open sweeps
+    /// (`IslandGlass.fadeSweeps`). Kept here because this view lasts across
+    /// opens and closes; the lens itself is rebuilt with every open.
+    @State private var closedAt: Date?
+    @State private var sweptAt: Date?
+    /// The open that earned a sweep, handed to the lens to run it.
+    @State private var sweepAt: Date?
+
     var body: some View {
         IslandGlassBlend(
             progress: opened ? 1 : 0,
@@ -68,13 +80,30 @@ struct IslandGlassFill: View {
             housing: housing,
             housingShift: housingShift,
             bandHeight: bandHeight,
-            lightPalette: lightPalette
+            lightPalette: lightPalette,
+            sweepAt: sweepAt
         )
         // The blend runs on the width's spring during a collapse — the
         // channel `expandProgress`, and so the content's fade, read off —
         // and on the transaction's own animation otherwise (the open).
         .islandCollapseChannel(.width)
         .clipShape(shape)
+        // Opens and closes only: a face swipe or a height change doesn't
+        // touch `opened`, so it never sweeps.
+        .onChange(of: opened) { _, isOpen in
+            let now = Date()
+            guard isOpen else {
+                closedAt = now
+                return
+            }
+            guard background == .fade, IslandGlass.fadeSweeps(
+                sinceClose: closedAt.map { now.timeIntervalSince($0) },
+                sinceSweep: sweptAt.map { now.timeIntervalSince($0) },
+                reduceMotion: reduceMotion
+            ) else { return }
+            sweptAt = now
+            sweepAt = now
+        }
     }
 }
 
@@ -89,6 +118,7 @@ private struct IslandGlassBlend: View, Animatable {
     var housingShift: CGFloat
     var bandHeight: CGFloat
     var lightPalette: ArtworkPalette?
+    var sweepAt: Date?
 
     var animatableData: Double {
         get { progress }
@@ -102,7 +132,7 @@ private struct IslandGlassBlend: View, Animatable {
                     .overlay(alignment: .top) { IslandGlassShade(background: background, bandHeight: bandHeight) }
                     .overlay(alignment: .top) {
                         if background == .fade {
-                            FadeLens(shape: shape, bandHeight: bandHeight, light: FadeLight.resolve(lightPalette))
+                            FadeLens(shape: shape, bandHeight: bandHeight, light: FadeLight.resolve(lightPalette), sweepAt: sweepAt)
                         }
                     }
                     .transition(.identity)
@@ -186,6 +216,8 @@ private struct FadeLens: View {
     var shape: NotchShape
     var bandHeight: CGFloat
     var light: FadeLight
+    /// The open that earned a sweep (see `IslandGlassFill`), if any.
+    var sweepAt: Date?
 
     var body: some View {
         let band = IslandGlass.fadeBand(notchHeight: bandHeight)
@@ -194,13 +226,16 @@ private struct FadeLens: View {
             // Keyed by the light, so a new cover's colours come in as a new
             // view and the old fade out under them.
             ZStack {
-                rim(band: band)
-                glint
+                ZStack {
+                    rim(band: band)
+                    glint
+                }
+                .id(light)
+                .transition(.opacity)
             }
-            .id(light)
-            .transition(.opacity)
+            .animation(.easeInOut(duration: IslandGlass.fadeLightCrossfade), value: light)
+            FadeSweepRun(sweepAt: sweepAt, shape: shape, light: light)
         }
-        .animation(.easeInOut(duration: IslandGlass.fadeLightCrossfade), value: light)
         .allowsHitTesting(false)
     }
 
@@ -263,6 +298,90 @@ private struct FadeLens: View {
     }
 }
 
+/// Runs Fade's sweep once for the open that earned it: from nothing at the
+/// centre to the corners over `IslandGlass.fadeSweepDuration`, eased out,
+/// starting `fadeSweepDelay` after the open — when the outline first
+/// reaches its full width. One animation of one value (`FadeSweep`'s
+/// phase); before and after it, nothing is drawn and nothing runs.
+private struct FadeSweepRun: View {
+    var sweepAt: Date?
+    var shape: NotchShape
+    var light: FadeLight
+
+    /// 1 at rest (done, or never started): nothing drawn.
+    @State private var phase: Double = 1
+
+    var body: some View {
+        // On a clear view that's always there: at rest the sweep draws
+        // nothing, and a view that draws nothing never appears.
+        Color.clear
+            .overlay { FadeSweep(phase: phase, shape: shape, light: light) }
+            .onAppear(perform: start)
+            .onChange(of: sweepAt) { _, _ in start() }
+    }
+
+    private func start() {
+        guard let sweepAt else { return }
+        // The lens is rebuilt with each open, a moment after the open that
+        // set `sweepAt`; anything older is a sweep already run.
+        let age = Date().timeIntervalSince(sweepAt)
+        guard age >= 0, age < IslandGlass.fadeSweepDelay else { return }
+        var reset = Transaction()
+        reset.disablesAnimations = true
+        withTransaction(reset) { phase = 0 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (IslandGlass.fadeSweepDelay - age)) {
+            withAnimation(.easeOut(duration: IslandGlass.fadeSweepDuration)) { phase = 1 }
+        }
+    }
+}
+
+/// The sweep at `phase` of its run: the light's colours, bright, along the
+/// lower rim with a low haze under it, carried by two soft highlights that
+/// part from the centre (`IslandGlass.fadeSweepMask`) and faded in and out
+/// over the run (`fadeSweepEnvelope`). Animatable on the phase alone; at 0
+/// and 1 it draws nothing at all.
+private struct FadeSweep: View, Animatable {
+    var phase: Double
+    var shape: NotchShape
+    var light: FadeLight
+
+    var animatableData: Double {
+        get { phase }
+        set { phase = newValue }
+    }
+
+    var body: some View {
+        let envelope = IslandGlass.fadeSweepEnvelope(phase: phase)
+        if phase > 0, phase < 1, envelope > 0.001 {
+            let colors = LinearGradient(stops: light.sweep, startPoint: .leading, endPoint: .trailing)
+            let carry = IslandGlass.fadeSweepMask(phase: phase).map {
+                Gradient.Stop(color: .white.opacity($0.alpha), location: $0.location)
+            }
+            ZStack(alignment: .bottom) {
+                shape
+                    .stroke(colors, lineWidth: IslandGlass.fadeGlintWidth)
+                    .opacity(IslandGlass.fadeSweepAlpha)
+                Rectangle()
+                    .fill(colors)
+                    .frame(height: IslandGlass.fadeHazeHeight)
+                    .mask(LinearGradient(colors: [.clear, .white], startPoint: .top, endPoint: .bottom))
+                    .opacity(IslandGlass.fadeSweepHazeAlpha)
+            }
+            .mask {
+                // The lower rim only, thinning out up the walls.
+                VStack(spacing: 0) {
+                    Color.clear
+                    LinearGradient(colors: [.clear, .white], startPoint: .top, endPoint: .bottom)
+                        .frame(height: IslandGlass.fadeGlintReach)
+                }
+            }
+            .mask(LinearGradient(stops: carry, startPoint: .leading, endPoint: .trailing))
+            .opacity(envelope)
+            .blendMode(.plusLighter)
+        }
+    }
+}
+
 /// Fade's light: the rim's and the glint's gradients. Spectral with no
 /// cover; from a cover, the glint in its palette's colours
 /// (`IslandGlass.fadeGlint`, each lit to a brightness floor so a dark or
@@ -272,6 +391,9 @@ private struct FadeLens: View {
 struct FadeLight: Hashable {
     var rim: [Gradient.Stop]
     var glint: [Gradient.Stop]
+    /// The sweep's colours: the glint's at full strength across the middle
+    /// and the rim's colour out at the corners, where the glint fades.
+    var sweep: [Gradient.Stop]
 
     static let spectral = FadeLight(glint: IslandGlass.fadeSpectralGlint(), rim: nil)
 
@@ -287,6 +409,9 @@ struct FadeLight: Hashable {
                 location: $0.location
             )
         }
+        sweep = [Gradient.Stop(color: rimColor, location: 0)]
+            + glint.map { Gradient.Stop(color: Color(hue: $0.color.h, saturation: $0.color.s, brightness: $0.color.b), location: $0.location) }
+            + [Gradient.Stop(color: rimColor, location: 1)]
     }
 
     init(palette: ArtworkPalette) {

@@ -45,7 +45,7 @@ extension Animation {
     /// for. Underdamped on purpose: overshooting *larger* on the way open is
     /// the part that feels good.
     static var notchOpen: Animation {
-        .spring(response: 0.34, dampingFraction: 0.76, blendDuration: 0)
+        .spring(response: IslandMotion.open.response, dampingFraction: IslandMotion.open.dampingFraction, blendDuration: 0)
     }
 
     /// Closing curve — critically damped, so it cannot overshoot.

@@ -19,6 +19,9 @@
 //    lighter glass round the sides and bottom, a specular line on that rim,
 //    and a thin band of spectral light along the bottom edge — in the
 //    current cover's colours while a track is up.
+//  - Fade's sweep: once per open, a highlight running along the bottom rim
+//    from the centre out to both corners as the outline arrives at full
+//    width, and when it may play.
 //  - The legibility lifts for content on glass: secondary text a little
 //    brighter, artwork colours held above a lightness floor.
 //
@@ -317,6 +320,83 @@ enum IslandGlass {
     /// How long the light takes to cross-fade to a new cover's colours, in
     /// seconds: a short implicit animation, run only on the change.
     static let fadeLightCrossfade: Double = 0.6
+
+    // MARK: - Fade's sweep on open
+
+    /// The sweep's run, in seconds, eased out: quick off the centre, slowing
+    /// as it reaches the corners. Tune here.
+    static let fadeSweepDuration: Double = 0.6
+
+    /// When the sweep starts, in seconds after the open: the moment the
+    /// open spring first brings the outline to its full width, so the light
+    /// runs along an edge that has arrived rather than one still growing.
+    /// Its overshoot and settle happen under the sweep's first part.
+    static var fadeSweepDelay: Double { IslandMotion.open.reach(1) }
+
+    /// An island closed for less than this, in seconds, and opened again
+    /// doesn't sweep: a quick re-open is the same look, not a new one.
+    static let fadeSweepRearm: Double = 1.2
+
+    /// Nor within this long of the last sweep starting, in seconds, however
+    /// the island got there: a live alert's auto-open landing between
+    /// hovers, or a pointer brushing the notch, can't make it flicker.
+    static let fadeSweepCooldown: Double = 3
+
+    /// Whether an open sweeps: Fade's light catching the glass as it
+    /// unfolds. `sinceClose` is how long the island had been closed (nil:
+    /// never opened before), `sinceSweep` how long since the last sweep
+    /// started (nil: none yet). Never with Reduce Motion. Face swipes and
+    /// height changes aren't opens and never ask.
+    static func fadeSweeps(sinceClose: Double?, sinceSweep: Double?, reduceMotion: Bool) -> Bool {
+        guard !reduceMotion else { return false }
+        if let sinceClose, sinceClose < fadeSweepRearm { return false }
+        if let sinceSweep, sinceSweep < fadeSweepCooldown { return false }
+        return true
+    }
+
+    /// The two highlights' centres across the panel, 0 its left edge and 1
+    /// its right, at `phase` 0...1 of the run: together at the centre, then
+    /// apart, mirror images, to the edges — past the bottom corners, where
+    /// the rim turns up the walls and the light thins out with it.
+    static func fadeSweepCentres(phase: Double) -> (left: Double, right: Double) {
+        let p = min(max(phase, 0), 1)
+        return (0.5 - 0.5 * p, 0.5 + 0.5 * p)
+    }
+
+    /// Each highlight's half-width, as a fraction of the panel's width.
+    static let fadeSweepSpot: Double = 0.1
+
+    /// The sweep's brightness over the run: up from nothing over its first
+    /// moments, so it doesn't pop on at the centre, and down to nothing as
+    /// it reaches the corners, so it hands over to the resting rim and
+    /// glint rather than cutting out.
+    static func fadeSweepEnvelope(phase: Double) -> Double {
+        let p = min(max(phase, 0), 1)
+        return smoothstep(0, 0.12, p) * (1 - smoothstep(0.45, 1, p))
+    }
+
+    /// The light at its brightest (added, plus-lighter): the line, and the
+    /// low haze under it. Tune here.
+    static let fadeSweepAlpha: Double = 0.95
+    static let fadeSweepHazeAlpha: Double = 0.35
+
+    /// How many stops the travelling mask is sampled at.
+    static let fadeSweepMaskSamples = 64
+
+    /// The mask that carries the two highlights along the rim, as
+    /// (location, alpha) stops across the panel at `phase`: a soft bump
+    /// (cosine) at each centre, the brighter where they overlap at the start.
+    static func fadeSweepMask(phase: Double) -> [(location: Double, alpha: Double)] {
+        let c = fadeSweepCentres(phase: phase)
+        func bump(_ d: Double) -> Double {
+            let u = abs(d) / fadeSweepSpot
+            return u >= 1 ? 0 : 0.5 + 0.5 * cos(Double.pi * u)
+        }
+        return (0...fadeSweepMaskSamples).map {
+            let x = Double($0) / Double(fadeSweepMaskSamples)
+            return (x, max(bump(x - c.left), bump(x - c.right)))
+        }
+    }
 
     // MARK: - The blend
 

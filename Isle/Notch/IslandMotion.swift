@@ -43,6 +43,19 @@ enum IslandMotion {
         /// Progress from 0 toward 1 at time `t` (seconds) after starting from
         /// rest: the spring's step response. Underdamped springs pass 1 and
         /// come back; a critically damped one never does.
+        /// The first time, in seconds, the spring reaches `fraction` of its
+        /// travel: for the open, `reach(1)` is when the outline first
+        /// arrives at its full size, before the overshoot. Searched in
+        /// steps of a millisecond, up to three seconds.
+        func reach(_ fraction: Double) -> Double {
+            var t = 0.0
+            while t < 3 {
+                if value(at: t) >= fraction { return t }
+                t += 0.001
+            }
+            return 3
+        }
+
         func value(at t: Double) -> Double {
             guard t > 0 else { return 0 }
             let w0 = 2 * Double.pi / response
@@ -56,6 +69,10 @@ enum IslandMotion {
             return 1 - decay * (cos(wd * t) + (z * w0 / wd) * sin(wd * t))
         }
     }
+
+    /// Opening: one spring for the whole outline (`Animation.notchOpen`).
+    /// Underdamped, so the panel overshoots a little larger and settles.
+    static let open = Spring(response: 0.34, dampingFraction: 0.76)
 
     /// Closing: the width. Faster than the height and a little underdamped,
     /// so the panel pulls in from the sides first and settles a hair past

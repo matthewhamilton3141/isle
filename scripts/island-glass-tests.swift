@@ -213,6 +213,62 @@ do {
     check(IslandGlass.fadeLightCrossfade > 0.2 && IslandGlass.fadeLightCrossfade <= 1, "a short cross-fade")
 }
 
+print("fade sweep on open")
+do {
+    let sweeps = IslandGlass.fadeSweeps
+    // The trigger rules.
+    check(sweeps(nil, nil, false), "the first open sweeps")
+    check(!sweeps(nil, nil, true), "never with Reduce Motion")
+    check(sweeps(5, 30, false), "an open after a while closed sweeps")
+    check(!sweeps(0.4, 30, false), "re-opening within a moment of closing doesn't")
+    check(!sweeps(IslandGlass.fadeSweepRearm - 0.01, nil, false) && sweeps(IslandGlass.fadeSweepRearm, nil, false),
+          "re-arms after fadeSweepRearm closed")
+    check(!sweeps(2, 2.5, false), "not within the cooldown of the last sweep (an alert's open landing between hovers)")
+    check(sweeps(2, IslandGlass.fadeSweepCooldown, false), "and again once the cooldown has passed")
+    check(IslandGlass.fadeSweepRearm >= 1 && IslandGlass.fadeSweepRearm <= 2, "re-arm about a second", "\(IslandGlass.fadeSweepRearm)")
+    check(IslandGlass.fadeSweepCooldown > IslandGlass.fadeSweepRearm, "the cooldown outlasts the re-arm")
+    // An alert's auto-open cycling open/closed every second or two sweeps
+    // once, not every time.
+    var lastClose: Double? = nil, lastSweep: Double? = nil, count = 0
+    for cycle in 0..<6 {
+        let openAt = Double(cycle) * 1.6
+        if sweeps(lastClose.map { openAt - $0 }, lastSweep.map { openAt - $0 }, false) { count += 1; lastSweep = openAt }
+        lastClose = openAt + 0.5
+    }
+    check(count <= 3, "an open/close cycle every 1.6s sweeps at most every other time", "\(count)")
+    // Timing: from the open spring's arrival at full width.
+    check(near(IslandGlass.fadeSweepDelay, IslandMotion.open.reach(1)), "starts as the outline first reaches full width")
+    check(IslandGlass.fadeSweepDelay > 0.15 && IslandGlass.fadeSweepDelay < 0.25, "about 0.2s after the open", "\(IslandGlass.fadeSweepDelay)")
+    check(near(IslandGlass.fadeSweepDuration, 0.6), "runs 0.6s")
+    // Symmetric, from the centre to the edges.
+    let c0 = IslandGlass.fadeSweepCentres(phase: 0), c1 = IslandGlass.fadeSweepCentres(phase: 1)
+    check(c0.left == 0.5 && c0.right == 0.5, "starts together at the centre")
+    check(c1.left == 0 && c1.right == 1, "ends at both edges, past the corners")
+    var symmetric = true, parting = true, prevGap = -1.0
+    for i in 0...100 {
+        let c = IslandGlass.fadeSweepCentres(phase: Double(i) / 100)
+        if !near(c.left, 1 - c.right, 1e-12) { symmetric = false }
+        if c.right - c.left < prevGap { parting = false }
+        prevGap = c.right - c.left
+        let m = IslandGlass.fadeSweepMask(phase: Double(i) / 100)
+        for (a, b) in zip(m, m.reversed()) where !near(a.alpha, b.alpha, 1e-9) { symmetric = false }
+    }
+    check(symmetric, "mirror images, centres and mask")
+    check(parting, "the highlights only move apart")
+    let m = IslandGlass.fadeSweepMask(phase: 0.5)
+    check(m.first!.location == 0 && m.last!.location == 1 && m.count == IslandGlass.fadeSweepMaskSamples + 1, "mask stops span the panel")
+    check(m.allSatisfy { (0...1).contains($0.alpha) }, "mask alphas in range")
+    check(m.first { near($0.location, 0.25) }!.alpha > 0.99 && m.first { near($0.location, 0.5) }!.alpha < 0.01,
+          "half way: lit a quarter of the way in, dark at the centre")
+    // In from nothing, out to nothing: no pop at either end.
+    check(IslandGlass.fadeSweepEnvelope(phase: 0) == 0 && IslandGlass.fadeSweepEnvelope(phase: 1) == 0, "no light at the start or end")
+    check(IslandGlass.fadeSweepEnvelope(phase: 0.3) == 1, "full through the middle of the run")
+    var envStep = 0.0, prevEnv = 0.0
+    for i in 0...1000 { let v = IslandGlass.fadeSweepEnvelope(phase: Double(i) / 1000); envStep = max(envStep, abs(v - prevEnv)); prevEnv = v }
+    check(envStep < 0.02, "the envelope has no step", "\(envStep)")
+    check(IslandGlass.fadeSweepAlpha <= 1 && IslandGlass.fadeSweepHazeAlpha <= 0.5, "bright, not blinding")
+}
+
 print("blend")
 do {
     check(IslandGlass.blackCover(progress: 0) == 1, "closed: all black")
