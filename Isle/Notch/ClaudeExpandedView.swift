@@ -36,6 +36,8 @@ struct ClaudeExpandedView: View {
     /// wing can say when they scroll.
     @State private var sessionRowsRoom: CGFloat = 0
 
+    @Environment(\.islandOnGlass) private var onGlass
+
     private var state: ClaudeCodeState { viewModel.claudeState }
 
     /// The approval the notch can decide right now, if any.
@@ -365,13 +367,20 @@ struct ClaudeExpandedView: View {
             }
             .font(IsleType.meta)
             .lineLimit(1)
-            .foregroundStyle(.islandSecondary(Self.stepTones[min(age, Self.stepTones.count - 1)]))
+            .foregroundStyle(.islandSecondary(stepTone(age)))
             .accessibilityElement(children: .combine)
         }
     }
 
-    /// The newest finished call in the body's tone, the older ones fading.
-    private static let stepTones: [Double] = [IsleType.Tone.secondary, IsleType.Tone.meta, IsleType.Tone.faint]
+    /// The newest finished call in the body's tone, the older ones fading;
+    /// the oldest a touch brighter on glass.
+    private func stepTone(_ age: Int) -> Double {
+        switch age {
+        case 0: return IsleType.Tone.secondary
+        case 1: return IsleType.Tone.meta
+        default: return onGlass ? IsleType.Tone.faintOnGlass : IsleType.Tone.faint
+        }
+    }
 
     /// A row's symbol, in a fixed slot so the words line up.
     private func rowSymbol(_ name: String) -> some View {

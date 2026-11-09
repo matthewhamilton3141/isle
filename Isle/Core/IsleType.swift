@@ -76,5 +76,8 @@ enum IsleType {
         static let meta: Double = 0.5
         /// The oldest of a fading list: a working face's earliest step.
         static let faint: Double = 0.35
+        /// `faint` on a glass panel, where the tint behind it takes more of
+        /// the contrast (and `islandSecondary` lifts it from there).
+        static let faintOnGlass: Double = 0.4
     }
 }
