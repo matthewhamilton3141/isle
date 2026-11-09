@@ -31,6 +31,12 @@ final class DotMatrixLayerView: NSView {
     /// frame rate — it doesn't cap how smoothly the result plays.
     private static let sampleRate: Double = 30
 
+    /// Keyframes per second of the steady loop, which steps through them
+    /// rather than blending (see `loop`): each step is a frame the window
+    /// server composites. Side by side on a MacBook Pro, 20 looked the same as
+    /// 30 and as a fully blended loop. The one-shot morphs keep `sampleRate`.
+    private static let loopRate: Double = 20
+
     /// Hue drifts far more slowly than intensity does, so it's sampled coarser.
     private static let colorSampleRate: Double = 10
 
@@ -186,12 +192,12 @@ final class DotMatrixLayerView: NSView {
         // `looped` cross-fades the tail into the head for a baked loop, so the
         // wrap is continuous — see DotMatrixCurves.loopBlend. Colour is left
         // alone: it always loops on its own exact period and has no seam.
-        let opacity = keyframes(period: period, rate: Self.sampleRate) { clock in
+        let opacity = keyframes(period: period, rate: Self.loopRate) { clock in
             curves.looped(clock) { c in
                 curves.opacity(row: row, col: col, clock: start + c, level: level)
             }
         }
-        let scale = keyframes(period: period, rate: Self.sampleRate) { clock in
+        let scale = keyframes(period: period, rate: Self.loopRate) { clock in
             curves.looped(clock) { c in
                 curves.scale(row: row, col: col, clock: start + c, level: level)
             }
@@ -272,13 +278,14 @@ final class DotMatrixLayerView: NSView {
         animation.values = values
         animation.duration = max(duration, 0.001)
         // A loop steps through its values rather than blending between them.
-        // They're already sampled 30 a second, and every dot shares the loop's
-        // start, period and sample count, so all of them change together 30
-        // times a second and the window server has 30 frames to composite. A
+        // They're sampled `loopRate` (20) a second, and every dot shares the
+        // loop's start, period and sample count, so all of them change
+        // together 20 times a second and the window server has 20 frames to
+        // composite. A
         // blended loop changes every display refresh: on a ProMotion MacBook
         // that's 120 recomposites of the notch and the translucent menu bar
         // behind it. Measured on a 14" MacBook Pro with Claude working: the
-        // window server at ~41% CPU blended, ~23% stepped, ~9% with nothing
+        // window server at ~41% CPU blended, ~24% stepped at 30, ~9% with nothing
         // looping. (`preferredFrameRateRange` on the animations changed
         // nothing.) The one-shot morphs stay blended: they're brief.
         animation.calculationMode = repeats ? .discrete : .linear
