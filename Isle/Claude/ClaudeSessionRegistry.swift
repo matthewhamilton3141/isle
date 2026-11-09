@@ -50,9 +50,17 @@ struct ClaudeSession: Equatable, Identifiable {
         case idle
         case busy
         case waiting
+        /// At its prompt with a background shell still running (a
+        /// `run_in_background` command): the turn is over and the prompt takes
+        /// typing as at `idle`. Measured on 2.1.317-2.1.319: `shell` while the
+        /// command runs, `idle` again once it ends; `!` shell mode stays `idle`.
+        case shell
         /// A value this build doesn't know. Treated as "alive but unclassified"
         /// rather than dropped, so a new CLI status can't make a session vanish.
         case unknown
+
+        /// The turn is over and the prompt is Claude's: `idle`, or `shell`.
+        var isAtPrompt: Bool { self == .idle || self == .shell }
     }
 
     let pid: pid_t
