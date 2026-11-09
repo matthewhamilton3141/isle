@@ -8,6 +8,8 @@
 //
 //    title     17 semibold   the face's headline: Claude's state, the
 //                            timer's phase, an empty agenda, the drop
+//    lead      15 medium     prose as a face's hero: what Claude said
+//                            when its turn ended
 //    headline  13 semibold   the second voice: a question, an agenda line,
 //                            the track playing
 //    body      12 regular    what Claude is doing, an artist, a detail
@@ -28,11 +30,11 @@
 //
 
 import SwiftUI
-import AppKit
 
 enum IsleType {
     enum Size {
         static let title: CGFloat = 17
+        static let lead: CGFloat = 15
         static let headline: CGFloat = 13
         static let body: CGFloat = 12
         static let meta: CGFloat = 11
@@ -44,6 +46,8 @@ enum IsleType {
     static let titleDesign: Font.Design = .default
 
     static var title: Font { .system(size: Size.title, weight: .semibold, design: titleDesign) }
+    /// Prose that leads a face: a title's weight would shout a sentence.
+    static var lead: Font { .system(size: Size.lead, weight: .medium) }
     static var headline: Font { .system(size: Size.headline, weight: .semibold) }
     static var body: Font { .system(size: Size.body, weight: .regular) }
     static var label: Font { .system(size: Size.body, weight: .semibold) }
@@ -70,11 +74,5 @@ enum IsleType {
     enum Tone {
         static let secondary: Double = 0.7
         static let meta: Double = 0.5
-    }
-
-    /// The cap height of `title`, for centring a mark on a title's letters
-    /// rather than on its line box (which carries the descenders).
-    static var titleCapHeight: CGFloat {
-        NSFont.systemFont(ofSize: Size.title, weight: .semibold).capHeight
     }
 }

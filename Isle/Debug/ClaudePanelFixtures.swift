@@ -384,7 +384,31 @@ extension ClaudePanelFixture {
             .init(name: "both_question_4", mode: .both, state: .needsQuestion, request: question([fourOptions])),
         ] + approvalKinds + descriptionModes + worstCases + liveExtras + jumpAndReply + doneSays + loneJump + subagentCounts + autoModeBlocks
             + doneLeftovers
-            + sessionLists + guardedApprovals + faceRow + usageLimits
+            + sessionLists + guardedApprovals + faceRow + usageLimits + wingFaces
+    }
+
+    // MARK: The wings beside the housing
+
+    /// The four faces a redesign is judged on, in `.both` (so the crumb
+    /// shares the right wing) with other sessions live, so both wings are as
+    /// full as they get on an ordinary day.
+    static var wingFaces: [ClaudePanelFixture] {
+        let others = [ownWorking, website, paletteLab]
+        return [
+            .init(name: "rd_working", mode: .both, state: .working, action: "Edit",
+                  target: "/Users/matthew/Documents/isle/Isle/Notch/ClaudeExpandedView.swift",
+                  updatedAt: Date(), keepAwake: true, others: .init(working: 1, needYou: 1), host: terminalHost,
+                  subagents: threeMixed, sessions: others, sessionRequests: [websiteApproval]),
+            .init(name: "rd_question", mode: .both, state: .needsQuestion, request: question([fourOptions]),
+                  others: .init(working: 1), host: terminalHost, sessions: [ownWorking, paletteLab]),
+            .init(name: "rd_approval", mode: .both, state: .needsApproval, action: "Bash", target: "npm",
+                  request: approval(stdin: bashPrefixStdin), others: .init(working: 2), host: terminalHost,
+                  sessions: [session("preview-session", "isle", .needsApproval, ago: 5, action: "Bash", target: "npm"),
+                             paletteLab, session("w2", "isle-website", .working, ago: 30)]),
+            .init(name: "rd_done", mode: .both, state: .done, host: terminalHost,
+                  lastMessage: "Fixed the race in the request watcher: it now re-reads the directory after every rename, and the new test covers a rename landing mid-read.",
+                  sessions: [session("preview-session", "isle", .done, ago: 8, said: saidShort), bench]),
+        ]
     }
 
     // MARK: The usage limit, said straight (Milestone 19)

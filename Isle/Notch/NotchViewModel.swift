@@ -3075,10 +3075,38 @@ final class NotchViewModel: ObservableObject {
     /// current one out at its own height (see `FaceCarousel`).
     func faceContentHeight(of face: IsleTab, room: CGFloat) -> CGFloat? {
         switch face {
-        case .claude: return face == expandedPlace.face ? questionContentHeight(room: room) : nil
+        case .claude:
+            if face == expandedPlace.face, let question = questionContentHeight(room: room) { return question }
+            return claudeShrinks ? ClaudePanelLayout.bareStatusHeight : nil
         case .agenda: return min(room, AgendaLayout.contentHeight)
         case .shelf: return min(room, ShelfLayout.contentHeight(rows: shelfRows))
         case .music, .pomodoro: return nil
+        }
+    }
+
+    /// The face asks for less than the standard panel (see
+    /// `NotchMetrics.panelHeight`): only the Claude face, when it's a status
+    /// with nothing to press.
+    func faceShrinks(_ face: IsleTab?) -> Bool {
+        face == .claude && claudeShrinks
+    }
+
+    /// The Claude face is a status with no action row — no terminal to jump
+    /// to, nothing to reply into — so it's its hero and meta alone, in a
+    /// panel that short.
+    private var claudeShrinks: Bool {
+        guard !sessionListShown, pendingRequest == nil else { return false }
+        return !claudeHasActions
+    }
+
+    /// The status face has an action row: the session's app to jump to or
+    /// attach in, a reply to type or one on its way. Read by the face and
+    /// the panel's height alike, so the two agree.
+    var claudeHasActions: Bool {
+        if composing == .reply || jumpAttaches || jumpTarget != nil || canReply { return true }
+        switch replyDelivery {
+        case .sending, .sent: return true
+        default: return false
         }
     }
 

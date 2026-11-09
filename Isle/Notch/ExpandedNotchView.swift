@@ -120,7 +120,8 @@ struct ExpandedNotchView: View {
         let band = island.metrics?.notchSize.height ?? NotchMetrics.fallbackNotchSize.height
         let room = NotchMetrics.contentRoom(bandHeight: band)
         return NotchMetrics.contentAreaHeight(
-            contentHeight: viewModel.faceContentHeight(of: tab, room: room), bandHeight: band)
+            contentHeight: viewModel.faceContentHeight(of: tab, room: room), bandHeight: band,
+            shrinks: viewModel.faceShrinks(tab))
     }
 
     /// How a face comes in from Home and goes back: out of its tile and into
