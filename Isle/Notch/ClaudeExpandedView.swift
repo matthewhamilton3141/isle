@@ -70,13 +70,6 @@ struct ClaudeExpandedView: View {
             .frame(maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        // The wings: raised out of the face's box into the housing band,
-        // either side of the camera, the way the album rises beside it on
-        // the Music face. An overlay, so they never move the body.
-        .overlay(alignment: .top) {
-            wings
-                .offset(y: -(wingLayout.band + NotchMetrics.contentTopGap))
-        }
         .animation(.easeInOut(duration: 0.22), value: listing)
         .foregroundStyle(.white)
         // Click the alert panel to retract it (no-op unless an alert is live and
@@ -88,6 +81,20 @@ struct ClaudeExpandedView: View {
         .onTapGesture {
             guard viewModel.composing == nil else { return }
             island.dismissAlert()
+        }
+        // The wings: raised out of the face's box into the housing band,
+        // either side of the camera, the way the album rises beside it on
+        // the Music face. An overlay, so they never move the body.
+        //
+        // Outside the content shape above, on purpose: a content shape
+        // bounds hit-testing for everything inside it, and the wings are
+        // drawn above the face's box, so inside it they drew but took no
+        // clicks — the sessions chip and the list's way back were dead.
+        .overlay(alignment: .top) {
+            wings
+                .offset(y: -(wingLayout.band + NotchMetrics.contentTopGap))
+                .foregroundStyle(.white)
+                .animation(.easeInOut(duration: 0.22), value: listing)
         }
     }
 
