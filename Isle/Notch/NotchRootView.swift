@@ -132,6 +132,14 @@ struct NotchRootView: View {
         viewModel.palette
     }
 
+    /// The cover's colours for Fade's light: only while there's a track up
+    /// and it has a cover. Not `palette`, whose accent stand-in would light
+    /// a panel with no music in it; without a cover the light stays
+    /// spectral.
+    private var lightPalette: ArtworkPalette? {
+        panelBackground == .fade && viewModel.hasMusicActivity ? viewModel.artworkPalette : nil
+    }
+
     /// Height of the physical camera housing. Content in the expanded panel
     /// has to start below this. Falls back to the common 32pt housing if
     /// metrics aren't available yet, which is safer than falling back to 0 —
@@ -313,7 +321,8 @@ struct NotchRootView: View {
                 opened: state.isExpanded,
                 housing: glowHousing,
                 housingShift: collapsedShift,
-                bandHeight: notchBandHeight
+                bandHeight: notchBandHeight,
+                lightPalette: lightPalette
             )
         }
         // The corners lead the collapse: the clip's and the fill's radii.

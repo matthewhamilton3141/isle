@@ -17,7 +17,8 @@
 //    clear glass rather than the frosted.
 //  - Fade's lens: a soft dark scrim behind the content that leaves a rim of
 //    lighter glass round the sides and bottom, a specular line on that rim,
-//    and a thin band of spectral light along the bottom edge.
+//    and a thin band of spectral light along the bottom edge — in the
+//    current cover's colours while a track is up.
 //  - The legibility lifts for content on glass: secondary text a little
 //    brighter, artwork colours held above a lightness floor.
 //
@@ -211,6 +212,111 @@ enum IslandGlass {
     /// How far up from the bottom edge the glint's line shows before it has
     /// faded out up the walls, in points.
     static let fadeGlintReach: CGFloat = 26
+
+    // MARK: - Fade's light, from the cover
+
+    /// A colour as hue, saturation and brightness, each 0...1.
+    struct HSB: Equatable {
+        var h: Double
+        var s: Double
+        var b: Double
+    }
+
+    /// The spectral line's colours: full brightness, this saturated.
+    static let fadeSpectralSaturation: Double = 0.75
+
+    /// Light from an artwork colour is at least this bright. The glint is
+    /// added light: a near-black cover's colours would add nothing and
+    /// vanish, and a dark grey or brown would read as a smudge. Lifted,
+    /// they keep their hue and become light of that hue. Tune here.
+    static let fadeLightMinBrightness: Double = 0.9
+
+    /// A colour with a hue of its own (saturation past
+    /// `fadeLightHueOnset`) is lit at least this saturated, so a pale
+    /// pastel still reads as its colour rather than as white. Greys, below
+    /// the onset, stay neutral — silver light, not a hue made up from
+    /// JPEG noise. Never more saturated than the spectral line, so a loud
+    /// cover is no louder than the spectrum it replaces. Tune here.
+    static let fadeLightMinSaturation: Double = 0.38
+    static let fadeLightHueOnset: (from: Double, to: Double) = (0.05, 0.15)
+
+    /// An artwork colour as Fade's light: hue kept, brightness floored,
+    /// saturation lifted for colours that have a hue and capped at the
+    /// spectrum's.
+    static func fadeLight(_ c: HSB) -> HSB {
+        let s = min(max(c.s, 0), 1)
+        let onset = smoothstep(fadeLightHueOnset.from, fadeLightHueOnset.to, s)
+        let lifted = max(s, fadeLightMinSaturation * onset)
+        return HSB(
+            h: min(max(c.h, 0), 1),
+            s: min(lifted, fadeSpectralSaturation),
+            b: max(min(max(c.b, 0), 1), fadeLightMinBrightness)
+        )
+    }
+
+    static func smoothstep(_ a: Double, _ b: Double, _ x: Double) -> Double {
+        fadeEase((x - a) / (b - a))
+    }
+
+    /// One stop of the glint: where across the panel, its colour, and its
+    /// strength (0...1, times `fadeGlintAlpha`).
+    struct GlintStop: Equatable {
+        var location: Double
+        var color: HSB
+        var strength: Double
+    }
+
+    /// The glint with no cover: the spectral line.
+    static func fadeSpectralGlint() -> [GlintStop] {
+        fadeGlintStops.map {
+            GlintStop(location: $0.location, color: HSB(h: $0.hue, s: fadeSpectralSaturation, b: 1), strength: $0.strength)
+        }
+    }
+
+    /// The glint from a cover's palette, laid where the spectrum's stops
+    /// are, at their strengths: the secondary colour at the ends, the
+    /// primary either side of the middle, the accent at the centre — so the
+    /// cover's main colour carries the line and the accent is its brightest
+    /// point. Each colour lit by `fadeLight`.
+    static func fadeGlint(primary: HSB, secondary: HSB, accent: HSB) -> [GlintStop] {
+        let order = [secondary, secondary, primary, accent, primary, secondary, secondary].map(fadeLight)
+        return zip(fadeGlintStops, order).map {
+            GlintStop(location: $0.location, color: $1, strength: $0.strength)
+        }
+    }
+
+    /// How far the rim's white is tinted toward the cover's primary colour
+    /// (lit). Faint: the corners still read as a white highlight, warmed or
+    /// cooled by the cover. Tune here.
+    static let fadeRimTint: Double = 0.3
+
+    /// The rim's colour, as sRGB 0...1: white with no cover, else white
+    /// mixed `fadeRimTint` of the way toward the primary colour's light.
+    static func fadeRimColor(primary: HSB?) -> (r: Double, g: Double, b: Double) {
+        guard let primary else { return (1, 1, 1) }
+        let c = rgb(fadeLight(primary))
+        return (1 + (c.r - 1) * fadeRimTint, 1 + (c.g - 1) * fadeRimTint, 1 + (c.b - 1) * fadeRimTint)
+    }
+
+    /// HSB to sRGB, each 0...1.
+    static func rgb(_ c: HSB) -> (r: Double, g: Double, b: Double) {
+        let h = (c.h - c.h.rounded(.down)) * 6
+        let i = Int(h) % 6
+        let f = h - Double(Int(h))
+        let p = c.b * (1 - c.s), q = c.b * (1 - c.s * f), t = c.b * (1 - c.s * (1 - f))
+        switch i {
+        case 0: return (c.b, t, p)
+        case 1: return (q, c.b, p)
+        case 2: return (p, c.b, t)
+        case 3: return (p, q, c.b)
+        case 4: return (t, p, c.b)
+        default: return (c.b, p, q)
+        }
+    }
+
+    /// How long the light takes to cross-fade to a new cover's colours, in
+    /// seconds: a short implicit animation, run only on the change.
+    static let fadeLightCrossfade: Double = 0.6
 
     // MARK: - The blend
 

@@ -203,6 +203,8 @@ struct IslandFill: View {
     /// The band the open panel's content starts under, which Fade keeps
     /// solid black.
     var bandHeight: CGFloat = NotchMetrics.fallbackNotchSize.height
+    /// The current track's cover colours, for Fade's light (nil: spectral).
+    var lightPalette: ArtworkPalette? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -230,7 +232,8 @@ struct IslandFill: View {
                 opened: opened,
                 housing: housing,
                 housingShift: housingShift,
-                bandHeight: bandHeight
+                bandHeight: bandHeight,
+                lightPalette: lightPalette
             )
         } else {
             shape.fill(.black)

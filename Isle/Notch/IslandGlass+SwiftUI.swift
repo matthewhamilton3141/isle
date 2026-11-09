@@ -9,7 +9,8 @@
 //    the black that covers it all while the island is closed, blended away
 //    on the open's progress.
 //  - Fade's lens, over its shade: the scrim behind the content, the
-//    specular rim and the spectral glint along the bottom edge.
+//    specular rim and the spectral glint along the bottom edge, which take
+//    the current cover's colours while a track is up (`FadeLight`).
 //  - The material: Liquid Glass on macOS 26 (the frosted variant for Glass
 //    and Smoked, the clear one for Fade), an `NSVisualEffectView` behind
 //    the window on 14 and 15. Both are window-server effects — an offscreen
@@ -55,6 +56,9 @@ struct IslandGlassFill: View {
     /// housing's height, or the fallback band without one — which Fade
     /// keeps solid black and a little more (`IslandGlass.fadeBand`).
     var bandHeight: CGFloat
+    /// The current track's cover colours, for Fade's light; nil with no
+    /// track or no cover, which leaves it spectral.
+    var lightPalette: ArtworkPalette? = nil
 
     var body: some View {
         IslandGlassBlend(
@@ -63,7 +67,8 @@ struct IslandGlassFill: View {
             shape: shape,
             housing: housing,
             housingShift: housingShift,
-            bandHeight: bandHeight
+            bandHeight: bandHeight,
+            lightPalette: lightPalette
         )
         // The blend runs on the width's spring during a collapse — the
         // channel `expandProgress`, and so the content's fade, read off —
@@ -83,6 +88,7 @@ private struct IslandGlassBlend: View, Animatable {
     var housing: CGSize?
     var housingShift: CGFloat
     var bandHeight: CGFloat
+    var lightPalette: ArtworkPalette?
 
     var animatableData: Double {
         get { progress }
@@ -96,7 +102,7 @@ private struct IslandGlassBlend: View, Animatable {
                     .overlay(alignment: .top) { IslandGlassShade(background: background, bandHeight: bandHeight) }
                     .overlay(alignment: .top) {
                         if background == .fade {
-                            FadeLens(shape: shape, bandHeight: bandHeight)
+                            FadeLens(shape: shape, bandHeight: bandHeight, light: FadeLight.resolve(lightPalette))
                         }
                     }
                     .transition(.identity)
@@ -168,6 +174,10 @@ private enum FadeStops {
 /// - The glint: a thin spectral line across the middle of the bottom edge
 ///   and a low haze of the same colours rising a few points from it.
 ///
+/// The rim and glint are the lens's light (`FadeLight`): spectral, or the
+/// current cover's colours, cross-faded when that changes — an opacity
+/// transition on the change alone, nothing running at rest.
+///
 /// The light is added (plus-lighter), as light on glass is. Everything is
 /// static and laid out against the outline's current frame, with the band
 /// as the only fixed length, so it follows the panel as it opens, collapses
@@ -175,14 +185,22 @@ private enum FadeStops {
 private struct FadeLens: View {
     var shape: NotchShape
     var bandHeight: CGFloat
+    var light: FadeLight
 
     var body: some View {
         let band = IslandGlass.fadeBand(notchHeight: bandHeight)
         ZStack {
             scrim(band: band)
-            rim(band: band)
-            glint
+            // Keyed by the light, so a new cover's colours come in as a new
+            // view and the old fade out under them.
+            ZStack {
+                rim(band: band)
+                glint
+            }
+            .id(light)
+            .transition(.opacity)
         }
+        .animation(.easeInOut(duration: IslandGlass.fadeLightCrossfade), value: light)
         .allowsHitTesting(false)
     }
 
@@ -209,7 +227,7 @@ private struct FadeLens: View {
     /// The specular line round the lower outline.
     private func rim(band: CGFloat) -> some View {
         shape
-            .stroke(LinearGradient(stops: FadeLensStops.rim, startPoint: .leading, endPoint: .trailing),
+            .stroke(LinearGradient(stops: light.rim, startPoint: .leading, endPoint: .trailing),
                     lineWidth: IslandGlass.fadeRimWidth)
             .mask {
                 // Nothing over the band, then up to full by the bottom.
@@ -223,7 +241,7 @@ private struct FadeLens: View {
 
     /// The spectral line and its haze along the bottom edge.
     private var glint: some View {
-        let colors = LinearGradient(stops: FadeLensStops.glint, startPoint: .leading, endPoint: .trailing)
+        let colors = LinearGradient(stops: light.glint, startPoint: .leading, endPoint: .trailing)
         return ZStack(alignment: .bottom) {
             shape
                 .stroke(colors, lineWidth: IslandGlass.fadeGlintWidth)
@@ -245,17 +263,59 @@ private struct FadeLens: View {
     }
 }
 
-/// Fade's lens gradients, built from the numbers once.
-private enum FadeLensStops {
-    static let rim: [Gradient.Stop] = IslandGlass.fadeRimStops().map {
-        Gradient.Stop(color: .white.opacity($0.alpha), location: $0.location)
+/// Fade's light: the rim's and the glint's gradients. Spectral with no
+/// cover; from a cover, the glint in its palette's colours
+/// (`IslandGlass.fadeGlint`, each lit to a brightness floor so a dark or
+/// grey cover still throws light) and the rim's white faintly tinted toward
+/// its primary (`IslandGlass.fadeRimColor`). Consumes the palette the view
+/// model already extracted; extracts nothing.
+struct FadeLight: Hashable {
+    var rim: [Gradient.Stop]
+    var glint: [Gradient.Stop]
+
+    static let spectral = FadeLight(glint: IslandGlass.fadeSpectralGlint(), rim: nil)
+
+    private init(glint: [IslandGlass.GlintStop], rim primary: IslandGlass.HSB?) {
+        let c = IslandGlass.fadeRimColor(primary: primary)
+        let rimColor = Color(.sRGB, red: c.r, green: c.g, blue: c.b)
+        rim = IslandGlass.fadeRimStops().map {
+            Gradient.Stop(color: rimColor.opacity($0.alpha), location: $0.location)
+        }
+        self.glint = glint.map {
+            Gradient.Stop(
+                color: Color(hue: $0.color.h, saturation: $0.color.s, brightness: $0.color.b).opacity($0.strength),
+                location: $0.location
+            )
+        }
     }
 
-    static let glint: [Gradient.Stop] = IslandGlass.fadeGlintStops.map {
-        Gradient.Stop(
-            color: Color(hue: $0.hue, saturation: 0.75, brightness: 1).opacity($0.strength),
-            location: $0.location
+    init(palette: ArtworkPalette) {
+        let primary = Self.hsb(palette.primary)
+        self.init(
+            glint: IslandGlass.fadeGlint(primary: primary, secondary: Self.hsb(palette.secondary), accent: Self.hsb(palette.accent)),
+            rim: primary
         )
+    }
+
+    /// The light for a palette (nil: spectral). The last one is kept, since
+    /// the lens is laid out on every frame of an open or resize and the
+    /// palette changes only with the cover.
+    @MainActor
+    static func resolve(_ palette: ArtworkPalette?) -> FadeLight {
+        guard let palette else { return spectral }
+        if let last, last.palette == palette { return last.light }
+        let light = FadeLight(palette: palette)
+        last = (palette, light)
+        return light
+    }
+
+    @MainActor private static var last: (palette: ArtworkPalette, light: FadeLight)?
+
+    private static func hsb(_ color: Color) -> IslandGlass.HSB {
+        guard let c = NSColor(color).usingColorSpace(.sRGB) else { return IslandGlass.HSB(h: 0, s: 0, b: 1) }
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        c.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        return IslandGlass.HSB(h: Double(h), s: Double(s), b: Double(b))
     }
 }
 

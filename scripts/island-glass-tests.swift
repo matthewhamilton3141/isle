@@ -164,6 +164,55 @@ do {
     check(near(IslandGlass.over(0, 0.3), 0.3) && near(IslandGlass.over(0.5, 0.5), 0.75) && IslandGlass.over(1, 0) == 1, "over composites")
 }
 
+print("fade light from the cover")
+do {
+    typealias C = IslandGlass.HSB
+    let light = IslandGlass.fadeLight
+    // The floor: dark and grey covers still throw light.
+    let nearBlack = light(C(h: 0.6, s: 0.5, b: 0.08))
+    check(nearBlack.b >= IslandGlass.fadeLightMinBrightness && near(nearBlack.h, 0.6), "a near-black colour is lit to the floor, hue kept", "\(nearBlack)")
+    let grey = light(C(h: 0.3, s: 0.0, b: 0.35))
+    check(grey.s == 0 && grey.b >= IslandGlass.fadeLightMinBrightness, "a grey stays neutral: silver light", "\(grey)")
+    let noise = light(C(h: 0.9, s: 0.03, b: 0.5))
+    check(noise.s < 0.05, "a grey with a hint of JPEG hue stays neutral", "\(noise)")
+    let pastel = light(C(h: 0.85, s: 0.2, b: 0.95))
+    check(pastel.s >= IslandGlass.fadeLightMinSaturation - 1e-9 && near(pastel.b, 0.95), "a pastel reads as its colour", "\(pastel)")
+    let loud = light(C(h: 0.03, s: 1, b: 1))
+    check(near(loud.s, IslandGlass.fadeSpectralSaturation), "a loud red is no louder than the spectrum", "\(loud)")
+    let bright = light(C(h: 0.5, s: 0.5, b: 0.97))
+    check(bright == C(h: 0.5, s: 0.5, b: 0.97), "an already-bright, moderate colour is unchanged")
+    // Continuous in saturation: no jump where a hue sets in.
+    var maxJump = 0.0, prevS = light(C(h: 0.2, s: 0, b: 1)).s, mono = true
+    for i in 1...1000 {
+        let v = light(C(h: 0.2, s: Double(i) / 1000, b: 1)).s
+        maxJump = max(maxJump, abs(v - prevS)); if v < prevS - 1e-12 { mono = false }; prevS = v
+    }
+    check(maxJump < 0.01 && mono, "saturation lifts smoothly and monotonically", "\(maxJump)")
+    check(IslandGlass.fadeLightMinSaturation < IslandGlass.fadeSpectralSaturation, "the lift stays under the cap")
+    // The palette's glint lies where the spectrum's does.
+    let spectral = IslandGlass.fadeSpectralGlint()
+    let p = IslandGlass.fadeGlint(primary: C(h: 0.05, s: 0.9, b: 0.8), secondary: C(h: 0.95, s: 0.7, b: 0.4), accent: C(h: 0.12, s: 0.6, b: 0.9))
+    check(p.count == spectral.count, "same stop count as the spectrum (a cross-fade lines up)")
+    check(zip(p, spectral).allSatisfy { near($0.location, $1.location) && near($0.strength, $1.strength) }, "same locations and strengths")
+    check(p.first!.strength == 0 && p.last!.strength == 0, "still nothing at either end")
+    check(p.allSatisfy { $0.color.b >= IslandGlass.fadeLightMinBrightness && $0.color.s <= IslandGlass.fadeSpectralSaturation + 1e-12 }, "every stop lit and capped")
+    check(near(p[3].color.h, 0.12) && near(p[2].color.h, 0.05) && near(p[4].color.h, 0.05) && near(p[1].color.h, 0.95),
+          "accent at the centre, primary either side, secondary outside")
+    check(spectral.allSatisfy { $0.color.b == 1 && near($0.color.s, IslandGlass.fadeSpectralSaturation) }, "the spectrum: full brightness, spectral saturation")
+    // The rim: white with no cover, faintly tinted with one.
+    let white = IslandGlass.fadeRimColor(primary: nil)
+    check(white == (1, 1, 1), "no cover: a white rim")
+    let warm = IslandGlass.fadeRimColor(primary: C(h: 0.05, s: 0.9, b: 0.8))
+    check(warm.r > warm.b && min(warm.r, warm.g, warm.b) >= 1 - IslandGlass.fadeRimTint - 1e-9, "a red cover warms the rim, faintly", "\(warm)")
+    check(IslandGlass.fadeRimTint > 0 && IslandGlass.fadeRimTint <= 0.4, "the tint is faint")
+    // HSB to RGB.
+    func rgbNear(_ a: (r: Double, g: Double, b: Double), _ b: (Double, Double, Double)) -> Bool { near(a.r, b.0, 1e-9) && near(a.g, b.1, 1e-9) && near(a.b, b.2, 1e-9) }
+    check(rgbNear(IslandGlass.rgb(C(h: 0, s: 1, b: 1)), (1, 0, 0)) && rgbNear(IslandGlass.rgb(C(h: 1.0 / 3, s: 1, b: 1)), (0, 1, 0))
+          && rgbNear(IslandGlass.rgb(C(h: 2.0 / 3, s: 1, b: 1)), (0, 0, 1)) && rgbNear(IslandGlass.rgb(C(h: 0.5, s: 0, b: 0.4)), (0.4, 0.4, 0.4))
+          && rgbNear(IslandGlass.rgb(C(h: 1, s: 1, b: 1)), (1, 0, 0)), "HSB to RGB")
+    check(IslandGlass.fadeLightCrossfade > 0.2 && IslandGlass.fadeLightCrossfade <= 1, "a short cross-fade")
+}
+
 print("blend")
 do {
     check(IslandGlass.blackCover(progress: 0) == 1, "closed: all black")
