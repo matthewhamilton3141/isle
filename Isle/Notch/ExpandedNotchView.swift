@@ -51,6 +51,9 @@ struct ExpandedNotchView: View {
             .animation(reduceMotion ? Self.crossDissolve : .tileMorph, value: viewModel.expandedPlace == .home)
             .animation(Self.crossDissolve, value: viewModel.expandedPlace)
             .animation(.easeInOut(duration: 0.2), value: dropPayload != nil)
+            // The live strip's hold lasts as long as this panel is open.
+            .onAppear { viewModel.stripPanelOpened() }
+            .onDisappear { viewModel.stripPanelClosed() }
             // The waveform, on the Music face only: the other faces are about
             // something else, and a row of paused dots in their corner was
             // one more thing to read. Pinned to the panel's top-right outside
@@ -138,8 +141,29 @@ struct ExpandedNotchView: View {
         ))
     }
 
-    @ViewBuilder
+    /// The most content the panel's cap holds under this island's housing.
+    private var contentRoom: CGFloat {
+        NotchMetrics.contentRoom(bandHeight: island.metrics?.notchSize.height ?? NotchMetrics.fallbackNotchSize.height)
+    }
+
+    /// A face, and under the primary face the live strip (`LiveStrip`): the
+    /// face is laid out in what the strip leaves, the strip at its foot.
+    /// One container whether or not the strip is up, so the face keeps its
+    /// identity (and its state) as the strip comes and goes with a takeover.
     private func face(_ tab: IsleTab) -> some View {
+        VStack(spacing: 0) {
+            ownFace(tab)
+                .frame(maxHeight: .infinity)
+            if let strip = viewModel.strip(on: tab, room: contentRoom) {
+                LiveStripView(viewModel: viewModel, palette: palette, content: strip)
+                    .frame(width: ClaudePanelLayout.faceWidth)
+                    .transition(.opacity)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func ownFace(_ tab: IsleTab) -> some View {
         switch tab {
         case .music:
             musicBody
