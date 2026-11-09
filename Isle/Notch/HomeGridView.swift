@@ -351,14 +351,12 @@ struct HomeTile<Lead: View>: View {
             }
             Spacer(minLength: 0)
             Text(title)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.islandSecondary(0.5))
+                .font(IsleType.caption)
+                .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
                 .lineLimit(1)
             if let glance {
                 Text(glance.line1)
-                    .font(glance.monospaced
-                          ? .system(size: 12, weight: .semibold).monospacedDigit()
-                          : .system(size: 12, weight: .semibold))
+                    .font(glance.monospaced ? IsleType.label.monospacedDigit() : IsleType.label)
                     .lineLimit(1)
                 if glance.fits.count > 1 {
                     ViewThatFits(in: .horizontal) {
@@ -366,12 +364,12 @@ struct HomeTile<Lead: View>: View {
                             Text(line).lineLimit(1)
                         }
                     }
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.islandSecondary(0.65))
+                    .font(IsleType.note)
+                    .foregroundStyle(.islandSecondary(IsleType.Tone.secondary))
                 } else if let line2 = glance.line2 {
                     Text(line2)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.islandSecondary(0.65))
+                        .font(IsleType.note)
+                        .foregroundStyle(.islandSecondary(IsleType.Tone.secondary))
                         .lineLimit(1)
                         .minimumScaleFactor(glance.shrinksToFit ? 0.8 : 1)
                         .truncationMode(.tail)
@@ -444,7 +442,7 @@ struct NotchCrumb: View {
             .padding(.trailing, -6)
 
             Text(face.title)
-                .font(.system(size: 11, weight: .semibold))
+                .font(IsleType.metaStrong)
                 .opacity(0.85)
                 .lineLimit(1)
                 .contentTransition(.opacity)

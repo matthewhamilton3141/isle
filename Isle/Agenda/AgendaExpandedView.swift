@@ -182,16 +182,16 @@ struct AgendaExpandedView: View {
     private func dateCard(for date: Date, isToday: Bool) -> some View {
         VStack(spacing: 0) {
             Text(date.formatted(.dateTime.weekday(.abbreviated)).uppercased())
-                .font(.system(size: 12, weight: .semibold))
-                .tracking(1.5)
+                .font(IsleType.metaStrong)
+                .tracking(IsleType.capsTracking)
                 .foregroundStyle(isToday ? palette.accent : .white.opacity(0.6))
             Text(date.formatted(.dateTime.day()))
-                .font(.system(size: 52, weight: .bold).monospacedDigit())
+                .font(IsleType.numeral(52))
                 .foregroundStyle(.white)
                 .padding(.vertical, -4)
             Text(date.formatted(.dateTime.month(.wide)))
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.islandSecondary(0.6))
+                .font(IsleType.meta)
+                .foregroundStyle(.islandSecondary(IsleType.Tone.secondary))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
@@ -276,14 +276,14 @@ struct AgendaExpandedView: View {
     private func emptyState(day: Date, isToday: Bool, compact: Bool) -> some View {
         if compact {
             Text(isToday ? emptyHeadline : "Nothing on \(day.formatted(.dateTime.weekday(.wide)))")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.islandSecondary(0.55))
+                .font(IsleType.body)
+                .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
                 .padding(.top, 6)
                 .padding(.leading, 2)
         } else {
             VStack(alignment: .leading, spacing: 0) {
                 Text(isToday ? emptyHeadline : "Nothing on \(day.formatted(.dateTime.weekday(.wide)))")
-                    .font(.system(size: 24, weight: .bold))
+                    .font(IsleType.title)
                     .foregroundStyle(.white)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
@@ -291,8 +291,8 @@ struct AgendaExpandedView: View {
                 Spacer().frame(height: 2)
 
                 Text(isToday ? emptyDetail : "No events or reminders on \(day.formatted(.dateTime.day().month(.wide))).")
-                    .font(.system(size: 12.5, weight: .regular))
-                    .foregroundStyle(.islandSecondary(0.72))
+                    .font(IsleType.body)
+                    .foregroundStyle(.islandSecondary(IsleType.Tone.secondary))
                     .lineLimit(2)
                     .minimumScaleFactor(0.8)
                     .fixedSize(horizontal: false, vertical: true)
@@ -361,15 +361,15 @@ struct AgendaRow: View {
         let label = timeLabel
         HStack(spacing: 10) {
             Text(label.text)
-                .font(.system(size: 11, weight: .medium).monospacedDigit())
-                .foregroundStyle(label.emphasised ? Self.overdue : .white.opacity(0.55))
+                .font(IsleType.meta.monospacedDigit())
+                .foregroundStyle(label.emphasised ? AnyShapeStyle(Self.overdue) : AnyShapeStyle(.islandSecondary(IsleType.Tone.meta)))
                 .lineLimit(1)
                 .frame(width: Self.timeWidth, alignment: .trailing)
 
             mark
 
             Text(item.title)
-                .font(.system(size: 13, weight: .semibold))
+                .font(IsleType.headline)
                 .foregroundStyle(.white.opacity(isTicked ? 0.45 : 1))
                 .strikethrough(isTicked, color: .white.opacity(0.45))
                 .lineLimit(1)
@@ -493,7 +493,7 @@ struct JoinPill: View {
                 Image(systemName: "video.fill")
                     .font(.system(size: compact ? 8 : 8.5, weight: .bold))
                 Text("Join")
-                    .font(.system(size: compact ? 10 : 10.5, weight: .bold))
+                    .font(compact ? IsleType.caption : IsleType.metaStrong)
             }
             .foregroundStyle(.black.opacity(0.85))
             .padding(.horizontal, compact ? 7 : 8)
@@ -516,7 +516,7 @@ struct RowPill: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 10.5, weight: .semibold))
+                .font(IsleType.metaStrong)
                 .foregroundStyle(foreground)
                 .padding(.horizontal, 8)
                 .frame(height: 17)

@@ -1,11 +1,10 @@
 //
 //  ClaudeExpandedView.swift
 //
-//  The Claude face of the expanded panel. Mirrors the music tab's weight — a
-//  large marker on the left where the album art sits, and a text column
-//  beside it — so the tab fills the panel instead of floating a small glyph
-//  in dead space. Shown as the whole panel in `.claude` mode, or under the
-//  Claude tab in `.both`.
+//  The Claude face of the expanded panel: one column, the marker inline
+//  before the headline at the collapsed island's size, so the words have
+//  the room and the status reads as the same mark the pill shows. Shown as
+//  the whole panel in `.claude` mode, or under the Claude tab in `.both`.
 //
 //  Every face is one layout (see `ClaudePanelLayout`): an eyebrow naming the
 //  session and what else is going on, a title, a body, and an action row
@@ -13,10 +12,9 @@
 //  doing, and an empty action row; an approval (Milestone 7) puts the exact
 //  command in the body and Approve / Deny / Terminal in the row; a question
 //  puts the question in the title and its options in the body, in a panel
-//  grown to seat them — the one face without the glyph, so the question and
-//  its options have the full width. Every control here is a real `Button`,
-//  so its tap is consumed and never falls through to the card's dismiss
-//  gesture.
+//  grown to seat them, without the marker. Every control here is a real
+//  `Button`, so its tap is consumed and never falls through to the card's
+//  dismiss gesture.
 //
 //  With more than one live session, the face also flips to a list of them
 //  all (Milestone 16): the other-sessions marks are the way in, a row's
@@ -54,16 +52,7 @@ struct ClaudeExpandedView: View {
 
     var body: some View {
         let listing = viewModel.sessionListShown
-        let isQuestion = asking != nil && !listing
         return ZStack(alignment: .topLeading) {
-            // The question face has no glyph: its eyebrow already says it's a
-            // question, and the options want the face's whole width. Nor
-            // does the list, whose rows each carry their own.
-            if !isQuestion, !listing {
-                glyph
-                    .transition(.opacity.combined(with: .scale(scale: 0.6, anchor: .topLeading)))
-            }
-
             Group {
                 if listing {
                     sessionListFace
@@ -73,7 +62,6 @@ struct ClaudeExpandedView: View {
                         .transition(.opacity)
                 } else {
                     statusFace
-                        .padding(.leading, L.glyphSize + L.glyphGap)
                         // A two-line body (a long command, Claude's words, the
                         // subagent line) fills the content area under a 32pt
                         // band. The row's own bottom inset gives way into the
@@ -101,24 +89,19 @@ struct ClaudeExpandedView: View {
         }
     }
 
-    /// Occupies the album cover's exact footprint (size + raise), so the
-    /// glyph reads as the same block on both tabs and the dots scale up to
-    /// fill it — the frame is the only cap on dot size. Safe to raise into
-    /// the housing band: the glyph sits left of the camera cutout, on
-    /// ordinary screen, just like the album.
-    ///
-    /// Absent on the question face: it goes with the same spring the panel
-    /// grows on, and comes back when the question leaves.
+    /// The marker, inline before the headline: the collapsed island's mark
+    /// at its size, a status beside the words. Centred on the title's
+    /// capitals rather than its line box, so it sits level with the letters
+    /// and not with their descenders. Every status face has it — working,
+    /// done, an approval, a limit, idle — at the one size and place; the
+    /// question face and the list have none (the list's rows carry their
+    /// own).
     private var glyph: some View {
         ClaudeStatusGlyphView(state: state, kind: viewModel.claudeMarkerKind, palette: palette)
             .frame(width: L.glyphSize, height: L.glyphSize)
-            // No height of its own in the face's layout. The glyph is taller
-            // than the content area under a 32pt band (114 against 104), and
-            // as a full-height child it made the face overflow, which centred
-            // it: the whole face rode ~5pt up, the eyebrow into the camera
-            // cutout, and out of line with the question and list faces'.
-            .frame(width: L.glyphSize, height: 0, alignment: .top)
-            .offset(y: -L.glyphRaise)
+            .alignmentGuide(.firstTextBaseline) { d in
+                d.height / 2 + IsleType.titleCapHeight / 2
+            }
     }
 
     // MARK: - Status face
@@ -142,7 +125,8 @@ struct ClaudeExpandedView: View {
 
             Spacer().frame(height: L.eyebrowGap)
 
-            HStack(spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: L.glyphGap) {
+                glyph
                 Text(headline)
                     .font(L.headlineFont)
                     .lineLimit(1)
@@ -177,7 +161,7 @@ struct ClaudeExpandedView: View {
                 // lines of it would.
                 Text(said)
                     .font(L.detailFont)
-                    .foregroundStyle(.islandSecondary(0.72))
+                    .foregroundStyle(.islandSecondary(IsleType.Tone.secondary))
                     .lineLimit(viewModel.claudeBlock == nil && leftovers == nil ? L.saidLines : 1)
                     .truncationMode(.tail)
                     .fixedSize(horizontal: false, vertical: true)
@@ -238,7 +222,7 @@ struct ClaudeExpandedView: View {
     private func detailText(_ text: String) -> some View {
         Text(text)
             .font(L.detailFont)
-            .foregroundStyle(.islandSecondary(0.72))
+            .foregroundStyle(.islandSecondary(IsleType.Tone.secondary))
             .lineLimit(1)
             .minimumScaleFactor(0.7)
             .truncationMode(.middle)
@@ -269,7 +253,7 @@ struct ClaudeExpandedView: View {
                     ForEach(forms, id: \.self) { form in
                         HStack(spacing: 0) {
                             Text(detail)
-                                .foregroundStyle(.islandSecondary(0.72))
+                                .foregroundStyle(.islandSecondary(IsleType.Tone.secondary))
                             agentsTail(form)
                         }
                         .lineLimit(1)
@@ -298,7 +282,7 @@ struct ClaudeExpandedView: View {
     /// under it was.
     private func agentsTail(_ form: String) -> some View {
         (Text(" · ").foregroundColor(.white.opacity(0.3)) + Text(form))
-            .foregroundStyle(.islandSecondary(0.5))
+            .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
             .lineLimit(1)
     }
 
@@ -316,8 +300,8 @@ struct ClaudeExpandedView: View {
                     Text(line).lineLimit(1)
                 }
             }
-            .font(L.detailFont)
-            .foregroundStyle(.islandSecondary(0.5))
+            .font(IsleType.meta)
+            .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
             .frame(height: L.detailLine, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.trailing, switcherClearance)
@@ -340,8 +324,8 @@ struct ClaudeExpandedView: View {
                     Text(line).lineLimit(1)
                 }
             }
-            .font(L.detailFont)
-            .foregroundStyle(.islandSecondary(0.5))
+            .font(IsleType.meta)
+            .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
             .frame(height: L.detailLine, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.trailing, switcherClearance)
@@ -413,7 +397,7 @@ struct ClaudeExpandedView: View {
         }
         .font(L.eyebrowFont)
         .labelStyle(EyebrowLabelStyle())
-        .foregroundStyle(.islandSecondary(0.5))
+        .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
         .lineLimit(1)
         .frame(height: L.eyebrowHeight)
     }
@@ -625,7 +609,7 @@ struct ClaudeExpandedView: View {
             }
             .font(L.eyebrowFont)
             .labelStyle(EyebrowLabelStyle())
-            .foregroundStyle(.islandSecondary(0.5))
+            .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
             .lineLimit(1)
             .frame(height: L.eyebrowHeight)
 
@@ -710,7 +694,7 @@ struct ClaudeExpandedView: View {
                         .fixedSize()
                     Text(row.detail)
                         .font(L.sessionDetailFont)
-                        .foregroundStyle(.islandSecondary(0.55))
+                        .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
                         .lineLimit(1)
                         .truncationMode(.tail)
                     Spacer(minLength: 4)
@@ -718,7 +702,7 @@ struct ClaudeExpandedView: View {
                         Text(Self.shortAge(from: updated, to: now))
                             .font(L.sessionDetailFont)
                             .monospacedDigit()
-                            .foregroundStyle(.white.opacity(0.4))
+                            .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
                             .fixedSize()
                     }
                 }
@@ -810,7 +794,7 @@ struct ClaudeExpandedView: View {
             }
         }
         .font(L.commandFont)
-        .foregroundStyle(.islandSecondary(0.72))
+        .foregroundStyle(.islandSecondary(IsleType.Tone.secondary))
         .frame(minHeight: CGFloat(Self.commandBoxLines(request)) * L.commandLine, alignment: .topLeading)
         .padding(.trailing, switcherClearance)
     }
@@ -1079,7 +1063,7 @@ struct ClaudeExpandedView: View {
             HStack(spacing: 6) {
                 Image(systemName: "arrowshape.turn.up.left.fill")
                     .font(.system(size: 9.5, weight: .semibold))
-                    .foregroundStyle(.islandSecondary(0.55))
+                    .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
                 Text(draft.isEmpty ? "Reply to Claude…" : draft)
                     .foregroundStyle(.white.opacity(draft.isEmpty ? 0.55 : 0.9))
                     .lineLimit(1)
@@ -1108,7 +1092,7 @@ struct ClaudeExpandedView: View {
                 .fixedSize()
             if let detail {
                 Text(detail)
-                    .foregroundStyle(.islandSecondary(0.5))
+                    .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
@@ -1234,7 +1218,7 @@ struct ClaudeExpandedView: View {
                         Label("\(question.options.count) options", systemImage: "arrow.up.and.down")
                             .font(L.eyebrowFont)
                             .labelStyle(EyebrowLabelStyle())
-                            .foregroundStyle(.islandSecondary(0.5))
+                            .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
                             .fixedSize()
                     }
                     Spacer(minLength: 0)
@@ -1317,7 +1301,7 @@ struct ClaudeExpandedView: View {
                             .padding(.trailing, clearance ?? 0)
                         Text(option.description ?? "")
                             .font(L.optionDescriptionFont)
-                            .foregroundStyle(.islandSecondary(0.55))
+                            .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
                             .lineLimit(lines)
                             .truncationMode(.tail)
                             .frame(height: CGFloat(lines) * L.optionDescriptionLine, alignment: .topLeading)
@@ -1328,7 +1312,7 @@ struct ClaudeExpandedView: View {
                     if style == .oneLine, let description = option.description {
                         Text(description)
                             .font(L.optionDescriptionFont)
-                            .foregroundStyle(.islandSecondary(0.55))
+                            .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
@@ -1657,7 +1641,7 @@ private struct ComposeField: View {
                 Text(prompt)
             }
             .textFieldStyle(.plain)
-            .font(.system(size: 12, weight: .medium))
+            .font(IsleType.body)
             .foregroundStyle(.white)
             .focused($focused)
             .onSubmit { if !isEmpty { onSend() } }

@@ -22,8 +22,8 @@ struct DropFaceView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(payload.headline)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.islandSecondary(0.5))
+                .font(IsleType.meta)
+                .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .padding(.leading, 2)
@@ -107,11 +107,11 @@ private struct DropTargetTile: View {
                 .font(.system(size: 19, weight: .semibold))
                 .frame(height: 24)
             Text(title)
-                .font(.system(size: 13, weight: .semibold))
+                .font(IsleType.headline)
                 .lineLimit(1)
             Text(detail)
-                .font(.system(size: 10.5))
-                .foregroundStyle(.islandSecondary(0.65))
+                .font(IsleType.note)
+                .foregroundStyle(.islandSecondary(IsleType.Tone.secondary))
                 .lineLimit(1)
                 .truncationMode(.middle)
         }

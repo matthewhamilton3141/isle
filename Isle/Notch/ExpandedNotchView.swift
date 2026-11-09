@@ -293,9 +293,9 @@ struct ExpandedNotchView: View {
         VStack(alignment: .leading, spacing: 1) {
             MarqueeText(
                 text: media.title.isEmpty ? "Not playing" : media.title,
-                fontSize: 14,
+                fontSize: IsleType.Size.headline,
                 weight: .semibold,
-                lineHeight: 18
+                lineHeight: 17
             )
 
             // No HStack wrapper: it gave the marquee an ambiguous width to
@@ -307,9 +307,9 @@ struct ExpandedNotchView: View {
             // SwiftUI style modifier can't reach inside it.
             MarqueeText(
                 text: media.artist,
-                fontSize: 11,
-                weight: .regular,
-                color: .white.opacity(0.7),
+                fontSize: IsleType.Size.meta,
+                weight: .medium,
+                color: .white.opacity(IsleType.Tone.secondary),
                 lineHeight: 15
             )
         }
@@ -324,7 +324,7 @@ struct ExpandedNotchView: View {
             Spacer(minLength: 0)
 
             Text("Nothing playing")
-                .font(.system(size: 24, weight: .bold))
+                .font(IsleType.title)
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
@@ -332,8 +332,8 @@ struct ExpandedNotchView: View {
             Spacer().frame(height: 2)
 
             Text("Start something in Spotify or Music")
-                .font(.system(size: 12.5, weight: .regular))
-                .foregroundStyle(.islandSecondary(0.72))
+                .font(IsleType.body)
+                .foregroundStyle(.islandSecondary(IsleType.Tone.secondary))
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
                 .truncationMode(.middle)
@@ -388,8 +388,8 @@ struct ExpandedNotchView: View {
                     Spacer()
                     Text("-" + TimeFormatter.string(from: max(0, media.duration - elapsed)))
                 }
-                .font(.system(size: 9, weight: .medium).monospacedDigit())
-                .foregroundStyle(.islandSecondary(0.55))
+                .font(IsleType.micro.monospacedDigit())
+                .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
             }
         }
         .opacity(viewModel.canSeek && media.duration > 0 ? 1 : 0.4)
@@ -606,7 +606,7 @@ private struct OutputList: View {
                         Image(systemName: "chevron.left")
                             .font(.system(size: 9, weight: .semibold))
                         Text("Output")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(IsleType.metaStrong)
                     }
                     .foregroundStyle(.islandSecondary(0.55))
                     .frame(height: 16)
@@ -660,7 +660,7 @@ private struct OutputList: View {
                     .font(.system(size: 12, weight: .medium))
                     .frame(width: 18, alignment: .leading)
                 Text(device.name)
-                    .font(.system(size: 12, weight: isCurrent ? .semibold : .regular))
+                    .font(isCurrent ? IsleType.label : IsleType.body)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Spacer(minLength: 8)

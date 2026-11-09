@@ -80,10 +80,10 @@ enum ShelfLayout {
     }
 
     /// One row: room for the file to be seen.
-    static let large = Cell(side: 56, padding: 3, spacing: 3, nameSize: 10, nameHeight: 26)
+    static let large = Cell(side: 56, padding: 3, spacing: 3, nameSize: IsleType.Size.caption, nameHeight: 26)
 
     /// Two rows.
-    static let small = Cell(side: 44, padding: 2, spacing: 2, nameSize: 9, nameHeight: 22)
+    static let small = Cell(side: 44, padding: 2, spacing: 2, nameSize: IsleType.Size.micro, nameHeight: 22)
 
     static let rowGap: CGFloat = 4
 
