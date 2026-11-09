@@ -126,14 +126,6 @@ enum ClaudePanelLayout {
     static let bodyGap: CGFloat = 10
     static let actionHeight: CGFloat = 22
 
-    /// A status face with no action row (`NotchViewModel.claudeHasActions`):
-    /// the hero and the meta line, and room for the tallest of what can sit
-    /// with them — two lines of what Claude said, or a title and a line
-    /// under the meta. One height for all of them, so the panel doesn't bob
-    /// as the line comes and goes.
-    static var bareStatusHeight: CGFloat {
-        max(CGFloat(saidLines) * saidLine, headlineLine + detailLine) + heroGap + metaHeight + bottomInset
-    }
     /// Under the action row, on top of the panel's own bottom inset.
     static let bottomInset: CGFloat = 4
 
@@ -183,6 +175,11 @@ enum ClaudePanelLayout {
     /// on its way, the finished calls): this many slots, held whole once
     /// there's one row, so a row arriving moves nothing.
     static let workSlots = 3
+    /// The turn's prompt keeps the oldest slot once steps arrive, rather
+    /// than giving it up to them as they fill the slots: the steps read as
+    /// what Claude is doing about it, and a long turn doesn't lose what it
+    /// was for.
+    static let promptRowStays = true
     /// The most of the slots replies queued mid-turn take, the rest counted
     /// on the last.
     static let queuedRows = 2

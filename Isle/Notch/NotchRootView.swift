@@ -89,8 +89,7 @@ struct NotchRootView: View {
 
     /// The open panel's height: the standard 146, unless the face on screen
     /// asks for more — a live question seating its options, the agenda its
-    /// day — when it grows to that, capped (see `NotchMetrics.panelHeight`);
-    /// or for less, the Claude face with nothing to press.
+    /// day — when it grows to that, capped (see `NotchMetrics.panelHeight`).
     /// Only ever read for an expanded state.
     private var expandedHeight: CGFloat {
         // The drop face stands in for whatever face was open, at the
@@ -98,8 +97,7 @@ struct NotchRootView: View {
         if island.isDropTarget, viewModel.acceptsDrops { return NotchMetrics.expandedSize.height }
         let room = NotchMetrics.contentRoom(bandHeight: notchBandHeight)
         guard let content = viewModel.faceContentHeight(room: room) else { return NotchMetrics.expandedSize.height }
-        return NotchMetrics.panelHeight(contentHeight: content, bandHeight: notchBandHeight,
-                                        shrinks: viewModel.faceShrinks(viewModel.expandedPlace.face))
+        return NotchMetrics.panelHeight(contentHeight: content, bandHeight: notchBandHeight)
     }
 
     /// The spring for a height change while open — a face growing or

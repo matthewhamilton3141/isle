@@ -68,22 +68,19 @@ struct NotchMetrics {
     static let stayOpenSidePad: CGFloat = 16
 
     /// Panel height for a face whose content wants `contentHeight`, below a
-    /// camera housing `bandHeight` tall. Never taller than the cap, and
-    /// never shorter than the standard panel unless the face `shrinks` — the
-    /// Claude face with nothing to press, which is its hero and meta alone.
-    /// A face fits its content to `contentRoom` before it gets here — the
-    /// question face shortens its descriptions so every option fits — so it
-    /// is only ever cut by the cap past what that face can give up.
-    static func panelHeight(contentHeight: CGFloat, bandHeight: CGFloat, shrinks: Bool = false) -> CGFloat {
-        let floor = shrinks ? 0 : expandedSize.height
-        return min(panelMaxHeight, max(floor, contentInsets(bandHeight: bandHeight) + ceil(contentHeight)))
+    /// camera housing `bandHeight` tall. Never shorter than the standard
+    /// panel, never taller than the cap. A face fits its content to
+    /// `contentRoom` before it gets here — the question face shortens its
+    /// descriptions so every option fits — so it is only ever cut by the cap
+    /// past what that face can give up.
+    static func panelHeight(contentHeight: CGFloat, bandHeight: CGFloat) -> CGFloat {
+        min(panelMaxHeight, max(expandedSize.height, contentInsets(bandHeight: bandHeight) + ceil(contentHeight)))
     }
 
     /// The content area a face wanting `contentHeight` (nil: the standard
     /// panel) is laid out in: its panel's height less the content's insets.
-    static func contentAreaHeight(contentHeight: CGFloat?, bandHeight: CGFloat, shrinks: Bool = false) -> CGFloat {
-        let panel = contentHeight.map { panelHeight(contentHeight: $0, bandHeight: bandHeight, shrinks: shrinks) }
-            ?? expandedSize.height
+    static func contentAreaHeight(contentHeight: CGFloat?, bandHeight: CGFloat) -> CGFloat {
+        let panel = contentHeight.map { panelHeight(contentHeight: $0, bandHeight: bandHeight) } ?? expandedSize.height
         return panel - contentInsets(bandHeight: bandHeight)
     }
 

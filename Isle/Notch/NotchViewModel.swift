@@ -3259,30 +3259,11 @@ final class NotchViewModel: ObservableObject {
             if face == expandedPlace.face, let question = questionContentHeight(room: room) { return question }
             // A reply grown past one line takes the panel with it.
             let extra = face == expandedPlace.face && composing == .reply ? replyFieldExtra : 0
-            if claudeShrinks { return ClaudePanelLayout.bareStatusHeight + extra }
             return extra > 0 ? NotchMetrics.standardContentHeight(room: room) + extra : nil
         case .agenda: return min(room, AgendaLayout.contentHeight)
         case .shelf: return min(room, ShelfLayout.contentHeight(rows: shelfRows))
         case .music, .pomodoro: return nil
         }
-    }
-
-    /// The face asks for less than the standard panel (see
-    /// `NotchMetrics.panelHeight`): only the Claude face, when it's a status
-    /// with nothing to press.
-    func faceShrinks(_ face: IsleTab?) -> Bool {
-        face == .claude && claudeShrinks
-    }
-
-    /// The Claude face is a status with no action row — no terminal to jump
-    /// to, nothing to reply into — so it's its hero and meta alone, in a
-    /// panel that short.
-    private var claudeShrinks: Bool {
-        guard !sessionListShown, pendingRequest == nil else { return false }
-        // A turn in progress keeps its terminal on the meta line, and is
-        // short until it has a row to show.
-        if claudeTurnActive { return !claudeWorkHasRows }
-        return !claudeHasActions
     }
 
     /// A turn is in progress on the island's session, as its hooks said:
@@ -3296,6 +3277,7 @@ final class NotchViewModel: ObservableObject {
     /// headline names. Read by the face and the panel's height alike.
     var claudeWorkHasRows: Bool {
         if !claudeSubagents.isEmpty || claudeBlock != nil || !claudeQueued.isEmpty { return true }
+        if claudeTrail?.prompt != nil { return true }
         switch replyDelivery {
         case .sending, .sent: return true
         default: break
@@ -3576,12 +3558,39 @@ final class NotchViewModel: ObservableObject {
             live.insert(id)
             var trail = trails[id] ?? ClaudeTrail()
             trail.observe(phase: Self.trailPhase(status.state), action: status.action,
-                          target: status.target, toolActive: status.toolActive)
+                          target: status.target, toolActive: status.toolActive, at: status.updatedAt)
             trails[id] = trail
         }
         for id in trails.keys where !live.contains(id) { trails[id] = nil }
-        guard trails != claudeTrails else { return }
-        withAnimation(.easeOut(duration: 0.22)) { claudeTrails = trails }
+        if trails != claudeTrails {
+            withAnimation(.easeOut(duration: 0.22)) { claudeTrails = trails }
+        }
+        readTurnPrompts()
+    }
+
+    /// When each session's prompt read was last tried, so a turn whose
+    /// prompt isn't in the transcript yet is asked again on a later scan,
+    /// and no more than once a second.
+    private var promptReads: [String: Date] = [:]
+
+    /// Reads the prompt that started each running turn from its session's
+    /// transcript, for the trail's "You" row. Off the main thread.
+    private func readTurnPrompts() {
+        for (id, trail) in claudeTrails where trail.wantsPrompt {
+            if let last = promptReads[id], Date().timeIntervalSince(last) < 1 { continue }
+            guard let cwd = claudeSessions.first(where: { $0.sessionId == id })?.cwd else { continue }
+            promptReads[id] = Date()
+            let since = trail.turnStartedAt
+            Task { [weak self] in
+                let prompt = await Task.detached(priority: .utility) {
+                    ClaudeTrail.turnPrompt(in: Self.transcriptLines(cwd: cwd, sessionId: id), since: since)
+                }.value
+                guard let self, let prompt, self.claudeTrails[id]?.wantsPrompt == true,
+                      self.claudeTrails[id]?.turnStartedAt == since else { return }
+                withAnimation(.easeOut(duration: 0.22)) { self.claudeTrails[id]?.setPrompt(prompt) }
+            }
+        }
+        for id in promptReads.keys where claudeTrails[id] == nil { promptReads[id] = nil }
     }
 
     private static func trailPhase(_ state: ClaudeCodeState) -> ClaudeTrail.Phase {
@@ -4136,7 +4145,8 @@ extension NotchViewModel {
             for step in fixture.steps {
                 trail.observe(phase: .working, action: step.action, target: step.target, toolActive: false)
             }
-            claudeTrails = fixture.steps.isEmpty ? [:] : [id: trail]
+            trail.setPrompt(fixture.prompt)
+            claudeTrails = fixture.steps.isEmpty && fixture.prompt == nil ? [:] : [id: trail]
         }
         claudeBlock = fixture.blocked
         claudeLeftovers = fixture.left

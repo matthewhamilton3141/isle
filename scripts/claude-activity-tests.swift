@@ -191,5 +191,35 @@ trail.observe(phase: .working, action: "Read", target: "x", toolActive: false)
 trail.observe(phase: .working, action: "Read", target: "y", toolActive: false)
 check("\(ids(trail))", "true", "every step its own id, across turns")
 
+print("The turn's prompt, from the transcript")
+// Entries in the shape Claude Code 2.1.321 wrote them, newest first.
+func line(_ json: String) -> Data { Data(json.utf8) }
+func human(_ at: String, _ text: String) -> Data {
+    line(#"{"type":"user","timestamp":"2026-11-09T20:\#(at).000Z","origin":{"kind":"human"},"message":{"role":"user","content":"\#(text)"}}"#)
+}
+let toolResult = line(#"{"type":"user","timestamp":"2026-11-09T20:37:23.000Z","message":{"role":"user","content":[{"type":"tool_result","content":"42"}]}}"#)
+let queued = line(#"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-09T20:36:59.000Z","content":"Now reply BRAVO"}"#)
+let attachment = line(#"{"type":"attachment","timestamp":"2026-11-09T20:37:23.000Z","attachment":{"type":"queued_command","prompt":"Now reply BRAVO"}}"#)
+let started = ISO8601DateFormatter().date(from: "2026-11-09T20:36:50Z")!
+let lines = [attachment, toolResult, queued,
+             human("36:50", "Fix the race in the watcher.\\nThen add a test."),
+             human("30:00", "An older prompt")]
+check(ClaudeTrail.turnPrompt(in: lines, since: started) ?? "nil", "Fix the race in the watcher.",
+      "the prompt that started the turn, first line — not the one queued after it")
+check(ClaudeTrail.turnPrompt(in: lines, since: nil) ?? "nil", "Fix the race in the watcher.", "Isle launched mid-turn: the newest")
+let later = ISO8601DateFormatter().date(from: "2026-11-09T20:38:00Z")!
+check(ClaudeTrail.turnPrompt(in: lines, since: later) ?? "nil", "nil", "not yet written for this turn: nothing, not the last turn's")
+check(ClaudeTrail.turnPrompt(in: [human("36:50", "<command-name>/clear</command-name>")], since: nil) ?? "nil", "nil",
+      "a slash command isn't a prompt to show")
+var turn = ClaudeTrail()
+turn.observe(phase: .working, action: nil, target: nil, toolActive: false)
+check("\(turn.wantsPrompt)", "true", "a running turn wants its prompt")
+turn.setPrompt("Fix it")
+turn.observe(phase: .ended, action: nil, target: nil, toolActive: false)
+check("\(turn.wantsPrompt)", "false", "an ended turn doesn't")
+turn.observe(phase: .working, action: nil, target: nil, toolActive: false, at: later)
+check(turn.prompt ?? "nil", "nil", "the next turn starts without the last one's prompt")
+check("\(turn.turnStartedAt == later)", "true", "and knows when it started")
+
 print("\n\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

@@ -51,8 +51,26 @@ struct ClaudeTrail: Equatable {
     private var nextId = 0
     private var ended = false
 
-    /// Takes in one record of the session.
-    mutating func observe(phase: Phase, action: String?, target: String?, toolActive: Bool) {
+    /// The first line of the prompt that started this turn, once read from
+    /// the session's transcript (`turnPrompt`). Nil until it has been, and
+    /// cleared with the trail when a new turn starts.
+    private(set) var prompt: String?
+    /// When this turn started, as the first working record after the last
+    /// turn's end was written: what a prompt read from the transcript must
+    /// be at least as new as. Nil for a turn already running when the trail
+    /// was made (Isle launched mid-turn), when the newest prompt is the one.
+    private(set) var turnStartedAt: Date?
+
+    /// The turn is running and its prompt hasn't been read yet.
+    var wantsPrompt: Bool { !ended && prompt == nil }
+
+    mutating func setPrompt(_ prompt: String?) {
+        guard !ended else { return }
+        self.prompt = prompt
+    }
+
+    /// Takes in one record of the session, written at `at`.
+    mutating func observe(phase: Phase, action: String?, target: String?, toolActive: Bool, at: Date? = nil) {
         switch phase {
         case .ended:
             ended = true
@@ -63,6 +81,8 @@ struct ClaudeTrail: Equatable {
             if ended {
                 ended = false
                 steps.removeAll()
+                prompt = nil
+                turnStartedAt = at
             }
         }
         guard !toolActive, let activity = ClaudeActivity(action: action, target: target) else { return }
@@ -81,5 +101,52 @@ struct ClaudeTrail: Equatable {
         var recent = Array(steps.reversed())
         if let first = recent.first, first.activity == current { recent.removeFirst() }
         return Array(recent.prefix(max(0, limit)))
+    }
+
+    // MARK: - The turn's prompt
+
+    /// The first line of the prompt that started the turn, from a session's
+    /// transcript lines, newest first: the newest user entry a person typed
+    /// (`origin.kind == "human"`), at least as new as `since` (less a few
+    /// seconds: the transcript and the hook stamp the same moment from
+    /// different clocks). A prompt typed while Claude was working isn't one:
+    /// Claude Code files it as a `queue-operation` and hands it over as an
+    /// attachment, never as a user entry (measured, 2.1.321), so the newest
+    /// such entry is the turn's own. Slash commands and Claude Code's own
+    /// wrappers (text starting with "<") aren't a prompt to show. Nil when
+    /// there's none in reach — the trail then shows no prompt rather than a
+    /// guess.
+    static func turnPrompt(in lines: [Data], since: Date?) -> String? {
+        for line in lines {
+            guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                  object["type"] as? String == "user"
+            else { continue }
+            if let since, let stamp = object["timestamp"] as? String, let at = date(stamp),
+               at < since.addingTimeInterval(-3) {
+                return nil
+            }
+            guard let origin = object["origin"] as? [String: Any], origin["kind"] as? String == "human",
+                  let message = object["message"] as? [String: Any]
+            else { continue }
+            let content: String
+            if let string = message["content"] as? String {
+                content = string
+            } else if let blocks = message["content"] as? [[String: Any]] {
+                content = blocks.compactMap { $0["text"] as? String }.joined(separator: "\n")
+            } else {
+                continue
+            }
+            let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("<") else { return nil }
+            let first = trimmed.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? trimmed
+            return first.trimmingCharacters(in: .whitespaces)
+        }
+        return nil
+    }
+
+    private static func date(_ string: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: string) ?? ISO8601DateFormatter().date(from: string)
     }
 }

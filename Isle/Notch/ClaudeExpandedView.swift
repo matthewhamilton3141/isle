@@ -220,7 +220,14 @@ struct ClaudeExpandedView: View {
     }
 
     private var restingFace: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let bare = approval == nil && !viewModel.claudeHasActions
+        return VStack(alignment: .leading, spacing: 0) {
+            if bare {
+                // Nothing to press: the hero and its lines sit in the
+                // middle of the standard panel, not at its top over an
+                // empty foot.
+                Spacer(minLength: 0)
+            }
             hero
             Spacer().frame(height: L.heroGap)
             metaLine()
@@ -237,8 +244,6 @@ struct ClaudeExpandedView: View {
                     }
                 }
             } else {
-                // Nothing to press: the panel is the hero and the meta's
-                // height (`bareStatusHeight`), with no row held empty.
                 Spacer(minLength: 0)
             }
         }
@@ -316,6 +321,8 @@ struct ClaudeExpandedView: View {
         case queued(NotchViewModel.QueuedReply, more: Int)
         case block
         case delivery
+        /// The first line of the prompt that started the turn.
+        case prompt(String)
         /// A finished call; `age` 0 is the newest.
         case step(ClaudeTrail.Step, age: Int)
 
@@ -325,6 +332,7 @@ struct ClaudeExpandedView: View {
             case .queued(let reply, _): return "queued-\(reply.id)"
             case .block: return "block"
             case .delivery: return "delivery"
+            case .prompt: return "prompt"
             case .step(let step, _): return "step-\(step.id)"
             }
         }
@@ -360,9 +368,15 @@ struct ClaudeExpandedView: View {
             }
         }
         if viewModel.claudeBlock != nil { rows.append(.block) }
+        // The prompt that started the turn, as the oldest row: before the
+        // first step it fills the slots; as steps arrive it keeps its place
+        // (`promptRowStays`) or gives it up to them.
+        let prompt = viewModel.claudeTrail?.prompt
         let room = max(0, L.workSlots - rows.count)
-        let steps = viewModel.claudeTrail?.shown(current: viewModel.claudeActivity, limit: room) ?? []
+        let stepRoom = prompt != nil && L.promptRowStays ? max(0, room - 1) : room
+        let steps = viewModel.claudeTrail?.shown(current: viewModel.claudeActivity, limit: stepRoom) ?? []
         rows += steps.enumerated().map { WorkRow.step($0.element, age: $0.offset) }
+        if let prompt, rows.count < L.workSlots { rows.append(.prompt(prompt)) }
         return Array(rows.prefix(L.workSlots))
     }
 
@@ -408,6 +422,21 @@ struct ClaudeExpandedView: View {
             .lineLimit(1)
             .help("Typed into the terminal while Claude was working; it takes it at its next step")
             .accessibilityElement(children: .combine)
+        case .prompt(let text):
+            HStack(spacing: 6) {
+                rowSymbol("person.fill")
+                Text("You")
+                    .font(IsleType.metaStrong)
+                    .foregroundStyle(.islandSecondary(IsleType.Tone.secondary))
+                Text(text)
+                    .truncationMode(.tail)
+            }
+            .font(IsleType.meta)
+            .lineLimit(1)
+            .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
+            .help(text)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Your prompt: \(text)")
         case .block:
             blockLine
         case .delivery:
@@ -2040,7 +2069,11 @@ private struct ComposeField: View {
             .onKeyPress(keys: [.return], phases: .down) { press in
                 if press.modifiers.contains(.shift) || press.modifiers.contains(.option) {
                     if maxLines > 1 {
-                        NSApp.sendAction(#selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)), to: nil, from: nil)
+                        // To the field the key went to — the first responder
+                        // of the event's own window — rather than whichever
+                        // window AppKit counts as key right now.
+                        let field = NSApp.currentEvent?.window?.firstResponder
+                        NSApp.sendAction(#selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)), to: field, from: nil)
                     }
                     return .handled
                 }
