@@ -216,7 +216,7 @@ final class NotchWindowController {
             if let island = islands[id] {
                 island.screen = screen
                 island.presentation.metrics = metrics
-                island.window.setFrame(metrics.maximumFrame, display: false)
+                island.window.place(metrics.maximumFrame)
                 island.window.orderFrontRegardless()
             } else {
                 makeIsland(id: id, screen: screen, metrics: metrics)
@@ -249,7 +249,13 @@ final class NotchWindowController {
             .sink { [weak self] _ in self?.settingsPreview.released(id) }
             .store(in: &cancellables)
 
-        let window = NotchWindow(contentRect: metrics.maximumFrame)
+        let (window, hosting) = Self.makePanel(
+            viewModel: viewModel,
+            presentation: presentation,
+            metrics: metrics
+        ) { [weak self] rect in
+            self?.updateActiveRect(rect, on: id)
+        }
         // A two-finger swipe across an open face moves between faces.
         window.scrollInterceptor = { [weak presentation] event in
             presentation?.handleScroll(event) ?? false
@@ -257,26 +263,6 @@ final class NotchWindowController {
         // Files dragged onto the island open the drop face.
         window.registerForDraggedTypes([.fileURL])
         window.dropHandler = self
-        let hosting = NotchHostingView(
-            rootView: NotchRootView(viewModel: viewModel, island: presentation, glassLayer: .withoutMaterial) { [weak self] rect in
-                self?.updateActiveRect(rect, on: id)
-            }
-        )
-        // The glass material, in its own window under the panel, which never
-        // becomes key (see `IslandGlassLayer`). Sized by the window alone,
-        // like the panel's.
-        let glassHosting = NSHostingView(
-            rootView: NotchRootView(viewModel: viewModel, island: presentation, glassLayer: .materialOnly)
-        )
-        glassHosting.sizingOptions = []
-        window.attachGlass(glassHosting)
-        // The window is sized and placed by `maximumFrame` alone. Left to its
-        // defaults the hosting view also sizes it, to the SwiftUI content's
-        // ideal width (the 520pt panel), keeping the origin: with the side
-        // pad's 16pt on each side that took 32pt off the right and drew the
-        // whole island 16pt left of the camera, the collapsed pill's right
-        // cluster half under the housing.
-        hosting.sizingOptions = []
 
         // In the dictionary before the content view is set: SwiftUI can report
         // its first layout during the `contentView` assignment, and the
@@ -289,8 +275,46 @@ final class NotchWindowController {
         )
 
         window.contentView = hosting
-        window.setFrame(metrics.maximumFrame, display: false)
+        window.place(metrics.maximumFrame)
         window.orderFrontRegardless()
+    }
+
+    /// One screen's panel and its glass window, with their view trees, built
+    /// the one way Isle builds them — here, so scripts/test-island-windows.sh
+    /// checks exactly what runs. The panel's content view is left for the
+    /// caller to set (the controller registers the island first), and it
+    /// isn't placed or shown.
+    static func makePanel(
+        viewModel: NotchViewModel,
+        presentation: IslandPresentation,
+        metrics: NotchMetrics,
+        onActiveRectChange: @escaping (CGRect) -> Void
+    ) -> (NotchWindow, NotchHostingView<NotchRootView>) {
+        let window = NotchWindow(contentRect: metrics.maximumFrame)
+        let hosting = NotchHostingView(
+            rootView: NotchRootView(
+                viewModel: viewModel,
+                island: presentation,
+                glassLayer: .withoutMaterial,
+                onActiveRectChange: onActiveRectChange
+            )
+        )
+        // The window is sized and placed by `maximumFrame` alone
+        // (`NotchWindow.place`). Left to its defaults the hosting view also
+        // sizes it, to the SwiftUI content's ideal width (the 520pt panel),
+        // keeping the origin: with the side pad's 16pt on each side that took
+        // 32pt off the right and drew the whole island 16pt left of the
+        // camera, the collapsed pill's right cluster half under the housing.
+        hosting.sizingOptions = []
+        // The glass material, in its own window under the panel, which never
+        // becomes key (see `IslandGlassLayer`). Sized by the window alone,
+        // like the panel's.
+        let glassHosting = NSHostingView(
+            rootView: NotchRootView(viewModel: viewModel, island: presentation, glassLayer: .materialOnly)
+        )
+        glassHosting.sizingOptions = []
+        window.attachGlass(glassHosting)
+        return (window, hosting)
     }
 
     /// The screens to draw on, in the user's chosen scope.
