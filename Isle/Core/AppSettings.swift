@@ -47,6 +47,7 @@ final class AppSettings: ObservableObject {
     private static let showRemindersKey = "isle.showReminders"
     private static let eventLeadMinutesKey = "isle.eventLeadMinutes"
     private static let pomodoroEnabledKey = "isle.pomodoro.enabled"
+    private static let liveStripKey = "isle.liveStrip"
     private static let pomodoroFocusMinutesKey = "isle.pomodoro.focusMinutes"
     private static let pomodoroShortBreakMinutesKey = "isle.pomodoro.shortBreakMinutes"
     private static let pomodoroLongBreakMinutesKey = "isle.pomodoro.longBreakMinutes"
@@ -130,6 +131,14 @@ final class AppSettings: ObservableObject {
     /// Black and Fade ignore it (Fade is black around the camera already).
     @Published var panelNotchGlow: Bool {
         didSet { defaults.set(panelNotchGlow, forKey: Self.panelNotchGlowKey) }
+    }
+
+    /// The open island leads with its primary face — Claude, or with no
+    /// session the track or the timer — and a row of what else is live at
+    /// its foot: the track, the timer, the next event, the shelf (see
+    /// `LiveStrip`). Off, it opens where it was last left. On by default.
+    @Published var liveStrip: Bool {
+        didSet { defaults.set(liveStrip, forKey: Self.liveStripKey) }
     }
 
     // MARK: - Media controls (spec 3.4)
@@ -485,6 +494,7 @@ final class AppSettings: ObservableObject {
             ?? .builtIn
         panelBackground = PanelBackground.stored(defaults.string(forKey: Self.panelBackgroundKey))
         panelNotchGlow = defaults.object(forKey: Self.panelNotchGlowKey) as? Bool ?? true
+        liveStrip = defaults.object(forKey: Self.liveStripKey) as? Bool ?? true
         showScrubber = defaults.object(forKey: Self.showScrubberKey) as? Bool ?? true
         showShuffleRepeat = defaults.object(forKey: Self.showShuffleRepeatKey) as? Bool ?? true
         waveformSource = WaveformSource(rawValue: defaults.string(forKey: Self.waveformSourceKey) ?? "")
