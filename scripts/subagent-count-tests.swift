@@ -161,6 +161,15 @@ enum Tests {
         equal(S.counted(agents, sessionId: nil, live: live), [], "no session id to check: none")
         equal(S.counted(agents, sessionId: "alive", live: []), [], "a registry listing nobody vouches for nobody")
         equal(S.counted([], sessionId: "alive", live: live), [], "none running: none")
+
+        // The CLI's status words (2.1.317-2.1.319): `shell` is at the prompt
+        // with a background command running, so a reply may be typed there.
+        for (word, atPrompt) in [("idle", true), ("shell", true), ("busy", false), ("waiting", false), ("dialog", false)] {
+            let json = #"{"pid":\#(me),"sessionId":"alive","cwd":"/tmp/work","kind":"interactive","status":"\#(word)"}"#
+            try? Data(json.utf8).write(to: dir.appendingPathComponent("\(me).json"))
+            let status = ClaudeSessionRegistry.scan(dir).first?.status
+            equal(status?.isAtPrompt, atPrompt, "status \(word): at the prompt \(atPrompt)")
+        }
     }
 
     // MARK: - Session rows

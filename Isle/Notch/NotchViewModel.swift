@@ -577,7 +577,7 @@ final class NotchViewModel: ObservableObject {
         // fresh `working` record and puts a new user turn at the tail.
         if !tail.interrupted {
             guard !status.toolActive,
-                  session.status == .idle,
+                  session.status.isAtPrompt,
                   !tail.awaitingModel
             else {
                 return status
@@ -2849,7 +2849,7 @@ final class NotchViewModel: ObservableObject {
         // Read now, at the click: the CLI rewrites its record in place, and
         // only a fresh read says it is at its prompt.
         guard let fresh = sessionRegistry.currentSessions().first(where: { $0.sessionId == sessionId }),
-              fresh.status == .idle
+              fresh.status.isAtPrompt
         else {
             replyDelivery = .failed(text: text, reason: "Claude isn't at its prompt right now")
             return
