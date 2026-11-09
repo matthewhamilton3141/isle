@@ -74,5 +74,7 @@ enum IsleType {
     enum Tone {
         static let secondary: Double = 0.7
         static let meta: Double = 0.5
+        /// The oldest of a fading list: a working face's earliest step.
+        static let faint: Double = 0.35
     }
 }

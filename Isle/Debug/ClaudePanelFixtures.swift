@@ -51,6 +51,9 @@ struct ClaudePanelFixture: Identifiable {
     /// The record's `subagents` (Milestone 22): the running agents' types,
     /// oldest first.
     var subagents: [String] = []
+    /// The calls the turn has finished, oldest first, as the trail would
+    /// have taken them from the session's records (`ClaudeTrail`).
+    var steps: [Step] = []
     /// The record's `blocked` (Milestone 23): the last call auto mode
     /// blocked since the last prompt.
     var blocked: ClaudeBlock? = nil
@@ -82,6 +85,15 @@ struct ClaudePanelFixture: Identifiable {
     var toast: IslandToast? = nil
 
     var id: String { name }
+
+    struct Step {
+        var action: String
+        var target: String?
+        init(_ action: String, _ target: String? = nil) {
+            self.action = action
+            self.target = target
+        }
+    }
 
     /// The settings the fixture is drawn under, on an isolated store.
     @MainActor
@@ -384,7 +396,51 @@ extension ClaudePanelFixture {
             .init(name: "both_question_4", mode: .both, state: .needsQuestion, request: question([fourOptions])),
         ] + approvalKinds + descriptionModes + worstCases + liveExtras + jumpAndReply + doneSays + loneJump + subagentCounts + autoModeBlocks
             + doneLeftovers
-            + sessionLists + guardedApprovals + faceRow + usageLimits + wingFaces
+            + sessionLists + guardedApprovals + faceRow + usageLimits + wingFaces + workingFaces
+    }
+
+    // MARK: The working face's rows
+
+    /// A turn in progress with nothing, one, and three finished calls under
+    /// its headline; its agents running; thinking, compacting, a block and a
+    /// reply on its way — in `.both` with a terminal, as on a usual day.
+    static var workingFaces: [ClaudePanelFixture] {
+        let editing = Step("Edit", "/Users/matthew/Documents/isle/Isle/Notch/ClaudeExpandedView.swift")
+        let earlier = [
+            Step("Read", "/Users/matthew/Documents/isle/Isle/Notch/NotchMetrics.swift"),
+            Step("Grep", "activeRect"),
+            Step("Bash", "xcodebuild"),
+            Step("Read", "/Users/matthew/Documents/isle/Isle/Notch/ClaudePanelLayout.swift"),
+        ]
+        let others = [ownWorking, website, paletteLab]
+        func working(_ name: String, steps: [Step], subagents: [String] = [], action: String? = "Edit",
+                     target: String? = editing.target, state: ClaudeCodeState = .working,
+                     blocked: ClaudeBlock? = nil, delivery: ReplyDelivery = .none,
+                     mode: IsleMode = .both) -> ClaudePanelFixture {
+            .init(name: name, mode: mode, state: state, action: action, target: target, updatedAt: Date(),
+                  keepAwake: true, others: .init(working: 1, needYou: 1), host: terminalHost, delivery: delivery,
+                  subagents: subagents, steps: steps, blocked: blocked, sessions: others,
+                  sessionRequests: [websiteApproval])
+        }
+        return [
+            working("wk_steps0", steps: []),
+            working("wk_steps0_first_done", steps: [editing]),
+            working("wk_steps1", steps: [earlier[3], editing]),
+            working("wk_steps3", steps: earlier + [editing]),
+            working("wk_agents1", steps: earlier + [editing], subagents: ["Explore"]),
+            working("wk_agents3", steps: earlier + [editing], subagents: ["Explore", "Plan", "Explore"]),
+            working("wk_agents5", steps: earlier + [editing],
+                    subagents: ["Explore", "Plan", "general-purpose", "Explore", "feature-dev:code-reviewer"]),
+            working("wk_thinking", steps: [], action: nil, target: nil),
+            working("wk_thinking_midturn", steps: earlier, action: "Read", target: earlier[3].target),
+            working("wk_compacting", steps: earlier, action: nil, target: nil, state: .compacting),
+            working("wk_block", steps: earlier + [editing],
+                    blocked: shortBlock),
+            working("wk_sent", steps: earlier + [editing], action: nil, target: nil,
+                    delivery: .sent("Yes, and bump the version to 0.4.5 first")),
+            working("wk_claude_steps3", steps: earlier + [editing], mode: .claude),
+            working("wk_claude_steps0", steps: [], mode: .claude),
+        ]
     }
 
     // MARK: The wings beside the housing
