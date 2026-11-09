@@ -206,8 +206,18 @@ struct ClaudeExpandedView: View {
     /// with what it's about — the command to approve, what Claude said, what
     /// it's doing — then where and when, then the action row, which sits at
     /// the foot of the face on every status and approval so it's always
-    /// where the pointer left it.
+    /// where the pointer left it. A turn in progress has a face of its own
+    /// (`workingFace`).
+    @ViewBuilder
     private var statusFace: some View {
+        if viewModel.claudeTurnActive, approval == nil {
+            workingFace
+        } else {
+            restingFace
+        }
+    }
+
+    private var restingFace: some View {
         VStack(alignment: .leading, spacing: 0) {
             hero
             Spacer().frame(height: L.heroGap)
@@ -230,6 +240,201 @@ struct ClaudeExpandedView: View {
                 Spacer(minLength: 0)
             }
         }
+    }
+
+    // MARK: - Working face
+
+    /// A turn in progress: what Claude is doing now, then up to three rows
+    /// of what else is true of the turn — its agents running, a call auto
+    /// mode blocked, a reply on its way, and the calls it has finished, the
+    /// newest nearest — and at the foot the meta line with the session's
+    /// terminal at its end. Every row is from a hook's record; with none
+    /// yet (the turn just started, or Claude is thinking) the face is the
+    /// headline and the meta alone, in the short panel, and it grows to the
+    /// standard one when the first row arrives. The rows hold all three
+    /// slots from then on, so a step arriving moves nothing.
+    private var workingFace: some View {
+        let rows = workRows
+        return VStack(alignment: .leading, spacing: 0) {
+            hero
+            if viewModel.claudeWorkHasRows {
+                Spacer().frame(height: L.heroGap)
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(rows) { row in
+                        workRow(row)
+                            .frame(height: L.workRowHeight, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .transition(.asymmetric(
+                                insertion: .opacity.combined(with: .offset(y: -6)),
+                                removal: .opacity))
+                    }
+                }
+                .frame(height: CGFloat(L.workSlots) * L.workRowHeight, alignment: .top)
+                .animation(.easeOut(duration: 0.22), value: rows.map(\.id))
+            }
+            Spacer(minLength: L.heroGap)
+            HStack(spacing: 8) {
+                metaLine
+                jumpChip
+            }
+            .frame(height: L.chipHeight)
+            .padding(.bottom, L.bottomInset)
+        }
+    }
+
+    /// One row of the working face.
+    private enum WorkRow: Identifiable, Equatable {
+        /// A kind of agent running, how many, and on the last agent row
+        /// how many more aren't named.
+        case agents(type: String, count: Int, more: Int)
+        case block
+        case delivery
+        /// A finished call; `age` 0 is the newest.
+        case step(ClaudeTrail.Step, age: Int)
+
+        var id: String {
+            switch self {
+            case .agents(let type, _, _): return "agents-\(type)"
+            case .block: return "block"
+            case .delivery: return "delivery"
+            case .step(let step, _): return "step-\(step.id)"
+            }
+        }
+    }
+
+    /// The rows, in order of what matters now: a reply on its way, the
+    /// agents running (two rows at most, the rest as "+N more"), a call
+    /// auto mode blocked, then the finished calls in what room is left.
+    private var workRows: [WorkRow] {
+        var rows: [WorkRow] = []
+        switch viewModel.replyDelivery {
+        case .sending, .sent: rows.append(.delivery)
+        default: break
+        }
+        let running = viewModel.claudeSubagents
+        if !running.isEmpty {
+            let groups = Array(ClaudeSubagents.groups(running).prefix(L.agentRows))
+            let named = groups.reduce(0) { $0 + $1.count }
+            if groups.isEmpty {
+                // Agents whose type the hook didn't carry: counted, unnamed.
+                rows.append(.agents(type: "", count: running.count, more: 0))
+            }
+            for (index, group) in groups.enumerated() {
+                let last = index == groups.count - 1
+                rows.append(.agents(type: group.type, count: group.count, more: last ? running.count - named : 0))
+            }
+        }
+        if viewModel.claudeBlock != nil { rows.append(.block) }
+        let room = max(0, L.workSlots - rows.count)
+        let steps = viewModel.claudeTrail?.shown(current: viewModel.claudeActivity, limit: room) ?? []
+        rows += steps.enumerated().map { WorkRow.step($0.element, age: $0.offset) }
+        return Array(rows.prefix(L.workSlots))
+    }
+
+    @ViewBuilder
+    private func workRow(_ row: WorkRow) -> some View {
+        switch row {
+        case .agents(let type, let count, let more):
+            HStack(spacing: 6) {
+                rowSymbol("arrow.triangle.branch")
+                    .foregroundStyle(statusTint)
+                Text(agentName(type, count: count))
+                    .foregroundStyle(.white.opacity(0.85))
+                if count > 1, !type.isEmpty {
+                    Text("×\(count)").monospacedDigit()
+                        .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
+                }
+                if more > 0 {
+                    Text("· +\(more) more")
+                        .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
+                }
+            }
+            .font(IsleType.meta)
+            .lineLimit(1)
+            .help(ClaudeSubagents.lines(viewModel.claudeSubagents).first ?? "")
+            .accessibilityElement(children: .combine)
+        case .block:
+            blockLine
+        case .delivery:
+            HStack(spacing: 0) { deliveryRow }
+        case .step(let step, let age):
+            HStack(spacing: 6) {
+                rowSymbol(step.activity.symbolName)
+                Text(step.activity.pastPhrase)
+                    .truncationMode(.middle)
+            }
+            .font(IsleType.meta)
+            .lineLimit(1)
+            .foregroundStyle(.islandSecondary(Self.stepTones[min(age, Self.stepTones.count - 1)]))
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    /// The newest finished call in the body's tone, the older ones fading.
+    private static let stepTones: [Double] = [IsleType.Tone.secondary, IsleType.Tone.meta, IsleType.Tone.faint]
+
+    /// A row's symbol, in a fixed slot so the words line up.
+    private func rowSymbol(_ name: String) -> some View {
+        Image(systemName: name)
+            .font(.system(size: IsleType.Size.micro, weight: .semibold))
+            .frame(width: L.rowSymbolWidth)
+    }
+
+    /// "Explore agent", "Agent" for Claude Code's default kind, "2 agents"
+    /// for agents whose type the hook didn't carry.
+    private func agentName(_ type: String, count: Int) -> String {
+        if type.isEmpty { return "\(count) \(count == 1 ? "agent" : "agents")" }
+        if type == "general-purpose" { return "Agent" }
+        return "\(type) agent"
+    }
+
+    /// A reply on its way, as a row: sending, or sent and the turn it
+    /// started running.
+    @ViewBuilder
+    private var deliveryRow: some View {
+        switch viewModel.replyDelivery {
+        case .sending:
+            deliveryNote("Sending…", systemImage: "arrow.up.circle", tint: .white.opacity(0.6))
+        case .sent(let text):
+            deliveryNote("Sent", detail: text, systemImage: "checkmark.circle.fill", tint: .green)
+        default:
+            EmptyView()
+        }
+    }
+
+    /// The session's app, at the end of the working face's meta line: a
+    /// chip like the sessions chip, the way to the terminal while there's
+    /// nothing else to press.
+    @ViewBuilder
+    private var jumpChip: some View {
+        if viewModel.jumpAttaches {
+            chipButton("Attach in \(ClaudeLauncher.attachApp)", systemImage: "terminal") {
+                viewModel.jumpToSession()
+            }
+            .help("Open this background session in \(ClaudeLauncher.attachApp) (claude attach)")
+        } else if let target = viewModel.jumpTarget {
+            chipButton(target, systemImage: "arrow.up.forward.app") {
+                viewModel.jumpToSession()
+            }
+            .help("Show this session in \(target)")
+        }
+    }
+
+    private func chipButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .labelStyle(MetaLabelStyle())
+                .font(IsleType.metaStrong)
+                .foregroundStyle(.white.opacity(0.9))
+                .lineLimit(1)
+                .padding(.horizontal, 8)
+                .frame(height: L.chipHeight)
+                .background(Capsule().fill(.white.opacity(0.12)))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .accessibilityLabel(title)
     }
 
     /// The face's lead: the exact command on an approval; Claude's own words
@@ -264,7 +469,7 @@ struct ClaudeExpandedView: View {
         }
     }
 
-    /// Where, when, and what else: "isle · 2m ago", "isle · 3 agents ☕",
+    /// Where, when, and what else: "isle · 2m ago", "isle ☕",
     /// "isle · 4m ago  [Guarded]", "isle · Replying · esc to cancel". Gives
     /// way from the end, down to the project alone. A reply that didn't
     /// land takes the whole line.
@@ -296,7 +501,6 @@ struct ClaudeExpandedView: View {
     @ViewBuilder
     private func metaItems(full: Bool) -> some View {
         if full {
-            let agents = foldsAgents ? ClaudeSubagents.briefs(viewModel.claudeSubagents).last : nil
             HStack(spacing: 5) {
                 projectLabel
                 // A dot between items, never ahead of the first.
@@ -308,12 +512,6 @@ struct ClaudeExpandedView: View {
                 } else if viewModel.claudeUpdatedAt != nil, showsAge {
                     if showsProject { separator }
                     elapsed
-                }
-                if let agents {
-                    if showsProject || viewModel.composing == .reply
-                        || (viewModel.claudeUpdatedAt != nil && showsAge) { separator }
-                    Text(agents)
-                        .help(ClaudeSubagents.lines(viewModel.claudeSubagents).first ?? "")
                 }
                 if viewModel.isKeepingAwake {
                     keepAwakeCup

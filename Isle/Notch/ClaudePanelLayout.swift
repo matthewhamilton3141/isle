@@ -23,6 +23,12 @@
 //  action row sits at the foot of the face, so it's where the pointer left
 //  it whatever the body above holds.
 //
+//  A turn in progress swaps the meta and the action row for rows of its own
+//  (`workSlots` of them: the agents running, a block, a reply on its way,
+//  the calls it has finished) and puts the terminal at the meta line's end.
+//  With no row yet it's the short panel; with one, all the slots are held,
+//  so a row arriving never moves the panel.
+//
 //  The question face is the one that grows: the question and its options
 //  run the face's width, and the panel is sized from these same numbers
 //  before it's drawn (`questionContentHeight`, read by
@@ -172,6 +178,16 @@ enum ClaudePanelLayout {
     /// so opening the island grows the pill's mark and word into the wing.
     static let glyphSize: CGFloat = 16
     static let glyphGap: CGFloat = 7
+
+    /// The working face's rows under the headline (agents, a block, a reply
+    /// on its way, the finished calls): this many slots, held whole once
+    /// there's one row, so a row arriving moves nothing.
+    static let workSlots = 3
+    static let workRowHeight: CGFloat = 15
+    /// The most of the slots the agents take, the rest counted on the last.
+    static let agentRows = 2
+    /// A row's symbol, in a slot of its own.
+    static let rowSymbolWidth: CGFloat = 12
 
     /// The approval's command card.
     static let cardPadding = CGSize(width: 10, height: 6)

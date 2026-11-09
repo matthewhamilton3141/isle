@@ -81,5 +81,6 @@ hook "Running a command" $'  \n# only a comment' "no command at all"
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 cp "$ROOT/scripts/claude-activity-tests.swift" "$SCRATCH/main.swift"
-xcrun swiftc -swift-version 5 -O "$ROOT/Isle/Claude/ClaudeActivity.swift" "$SCRATCH/main.swift" -o "$SCRATCH/run"
+xcrun swiftc -swift-version 5 -O "$ROOT/Isle/Claude/ClaudeActivity.swift" "$ROOT/Isle/Claude/ClaudeTrail.swift" \
+  "$SCRATCH/main.swift" -o "$SCRATCH/run"
 "$SCRATCH/run" "$CASES"

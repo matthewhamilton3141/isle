@@ -150,6 +150,18 @@ final class NotchViewModel: ObservableObject {
     /// `ClaudeSubagents` for the line made of it.
     @Published private(set) var claudeSubagents: [String] = []
 
+    /// Each live session's trail: the calls its turn has finished, as its
+    /// records reported them (see `ClaudeTrail`). Kept from every scan, not
+    /// just the island's session's, so a session picked from the list or
+    /// taking the island arrives with its trail; dropped with the session's
+    /// record.
+    @Published private(set) var claudeTrails: [String: ClaudeTrail] = [:]
+
+    /// The island's session's trail.
+    var claudeTrail: ClaudeTrail? {
+        claudeSessionId.flatMap { claudeTrails[$0] }
+    }
+
     /// The last call auto mode blocked in the island's session since its
     /// last prompt (Milestone 23), as its record carries it. An event, not a
     /// state: it changes no headline, and the face says it in a line of its
@@ -1556,6 +1568,7 @@ final class NotchViewModel: ObservableObject {
             guard let self else { return }
             self.claudeStatuses = statuses
             self.announceBlocks(in: statuses)
+            self.followTrails(statuses)
             // Selection reads the registry's `status` and session ids, which
             // the CLI rewrites in place where the registry's watch can't see
             // it, so the read re-scans it: a snapshot left at `idle` from
@@ -3096,7 +3109,28 @@ final class NotchViewModel: ObservableObject {
     /// panel that short.
     private var claudeShrinks: Bool {
         guard !sessionListShown, pendingRequest == nil else { return false }
+        // A turn in progress keeps its terminal on the meta line, and is
+        // short until it has a row to show.
+        if claudeTurnActive { return !claudeWorkHasRows }
         return !claudeHasActions
+    }
+
+    /// A turn is in progress on the island's session, as its hooks said:
+    /// working or compacting, from a record rather than `claude agents`.
+    var claudeTurnActive: Bool {
+        !claudeStateFromAgent && (claudeState == .working || claudeState == .compacting)
+    }
+
+    /// The working face has a row under its headline: an agent running, a
+    /// block, a reply on its way, or a finished call other than the one the
+    /// headline names. Read by the face and the panel's height alike.
+    var claudeWorkHasRows: Bool {
+        if !claudeSubagents.isEmpty || claudeBlock != nil { return true }
+        switch replyDelivery {
+        case .sending, .sent: return true
+        default: break
+        }
+        return !(claudeTrail?.shown(current: claudeActivity, limit: 1).isEmpty ?? true)
     }
 
     /// The status face has an action row: the session's app to jump to or
@@ -3358,6 +3392,33 @@ final class NotchViewModel: ObservableObject {
     private var statusSlot: CGFloat {
         let width = Self.textWidth(collapsedStatusText)
         return width > 0 ? CollapsedSize.gap + width : 0
+    }
+
+    /// Feeds every session's record to its trail, and lets go of the trails
+    /// of sessions whose record is gone. A step arriving slides in on the
+    /// face, and the panel grows to seat the first one.
+    private func followTrails(_ statuses: [ClaudeStatus]) {
+        var trails = claudeTrails
+        var live = Set<String>()
+        for status in statuses where !status.fromAgent {
+            guard let id = status.sessionId, !id.isEmpty else { continue }
+            live.insert(id)
+            var trail = trails[id] ?? ClaudeTrail()
+            trail.observe(phase: Self.trailPhase(status.state), action: status.action,
+                          target: status.target, toolActive: status.toolActive)
+            trails[id] = trail
+        }
+        for id in trails.keys where !live.contains(id) { trails[id] = nil }
+        guard trails != claudeTrails else { return }
+        withAnimation(.easeOut(duration: 0.22)) { claudeTrails = trails }
+    }
+
+    private static func trailPhase(_ state: ClaudeCodeState) -> ClaudeTrail.Phase {
+        switch state {
+        case .working, .compacting: return .working
+        case .needsApproval, .needsQuestion: return .waiting
+        case .done, .idle, .waitingInput, .failed, .disconnected: return .ended
+        }
     }
 
     /// The current tool call as a display model, used by the expanded "what it's
@@ -3899,6 +3960,13 @@ extension NotchViewModel {
         replyDelivery = fixture.delivery
         claudeFinalLine = ClaudeDoneLine.line(from: fixture.lastMessage)
         claudeSubagents = fixture.subagents
+        if let id = claudeSessionId {
+            var trail = ClaudeTrail()
+            for step in fixture.steps {
+                trail.observe(phase: .working, action: step.action, target: step.target, toolActive: false)
+            }
+            claudeTrails = fixture.steps.isEmpty ? [:] : [id: trail]
+        }
         claudeBlock = fixture.blocked
         claudeLeftovers = fixture.left
         if let toast = fixture.toast { pinPreviewToast(toast) }
