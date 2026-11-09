@@ -74,10 +74,10 @@ enum IslandGlass {
 
     /// How much of the way from the band's foot to the bottom edge the ease
     /// takes, as a fraction: past it the shade is the end tint all the way
-    /// down. Most of the way, so the glass shows in the lower part of the
-    /// panel, round the action row, and a tall panel stays dark through its
-    /// middle rather than opening onto whatever is behind it. Tune here.
-    static let fadeReach: Double = 0.7
+    /// down. Half, so the lower half of the panel is plainly glass rather
+    /// than still on its way there; the content keeps its dark from the
+    /// scrim. Tune here.
+    static let fadeReach: Double = 0.5
 
     /// The ease from the band to the end tint, `t` 0 at the band's foot
     /// and 1 where it ends (`fadeReach` of the way down): smoothstep, so it

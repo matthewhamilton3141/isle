@@ -67,7 +67,7 @@ do {
     check(near(a(height), IslandGlass.fadeEndTint), "the end tint at the bottom edge")
     let reach = IslandGlass.fadeReach
     let easeEnd = band + (height - band) * CGFloat(reach)
-    check(reach >= 0.6 && reach <= 0.8, "the ease takes most of the way down, leaving glass round the action row", "\(reach)")
+    check(reach >= 0.4 && reach <= 0.8, "the ease takes a good part of the way down", "\(reach)")
     check(near(a(band + (easeEnd - band) / 2), 1 - (1 - IslandGlass.fadeEndTint) / 2), "half way down the ease, half way to the end tint")
     check(near(a(easeEnd), IslandGlass.fadeEndTint) && near(a((easeEnd + height) / 2), IslandGlass.fadeEndTint),
           "past the ease's reach, the end tint all the way down")
