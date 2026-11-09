@@ -75,7 +75,7 @@ enum SettingsPreviewTests {
         for c in [Change.showCalendarEvents, .showReminders, .eventLeadMinutes] {
             equal(c.face, .agenda, "\(c.rawValue): the agenda")
         }
-        for c in [Change.mode, .panelBackground, .panelNotchGlow, .liveStrip, .claudeAccent, .claudeAccentHex] {
+        for c in [Change.mode, .panelBackground, .panelNotchGlow, .claudeAccent, .claudeAccentHex] {
             equal(c.face, nil, "\(c.rawValue): whatever face is up (it shows on every one)")
         }
     }

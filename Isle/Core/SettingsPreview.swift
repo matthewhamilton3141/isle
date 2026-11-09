@@ -40,7 +40,6 @@ enum SettingsPreviewChange: String, CaseIterable, Equatable {
     case mode
     case panelBackground
     case panelNotchGlow
-    case liveStrip
     case claudeAccent
     case claudeAccentHex
     // Music
@@ -64,7 +63,7 @@ enum SettingsPreviewChange: String, CaseIterable, Equatable {
     /// The face it's about, or nil for one that shows on every face.
     var face: IsleTab? {
         switch self {
-        case .mode, .panelBackground, .panelNotchGlow, .liveStrip, .claudeAccent, .claudeAccentHex:
+        case .mode, .panelBackground, .panelNotchGlow, .claudeAccent, .claudeAccentHex:
             return nil
         case .showScrubber, .showShuffleRepeat, .waveformSource:
             return .music
@@ -165,7 +164,6 @@ extension AppSettings {
             watch($mode, .mode),
             watch($panelBackground, .panelBackground),
             watch($panelNotchGlow, .panelNotchGlow),
-            watch($liveStrip, .liveStrip),
             watch($claudeAccent, .claudeAccent),
             watch($claudeAccentHex, .claudeAccentHex),
             watch($showScrubber, .showScrubber),

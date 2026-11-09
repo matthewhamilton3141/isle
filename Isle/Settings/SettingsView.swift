@@ -338,10 +338,6 @@ struct SettingsView: View {
             if settings.panelBackground.growsNotchGlow {
                 toggleRow("Glow from the notch", notchGlowCaption, isOn: $settings.panelNotchGlow)
             }
-
-            toggleRow("Live strip",
-                      "Opens on Claude, or the track or timer with no session, with the rest of what's live in a row underneath: the track, the timer, the next event, the shelf.",
-                      isOn: $settings.liveStrip)
         }
     }
 

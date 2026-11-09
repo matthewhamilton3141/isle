@@ -96,25 +96,6 @@ final class NotchViewModel: ObservableObject {
     /// still grabs the Claude face once.
     private var tabOverriddenDuringAlert = false
 
-    // MARK: Live strip (the rest is in NotchViewModel+LiveStrip.swift)
-
-    /// The user went somewhere other than the primary face during this open
-    /// — a chip, a swipe, Home. Cleared when the panel closes, so the next
-    /// open is the primary face and its strip again.
-    var leftPrimary = false
-    /// What this open settled on (`LiveStrip.hold`); nil while closed. Not
-    /// published: it only ever settles on what's already drawn.
-    var stripHold: LiveStrip.Hold?
-    /// Open panels showing content (one per island that's open).
-    var stripOpenPanels = 0
-    /// The agenda chip's clock while a panel is open, on the minute.
-    @Published var stripMinute = Date()
-    var stripTicker: Timer?
-
-    /// The island opens to its primary face with the live strip under it
-    /// (Settings → Appearance → Live strip). Only with a second face to show.
-    var liveStripEnabled: Bool { settings.liveStrip && availableTabs.count > 1 }
-
     /// Claude Code state from the hook bridge, driven by `ClaudeStatusWatcher`.
     /// Stays `.disconnected` when the active mode doesn't show Claude, or when
     /// there's no live session.
@@ -3228,8 +3209,6 @@ final class NotchViewModel: ObservableObject {
             return .face(.claude)
         }
         guard tabs.count > 1 else { return .face(tabs.first ?? .music) }
-        // The live strip's island opens to its primary face (see `LiveStrip`).
-        if let primary = stripPrimaryPlace { return primary }
         if isHome { return .home }
         if tabs.contains(activeTab) { return .face(activeTab) }
         return .home
@@ -3271,11 +3250,10 @@ final class NotchViewModel: ObservableObject {
         return faceContentHeight(of: face, room: room)
     }
 
-    /// The content height `face` wants for itself, whether or not it's the
-    /// face on screen — for the pager, which lays the face coming in beside
-    /// the current one out at its own height (see `FaceCarousel`). The live
-    /// strip under it is added by `faceContentHeight(of:room:)`.
-    func faceOwnContentHeight(of face: IsleTab, room: CGFloat) -> CGFloat? {
+    /// The content height `face` wants, whether or not it's the face on
+    /// screen — for the pager, which lays the face coming in beside the
+    /// current one out at its own height (see `FaceCarousel`).
+    func faceContentHeight(of face: IsleTab, room: CGFloat) -> CGFloat? {
         switch face {
         case .claude:
             if face == expandedPlace.face, let question = questionContentHeight(room: room) { return question }
@@ -3369,7 +3347,6 @@ final class NotchViewModel: ObservableObject {
     /// alert.
     func selectTab(_ tab: IsleTab) {
         if hasLiveActivity { tabOverriddenDuringAlert = true }
-        leftPrimary = tab != stripPrimaryFace
         activeTab = tab
         isHome = false
         // The changes publish, but publish explicitly too: if the tap
@@ -3382,7 +3359,6 @@ final class NotchViewModel: ObservableObject {
     /// rule as `selectTab`: during an alert, Home sticks.
     func selectHome() {
         if hasLiveActivity { tabOverriddenDuringAlert = true }
-        leftPrimary = true
         isHome = true
         objectWillChange.send()
     }
