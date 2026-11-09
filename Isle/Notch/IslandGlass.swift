@@ -13,8 +13,7 @@
 //    outward, wider sideways than down.
 //  - The tints laid over the system material, one per mode.
 //  - Fade's shade: solid black over a band as deep as the notch and a little
-//    more, then easing to a light tint at the panel's bottom edge, over the
-//    clear glass rather than the frosted.
+//    more, then easing to a light tint most of the way down.
 //  - Fade's lens: a soft dark scrim behind the content that leaves a rim of
 //    lighter glass round the sides and bottom, a specular line on that rim,
 //    and a thin band of spectral light along the bottom edge — in the
@@ -61,12 +60,10 @@ enum IslandGlass {
     /// below the housing never shows a glass seam. Tune here.
     static let fadeBandExtra: CGFloat = 8
 
-    /// Black left over the glass at the panel's bottom edge, where the fade
-    /// ends, across the panel's full width: what the rim sees. Fade is drawn
-    /// on the clear glass, which is lighter than the frosted under Glass and
-    /// Smoked, but light is the point here: the rim is where the glass
-    /// should read as glass. The content gets its darkness from the scrim
-    /// on top (`fadeScrim`). Tune here.
+    /// Black left over the glass where the fade ends, across the panel's
+    /// full width: what the rim sees. Lighter than Glass's flat tint, since
+    /// the rim is where Fade should read as glass; the content gets its
+    /// darkness from the scrim on top (`fadeScrim`). Tune here.
     static let fadeEndTint: Double = 0.14
 
     /// The solid band's depth for a camera housing (or content band)
@@ -77,10 +74,10 @@ enum IslandGlass {
 
     /// How much of the way from the band's foot to the bottom edge the ease
     /// takes, as a fraction: past it the shade is the end tint all the way
-    /// down. Half, so the lower half of the panel is plainly glass rather
-    /// than still on its way there; the content keeps its dark from the
-    /// scrim. Tune here.
-    static let fadeReach: Double = 0.5
+    /// down. Most of the way, so the glass shows in the lower part of the
+    /// panel, round the action row, and a tall panel stays dark through its
+    /// middle rather than opening onto whatever is behind it. Tune here.
+    static let fadeReach: Double = 0.7
 
     /// The ease from the band to the end tint, `t` 0 at the band's foot
     /// and 1 where it ends (`fadeReach` of the way down): smoothstep, so it
@@ -140,7 +137,7 @@ enum IslandGlass {
     /// rim. Tune here.
     static let fadeScrimFeather: CGFloat = 5
 
-    /// Black over the clear glass where the content sits, once the shade's
+    /// Black over the glass where the content sits, once the shade's
     /// ease has all but flattened: the shade's end tint and the scrim
     /// composited.
     static var fadeContentAlpha: Double { over(fadeEndTint, fadeScrim) }

@@ -12,8 +12,7 @@
 //    specular rim and the spectral glint along the bottom edge, which take
 //    the current cover's colours while a track is up (`FadeLight`), and
 //    the sweep that runs along the rim once as the island opens.
-//  - The material: Liquid Glass on macOS 26 (the frosted variant for Glass
-//    and Smoked, the clear one for Fade), an `NSVisualEffectView` behind
+//  - The material: Liquid Glass on macOS 26, an `NSVisualEffectView` behind
 //    the window on 14 and 15. Both are window-server effects — an offscreen
 //    render draws neither — and both are forced dark, so the white content
 //    stays readable whatever the light/dark setting.
@@ -128,7 +127,7 @@ private struct IslandGlassBlend: View, Animatable {
     var body: some View {
         ZStack(alignment: .top) {
             if IslandGlass.showsGlass(progress: progress) {
-                IslandGlassMaterial(shape: shape, clear: background == .fade)
+                IslandGlassMaterial(shape: shape)
                     .overlay(alignment: .top) { IslandGlassShade(background: background, bandHeight: bandHeight) }
                     .overlay(alignment: .top) {
                         if background == .fade {
@@ -192,7 +191,7 @@ private enum FadeStops {
 }
 
 /// Fade's lens, drawn over its shade and under the content: what makes the
-/// clear glass below the band read as a piece of glass rather than a tinted
+/// glass below the band read as a piece of glass rather than a tinted
 /// window.
 ///
 /// - The scrim: black behind the content (`IslandGlass.fadeScrim`), inset
@@ -507,26 +506,25 @@ private enum NotchGlowImage {
 /// desktop — the panel usually sits over app windows, and the material
 /// reads whatever is really there.
 ///
-/// Fade asks for Liquid Glass's clear variant, which lets more of what's
-/// behind through, its colour and light, than the frosted `.regular` under
-/// Glass and Smoked. It still softens it on macOS: it isn't the sharp lens
-/// of the iPhone's island. It is never tinted through `Glass.tint` — black
-/// there lightens the glass to grey rather than darkening it — so the
-/// shade over it does that. Not `.interactive()`: the panel is a surface
-/// with buttons on it, not a control, and shouldn't flex under a click.
-/// Before 26 there's no clear variant: the HUD material is already about
-/// as light as the clear glass, and Fade's lens is drawn over it the same.
+/// The frosted `.regular` variant in every mode, Fade included. Fade was
+/// briefly on `.clear`, which passes far more of what's behind — over a
+/// white page about twice the light — and with text, video or a scrolling
+/// page under the panel that read as busy, competing with Isle's own text.
+/// The frosted glass keeps the backdrop's colour and leaves its detail
+/// behind; Fade's rim, glint and sweep are what make it read as glass.
+/// It is never tinted through `Glass.tint` — black there lightens the glass
+/// to grey rather than darkening it — so the shade over it does that. Not
+/// `.interactive()`: the panel is a surface with buttons on it, not a
+/// control, and shouldn't flex under a click.
 private struct IslandGlassMaterial: View {
     /// The outline, so Liquid Glass's rim follows it. The fill clips to it
     /// as well, which is what holds the edge exact while it moves.
     var shape: NotchShape
-    /// Liquid Glass's clear variant rather than the frosted.
-    var clear: Bool = false
 
     var body: some View {
         if #available(macOS 26.0, *) {
             Color.clear
-                .glassEffect(clear ? .clear : .regular, in: shape)
+                .glassEffect(.regular, in: shape)
                 .environment(\.colorScheme, .dark)
         } else {
             IslandVisualEffect()

@@ -67,12 +67,12 @@ do {
     check(near(a(height), IslandGlass.fadeEndTint), "the end tint at the bottom edge")
     let reach = IslandGlass.fadeReach
     let easeEnd = band + (height - band) * CGFloat(reach)
-    check(reach >= 0.4 && reach <= 1, "the ease takes a good part of the way down", "\(reach)")
+    check(reach >= 0.6 && reach <= 0.8, "the ease takes most of the way down, leaving glass round the action row", "\(reach)")
     check(near(a(band + (easeEnd - band) / 2), 1 - (1 - IslandGlass.fadeEndTint) / 2), "half way down the ease, half way to the end tint")
     check(near(a(easeEnd), IslandGlass.fadeEndTint) && near(a((easeEnd + height) / 2), IslandGlass.fadeEndTint),
           "past the ease's reach, the end tint all the way down")
-    // Fade is clear glass: the shade's end is lighter than Glass's flat tint
-    // over the frosted, so the rim reads as glass…
+    // The shade's end is lighter than Glass's flat tint, so the rim reads
+    // as glass…
     check(IslandGlass.fadeEndTint < IslandGlass.glassTint, "the end tint is lighter than Glass's", "\(IslandGlass.fadeEndTint)")
     // …and the content gets its dark from the scrim: with it, the content
     // sits on more black than Glass gives it, short of Smoked's.
