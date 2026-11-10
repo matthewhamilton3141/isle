@@ -310,7 +310,80 @@ final class NotchViewModel: ObservableObject {
     /// Which text field is taking keys, if any. The window controller makes
     /// the panel key exactly while this is set, and hands focus back the
     /// moment it clears — see `NotchWindowController.observeComposing`.
-    @Published private(set) var composing: ComposeKind?
+    @Published private(set) var composing: ComposeKind? {
+        didSet {
+            // The reply's field let go — sent, Esc, or focus went elsewhere:
+            // what changed while it held the face still lands now.
+            if oldValue == .reply, composing != .reply { thawClaudeFace() }
+        }
+    }
+
+    // MARK: Holding the face still while a reply is written
+
+    /// The Claude face holds still while the reply field has the keys: a
+    /// face that changes under the pointer — rows sliding in, the headline
+    /// changing, Done swapping in for the working face, another session
+    /// taking the island — throws off what's being typed. What arrives is
+    /// kept, the latest of each, and applied once when the field lets go
+    /// (`thawClaudeFace`). Only the field itself grows meanwhile. The
+    /// draft is never touched by any of it.
+    var claudeFaceFrozen: Bool { composing == .reply }
+
+    /// The latest status that arrived while the face was held, and whether
+    /// it would have announced itself.
+    private var heldStatus: (status: ClaudeStatus, announce: Bool)?
+    /// The trails as they stood when the face was last allowed to move.
+    private var heldTrails: [String: ClaudeTrail]?
+    /// Something held back says Claude needs the user — a permission prompt
+    /// or a question — so the face says so, without moving, and switches to
+    /// it once the reply is sent or put away.
+    @Published private(set) var claudeNeedsYouWhileComposing = false
+    /// Why Return didn't send: a prompt is up in this session's terminal,
+    /// where the text would answer it. The field and the draft stay.
+    @Published private(set) var replyRefusal: String?
+    /// Held back: the eased revert to Ready, a request to refresh, queued
+    /// rows Claude has taken.
+    private var heldIdleRevert = false
+    private var heldRequestRefresh = false
+    private var heldQueueRemovals: [(session: String, id: UUID)] = []
+
+    private func noteHeldNeedsYou(_ state: ClaudeCodeState) {
+        if state.isAttention, !claudeNeedsYouWhileComposing { claudeNeedsYouWhileComposing = true }
+    }
+
+    /// Applies what the face held back while the reply was written, once,
+    /// with the usual animations.
+    private func thawClaudeFace() {
+        claudeNeedsYouWhileComposing = false
+        replyRefusal = nil
+        if let trails = heldTrails {
+            heldTrails = nil
+            if trails != claudeTrails { withAnimation(.easeOut(duration: 0.22)) { claudeTrails = trails } }
+        }
+        if let held = heldStatus {
+            heldStatus = nil
+            applyClaudeStatus(held.status, announce: held.announce)
+        } else if heldIdleRevert {
+            heldIdleRevert = false
+            scheduleIdleRevert(after: 0)
+        }
+        heldIdleRevert = false
+        if heldRequestRefresh {
+            heldRequestRefresh = false
+            refreshPendingRequest()
+        }
+        let removals = heldQueueRemovals
+        heldQueueRemovals = []
+        if !removals.isEmpty {
+            withAnimation(.easeOut(duration: 0.22)) {
+                for removal in removals {
+                    queuedReplies[removal.session]?.removeAll { $0.id == removal.id }
+                    if queuedReplies[removal.session]?.isEmpty == true { queuedReplies[removal.session] = nil }
+                }
+            }
+        }
+        readTurnPrompts()
+    }
 
     /// Reply drafts by session id, so text typed for one session never goes
     /// to another when the island moves on — it waits for its own session.
@@ -1389,7 +1462,7 @@ final class NotchViewModel: ObservableObject {
         workingWord = Self.workingWords[workingWordIndex]
         let timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self else { return }
+                guard let self, !self.claudeFaceFrozen else { return }
                 self.workingWordIndex = (self.workingWordIndex + 1) % Self.workingWords.count
                 withAnimation(.easeInOut(duration: 0.3)) {
                     self.workingWord = Self.workingWords[self.workingWordIndex]
@@ -2008,6 +2081,13 @@ final class NotchViewModel: ObservableObject {
     /// counts as already seen, so the panel doesn't pop open for it.
     private func applyClaudeStatus(_ status: ClaudeStatus, announce: Bool = true) {
         guard status != lastAppliedStatus else { return }
+        if claudeFaceFrozen {
+            // Held until the reply's field lets go; the latest wins, and an
+            // announcement held back is still made then.
+            heldStatus = (status, announce || (heldStatus?.announce ?? false))
+            noteHeldNeedsYou(status.state)
+            return
+        }
         lastAppliedStatus = status
 
         doneRevertTask?.cancel()
@@ -2137,6 +2217,11 @@ final class NotchViewModel: ObservableObject {
             guard !Task.isCancelled, let self else { return }
             guard self.pendingRequest == nil else {
                 self.doneRevertTask = nil
+                return
+            }
+            if self.claudeFaceFrozen {
+                self.doneRevertTask = nil
+                self.heldIdleRevert = true
                 return
             }
             // Idle is quiescent — nothing left to re-select for, unless a
@@ -2509,6 +2594,13 @@ final class NotchViewModel: ObservableObject {
     /// Re-derives `pendingRequest` from the status's request id and the
     /// requests on disk. Called whenever either side moves.
     private func refreshPendingRequest() {
+        if claudeFaceFrozen {
+            // A request taking the face would take the field with it: it
+            // waits, and the face says Claude needs you.
+            heldRequestRefresh = true
+            if claudeRequests.contains(where: { $0.sessionId == claudeSessionId }) { claudeNeedsYouWhileComposing = true }
+            return
+        }
         let match = claudeRequests.first { request in
             guard request.id == claudeRequestId else { return false }
             // The id is session-scoped already; this just refuses to show one
@@ -2913,6 +3005,13 @@ final class NotchViewModel: ObservableObject {
         let text = Self.replyText(replyDraft)
         guard !text.isEmpty, let session = selectedSession else { return }
         if case .sending = replyDelivery { return }
+        // A prompt has come up in this session's terminal while the reply
+        // was written: typed now, it would answer that. The field stays
+        // open with the draft in it, and says why.
+        if replyReadiness(session.sessionId) == false {
+            replyRefusal = "Claude is asking something in \(sessionHost?.app?.name ?? "its terminal") — answer it first (esc)"
+            return
+        }
         composing = nil
         let id = session.sessionId
         // Out of the field now: it's sending, or comes back with the reason
@@ -3047,6 +3146,10 @@ final class NotchViewModel: ObservableObject {
             }
             guard let self else { return }
             self.queueWatches[entry.id] = nil
+            if self.claudeFaceFrozen {
+                self.heldQueueRemovals.append((id, entry.id))
+                return
+            }
             withAnimation(.easeOut(duration: 0.22)) {
                 self.queuedReplies[id]?.removeAll { $0.id == entry.id }
                 if self.queuedReplies[id]?.isEmpty == true { self.queuedReplies[id] = nil }
@@ -3562,6 +3665,10 @@ final class NotchViewModel: ObservableObject {
             trails[id] = trail
         }
         for id in trails.keys where !live.contains(id) { trails[id] = nil }
+        if claudeFaceFrozen {
+            heldTrails = trails
+            return
+        }
         if trails != claudeTrails {
             withAnimation(.easeOut(duration: 0.22)) { claudeTrails = trails }
         }
@@ -3576,6 +3683,7 @@ final class NotchViewModel: ObservableObject {
     /// Reads the prompt that started each running turn from its session's
     /// transcript, for the trail's "You" row. Off the main thread.
     private func readTurnPrompts() {
+        guard !claudeFaceFrozen else { return }
         for (id, trail) in claudeTrails where trail.wantsPrompt {
             if let last = promptReads[id], Date().timeIntervalSince(last) < 1 { continue }
             guard let cwd = claudeSessions.first(where: { $0.sessionId == id })?.cwd else { continue }
@@ -3585,7 +3693,7 @@ final class NotchViewModel: ObservableObject {
                 let prompt = await Task.detached(priority: .utility) {
                     ClaudeTrail.turnPrompt(in: Self.transcriptLines(cwd: cwd, sessionId: id), since: since)
                 }.value
-                guard let self, let prompt, self.claudeTrails[id]?.wantsPrompt == true,
+                guard let self, let prompt, !self.claudeFaceFrozen, self.claudeTrails[id]?.wantsPrompt == true,
                       self.claudeTrails[id]?.turnStartedAt == since else { return }
                 withAnimation(.easeOut(duration: 0.22)) { self.claudeTrails[id]?.setPrompt(prompt) }
             }
@@ -4099,6 +4207,18 @@ extension NotchViewModel {
     /// After `applyTestReading`, which is what turns the bridge on.
     func applyTestAgents(_ agents: [ClaudeAgent]) {
         receiveAgents(agents)
+    }
+
+    /// A record arriving from the watcher, through the same path a real
+    /// one takes — for tests of what the face does with it.
+    func previewReceive(_ status: ClaudeStatus) {
+        applyClaudeStatus(status)
+        followTrails([status])
+    }
+
+    /// The trail's steps, as a scan would deliver them, for tests.
+    func previewReceiveTrail(_ status: ClaudeStatus) {
+        followTrails([status])
     }
 
     func applyPreviewFixture(_ fixture: ClaudePanelFixture) {

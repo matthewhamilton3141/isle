@@ -439,6 +439,9 @@ extension ClaudePanelFixture {
             reply("rp_locked_approval", state: .needsApproval, steps: [], action: "Bash", target: "npm"),
             reply("rp_locked_question", state: .needsQuestion, steps: [], action: nil, target: nil),
             reply("rp_claude_typing3", composing: true, draft: three, mode: .claude),
+            // An alert that opened the panel on its own, on a terminal Isle
+            // can type into.
+            reply("rp_failed", state: .failed, steps: [], action: nil, target: nil),
         ]
     }
 

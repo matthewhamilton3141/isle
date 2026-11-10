@@ -84,6 +84,12 @@ struct ClaudeExpandedView: View {
             guard viewModel.composing == nil else { return }
             island.dismissAlert()
         }
+        // While a reply is being written the face holds still; what Claude
+        // needs meanwhile is said here, over the face's top-right corner,
+        // without moving anything.
+        .overlay(alignment: .topTrailing) {
+            composeNotice
+        }
         // The wings: raised out of the face's box into the housing band,
         // either side of the camera, the way the album rises beside it on
         // the Music face. An overlay, so they never move the body.
@@ -98,6 +104,34 @@ struct ClaudeExpandedView: View {
                 .foregroundStyle(.white)
                 .animation(.easeInOut(duration: 0.22), value: listing)
         }
+    }
+
+    // MARK: - While a reply is written
+
+    @ViewBuilder
+    private var composeNotice: some View {
+        if let refusal = viewModel.replyRefusal {
+            notice(refusal, tint: Self.lifted(stateColor(.warning)))
+        } else if viewModel.claudeNeedsYouWhileComposing {
+            notice("Claude needs you — finish, or esc", tint: Self.lifted(stateColor(.warning)))
+        }
+    }
+
+    private func notice(_ text: String, tint: Color) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(tint).frame(width: 6, height: 6)
+            Text(text)
+                .lineLimit(1)
+        }
+        .font(IsleType.metaStrong)
+        .foregroundStyle(.white.opacity(0.9))
+        .padding(.horizontal, 8)
+        .frame(height: L.chipHeight)
+        .background(Capsule().fill(Color(white: 0.12)))
+        .overlay(Capsule().inset(by: 0.5).stroke(tint.opacity(0.5), lineWidth: 1))
+        .fixedSize()
+        .transition(.opacity)
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: - Wings
@@ -2048,6 +2082,8 @@ private struct ComposeField: View {
     let onCancel: () -> Void
 
     @FocusState private var focused: Bool
+    /// The window the field is in, for Shift-Return's newline.
+    @State private var window = WindowReference()
 
     private var isEmpty: Bool {
         text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -2069,11 +2105,10 @@ private struct ComposeField: View {
             .onKeyPress(keys: [.return], phases: .down) { press in
                 if press.modifiers.contains(.shift) || press.modifiers.contains(.option) {
                     if maxLines > 1 {
-                        // To the field the key went to — the first responder
-                        // of the event's own window — rather than whichever
-                        // window AppKit counts as key right now.
-                        let field = NSApp.currentEvent?.window?.firstResponder
-                        NSApp.sendAction(#selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)), to: field, from: nil)
+                        // Into this field's own editor — the first responder
+                        // of the window it's in — never whichever window
+                        // AppKit counts as key just then.
+                        (window.window?.firstResponder as? NSTextView)?.insertNewlineIgnoringFieldEditor(nil)
                     }
                     return .handled
                 }
@@ -2109,6 +2144,7 @@ private struct ComposeField: View {
             .fill(.white.opacity(0.08)))
         .overlay(RoundedRectangle(cornerRadius: ClaudePanelLayout.actionHeight / 2, style: .continuous)
             .inset(by: 0.5).stroke(.white.opacity(0.4), lineWidth: 1))
+        .background(WindowReader(reference: window))
         .background {
             GeometryReader { proxy in
                 Color.clear
@@ -2128,5 +2164,32 @@ private struct ComposeField: View {
             onHeight?(ClaudePanelLayout.actionHeight)
             onCancel()
         }
+    }
+}
+
+/// Holds the window a view is in, weakly, without SwiftUI watching it.
+private final class WindowReference {
+    weak var window: NSWindow?
+}
+
+/// Fills a `WindowReference` with the window it's placed in.
+private struct WindowReader: NSViewRepresentable {
+    let reference: WindowReference
+
+    func makeNSView(context: Context) -> NSView { Probe(reference: reference) }
+    func updateNSView(_ view: NSView, context: Context) {}
+
+    private final class Probe: NSView {
+        let reference: WindowReference
+        init(reference: WindowReference) {
+            self.reference = reference
+            super.init(frame: .zero)
+        }
+        required init?(coder: NSCoder) { fatalError() }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            reference.window = window
+        }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }
