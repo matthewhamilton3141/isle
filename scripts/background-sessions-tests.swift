@@ -584,11 +584,15 @@ enum Tests {
         check(!vm.canReply, "and there's no reply to type: no terminal")
         equal(vm.otherSessions, ClaudeOtherSessions(working: 2, needYou: 0), "the island's own is left out of the count")
 
-        // M16's rule holds: a pinned session that itself needs you isn't
-        // taken by another that needs you.
+        // A pinned session yields only to a higher rank rising elsewhere
+        // (`ClaudeSelection.Selector`): a question it holds against a new
+        // question, but an approval outranks it.
+        let questioning = hook("own", "isle", .needsQuestion, ago: 0)
+        vm.applyTestReading(statuses: [questioning], sessions: [registry("own", pid: pid)])
+        equal(vm.claudeSessionId, blocked.sessionId, "a pinned blocked one holds against a new question")
         let asking = hook("own", "isle", .needsApproval, ago: 0, action: "Bash", target: "npm")
         vm.applyTestReading(statuses: [asking], sessions: [registry("own", pid: pid)])
-        equal(vm.claudeSessionId, blocked.sessionId, "a pinned blocked one holds against a new approval")
+        equal(vm.claudeSessionId, "own", "but an approval, the higher rank, takes the island from it")
 
         // A pinned working one yields to it.
         vm.showSessionList()

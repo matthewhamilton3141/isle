@@ -217,6 +217,40 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
+    /// Which session the island shows, kept steady as several change at
+    /// once (see `ClaudeSelection.Selector`): the collapsed pill and the
+    /// open face both show its pick.
+    private var selector = ClaudeSelection.Selector()
+    /// Asks selection again when a higher rank's hold runs out.
+    private var selectionRecheck: Task<Void, Never>?
+    /// The Done records the user has seen, by session: the record's
+    /// `updatedAt` when the panel closed on it.
+    private var seenDone: [String: Date] = [:]
+    /// Lets go of the pin once the panel has stayed closed a while.
+    private var pinRelease: Task<Void, Never>?
+    /// How long the panel stays closed before a picked session lets go.
+    private static let pinReleaseSeconds: TimeInterval = 10
+
+    /// A Done the user has seen — the panel was open on it — or one older
+    /// than the island shows Done for: no longer news, so just ready.
+    private func isSeen(_ status: ClaudeStatus) -> Bool {
+        guard status.state == .done, let id = status.sessionId, let updated = status.updatedAt else { return true }
+        if seenDone[id] == updated { return true }
+        return Date().timeIntervalSince(updated) >= settings.doneToastSeconds
+    }
+
+    private func scheduleSelectionRecheck(at date: Date?) {
+        selectionRecheck?.cancel()
+        selectionRecheck = nil
+        guard let date else { return }
+        let delay = max(0.05, date.timeIntervalSinceNow + 0.02)
+        selectionRecheck = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            self?.requestClaudeReading(.tick)
+        }
+    }
+
     /// Where each listed session is on screen, for its row's Jump. Resolved
     /// only while the list is up, and only from the session's own process
     /// tree — a row without one has no Jump.
@@ -383,6 +417,9 @@ final class NotchViewModel: ObservableObject {
             }
         }
         readTurnPrompts()
+        // Selection held still too: a fresh reading picks what it would have
+        // meanwhile.
+        if claudeRunning { requestClaudeReading(.tick) }
     }
 
     /// Reply drafts by session id, so text typed for one session never goes
@@ -597,17 +634,13 @@ final class NotchViewModel: ObservableObject {
     /// changes without waiting for a status write.
     private var claudeStatuses: [ClaudeStatus] = []
 
-    /// Picks which session owns the island.
-    ///
-    /// Not "most recent": that was the old single-file behaviour and it's what
-    /// let a background session's `Stop` or idle notification wipe the session
-    /// the user was watching. Rank by how much the state wants attention, and
-    /// only break ties by recency — so a quiescent session can never displace
-    /// an active one, however recently it moved (`ClaudeSelection.ranked`).
-    ///
-    /// Except for a session the user picked from the list, which holds the
-    /// island until another session newly needs them, or it goes away (see
-    /// `ClaudeSelection.Pin`). Settles the pin as it goes.
+    /// Picks which session owns the island, steadily: a strict order of
+    /// ranks, the shown session kept through ties, another taking it only
+    /// for a higher rank that has held a second (an approval or a question
+    /// at once), never while a reply is written — see
+    /// `ClaudeSelection.Selector`. A session the user picked from the list
+    /// holds the island until a higher rank rises elsewhere, or it goes
+    /// away (`ClaudeSelection.Pin`). Settles the pin as it goes.
     private func selectStatus(from statuses: [ClaudeStatus]) -> ClaudeStatus {
         var pin = sessionPin
         // A pin needs a process the registry can see — never a leftover file
@@ -616,9 +649,12 @@ final class NotchViewModel: ObservableObject {
            backgroundMerge.agentOnly(held.sessionId) == nil {
             pin = nil
         }
-        let selection = ClaudeSelection.select(from: selectionPool(statuses, pinned: pin?.sessionId), pin: pin)
-        if sessionPin != selection.pin { sessionPin = selection.pin }
-        return selection.status
+        selector.pin = pin
+        let pick = selector.select(from: selectionPool(statuses, pinned: pin?.sessionId), seen: isSeen,
+                                   now: Date(), frozen: claudeFaceFrozen)
+        if sessionPin != selector.pin { sessionPin = selector.pin }
+        scheduleSelectionRecheck(at: pick.recheckAt)
+        return pick.status
     }
 
     /// The records selection chooses between, corrected.
@@ -1344,8 +1380,9 @@ final class NotchViewModel: ObservableObject {
     func pinSession(_ sessionId: String) {
         guard claudeSessions.contains(where: { $0.sessionId == sessionId })
                 || backgroundMerge.agentOnly(sessionId) != nil,
-              let pin = ClaudeSelection.pin(sessionId, in: selectionPool(claudeStatuses, pinned: sessionId))
+              let pin = ClaudeSelection.pin(sessionId, in: selectionPool(claudeStatuses, pinned: sessionId), seen: isSeen)
         else { return }
+        selector.lastSeen[sessionId] = Date()
         sessionPin = pin
         sessionListShown = false
         updateReselectTimer(for: claudeState)
@@ -1366,15 +1403,35 @@ final class NotchViewModel: ObservableObject {
         applyClaudeStatus(selectStatus(from: claudeStatuses), announce: false)
     }
 
-    /// The panel closed: the list goes, and so does the pin. The island
-    /// collapsed always means selection's own pick — a session picked once
-    /// and forgotten mustn't keep a more pressing one off it.
+    /// The panel closed: the list goes, and once the panel has stayed
+    /// closed `pinReleaseSeconds`, so does the pin — a session picked once
+    /// and forgotten mustn't keep a more pressing one off the island, but a
+    /// glance away and back keeps it.
     private func resetSessionList() {
         if sessionListShown {
             sessionListShown = false
             updateReselectTimer(for: claudeState)
         }
-        releasePin()
+        pinRelease?.cancel()
+        guard sessionPin != nil else { return }
+        pinRelease = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.pinReleaseSeconds))
+            guard !Task.isCancelled, let self, self.hoveredIslands == 0 else { return }
+            self.releasePin()
+        }
+    }
+
+    /// The panel closed on a session: the user has seen it. Its Done is no
+    /// longer news, and it's the one they saw last. Noted as the panel
+    /// closes rather than opens, so nothing moves under the pointer.
+    private func noteSessionSeen() {
+        guard let id = claudeSessionId else { return }
+        selector.lastSeen[id] = Date()
+        if let status = lastAppliedStatus, status.sessionId == id, status.state == .done, let updated = status.updatedAt {
+            seenDone[id] = updated
+            for key in seenDone.keys where !claudeStatuses.contains(where: { $0.sessionId == key }) { seenDone[key] = nil }
+            reselectQuietly()
+        }
     }
 
     /// Resolves where each listed session is, while the list is up. Off the
@@ -2549,7 +2606,11 @@ final class NotchViewModel: ObservableObject {
     /// transition, in both directions.
     func islandHoverChanged(_ hovering: Bool) {
         hoveredIslands = max(0, hoveredIslands + (hovering ? 1 : -1))
-        if !hovering, hoveredIslands == 0 { resetSessionList() }
+        if !hovering, hoveredIslands == 0 {
+            resetSessionList()
+            noteSessionSeen()
+        }
+        if hovering { pinRelease?.cancel() }
         // Opening the panel puts the scrubber on screen: bring the position
         // current now rather than at the next relaxed read. With nothing
         // routed, every player gets asked, so whichever has a track is found.
