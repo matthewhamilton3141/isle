@@ -73,14 +73,6 @@ do {
     check(StatusLight.iconWidth > 10 && StatusLight.iconWidth < 24, "the icon grows the island a little", "\(StatusLight.iconWidth)")
 }
 
-print("an even line")
-do {
-    check(StatusLight.edgeFade <= 0.06, "the closed island's lower edge eases in at the very ends only", "\(StatusLight.edgeFade)")
-    check(StatusLight.edgeAlpha >= 0.7, "and is lit all along it")
-    check(StatusLight.wrapGlintScale >= 0.1 && StatusLight.wrapGlintScale < 0.6,
-          "under a wrap the glint steps back, so the bottom doesn't outshine the sides", "\(StatusLight.wrapGlintScale)")
-}
-
 print("pulse")
 do {
     let p = StatusLight.pulseOpacity

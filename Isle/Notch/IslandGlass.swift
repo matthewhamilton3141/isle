@@ -148,20 +148,16 @@ enum IslandGlass {
     }
 
     /// The specular rim: white drawn along the outline below the band,
-    /// added to what's under it (plus-lighter). Near-even the whole length
-    /// of the lower edge — `fadeRimFloor` along the bottom, the corners a
-    /// touch brighter at `fadeRimPeak` — so it reads as one line round the
-    /// panel's foot, not two bright corners; it fades in up the walls from
-    /// nothing at the band's foot. (At 0.2 along the bottom against 0.6 at
-    /// the corners, on a real screen the corners were all that showed.)
-    /// Tune here.
+    /// strongest at the bottom corners where a rounded edge catches the
+    /// light, added to what's under it (plus-lighter). `fadeRimPeak` at the
+    /// corners, `fadeRimFloor` along the bottom between them; it fades in
+    /// up the walls from nothing at the band's foot. Tune here.
     static let fadeRimPeak: Double = 0.6
-    static let fadeRimFloor: Double = 0.55
+    static let fadeRimFloor: Double = 0.2
 
     /// The rim's stroke, centred on the outline and clipped to it, so half
-    /// of it shows: a 2pt line. At 1pt, on a real screen the light read as
-    /// its two corners and little else. Tune here.
-    static let fadeRimWidth: CGFloat = 4
+    /// of it shows: a 1pt line.
+    static let fadeRimWidth: CGFloat = 2
 
     /// The rim's brightness across the panel, `x` 0 at its left edge and 1
     /// at its right: the floor along the bottom, rising to the peak at each
@@ -186,26 +182,25 @@ enum IslandGlass {
     }
 
     /// The spectral glint: a thin band of split light along the bottom edge,
-    /// as hues (0...1, red at 0) laid across the whole width of the panel,
-    /// cool on the left warming to the right, at full strength all along and
-    /// easing off only at the very ends — the light the lower edge carries,
-    /// one even line into the corners rather than a pool in the middle.
-    /// Isle's own: no prism, no motion, just the colour a thick clear edge
-    /// throws. Each stop is (location across the panel, hue, strength 0...1).
+    /// as hues (0...1, red at 0) laid across the middle of the panel, cool
+    /// on the left warming to the right, and nothing at either end where
+    /// the white corners of the rim take over. Isle's own: no prism, no
+    /// motion, just the colour a thick clear edge throws. Each stop is
+    /// (location across the panel, hue, strength 0...1).
     static let fadeGlintStops: [(location: Double, hue: Double, strength: Double)] = [
-        (0.02, 0.52, 0.85),
-        (0.14, 0.55, 1),
-        (0.32, 0.64, 1),
-        (0.50, 0.76, 1),
-        (0.68, 0.88, 1),
-        (0.86, 0.02, 1),
-        (0.98, 0.10, 0.85),
+        (0.14, 0.52, 0),
+        (0.26, 0.55, 0.7),
+        (0.40, 0.64, 1),
+        (0.52, 0.76, 1),
+        (0.64, 0.88, 1),
+        (0.76, 0.02, 0.8),
+        (0.86, 0.10, 0),
     ]
 
     /// The glint's line at full strength (added light, plus-lighter), and
-    /// its stroke, half of which shows inside the outline: 2.5pt. Tune here.
+    /// its stroke, half of which shows inside the outline: 1.25pt. Tune here.
     static let fadeGlintAlpha: Double = 0.85
-    static let fadeGlintWidth: CGFloat = 5
+    static let fadeGlintWidth: CGFloat = 2.5
 
     /// The glint's glow: the same colours as a soft haze rising from the
     /// bottom edge, `fadeHazeHeight` deep and `fadeHazeAlpha` strong at the

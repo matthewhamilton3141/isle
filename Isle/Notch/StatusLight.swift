@@ -129,17 +129,10 @@ enum StatusLight {
     /// open panel's lower edge (the wrap is the status colour outright).
     static let rimTint: Double = 0.55
 
-    /// The closed island's lit lower edge: its strength, even along the
-    /// whole edge, and how far in from each end it eases up from nothing —
-    /// a short taper at the very ends only.
+    /// The closed island's lit lower edge: its strength, and how far in
+    /// from each end it fades from nothing.
     static let edgeAlpha: Double = 0.85
-    static let edgeFade: Double = 0.04
-
-    /// In the wrap states the glint, which runs along the bottom on top of
-    /// the wrapped rim, is drawn this strong: enough to carry the light's
-    /// colours along the bottom without leaving the sides, lit by the wrap
-    /// alone, looking dim beside it. The whole outline then reads near-even.
-    static let wrapGlintScale: Double = 0.2
+    static let edgeFade: Double = 0.16
 
     /// The status icon on the closed island: its slot's width and the gap
     /// before it, in points — what the island grows by to fit it.

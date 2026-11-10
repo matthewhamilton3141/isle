@@ -615,11 +615,8 @@ struct FadeLight: Hashable {
         rim = IslandGlass.fadeRimStops().map {
             Gradient.Stop(color: rimColor.opacity($0.alpha), location: $0.location)
         }
-        // Under a wrap, the glint steps back so the bottom doesn't outshine
-        // the sides (`StatusLight.wrapGlintScale`).
-        let glintScale = (status?.wraps ?? false) ? StatusLight.wrapGlintScale : 1
         self.glint = zip(glint, lit).map { stop, c in
-            Gradient.Stop(color: color(c).opacity(stop.strength * glintScale), location: stop.location)
+            Gradient.Stop(color: color(c).opacity(stop.strength), location: stop.location)
         }
         sweep = [Gradient.Stop(color: rimColor, location: 0)]
             + zip(glint, lit).map { stop, c in Gradient.Stop(color: color(c), location: stop.location) }
@@ -633,9 +630,9 @@ struct FadeLight: Hashable {
         let e = StatusLight.edgeAlpha, f = StatusLight.edgeFade
         edge = [
             Gradient.Stop(color: color(lit[1]).opacity(0), location: 0),
-            Gradient.Stop(color: color(lit[1]).opacity(e), location: f),
+            Gradient.Stop(color: color(lit[1]).opacity(e * 0.7), location: f),
             Gradient.Stop(color: color(lit[3]).opacity(e), location: 0.5),
-            Gradient.Stop(color: color(lit[5]).opacity(e), location: 1 - f),
+            Gradient.Stop(color: color(lit[5]).opacity(e * 0.7), location: 1 - f),
             Gradient.Stop(color: color(lit[5]).opacity(0), location: 1),
         ]
         // The glint lays secondary, secondary, primary, accent, primary, …
