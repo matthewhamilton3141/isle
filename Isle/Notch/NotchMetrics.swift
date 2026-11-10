@@ -96,11 +96,22 @@ struct NotchMetrics {
         expandedSize.height - contentInsets(bandHeight: bandHeight)
     }
 
-    /// The expanded content's top inset (band + 2) and bottom inset (8), from
-    /// NotchRootView.
-    private static func contentInsets(bandHeight: CGFloat) -> CGFloat {
-        bandHeight + 2 + 8
+    /// The standard panel's content height, from the most a face can have
+    /// (`contentRoom`) — for a face that knows the room and not the band.
+    static func standardContentHeight(room: CGFloat) -> CGFloat {
+        room - (panelMaxHeight - expandedSize.height)
     }
+
+    /// The expanded content's top inset (band + `contentTopGap`) and bottom
+    /// inset (8), from NotchRootView.
+    private static func contentInsets(bandHeight: CGFloat) -> CGFloat {
+        bandHeight + contentTopGap + 8
+    }
+
+    /// Between the housing band and the top of a face's content box. A face
+    /// that draws up into the band (the album, the Claude face's wings)
+    /// reaches back over it.
+    static let contentTopGap: CGFloat = 2
 
     /// Fraction of the collapsed width given to music when both music and a
     /// Claude Code activity are live. See the split-view rule in spec 3.1 —

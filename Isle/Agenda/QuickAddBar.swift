@@ -75,7 +75,7 @@ struct QuickAddBar: View {
                 }
                 Spacer(minLength: 0)
             }
-            .font(.system(size: 12, weight: .medium))
+            .font(IsleType.body)
             .padding(.horizontal, 10)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Capsule().fill(.white.opacity(0.06)))
@@ -107,7 +107,7 @@ private struct QuickAddField: View {
                 Text("Add event or reminder")
             }
             .textFieldStyle(.plain)
-            .font(.system(size: 12, weight: .medium))
+            .font(IsleType.body)
             .foregroundStyle(.white)
             .focused($focused)
             .onSubmit {
@@ -159,7 +159,7 @@ private struct ReviewLine: View {
                             .frame(width: 8, height: 8)
                     }
                     Text(draft.title)
-                        .font(.system(size: 12.5, weight: .semibold))
+                        .font(IsleType.label)
                         .lineLimit(1)
                         .truncationMode(.tail)
                     Spacer(minLength: 6)
@@ -168,8 +168,8 @@ private struct ReviewLine: View {
                         .disabled(isSaving)
                 }
                 Text(Self.detail(draft, destination))
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(.islandSecondary(0.6))
+                    .font(IsleType.meta)
+                    .foregroundStyle(.islandSecondary(IsleType.Tone.secondary))
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -180,7 +180,7 @@ private struct ReviewLine: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(AgendaRow.overdue)
                 Text(message)
-                    .font(.system(size: 11.5, weight: .medium))
+                    .font(IsleType.body)
                     .foregroundStyle(.white.opacity(0.8))
                     .lineLimit(1)
                     .truncationMode(.tail)

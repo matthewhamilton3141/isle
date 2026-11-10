@@ -60,10 +60,10 @@ struct AgendaWeekStrip: View {
         return Button { select(day) } label: {
             VStack(spacing: 2) {
                 Text(day.formatted(.dateTime.weekday(.narrow)))
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.islandSecondary(0.45))
+                    .font(IsleType.micro.weight(.semibold))
+                    .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
                 Text(day.formatted(.dateTime.day()))
-                    .font(.system(size: 13, weight: isToday ? .bold : .semibold).monospacedDigit())
+                    .font(IsleType.headline.monospacedDigit())
                     .foregroundStyle(isToday ? palette.accent : .white.opacity(isPast ? 0.5 : 0.95))
                 HStack(spacing: 2) {
                     ForEach(dots) { item in

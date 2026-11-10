@@ -1,8 +1,9 @@
 //
 //  claude-activity-tests.swift
 //
-//  Tests for the "what it's doing" line (`ClaudeActivity.phrase`), compiled
-//  against Isle/Claude/ClaudeActivity.swift alone. Run with
+//  Tests for the "what it's doing" line (`ClaudeActivity.phrase`), the
+//  finished calls under it (`pastPhrase`, `ClaudeTrail`), compiled against
+//  Isle/Claude/ClaudeActivity.swift and ClaudeTrail.swift alone. Run with
 //  scripts/test-claude-activity.sh, which also feeds it real hook targets:
 //  each Bash command put through `isle-cli` the way Claude Code runs it, so
 //  the app is tested on what the hook actually hands it — backslashes gone,
@@ -26,6 +27,10 @@ func check(_ got: String, _ want: String, _ name: String) {
 
 func bash(_ target: String?) -> String {
     ClaudeActivity(action: "Bash", target: target)!.phrase
+}
+
+func bashPast(_ target: String?) -> String {
+    ClaudeActivity(action: "Bash", target: target)!.pastPhrase
 }
 
 /// How `displayTarget` read a command before: its first space-separated
@@ -140,6 +145,81 @@ check(ClaudeActivity(action: "Edit", target: "/a/b/App.swift")!.phrase, "Editing
 check(ClaudeActivity(action: "Read", target: "README.md")!.phrase, "Reading README.md", "Read")
 check(ClaudeActivity(action: "WebFetch", target: "https://www.apple.com/x")!.phrase, "Browsing apple.com", "WebFetch")
 check(ClaudeActivity(action: "Grep", target: "activeRect")!.phrase, "Searching \u{201C}activeRect\u{201D}", "Grep")
+
+print("The finished call, said in the past")
+check(ClaudeActivity(action: "Edit", target: "/a/b/App.swift")!.pastPhrase, "Edited App.swift", "Edit")
+check(ClaudeActivity(action: "Read", target: "README.md")!.pastPhrase, "Read README.md", "Read")
+check(bashPast("xcodebuild -scheme Isle"), "Ran xcodebuild", "Bash")
+check(bashPast("cd /tmp"), "Ran a command", "Bash with no program to name")
+check(ClaudeActivity(action: "Grep", target: "activeRect")!.pastPhrase, "Searched \u{201C}activeRect\u{201D}", "Grep")
+check(ClaudeActivity(action: "Task", target: nil)!.pastPhrase, "Delegated a task", "Task")
+check(ClaudeActivity(action: "mcp__acme__deploy", target: nil)!.pastPhrase, "mcp__acme__deploy", "an unknown tool by its name")
+
+print("The trail: only calls that ran, in order, cleared by a new turn")
+func names(_ trail: ClaudeTrail, current: ClaudeActivity? = nil, limit: Int = 3) -> String {
+    trail.shown(current: current, limit: limit).map(\.activity.pastPhrase).joined(separator: " | ")
+}
+var trail = ClaudeTrail()
+trail.observe(phase: .working, action: nil, target: nil, toolActive: false)
+check(names(trail), "", "a prompt alone is no step")
+trail.observe(phase: .working, action: "Read", target: "a.swift", toolActive: true)
+check(names(trail), "", "a call starting (PreToolUse) is no step yet")
+trail.observe(phase: .working, action: "Read", target: "a.swift", toolActive: false)
+check(names(trail), "Read a.swift", "its PostToolUse is")
+trail.observe(phase: .working, action: "Read", target: "a.swift", toolActive: false)
+check(names(trail), "Read a.swift", "the same record read again is one step")
+trail.observe(phase: .waiting, action: "Bash", target: "rm", toolActive: false)
+check(names(trail), "Read a.swift", "an approval waiting adds nothing")
+trail.observe(phase: .working, action: "Bash", target: "rm", toolActive: true)
+trail.observe(phase: .working, action: "Edit", target: "b.swift", toolActive: true)
+check(names(trail), "Read a.swift", "a call denied in the terminal (no PostToolUse) is no step")
+trail.observe(phase: .working, action: "Edit", target: "b.swift", toolActive: false)
+trail.observe(phase: .working, action: "Bash", target: "make", toolActive: false)
+check(names(trail), "Ran make | Edited b.swift | Read a.swift", "newest first")
+let make = ClaudeActivity(action: "Bash", target: "make")
+check(names(trail, current: make), "Edited b.swift | Read a.swift", "the call the headline names isn't repeated under it")
+check(names(trail, limit: 2), "Ran make | Edited b.swift", "at most the slots there are")
+for i in 0..<6 { trail.observe(phase: .working, action: "Read", target: "f\(i).swift", toolActive: false) }
+check("\(trail.steps.count)", "\(ClaudeTrail.capacity)", "keeps no more than it can show")
+check(names(trail, limit: 3), "Read f5.swift | Read f4.swift | Read f3.swift", "the newest kept")
+trail.observe(phase: .ended, action: nil, target: nil, toolActive: false)
+check(names(trail), "Read f5.swift | Read f4.swift | Read f3.swift", "the turn's end leaves the trail until the next")
+trail.observe(phase: .working, action: nil, target: nil, toolActive: false)
+check(names(trail), "", "the next turn starts it afresh")
+let ids = { (t: ClaudeTrail) in Set(t.steps.map(\.id)).count == t.steps.count }
+trail.observe(phase: .working, action: "Read", target: "x", toolActive: false)
+trail.observe(phase: .working, action: "Read", target: "y", toolActive: false)
+check("\(ids(trail))", "true", "every step its own id, across turns")
+
+print("The turn's prompt, from the transcript")
+// Entries in the shape Claude Code 2.1.321 wrote them, newest first.
+func line(_ json: String) -> Data { Data(json.utf8) }
+func human(_ at: String, _ text: String) -> Data {
+    line(#"{"type":"user","timestamp":"2026-11-09T20:\#(at).000Z","origin":{"kind":"human"},"message":{"role":"user","content":"\#(text)"}}"#)
+}
+let toolResult = line(#"{"type":"user","timestamp":"2026-11-09T20:37:23.000Z","message":{"role":"user","content":[{"type":"tool_result","content":"42"}]}}"#)
+let queued = line(#"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-09T20:36:59.000Z","content":"Now reply BRAVO"}"#)
+let attachment = line(#"{"type":"attachment","timestamp":"2026-11-09T20:37:23.000Z","attachment":{"type":"queued_command","prompt":"Now reply BRAVO"}}"#)
+let started = ISO8601DateFormatter().date(from: "2026-11-09T20:36:50Z")!
+let lines = [attachment, toolResult, queued,
+             human("36:50", "Fix the race in the watcher.\\nThen add a test."),
+             human("30:00", "An older prompt")]
+check(ClaudeTrail.turnPrompt(in: lines, since: started) ?? "nil", "Fix the race in the watcher.",
+      "the prompt that started the turn, first line — not the one queued after it")
+check(ClaudeTrail.turnPrompt(in: lines, since: nil) ?? "nil", "Fix the race in the watcher.", "Isle launched mid-turn: the newest")
+let later = ISO8601DateFormatter().date(from: "2026-11-09T20:38:00Z")!
+check(ClaudeTrail.turnPrompt(in: lines, since: later) ?? "nil", "nil", "not yet written for this turn: nothing, not the last turn's")
+check(ClaudeTrail.turnPrompt(in: [human("36:50", "<command-name>/clear</command-name>")], since: nil) ?? "nil", "nil",
+      "a slash command isn't a prompt to show")
+var turn = ClaudeTrail()
+turn.observe(phase: .working, action: nil, target: nil, toolActive: false)
+check("\(turn.wantsPrompt)", "true", "a running turn wants its prompt")
+turn.setPrompt("Fix it")
+turn.observe(phase: .ended, action: nil, target: nil, toolActive: false)
+check("\(turn.wantsPrompt)", "false", "an ended turn doesn't")
+turn.observe(phase: .working, action: nil, target: nil, toolActive: false, at: later)
+check(turn.prompt ?? "nil", "nil", "the next turn starts without the last one's prompt")
+check("\(turn.turnStartedAt == later)", "true", "and knows when it started")
 
 print("\n\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

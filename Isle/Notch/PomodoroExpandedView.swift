@@ -28,7 +28,7 @@ struct PomodoroExpandedView: View {
                 Spacer(minLength: 0)
 
                 Text(timer.phase.title)
-                    .font(.system(size: 24, weight: .bold))
+                    .font(IsleType.title)
                     .foregroundStyle(.white)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
@@ -37,8 +37,8 @@ struct PomodoroExpandedView: View {
                 Spacer().frame(height: 2)
 
                 Text(detail)
-                    .font(.system(size: 12.5, weight: .regular))
-                    .foregroundStyle(.islandSecondary(0.72))
+                    .font(IsleType.body)
+                    .foregroundStyle(.islandSecondary(IsleType.Tone.secondary))
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                     .contentTransition(.opacity)
@@ -79,7 +79,7 @@ struct PomodoroExpandedView: View {
                     lineWidth: 6
                 )
                 Text(PomodoroTimer.clock(timer.remaining(at: context.date)))
-                    .font(.system(size: clockPointSize(for: context.date), weight: .semibold).monospacedDigit())
+                    .font(IsleType.numeral(clockPointSize(for: context.date)))
                     .foregroundStyle(.white)
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)

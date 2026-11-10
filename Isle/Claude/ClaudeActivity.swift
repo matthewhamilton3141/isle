@@ -76,6 +76,36 @@ struct ClaudeActivity: Equatable {
         }
     }
 
+    /// The same call, finished: "Edited App.swift", "Read README.md", "Ran
+    /// npm", "Searched “activeRect”" — for the trail of steps under what
+    /// Claude is doing now (`ClaudeTrail`).
+    var pastPhrase: String {
+        switch family {
+        case .edit: return "Edited \(displayTarget ?? "a file")"
+        case .read: return "Read \(displayTarget ?? "a file")"
+        case .run: return displayTarget.map { "Ran \($0)" } ?? "Ran a command"
+        case .search: return displayTarget.map { "Searched \(quoted($0))" } ?? "Searched"
+        case .web: return displayTarget.map { "Browsed \($0)" } ?? "Browsed the web"
+        case .delegate: return "Delegated a task"
+        case .plan: return "Updated the plan"
+        case .other: return displayTarget.map { "\(action) \($0)" } ?? action
+        }
+    }
+
+    /// An SF Symbol for the tool's family, for a trail row.
+    var symbolName: String {
+        switch family {
+        case .edit: return "square.and.pencil"
+        case .read: return "doc.text"
+        case .run: return "terminal"
+        case .search: return "magnifyingglass"
+        case .web: return "globe"
+        case .delegate: return "arrow.triangle.branch"
+        case .plan: return "checklist"
+        case .other: return "wrench.and.screwdriver"
+        }
+    }
+
     // MARK: - Target hygiene
 
     /// The target as `phrase` shows it — a file's name, a command's

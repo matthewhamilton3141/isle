@@ -45,12 +45,20 @@ struct ClaudePanelFixture: Identifiable {
     var answerDraft = ""
     var denialDraft = ""
     var delivery: ReplyDelivery = .none
+    /// Replies Isle typed mid-turn that Claude Code has queued.
+    var queued: [String] = []
     /// The record's `last_message` (Milestone 15): the start of Claude's
     /// final message, as the helper stores it.
     var lastMessage: String? = nil
     /// The record's `subagents` (Milestone 22): the running agents' types,
     /// oldest first.
     var subagents: [String] = []
+    /// The calls the turn has finished, oldest first, as the trail would
+    /// have taken them from the session's records (`ClaudeTrail`).
+    var steps: [Step] = []
+    /// The first line of the prompt that started the turn, as the trail
+    /// read it from the transcript.
+    var prompt: String? = nil
     /// The record's `blocked` (Milestone 23): the last call auto mode
     /// blocked since the last prompt.
     var blocked: ClaudeBlock? = nil
@@ -82,6 +90,15 @@ struct ClaudePanelFixture: Identifiable {
     var toast: IslandToast? = nil
 
     var id: String { name }
+
+    struct Step {
+        var action: String
+        var target: String?
+        init(_ action: String, _ target: String? = nil) {
+            self.action = action
+            self.target = target
+        }
+    }
 
     /// The settings the fixture is drawn under, on an isolated store.
     @MainActor
@@ -384,7 +401,123 @@ extension ClaudePanelFixture {
             .init(name: "both_question_4", mode: .both, state: .needsQuestion, request: question([fourOptions])),
         ] + approvalKinds + descriptionModes + worstCases + liveExtras + jumpAndReply + doneSays + loneJump + subagentCounts + autoModeBlocks
             + doneLeftovers
-            + sessionLists + guardedApprovals + faceRow + usageLimits
+            + sessionLists + guardedApprovals + faceRow + usageLimits + wingFaces + workingFaces + replyFaces
+    }
+
+    // MARK: Replying any time
+
+    /// The reply on a terminal Isle can type into: offered at rest and
+    /// mid-turn, written over one to five lines, queued, and locked while a
+    /// prompt is up in the terminal.
+    static var replyFaces: [ClaudePanelFixture] {
+        let steps = [Step("Read", "/Users/matthew/Documents/isle/Isle/Notch/NotchMetrics.swift"),
+                     Step("Bash", "xcodebuild"),
+                     Step("Edit", "/Users/matthew/Documents/isle/Isle/Notch/ClaudeExpandedView.swift")]
+        let three = "Yes, and bump the version to 0.4.5 first.\nThen run the tests again,\nand open a PR when they pass."
+        let five = three + "\nUse the release template for the body.\nDon't merge it yourself."
+        let others = [ownWorking, website, paletteLab]
+        func reply(_ name: String, state: ClaudeCodeState = .working, steps: [Step] = steps, action: String? = "Bash",
+                   target: String? = "xcodebuild", composing: Bool = false, draft: String = "",
+                   queued: [String] = [], lastMessage: String? = nil, mode: IsleMode = .both) -> ClaudePanelFixture {
+            .init(name: name, mode: mode, state: state, action: action, target: target, updatedAt: Date(),
+                  keepAwake: true, host: terminalHost, composing: composing ? .reply : nil, replyDraft: draft,
+                  queued: queued, lastMessage: lastMessage, steps: steps, sessions: others,
+                  sessionRequests: [websiteApproval])
+        }
+        return [
+            reply("rp_working_empty"),
+            reply("rp_working_empty_nosteps", steps: []),
+            reply("rp_working_typing1", composing: true, draft: "Also run the snapshot tests"),
+            reply("rp_working_typing3", composing: true, draft: three),
+            reply("rp_working_typing5", composing: true, draft: five),
+            reply("rp_working_queued1", queued: ["Also run the snapshot tests"]),
+            reply("rp_working_queued2", queued: ["Also run the snapshot tests", three]),
+            reply("rp_working_queued3", queued: ["Also run the snapshot tests", three, "And update the changelog"]),
+            reply("rp_done_empty", state: .done, steps: [], lastMessage: saidShort),
+            reply("rp_done_typing3", state: .done, steps: [], composing: true, draft: three, lastMessage: saidShort),
+            reply("rp_done_typing5", state: .done, steps: [], composing: true, draft: five, lastMessage: saidShort),
+            reply("rp_locked_approval", state: .needsApproval, steps: [], action: "Bash", target: "npm"),
+            reply("rp_locked_question", state: .needsQuestion, steps: [], action: nil, target: nil),
+            reply("rp_claude_typing3", composing: true, draft: three, mode: .claude),
+            // An alert that opened the panel on its own, on a terminal Isle
+            // can type into.
+            reply("rp_failed", state: .failed, steps: [], action: nil, target: nil),
+        ]
+    }
+
+    // MARK: The working face's rows
+
+    /// A turn in progress with nothing, one, and three finished calls under
+    /// its headline; its agents running; thinking, compacting, a block and a
+    /// reply on its way — in `.both` with a terminal, as on a usual day.
+    static var workingFaces: [ClaudePanelFixture] {
+        let editing = Step("Edit", "/Users/matthew/Documents/isle/Isle/Notch/ClaudeExpandedView.swift")
+        let earlier = [
+            Step("Read", "/Users/matthew/Documents/isle/Isle/Notch/NotchMetrics.swift"),
+            Step("Grep", "activeRect"),
+            Step("Bash", "xcodebuild"),
+            Step("Read", "/Users/matthew/Documents/isle/Isle/Notch/ClaudePanelLayout.swift"),
+        ]
+        let others = [ownWorking, website, paletteLab]
+        let promptLine = "Tighten the working face so the panel doesn't feel empty at the start of a turn"
+        func working(_ name: String, steps: [Step], subagents: [String] = [], action: String? = "Edit",
+                     target: String? = editing.target, state: ClaudeCodeState = .working,
+                     blocked: ClaudeBlock? = nil, delivery: ReplyDelivery = .none,
+                     prompt: String? = nil, mode: IsleMode = .both) -> ClaudePanelFixture {
+            .init(name: name, mode: mode, state: state, action: action, target: target, updatedAt: Date(),
+                  keepAwake: true, others: .init(working: 1, needYou: 1), host: terminalHost, delivery: delivery,
+                  subagents: subagents, steps: steps, prompt: prompt, blocked: blocked, sessions: others,
+                  sessionRequests: [websiteApproval])
+        }
+        return [
+            working("wk_steps0", steps: []),
+            working("wk_steps0_first_done", steps: [editing]),
+            working("wk_steps1", steps: [earlier[3], editing]),
+            working("wk_steps3", steps: earlier + [editing]),
+            working("wk_agents1", steps: earlier + [editing], subagents: ["Explore"]),
+            working("wk_agents3", steps: earlier + [editing], subagents: ["Explore", "Plan", "Explore"]),
+            working("wk_agents5", steps: earlier + [editing],
+                    subagents: ["Explore", "Plan", "general-purpose", "Explore", "feature-dev:code-reviewer"]),
+            working("wk_thinking", steps: [], action: nil, target: nil),
+            working("wk_thinking_midturn", steps: earlier, action: "Read", target: earlier[3].target),
+            working("wk_compacting", steps: earlier, action: nil, target: nil, state: .compacting),
+            working("wk_block", steps: earlier + [editing],
+                    blocked: shortBlock),
+            working("wk_sent", steps: earlier + [editing], action: nil, target: nil,
+                    delivery: .sent("Yes, and bump the version to 0.4.5 first")),
+            working("wk_prompt_only", steps: [], prompt: promptLine),
+            working("wk_prompt_thinking", steps: [], action: nil, target: nil, prompt: promptLine),
+            working("wk_prompt_steps1", steps: [earlier[3], editing], prompt: promptLine),
+            working("wk_prompt_steps2", steps: [earlier[2], earlier[3], editing], prompt: promptLine),
+            working("wk_prompt_steps3", steps: earlier + [editing], prompt: promptLine),
+            working("wk_prompt_agents", steps: [earlier[3], editing], subagents: ["Explore"], prompt: promptLine),
+            working("wk_claude_steps3", steps: earlier + [editing], mode: .claude),
+            working("wk_claude_steps0", steps: [], mode: .claude),
+        ]
+    }
+
+    // MARK: The wings beside the housing
+
+    /// The four faces a redesign is judged on, in `.both` (so the crumb
+    /// shares the right wing) with other sessions live, so both wings are as
+    /// full as they get on an ordinary day.
+    static var wingFaces: [ClaudePanelFixture] {
+        let others = [ownWorking, website, paletteLab]
+        return [
+            .init(name: "rd_working", mode: .both, state: .working, action: "Edit",
+                  target: "/Users/matthew/Documents/isle/Isle/Notch/ClaudeExpandedView.swift",
+                  updatedAt: Date(), keepAwake: true, others: .init(working: 1, needYou: 1), host: terminalHost,
+                  subagents: threeMixed, sessions: others, sessionRequests: [websiteApproval]),
+            .init(name: "rd_question", mode: .both, state: .needsQuestion, request: question([fourOptions]),
+                  others: .init(working: 1), host: terminalHost, sessions: [ownWorking, paletteLab]),
+            .init(name: "rd_approval", mode: .both, state: .needsApproval, action: "Bash", target: "npm",
+                  request: approval(stdin: bashPrefixStdin), others: .init(working: 2), host: terminalHost,
+                  sessions: [session("preview-session", "isle", .needsApproval, ago: 5, action: "Bash", target: "npm"),
+                             paletteLab, session("w2", "isle-website", .working, ago: 30)]),
+            .init(name: "rd_done", mode: .both, state: .done, host: terminalHost,
+                  lastMessage: "Fixed the race in the request watcher: it now re-reads the directory after every rename, and the new test covers a rename landing mid-read.",
+                  sessions: [session("preview-session", "isle", .done, ago: 8, said: saidShort), bench]),
+        ]
     }
 
     // MARK: The usage limit, said straight (Milestone 19)

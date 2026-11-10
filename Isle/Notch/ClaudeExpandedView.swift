@@ -1,27 +1,26 @@
 //
 //  ClaudeExpandedView.swift
 //
-//  The Claude face of the expanded panel. Mirrors the music tab's weight — a
-//  large marker on the left where the album art sits, and a text column
-//  beside it — so the tab fills the panel instead of floating a small glyph
-//  in dead space. Shown as the whole panel in `.claude` mode, or under the
-//  Claude tab in `.both`.
+//  The Claude face of the expanded panel. Shown as the whole panel in
+//  `.claude` mode, or under the Claude tab in `.both`.
 //
-//  Every face is one layout (see `ClaudePanelLayout`): an eyebrow naming the
-//  session and what else is going on, a title, a body, and an action row
-//  one gap below the body. A status fills it with the state, what Claude is
-//  doing, and an empty action row; an approval (Milestone 7) puts the exact
-//  command in the body and Approve / Deny / Terminal in the row; a question
-//  puts the question in the title and its options in the body, in a panel
-//  grown to seat them — the one face without the glyph, so the question and
-//  its options have the full width. Every control here is a real `Button`,
-//  so its tap is consumed and never falls through to the card's dismiss
-//  gesture.
+//  The face starts in the housing band, in the wings either side of the
+//  camera: the left wing has the marker and the state in its colour —
+//  the collapsed pill's own mark and word, grown — and the right the other
+//  live sessions, ahead of the crumb. The body starts right under the
+//  housing and leads with what the state is about: the exact command on an
+//  approval, Claude's own words when a turn ends, what it's doing while it
+//  works. Under that, one quiet meta line (project · time · agents), and at
+//  the foot of the face the action row — Approve / Deny / Terminal, or the
+//  terminal and the reply field. A question puts its header in the wing,
+//  the question and its options in the body, in a panel grown to seat
+//  them. Every control here is a real `Button`, so its tap is consumed and
+//  never falls through to the card's dismiss gesture.
 //
 //  With more than one live session, the face also flips to a list of them
-//  all (Milestone 16): the other-sessions marks are the way in, a row's
-//  click puts that session on the face, and the eyebrow's chevron is the way
-//  back up.
+//  all (Milestone 16): the sessions chip in the right wing is the way in, a
+//  row's click puts that session on the face, and the chevron in the left
+//  wing is the way back up.
 //
 
 import SwiftUI
@@ -34,8 +33,10 @@ struct ClaudeExpandedView: View {
     var palette: ArtworkPalette
 
     /// The height the session list's rows have, as last laid out — so the
-    /// eyebrow can say when they scroll.
+    /// wing can say when they scroll.
     @State private var sessionRowsRoom: CGFloat = 0
+
+    @Environment(\.islandOnGlass) private var onGlass
 
     private var state: ClaudeCodeState { viewModel.claudeState }
 
@@ -54,16 +55,7 @@ struct ClaudeExpandedView: View {
 
     var body: some View {
         let listing = viewModel.sessionListShown
-        let isQuestion = asking != nil && !listing
         return ZStack(alignment: .topLeading) {
-            // The question face has no glyph: its eyebrow already says it's a
-            // question, and the options want the face's whole width. Nor
-            // does the list, whose rows each carry their own.
-            if !isQuestion, !listing {
-                glyph
-                    .transition(.opacity.combined(with: .scale(scale: 0.6, anchor: .topLeading)))
-            }
-
             Group {
                 if listing {
                     sessionListFace
@@ -73,13 +65,6 @@ struct ClaudeExpandedView: View {
                         .transition(.opacity)
                 } else {
                     statusFace
-                        .padding(.leading, L.glyphSize + L.glyphGap)
-                        // A two-line body (a long command, Claude's words, the
-                        // subagent line) fills the content area under a 32pt
-                        // band. The row's own bottom inset gives way into the
-                        // panel's bottom padding before the gap above the row
-                        // does, so the row keeps its `bodyGap`.
-                        .padding(.bottom, -L.bottomInset)
                         .transition(.opacity)
                 }
             }
@@ -99,207 +84,623 @@ struct ClaudeExpandedView: View {
             guard viewModel.composing == nil else { return }
             island.dismissAlert()
         }
+        // While a reply is being written the face holds still; what Claude
+        // needs meanwhile is said here, over the face's top-right corner,
+        // without moving anything.
+        .overlay(alignment: .topTrailing) {
+            composeNotice
+        }
+        // The wings: raised out of the face's box into the housing band,
+        // either side of the camera, the way the album rises beside it on
+        // the Music face. An overlay, so they never move the body.
+        //
+        // Outside the content shape above, on purpose: a content shape
+        // bounds hit-testing for everything inside it, and the wings are
+        // drawn above the face's box, so inside it they drew but took no
+        // clicks — the sessions chip and the list's way back were dead.
+        .overlay(alignment: .top) {
+            wings
+                .offset(y: -(wingLayout.band + NotchMetrics.contentTopGap))
+                .foregroundStyle(.white)
+                .animation(.easeInOut(duration: 0.22), value: listing)
+        }
     }
 
-    /// Occupies the album cover's exact footprint (size + raise), so the
-    /// glyph reads as the same block on both tabs and the dots scale up to
-    /// fill it — the frame is the only cap on dot size. Safe to raise into
-    /// the housing band: the glyph sits left of the camera cutout, on
-    /// ordinary screen, just like the album.
-    ///
-    /// Absent on the question face: it goes with the same spring the panel
-    /// grows on, and comes back when the question leaves.
+    // MARK: - While a reply is written
+
+    @ViewBuilder
+    private var composeNotice: some View {
+        if let refusal = viewModel.replyRefusal {
+            notice(refusal, tint: Self.lifted(stateColor(.warning)))
+        } else if viewModel.claudeNeedsYouWhileComposing {
+            notice("Claude needs you — finish, or esc", tint: Self.lifted(stateColor(.warning)))
+        }
+    }
+
+    private func notice(_ text: String, tint: Color) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(tint).frame(width: 6, height: 6)
+            Text(text)
+                .lineLimit(1)
+        }
+        .font(IsleType.metaStrong)
+        .foregroundStyle(.white.opacity(0.9))
+        .padding(.horizontal, 8)
+        .frame(height: L.chipHeight)
+        .background(Capsule().fill(Color(white: 0.12)))
+        .overlay(Capsule().inset(by: 0.5).stroke(tint.opacity(0.5), lineWidth: 1))
+        .fixedSize()
+        .transition(.opacity)
+        .accessibilityElement(children: .combine)
+    }
+
+    // MARK: - Wings
+
+    /// The housing band beside the camera, laid out for this screen.
+    private var wingLayout: L.Wings {
+        let metrics = island.metrics
+        return L.wings(
+            notch: metrics?.notchSize.width ?? NotchMetrics.fallbackNotchSize.width,
+            band: metrics?.notchSize.height ?? NotchMetrics.fallbackNotchSize.height,
+            physical: metrics?.hasPhysicalNotch ?? true,
+            crumb: L.crumbWidth(showsHome: viewModel.showsHome)
+        )
+    }
+
+    /// Either side of the camera, in the band as tall as the housing: what
+    /// the face is about on the left, the other sessions on the right ahead
+    /// of the crumb. Each wing ends `wingClearance` short of the cutout, and
+    /// what it holds gives way to its own width rather than reach past it.
+    private var wings: some View {
+        let layout = wingLayout
+        return HStack(spacing: 0) {
+            leftWing
+                .frame(width: layout.left, alignment: .leading)
+            Spacer(minLength: 0)
+            rightWing
+                .frame(width: layout.right, alignment: .trailing)
+                .padding(.trailing, layout.trailing)
+        }
+        .lineLimit(1)
+        .frame(width: L.faceWidth, height: layout.band)
+    }
+
+    /// The status: the marker and the state in its colour — "Percolating…",
+    /// "Done", "Needs approval" — the pill's own mark and word, grown. On a
+    /// question its header; on the list the way back.
+    @ViewBuilder
+    private var leftWing: some View {
+        if viewModel.sessionListShown {
+            listBack
+        } else if let asking {
+            questionWing(asking.request, question: asking.question)
+        } else {
+            HStack(spacing: L.glyphGap) {
+                glyph
+                Text(wingWord)
+                    .font(L.statusFont)
+                    .foregroundStyle(statusTint)
+                    .minimumScaleFactor(0.85)
+                    .truncationMode(.tail)
+                    .contentTransition(.opacity)
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    /// The other sessions and the way to them, ahead of the crumb; the
+    /// list's count on the list.
+    @ViewBuilder
+    private var rightWing: some View {
+        if viewModel.sessionListShown {
+            listCount
+        } else {
+            sessionMarks
+                .animation(.easeInOut(duration: 0.2), value: viewModel.otherSessions)
+        }
+    }
+
+    /// The marker: the collapsed island's mark at the collapsed island's
+    /// size, so opening the island grows its pill rather than replacing it.
     private var glyph: some View {
         ClaudeStatusGlyphView(state: state, kind: viewModel.claudeMarkerKind, palette: palette)
             .frame(width: L.glyphSize, height: L.glyphSize)
-            // No height of its own in the face's layout. The glyph is taller
-            // than the content area under a 32pt band (114 against 104), and
-            // as a full-height child it made the face overflow, which centred
-            // it: the whole face rode ~5pt up, the eyebrow into the camera
-            // cutout, and out of line with the question and list faces'.
-            .frame(width: L.glyphSize, height: 0, alignment: .top)
-            .offset(y: -L.glyphRaise)
+    }
+
+    /// The status word in the wing: the headline, in its short form where
+    /// the long one is a sentence. The wing holds about fourteen letters.
+    private var wingWord: String {
+        switch state {
+        case .needsApproval where agentState == nil:
+            if viewModel.isReviewingRemember, approval?.remember != nil { return "Always allow?" }
+            return approval?.isPlan == true ? "Plan ready" : "Needs approval"
+        case .failed where viewModel.isUsageLimit:
+            return ClaudeLimit.headline(kind: viewModel.claudeLimitKind, next: viewModel.claudeLimitNext)
+        default:
+            return headline
+        }
+    }
+
+    /// The state's colour, for its words: the marker's own hue — working in
+    /// the palette's, done green, an approval amber, an error red — lifted a
+    /// little so it reads as text on black. Ready and No session are plain:
+    /// they're not news.
+    private var statusTint: Color {
+        if agentState == nil, state == .idle || state == .disconnected { return .white.opacity(0.85) }
+        return Self.lifted(stateColor(viewModel.claudeMarkerKind))
+    }
+
+    private static func lifted(_ color: Color) -> Color {
+        guard let ns = NSColor(color).usingColorSpace(.sRGB),
+              let mixed = ns.blended(withFraction: 0.18, of: .white) else { return color }
+        return Color(nsColor: mixed)
     }
 
     // MARK: - Status face
 
-    /// A status, or an approval: the same rows, with the command and the
-    /// decision taking the body and the action row.
+    /// A status, or an approval. The state is the wing's, so the body leads
+    /// with what it's about — the command to approve, what Claude said, what
+    /// it's doing — then where and when, then the action row, which sits at
+    /// the foot of the face on every status and approval so it's always
+    /// where the pointer left it. A turn in progress has a face of its own
+    /// (`workingFace`).
+    @ViewBuilder
     private var statusFace: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            eyebrow(hint: viewModel.composing == .reply ? "esc to cancel" : nil) {
-                projectLabel
-                if viewModel.composing == .reply {
-                    if viewModel.claudeProject?.isEmpty == false { separator }
-                    Text("Replying").foregroundStyle(.white.opacity(0.8))
-                }
-            } extra: {
-                if viewModel.claudeUpdatedAt != nil, showsAge, viewModel.composing != .reply {
-                    if viewModel.claudeProject?.isEmpty == false { separator }
-                    elapsed
-                }
+        if viewModel.claudeTurnActive, approval == nil {
+            workingFace
+        } else {
+            restingFace
+        }
+    }
+
+    private var restingFace: some View {
+        let bare = approval == nil && !viewModel.claudeHasActions
+        return VStack(alignment: .leading, spacing: 0) {
+            if bare {
+                // Nothing to press: the hero and its lines sit in the
+                // middle of the standard panel, not at its top over an
+                // empty foot.
+                Spacer(minLength: 0)
             }
+            hero
+            Spacer().frame(height: L.heroGap)
+            metaLine()
+            if approval == nil {
+                extraLine
+            }
+            if approval != nil || viewModel.claudeHasActions {
+                Spacer(minLength: L.bodyGap)
+                actionRow(fixed: viewModel.composing != .reply) {
+                    if approval != nil {
+                        approvalActions
+                    } else {
+                        statusActions
+                    }
+                }
+            } else {
+                Spacer(minLength: 0)
+            }
+        }
+    }
 
-            Spacer().frame(height: L.eyebrowGap)
+    // MARK: - Working face
 
+    /// A turn in progress: what Claude is doing now, then up to three rows
+    /// of what else is true of the turn — its agents running, a call auto
+    /// mode blocked, a reply on its way, and the calls it has finished, the
+    /// newest nearest — and at the foot the meta line with the session's
+    /// terminal at its end. Every row is from a hook's record; with none
+    /// yet (the turn just started, or Claude is thinking) the face is the
+    /// headline and the meta alone, in the short panel, and it grows to the
+    /// standard one when the first row arrives. The rows hold all three
+    /// slots from then on, so a step arriving moves nothing.
+    private var workingFace: some View {
+        let rows = workRows
+        return VStack(alignment: .leading, spacing: 0) {
+            hero
+            if viewModel.claudeWorkHasRows {
+                Spacer().frame(height: L.heroGap)
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(rows) { row in
+                        workRow(row)
+                            .frame(height: L.workRowHeight, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .transition(.asymmetric(
+                                insertion: .opacity.combined(with: .offset(y: -6)),
+                                removal: .opacity))
+                    }
+                }
+                .frame(height: CGFloat(L.workSlots) * L.workRowHeight, alignment: .top)
+                .animation(.easeOut(duration: 0.22), value: rows.map(\.id))
+            }
+            Spacer(minLength: L.heroGap)
+            workingFoot
+                .padding(.bottom, L.bottomInset)
+        }
+    }
+
+    /// The working face's foot: where the session is, the reply — sent now,
+    /// Claude Code queues it for its next step — and the terminal. While the
+    /// reply is being written, its field takes the row, and grows upward.
+    @ViewBuilder
+    private var workingFoot: some View {
+        if viewModel.composing == .reply {
+            replyField
+        } else {
+            let gate = viewModel.replyGate
             HStack(spacing: 8) {
-                Text(headline)
-                    .font(L.headlineFont)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                    .contentTransition(.opacity)
-                    .layoutPriority(1)
-                if let pattern = approval?.guardedBy {
-                    guardChip(pattern)
+                if gate == .unavailable {
+                    metaLine()
+                } else {
+                    metaLine(fills: false)
+                    if case .dialog(let reason) = gate {
+                        replyLocked(reason)
+                    } else {
+                        replyPrompt
+                    }
+                }
+                jumpChip
+            }
+            .frame(height: L.chipHeight)
+        }
+    }
+
+    /// One row of the working face.
+    private enum WorkRow: Identifiable, Equatable {
+        /// A kind of agent running, how many, and on the last agent row
+        /// how many more aren't named.
+        case agents(type: String, count: Int, more: Int)
+        /// A reply Claude Code queued, and on the last such row how many
+        /// more there are.
+        case queued(NotchViewModel.QueuedReply, more: Int)
+        case block
+        case delivery
+        /// The first line of the prompt that started the turn.
+        case prompt(String)
+        /// A finished call; `age` 0 is the newest.
+        case step(ClaudeTrail.Step, age: Int)
+
+        var id: String {
+            switch self {
+            case .agents(let type, _, _): return "agents-\(type)"
+            case .queued(let reply, _): return "queued-\(reply.id)"
+            case .block: return "block"
+            case .delivery: return "delivery"
+            case .prompt: return "prompt"
+            case .step(let step, _): return "step-\(step.id)"
+            }
+        }
+    }
+
+    /// The rows, in order of what matters now: a reply on its way, the
+    /// agents running (two rows at most, the rest as "+N more"), a call
+    /// auto mode blocked, then the finished calls in what room is left.
+    private var workRows: [WorkRow] {
+        var rows: [WorkRow] = []
+        switch viewModel.replyDelivery {
+        case .sending, .sent: rows.append(.delivery)
+        default: break
+        }
+        let queued = viewModel.claudeQueued
+        if !queued.isEmpty {
+            let shown = Array(queued.prefix(L.queuedRows))
+            for (index, reply) in shown.enumerated() {
+                rows.append(.queued(reply, more: index == shown.count - 1 ? queued.count - shown.count : 0))
+            }
+        }
+        let running = viewModel.claudeSubagents
+        if !running.isEmpty {
+            let groups = Array(ClaudeSubagents.groups(running).prefix(L.agentRows))
+            let named = groups.reduce(0) { $0 + $1.count }
+            if groups.isEmpty {
+                // Agents whose type the hook didn't carry: counted, unnamed.
+                rows.append(.agents(type: "", count: running.count, more: 0))
+            }
+            for (index, group) in groups.enumerated() {
+                let last = index == groups.count - 1
+                rows.append(.agents(type: group.type, count: group.count, more: last ? running.count - named : 0))
+            }
+        }
+        if viewModel.claudeBlock != nil { rows.append(.block) }
+        // The prompt that started the turn, as the oldest row: before the
+        // first step it fills the slots; as steps arrive it keeps its place
+        // (`promptRowStays`) or gives it up to them.
+        let prompt = viewModel.claudeTrail?.prompt
+        let room = max(0, L.workSlots - rows.count)
+        let stepRoom = prompt != nil && L.promptRowStays ? max(0, room - 1) : room
+        let steps = viewModel.claudeTrail?.shown(current: viewModel.claudeActivity, limit: stepRoom) ?? []
+        rows += steps.enumerated().map { WorkRow.step($0.element, age: $0.offset) }
+        if let prompt, rows.count < L.workSlots { rows.append(.prompt(prompt)) }
+        return Array(rows.prefix(L.workSlots))
+    }
+
+    @ViewBuilder
+    private func workRow(_ row: WorkRow) -> some View {
+        switch row {
+        case .agents(let type, let count, let more):
+            HStack(spacing: 6) {
+                rowSymbol("arrow.triangle.branch")
+                    .foregroundStyle(statusTint)
+                Text(agentName(type, count: count))
+                    .foregroundStyle(.white.opacity(0.85))
+                if count > 1, !type.isEmpty {
+                    Text("×\(count)").monospacedDigit()
+                        .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
+                }
+                if more > 0 {
+                    Text("· +\(more) more")
+                        .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
                 }
             }
-            .frame(height: L.headlineLine, alignment: .leading)
+            .font(IsleType.meta)
+            .lineLimit(1)
+            .help(ClaudeSubagents.lines(viewModel.claudeSubagents).first ?? "")
+            .accessibilityElement(children: .combine)
+        case .queued(let reply, let more):
+            HStack(spacing: 6) {
+                rowSymbol("clock.arrow.circlepath")
+                    .foregroundStyle(.islandSecondary(IsleType.Tone.secondary))
+                Text("Queued")
+                    .font(IsleType.metaStrong)
+                    .foregroundStyle(.white.opacity(0.8))
+                Text(reply.text.replacingOccurrences(of: "\n", with: " ⏎ "))
+                    .foregroundStyle(.islandSecondary(IsleType.Tone.secondary))
+                    .truncationMode(.tail)
+                if more > 0 {
+                    Text("· +\(more) more")
+                        .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
+                        .fixedSize()
+                }
+            }
+            .font(IsleType.meta)
+            .lineLimit(1)
+            .help("Typed into the terminal while Claude was working; it takes it at its next step")
+            .accessibilityElement(children: .combine)
+        case .prompt(let text):
+            HStack(spacing: 6) {
+                rowSymbol("person.fill")
+                Text("You")
+                    .font(IsleType.metaStrong)
+                    .foregroundStyle(.islandSecondary(IsleType.Tone.secondary))
+                Text(text)
+                    .truncationMode(.tail)
+            }
+            .font(IsleType.meta)
+            .lineLimit(1)
+            .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
+            .help(text)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Your prompt: \(text)")
+        case .block:
+            blockLine
+        case .delivery:
+            HStack(spacing: 0) { deliveryRow }
+        case .step(let step, let age):
+            HStack(spacing: 6) {
+                rowSymbol(step.activity.symbolName)
+                Text(step.activity.pastPhrase)
+                    .truncationMode(.middle)
+            }
+            .font(IsleType.meta)
+            .lineLimit(1)
+            .foregroundStyle(.islandSecondary(stepTone(age)))
+            .accessibilityElement(children: .combine)
+        }
+    }
 
-            Spacer().frame(height: L.headlineGap)
+    /// The newest finished call in the body's tone, the older ones fading;
+    /// the oldest a touch brighter on glass.
+    private func stepTone(_ age: Int) -> Double {
+        switch age {
+        case 0: return IsleType.Tone.secondary
+        case 1: return IsleType.Tone.meta
+        default: return onGlass ? IsleType.Tone.faintOnGlass : IsleType.Tone.faint
+        }
+    }
 
-            if let approval {
-                approvalCommand(approval)
-            } else if case .failed(_, let reason) = viewModel.replyDelivery {
+    /// A row's symbol, in a fixed slot so the words line up.
+    private func rowSymbol(_ name: String) -> some View {
+        Image(systemName: name)
+            .font(.system(size: IsleType.Size.micro, weight: .semibold))
+            .frame(width: L.rowSymbolWidth)
+    }
+
+    /// "Explore agent", "Agent" for Claude Code's default kind, "2 agents"
+    /// for agents whose type the hook didn't carry.
+    private func agentName(_ type: String, count: Int) -> String {
+        if type.isEmpty { return "\(count) \(count == 1 ? "agent" : "agents")" }
+        if type == "general-purpose" { return "Agent" }
+        return "\(type) agent"
+    }
+
+    /// A reply on its way, as a row: sending, or sent and the turn it
+    /// started running.
+    @ViewBuilder
+    private var deliveryRow: some View {
+        switch viewModel.replyDelivery {
+        case .sending:
+            deliveryNote("Sending…", systemImage: "arrow.up.circle", tint: .white.opacity(0.6))
+        case .sent(let text):
+            deliveryNote("Sent", detail: text, systemImage: "checkmark.circle.fill", tint: .green)
+        default:
+            EmptyView()
+        }
+    }
+
+    /// The session's app, at the end of the working face's meta line: a
+    /// chip like the sessions chip, the way to the terminal while there's
+    /// nothing else to press.
+    @ViewBuilder
+    private var jumpChip: some View {
+        if viewModel.jumpAttaches {
+            chipButton("Attach in \(ClaudeLauncher.attachApp)", systemImage: "terminal") {
+                viewModel.jumpToSession()
+            }
+            .help("Open this background session in \(ClaudeLauncher.attachApp) (claude attach)")
+        } else if let target = viewModel.jumpTarget {
+            chipButton(target, systemImage: "arrow.up.forward.app") {
+                viewModel.jumpToSession()
+            }
+            .help("Show this session in \(target)")
+        }
+    }
+
+    private func chipButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .labelStyle(MetaLabelStyle())
+                .font(IsleType.metaStrong)
+                .foregroundStyle(.white.opacity(0.9))
+                .lineLimit(1)
+                .padding(.horizontal, 8)
+                .frame(height: L.chipHeight)
+                .background(Capsule().fill(.white.opacity(0.12)))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .accessibilityLabel(title)
+    }
+
+    /// The face's lead: the exact command on an approval; Claude's own words
+    /// after a turn (two lines at most, cut at a sentence's end where one
+    /// falls — see `ClaudeDoneLine` — never shrunk, one line when a line
+    /// below needs the room); otherwise what it's doing or what the state
+    /// means, as a title.
+    @ViewBuilder
+    private var hero: some View {
+        if let approval {
+            approvalCard(approval)
+        } else if let said = claudeSaid {
+            Text(said)
+                .font(L.saidFont)
+                .foregroundStyle(.white.opacity(0.92))
+                .lineLimit(hasExtraLine ? 1 : L.saidLines)
+                .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentTransition(.opacity)
+        } else {
+            // A long filename shrinks to fit before it's cut, and then from
+            // the middle, so "Editing SomeLongComponentName.swift" keeps
+            // its name and its extension.
+            Text(detail)
+                .font(L.headlineFont)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .truncationMode(.middle)
+                .frame(height: L.headlineLine, alignment: .leading)
+                .contentTransition(.opacity)
+        }
+    }
+
+    /// Where, when, and what else: "isle · 2m ago", "isle ☕",
+    /// "isle · 4m ago  [Guarded]", "isle · Replying · esc to cancel". Gives
+    /// way from the end, down to the project alone. A reply that didn't
+    /// land takes the whole line.
+    @ViewBuilder
+    private func metaLine(fills: Bool = true) -> some View {
+        Group {
+            if case .failed(_, let reason) = viewModel.replyDelivery {
                 Label(reason, systemImage: "exclamationmark.triangle.fill")
-                    .labelStyle(EyebrowLabelStyle())
-                    .font(L.detailFont)
                     .foregroundStyle(.orange)
-                    .lineLimit(1)
                     .minimumScaleFactor(0.8)
                     .truncationMode(.tail)
-                    .frame(height: L.detailLine, alignment: .leading)
-            } else if let said = claudeSaid {
-                // Claude's own words: up to two lines, cut at the end of a
-                // sentence where one falls (see `ClaudeDoneLine`), else at
-                // the tail. Never shrunk — it's prose, not a filename.
-                // One line of it when a block's line, or what the turn left
-                // running, is below: the two together hold the room two
-                // lines of it would.
-                Text(said)
-                    .font(L.detailFont)
-                    .foregroundStyle(.islandSecondary(0.72))
-                    .lineLimit(viewModel.claudeBlock == nil && leftovers == nil ? L.saidLines : 1)
-                    .truncationMode(.tail)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.trailing, switcherClearance)
-                    .contentTransition(.opacity)
-                // Room for one line under it: a block keeps it (Milestone
-                // 23), as the one thing on the face that didn't happen.
-                if viewModel.claudeBlock != nil {
-                    blockLine
-                } else {
-                    leftLine
-                }
-            } else if foldsAgents {
-                // What Claude is doing, with its agents at the end of the
-                // same line: "Running python3 · 1 agent".
-                activityLine
-                if viewModel.claudeBlock != nil {
-                    blockLine
-                }
-            } else {
-                detailText(detail)
-                    .frame(height: L.detailLine, alignment: .leading)
-                    .padding(.trailing, switcherClearance)
-                // A block takes the second line from the agents: it's the
-                // one thing on the face that didn't happen.
-                if viewModel.claudeBlock != nil {
-                    blockLine
-                } else if leftovers != nil {
-                    leftLine
-                } else {
-                    subagentLine
-                }
-            }
-
-            // The row follows what's above it at one gap, whatever its
-            // height, and the panel's spare room goes below it. Squeezed
-            // toward 2pt, never past, when a taller camera band leaves less.
-            Spacer(minLength: 2)
-                .frame(maxHeight: L.bodyGap)
-                .layoutPriority(1)
-
-            actionRow {
-                if approval != nil {
-                    approvalActions
-                } else {
-                    statusActions
-                }
-            }
-
-            Spacer(minLength: 0)
-        }
-    }
-
-    /// The detail line's text: shrinks a long filename to fit before
-    /// resorting to an ellipsis, so "Editing SomeLongComponentName.swift"
-    /// stays whole instead of getting clipped mid-name.
-    private func detailText(_ text: String) -> some View {
-        Text(text)
-            .font(L.detailFont)
-            .foregroundStyle(.islandSecondary(0.72))
-            .lineLimit(1)
-            .minimumScaleFactor(0.7)
-            .truncationMode(.middle)
-    }
-
-    /// The agents join the activity line while Claude is doing something
-    /// (working, thinking, compacting): one line instead of two. The faces
-    /// after a turn have no activity line, and keep theirs (Milestones 20
-    /// and 22).
-    private var foldsAgents: Bool {
-        agentState == nil && (state == .working || state == .compacting)
-    }
-
-    /// What Claude is doing, and the agents it has running at the line's end
-    /// (`ClaudeSubagents.briefs`): "Editing Foo.swift · 3 agents". Whole if
-    /// it fits; else the activity gives way — shrinks, then is cut in the
-    /// middle — and the agents keep their place, in their shortest form.
-    /// The tooltip names every kind.
-    @ViewBuilder
-    private var activityLine: some View {
-        let forms = ClaudeSubagents.briefs(viewModel.claudeSubagents)
-        let full = ClaudeSubagents.lines(viewModel.claudeSubagents).first
-        Group {
-            if forms.isEmpty {
-                detailText(detail)
             } else {
                 ViewThatFits(in: .horizontal) {
-                    ForEach(forms, id: \.self) { form in
-                        HStack(spacing: 0) {
-                            Text(detail)
-                                .foregroundStyle(.islandSecondary(0.72))
-                            agentsTail(form)
-                        }
-                        .lineLimit(1)
-                        .fixedSize()
-                    }
-                    HStack(spacing: 0) {
-                        detailText(detail)
-                        agentsTail(forms[forms.count - 1])
-                            .fixedSize()
-                            .layoutPriority(1)
-                    }
+                    metaItems(full: true)
+                    metaItems(full: false)
                 }
-                .font(L.detailFont)
-                .help(full ?? "")
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel([detail, full].compactMap { $0 }.joined(separator: ", "))
             }
         }
-        .frame(height: L.detailLine, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.trailing, switcherClearance)
-        .contentTransition(.opacity)
+        .font(L.metaFont)
+        .labelStyle(MetaLabelStyle())
+        .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
+        .lineLimit(1)
+        .frame(height: L.metaHeight, alignment: .leading)
+        .frame(maxWidth: fills ? .infinity : nil, alignment: .leading)
+        .fixedSize(horizontal: !fills, vertical: false)
     }
 
-    /// " · 1 agent", quieter than the activity in front of it, as the line
-    /// under it was.
-    private func agentsTail(_ form: String) -> some View {
-        (Text(" · ").foregroundColor(.white.opacity(0.3)) + Text(form))
-            .foregroundStyle(.islandSecondary(0.5))
-            .lineLimit(1)
+    /// The meta line in full, or (`full` false) the project alone, cut
+    /// short if it must be.
+    @ViewBuilder
+    private func metaItems(full: Bool) -> some View {
+        if full {
+            HStack(spacing: 5) {
+                projectLabel
+                // A dot between items, never ahead of the first.
+                if viewModel.composing == .reply {
+                    if showsProject { separator }
+                    Text("Replying").foregroundStyle(.white.opacity(0.8))
+                    separator
+                    Text("esc to cancel")
+                } else if viewModel.claudeUpdatedAt != nil, showsAge {
+                    if showsProject { separator }
+                    elapsed
+                }
+                if viewModel.isKeepingAwake {
+                    keepAwakeCup
+                        .padding(.leading, 3)
+                }
+                if let pattern = approval?.guardedBy {
+                    guardChip(pattern)
+                        .padding(.leading, 4)
+                }
+            }
+            .fixedSize()
+        } else {
+            HStack(spacing: 5) { projectLabel }
+        }
+    }
+
+    /// The meta line has a project (or a session's name, or the way back
+    /// to the list) to lead with.
+    private var showsProject: Bool {
+        isPinned || viewModel.claudeBackground?.name != nil || viewModel.claudeProject?.isEmpty == false
+    }
+
+    /// One more line, under the meta, for what didn't happen or is still
+    /// going on its own: a block (Milestone 23), what the turn left running
+    /// (Milestone 20), or the agents of a face with no activity for them to
+    /// join (Milestone 22) — in that order, one at most.
+    @ViewBuilder
+    private var extraLine: some View {
+        if viewModel.claudeBlock != nil {
+            blockLine
+        } else if leftovers != nil {
+            leftLine
+        } else if claudeSaid == nil, !foldsAgents {
+            subagentLine
+        }
+    }
+
+    private var hasExtraLine: Bool {
+        viewModel.claudeBlock != nil || leftovers != nil
+            || (claudeSaid == nil && !foldsAgents && !viewModel.claudeSubagents.isEmpty)
+    }
+
+    /// The command to approve, on a card of its own edged in the request's
+    /// colour: the thing the click authorises, set apart from everything
+    /// around it.
+    private func approvalCard(_ request: ClaudeRequest) -> some View {
+        approvalCommand(request)
+            .padding(.horizontal, L.cardPadding.width)
+            .padding(.vertical, L.cardPadding.height)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: L.cardRadius, style: .continuous)
+                .fill(.white.opacity(0.07)))
+            .overlay(RoundedRectangle(cornerRadius: L.cardRadius, style: .continuous)
+                .inset(by: 0.5)
+                .stroke(statusTint.opacity(0.35), lineWidth: 1))
+    }
+
+    /// The agents are counted on the meta line while Claude is doing
+    /// something (working, thinking, compacting), the tooltip naming every
+    /// kind. The faces after a turn have no activity to count them beside,
+    /// and keep their own line (Milestones 20 and 22).
+    private var foldsAgents: Bool {
+        agentState == nil && (state == .working || state == .compacting)
     }
 
     /// The subagents running for this session (Milestone 22), under what
@@ -316,8 +717,8 @@ struct ClaudeExpandedView: View {
                     Text(line).lineLimit(1)
                 }
             }
-            .font(L.detailFont)
-            .foregroundStyle(.islandSecondary(0.5))
+            .font(IsleType.meta)
+            .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
             .frame(height: L.detailLine, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.trailing, switcherClearance)
@@ -340,8 +741,8 @@ struct ClaudeExpandedView: View {
                     Text(line).lineLimit(1)
                 }
             }
-            .font(L.detailFont)
-            .foregroundStyle(.islandSecondary(0.5))
+            .font(IsleType.meta)
+            .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
             .frame(height: L.detailLine, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.trailing, switcherClearance)
@@ -391,48 +792,7 @@ struct ClaudeExpandedView: View {
         return text
     }
 
-    // MARK: - Eyebrow
-
-    /// The face's top row: what it's about on the left, and on the right the
-    /// marks that hold whatever the face shows — the other live sessions and
-    /// the keep-awake hold. Same height and place on every face.
-    ///
-    /// When it's crowded it gives way in order of what matters least:
-    /// `extra` first (the elapsed time); the project is cut short only
-    /// after that.
-    private func eyebrow<Leading: View, Extra: View>(
-        hint: String? = nil,
-        @ViewBuilder leading: () -> Leading,
-        @ViewBuilder extra: () -> Extra = { EmptyView() }
-    ) -> some View {
-        let leading = leading()
-        let extra = extra()
-        return ViewThatFits(in: .horizontal) {
-            eyebrowRow(hint: hint) { leading; extra }
-            eyebrowRow(hint: hint) { leading }
-        }
-        .font(L.eyebrowFont)
-        .labelStyle(EyebrowLabelStyle())
-        .foregroundStyle(.islandSecondary(0.5))
-        .lineLimit(1)
-        .frame(height: L.eyebrowHeight)
-    }
-
-    private func eyebrowRow<Leading: View>(hint: String? = nil,
-                                           @ViewBuilder leading: () -> Leading) -> some View {
-        HStack(spacing: 5) {
-            leading()
-            Spacer(minLength: 6)
-            if let hint {
-                Text(hint).fixedSize()
-            }
-            marks
-            // On a status face only: a request's own row has Terminal.
-            if jumpIsLone, asking == nil, approval == nil {
-                jumpChip
-            }
-        }
-    }
+    // MARK: - Where
 
     /// The session's project. On a session picked from the list it's the way
     /// back up — a chevron where the folder was — so the face says it's
@@ -469,7 +829,7 @@ struct ClaudeExpandedView: View {
         }
     }
 
-    /// The session's name in the eyebrow: a background session's own, else
+    /// The session's name on the meta line: a background session's own, else
     /// its project.
     private var sessionLabel: String? {
         viewModel.claudeBackground?.name ?? viewModel.claudeProject.flatMap { $0.isEmpty ? nil : $0 }
@@ -482,22 +842,6 @@ struct ClaudeExpandedView: View {
 
     private var separator: some View {
         Text("·").foregroundStyle(.white.opacity(0.3))
-    }
-
-    /// Other sessions and the keep-awake hold. Each is shown only while the
-    /// thing it names is true — the count from the registry's live sessions,
-    /// the cup from the assertion itself (`isKeepingAwake`) — and neither has
-    /// an "off" form.
-    private var marks: some View {
-        HStack(spacing: 8) {
-            sessionMarks
-            if viewModel.isKeepingAwake {
-                keepAwakeCup
-            }
-        }
-        .fixedSize()
-        .animation(.easeInOut(duration: 0.2), value: viewModel.otherSessions)
-        .animation(.easeInOut(duration: 0.2), value: viewModel.isKeepingAwake)
     }
 
     /// The keep-awake hold, as its cup alone: the words are its tooltip.
@@ -527,37 +871,93 @@ struct ClaudeExpandedView: View {
             Button {
                 viewModel.showSessionList()
             } label: {
-                HStack(spacing: 8) {
-                    othersCounts(others)
-                    if others.isEmpty, quiet > 0 {
-                        Text("+\(quiet)")
-                    }
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 8, weight: .bold))
-                        .padding(.leading, -4)
+                // In words where the wing has the room; else as the counts
+                // in their states' colours — amber needs you, the working
+                // colour busy — which the tooltip says in words.
+                ViewThatFits(in: .horizontal) {
+                    sessionChip(others, quiet: quiet, form: .words)
+                    sessionChip(others, quiet: quiet, form: .counts)
+                    sessionChip(others, quiet: quiet, form: .total)
+                    sessionChip(others, quiet: quiet, form: .tight)
                 }
-                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(others.isEmpty && quiet > 0 ? "\(quiet) more \(quiet == 1 ? "session" : "sessions")" : "Every session")
+            .help(sessionsHelp(others, quiet: quiet))
             .accessibilityLabel(others.isEmpty && quiet > 0
                                 ? "\(quiet) more \(quiet == 1 ? "session" : "sessions"), show every session"
                                 : "Every session, \(viewModel.sessionList.count) live")
-        } else {
-            othersCounts(others)
+        } else if !others.isEmpty {
+            ViewThatFits(in: .horizontal) {
+                sessionChip(others, quiet: 0, form: .words, chevron: false)
+                sessionChip(others, quiet: 0, form: .counts, chevron: false)
+                sessionChip(others, quiet: 0, form: .total, chevron: false)
+                sessionChip(others, quiet: 0, form: .tight, chevron: false)
+            }
+            .help(sessionsHelp(others, quiet: 0))
         }
     }
 
-    @ViewBuilder
-    private func othersCounts(_ others: ClaudeOtherSessions) -> some View {
-        if others.needYou > 0 {
-            Text("+\(others.needYou) \(others.needYou == 1 ? "needs" : "need") you")
-                .foregroundStyle(.white.opacity(0.8))
-                .accessibilityLabel("\(others.needYou) other \(others.needYou == 1 ? "session needs" : "sessions need") you")
+    private func sessionsHelp(_ others: ClaudeOtherSessions, quiet: Int) -> String {
+        var parts: [String] = []
+        if others.needYou > 0 { parts.append("\(others.needYou) \(others.needYou == 1 ? "needs" : "need") you") }
+        if others.working > 0 { parts.append("\(others.working) working") }
+        if others.isEmpty, quiet > 0 { parts.append("\(quiet) more \(quiet == 1 ? "session" : "sessions")") }
+        return (parts.isEmpty ? "Every session" : parts.joined(separator: ", ")) + " — show every session"
+    }
+
+    /// `tight` is `total` drawn closer, for the widest housings.
+    private enum ChipForm { case words, counts, total, tight }
+
+    /// The other sessions as a chip, in the fullest form the wing holds:
+    /// "● 1 needs you  ● 1 working ›", then "● 1  ● 1 ›", then the total
+    /// behind the most pressing state's dot, "● 2 ›". Amber is needs you,
+    /// the working colour busy; the tooltip says it in words.
+    private func sessionChip(_ others: ClaudeOtherSessions, quiet: Int, form: ChipForm,
+                             chevron: Bool = true) -> some View {
+        let amber = Self.lifted(stateColor(.warning))
+        let busy = Self.lifted(stateColor(.working))
+        let tight = form == .tight
+        return HStack(spacing: tight ? 4 : 6) {
+            if form == .total || tight, !others.isEmpty {
+                sessionCount(others.needYou + others.working, words: nil,
+                             color: others.needYou > 0 ? amber : busy)
+            } else {
+                if others.needYou > 0 {
+                    sessionCount(others.needYou,
+                                 words: form == .words ? (others.needYou == 1 ? "needs you" : "need you") : nil,
+                                 color: amber)
+                        .accessibilityLabel("\(others.needYou) other \(others.needYou == 1 ? "session needs" : "sessions need") you")
+                }
+                if others.working > 0 {
+                    sessionCount(others.working, words: form == .words ? "working" : nil, color: busy)
+                        .accessibilityLabel("\(others.working) other \(others.working == 1 ? "session" : "sessions") working")
+                }
+            }
+            if others.isEmpty, quiet > 0 {
+                Text("+\(quiet)")
+                    .foregroundStyle(.white.opacity(0.85))
+            }
+            if chevron {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .padding(.leading, -2)
+            }
         }
-        if others.working > 0 {
-            Text("+\(others.working) working")
-                .accessibilityLabel("\(others.working) other \(others.working == 1 ? "session" : "sessions") working")
+        .font(IsleType.metaStrong)
+        .monospacedDigit()
+        .padding(.horizontal, tight ? 5 : 7)
+        .frame(height: L.chipHeight)
+        .background(Capsule().fill(.white.opacity(chevron ? 0.1 : 0.05)))
+        .contentShape(Capsule())
+        .fixedSize()
+    }
+
+    private func sessionCount(_ count: Int, words: String?, color: Color) -> some View {
+        HStack(spacing: 4) {
+            Circle().fill(color).frame(width: 6, height: 6)
+            Text(words.map { "\(count) \($0)" } ?? "\(count)")
+                .foregroundStyle(.white.opacity(0.85))
         }
     }
 
@@ -585,52 +985,15 @@ struct ClaudeExpandedView: View {
 
     /// Every live session, one line each, most pressing first — selection's
     /// own order. A row's click makes that session the face's; its Jump goes
-    /// to the session's terminal. The way back is the eyebrow's chevron.
+    /// to the session's terminal. The way back is the left wing's chevron.
     ///
     /// No glyph: each row has its own marker, and the rows want the face's
     /// whole width. Four rows fit the standard panel; past that they scroll
     /// (vertically — a sideways swipe is the way between faces), with the
-    /// count in the eyebrow and the last row fading at the foot to say so.
+    /// count in the right wing and the last row fading at the foot to say so.
     private var sessionListFace: some View {
         let rows = viewModel.sessionList
-        let scrolls = sessionRowsRoom > 0 && L.sessionRowsHeight(rows.count) > sessionRowsRoom + 0.5
         return VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 5) {
-                Button {
-                    viewModel.closeSessionList()
-                } label: {
-                    Label("Sessions", systemImage: "chevron.left")
-                        .foregroundStyle(.white.opacity(0.8))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .fixedSize()
-                .accessibilityLabel("Back")
-                separator
-                // "live" only while it's true of every row: a background
-                // session agent view lists may have no process at all.
-                Text(rows.allSatisfy { $0.background?.hasHookRecord ?? true }
-                     ? "\(rows.count) live" : "\(rows.count) \(rows.count == 1 ? "session" : "sessions")")
-                    .monospacedDigit()
-                if scrolls {
-                    // More than fit: the rest are a scroll away.
-                    Image(systemName: "arrow.up.and.down")
-                        .imageScale(.small)
-                        .accessibilityLabel("Scrolls")
-                }
-                Spacer(minLength: 6)
-                if viewModel.isKeepingAwake {
-                    keepAwakeCup
-                }
-            }
-            .font(L.eyebrowFont)
-            .labelStyle(EyebrowLabelStyle())
-            .foregroundStyle(.islandSecondary(0.5))
-            .lineLimit(1)
-            .frame(height: L.eyebrowHeight)
-
-            Spacer().frame(height: L.eyebrowGap)
-
             GeometryReader { proxy in
                 let fits = L.sessionRowsHeight(rows.count) <= proxy.size.height + 0.5
                 Group {
@@ -660,6 +1023,58 @@ struct ClaudeExpandedView: View {
             .padding(.bottom, L.sessionListBottomInset)
         }
         .animation(.easeInOut(duration: 0.2), value: rows)
+    }
+
+    /// The list's left wing: the way back to the face.
+    private var listBack: some View {
+        Button {
+            viewModel.closeSessionList()
+        } label: {
+            Label("Sessions", systemImage: "chevron.left")
+                .font(IsleType.headline)
+                .labelStyle(MetaLabelStyle())
+                .foregroundStyle(.white.opacity(0.9))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .accessibilityLabel("Back")
+    }
+
+    /// The list's right wing: how many, whether the rest are a scroll
+    /// away, and the keep-awake cup — the cup first to go when the wing is
+    /// short, then the scroll mark.
+    private var listCount: some View {
+        let rows = viewModel.sessionList
+        let scrolls = sessionRowsRoom > 0 && L.sessionRowsHeight(rows.count) > sessionRowsRoom + 0.5
+        return ViewThatFits(in: .horizontal) {
+            listCountRow(rows, scrolls: scrolls, cup: viewModel.isKeepingAwake)
+            listCountRow(rows, scrolls: scrolls, cup: false)
+            listCountRow(rows, scrolls: false, cup: false)
+        }
+        .font(L.metaFont)
+        .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
+    }
+
+    private func listCountRow(_ rows: [ClaudeSessionRow], scrolls: Bool, cup: Bool) -> some View {
+        HStack(spacing: 5) {
+            // "live" only while it's true of every row: a background
+            // session agent view lists may have no process at all.
+            Text(rows.allSatisfy { $0.background?.hasHookRecord ?? true }
+                 ? "\(rows.count) live" : "\(rows.count) \(rows.count == 1 ? "session" : "sessions")")
+                .monospacedDigit()
+            if scrolls {
+                // More than fit: the rest are a scroll away.
+                Image(systemName: "arrow.up.and.down")
+                    .imageScale(.small)
+                    .accessibilityLabel("Scrolls")
+            }
+            if cup {
+                keepAwakeCup
+                    .padding(.leading, 3)
+            }
+        }
+        .fixedSize()
     }
 
     private func sessionRows(_ rows: [ClaudeSessionRow]) -> some View {
@@ -710,7 +1125,7 @@ struct ClaudeExpandedView: View {
                         .fixedSize()
                     Text(row.detail)
                         .font(L.sessionDetailFont)
-                        .foregroundStyle(.islandSecondary(0.55))
+                        .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
                         .lineLimit(1)
                         .truncationMode(.tail)
                     Spacer(minLength: 4)
@@ -718,7 +1133,7 @@ struct ClaudeExpandedView: View {
                         Text(Self.shortAge(from: updated, to: now))
                             .font(L.sessionDetailFont)
                             .monospacedDigit()
-                            .foregroundStyle(.white.opacity(0.4))
+                            .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
                             .fixedSize()
                     }
                 }
@@ -810,8 +1225,10 @@ struct ClaudeExpandedView: View {
             }
         }
         .font(L.commandFont)
-        .foregroundStyle(.islandSecondary(0.72))
-        .frame(minHeight: CGFloat(Self.commandBoxLines(request)) * L.commandLine, alignment: .topLeading)
+        .foregroundStyle(.islandSecondary(IsleType.Tone.secondary))
+        // Centred in the lines it holds, so a one-line command in a box
+        // kept at two (for the review) sits in the card's middle.
+        .frame(minHeight: CGFloat(Self.commandBoxLines(request)) * L.commandLine, alignment: .leading)
         .padding(.trailing, switcherClearance)
     }
 
@@ -850,7 +1267,7 @@ struct ClaudeExpandedView: View {
                     .font(.system(size: 9.5, weight: .semibold))
                 if showWord { Text("Guarded") }
             }
-            .font(L.eyebrowFont)
+            .font(L.metaFont)
             .foregroundStyle(Color(red: 1, green: 0.8, blue: 0.55))
             .padding(.horizontal, 7)
             .frame(height: 17)
@@ -993,26 +1410,17 @@ struct ClaudeExpandedView: View {
     @ViewBuilder
     private var statusActions: some View {
         if viewModel.composing == .reply {
-            ComposeField(
-                text: $viewModel.replyDraft,
-                prompt: "Reply to Claude…",
-                sendTitle: "Send",
-                sendFill: .white,
-                sendForeground: .black,
-                onSend: { viewModel.sendCompose() },
-                onCancel: { viewModel.endCompose() }
-            )
+            replyField
         } else {
-            // Beside the reply field on a terminal Isle can type into; on
-            // any other, Jump is the eyebrow's chip and this row stays empty.
-            // Attaching to a background session (Milestone 21) is a pill of
-            // its own here: its eyebrow has the session's name to hold.
+            // The session's app by name, beside the reply field on a
+            // terminal Isle can type into and alone on any other. Attaching
+            // to a background session (Milestone 21) is a pill of its own.
             if viewModel.jumpAttaches {
                 pill("Attach in \(ClaudeLauncher.attachApp)", systemImage: "terminal", fill: .white.opacity(0.14)) {
                     viewModel.jumpToSession()
                 }
                 .help("Open this background session in \(ClaudeLauncher.attachApp) (claude attach)")
-            } else if let target = viewModel.jumpTarget, !jumpIsLone {
+            } else if let target = viewModel.jumpTarget {
                 pill(target, systemImage: "arrow.up.forward.app", fill: .white.opacity(0.14)) {
                     viewModel.jumpToSession()
                 }
@@ -1026,6 +1434,8 @@ struct ClaudeExpandedView: View {
             default:
                 if viewModel.canReply {
                     replyPrompt
+                } else if case .dialog(let reason) = viewModel.replyGate {
+                    replyLocked(reason)
                 } else {
                     Spacer(minLength: 0)
                 }
@@ -1033,40 +1443,42 @@ struct ClaudeExpandedView: View {
         }
     }
 
-    /// Jump with no reply beside it, ever: the session's terminal can't be
-    /// typed into (Ghostty, VS Code, Cursor, kitty, Warp…) or replying from
-    /// the notch is off. Decided by the host, not the state, so on a
-    /// terminal that does take replies the pill keeps its place in the row
-    /// while the reply field comes and goes beside it.
-    private var jumpIsLone: Bool {
-        viewModel.jumpTarget != nil && !viewModel.repliesFromNotch && !viewModel.jumpAttaches
+    /// The reply being written: up to four lines, then it scrolls; Return
+    /// sends, Shift-Return starts a new line. The panel grows with it — the
+    /// field reports how much taller than a line it is drawn.
+    private var replyField: some View {
+        ComposeField(
+            text: $viewModel.replyDraft,
+            prompt: viewModel.replyGate == .queues ? "Reply to Claude — it takes it at its next step…" : "Reply to Claude…",
+            sendTitle: "Send",
+            sendFill: .white,
+            sendForeground: .black,
+            maxLines: L.replyMaxLines,
+            onHeight: { viewModel.setReplyFieldExtra($0 - L.actionHeight) },
+            onSend: { viewModel.sendCompose() },
+            onCancel: { viewModel.endCompose() }
+        )
     }
 
-    /// The lone Jump, as a quiet chip: the session's app by name, at the
-    /// eyebrow's trailing end, on the row that already says where the
-    /// session is. Alone in the action row it was a big pill in an empty row,
-    /// bottom-left; here it takes no row of its own and leaves the room
-    /// below to what Claude said. Below the camera band, on the eyebrow's
-    /// line, so it never meets the hardware.
-    @ViewBuilder
-    private var jumpChip: some View {
-        if let target = viewModel.jumpTarget {
-            Button {
-                viewModel.jumpToSession()
-            } label: {
-                Label(target, systemImage: "arrow.up.forward.app")
-                    .labelStyle(EyebrowLabelStyle())
-                    .foregroundStyle(.white.opacity(0.85))
-                    .padding(.horizontal, 7)
-                    .frame(height: 17)
-                    .background(Capsule().fill(.white.opacity(0.12)))
-                    .contentShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .fixedSize()
-            .help(viewModel.jumpAttaches ? "Attach in \(target)" : "Show this session in \(target)")
-            .accessibilityLabel(viewModel.jumpAttaches ? "Attach to this session in \(target)" : "Show this session in \(target)")
+    /// The reply while a prompt is up in the terminal, where typing would
+    /// answer it: the field's shape, disabled, saying why.
+    private func replyLocked(_ reason: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "lock.fill")
+                .font(.system(size: 9, weight: .semibold))
+            Text(reason)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
         }
+        .font(L.pillFont)
+        .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
+        .padding(.horizontal, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(Capsule().inset(by: 0.5).stroke(.white.opacity(0.12), style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
+        .help(reason)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Reply unavailable: \(reason)")
     }
 
     /// "Reply to Claude…" at rest: a button shaped like the field it opens
@@ -1079,8 +1491,10 @@ struct ClaudeExpandedView: View {
             HStack(spacing: 6) {
                 Image(systemName: "arrowshape.turn.up.left.fill")
                     .font(.system(size: 9.5, weight: .semibold))
-                    .foregroundStyle(.islandSecondary(0.55))
-                Text(draft.isEmpty ? "Reply to Claude…" : draft)
+                    .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
+                Text(draft.isEmpty
+                     ? (viewModel.replyGate == .queues ? "Reply — Claude takes it at its next step…" : "Reply to Claude…")
+                     : draft.replacingOccurrences(of: "\n", with: " ⏎ "))
                     .foregroundStyle(.white.opacity(draft.isEmpty ? 0.55 : 0.9))
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -1108,7 +1522,7 @@ struct ClaudeExpandedView: View {
                 .fixedSize()
             if let detail {
                 Text(detail)
-                    .foregroundStyle(.islandSecondary(0.5))
+                    .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
@@ -1120,13 +1534,13 @@ struct ClaudeExpandedView: View {
 
     // MARK: - Question
 
-    /// One question of an `AskUserQuestion`: its header and step in the
-    /// eyebrow, the question as the title, its options as rows, and the way
+    /// One question of an `AskUserQuestion`: its header and step in the left
+    /// wing, the question as the title, its options as rows, and the way
     /// out to the terminal. The panel has grown to fit — sized from the same
     /// `ClaudePanelLayout.fit` these rows are drawn from.
     ///
-    /// No glyph here: the eyebrow, question and options all run the face's
-    /// whole width. Every option is always on screen: where the
+    /// The header is the left wing's; the question and options run the
+    /// face's whole width. Every option is always on screen: where the
     /// capped panel can't hold the descriptions as the setting draws them,
     /// they shorten instead (see `fit`), and the action row below is never
     /// pushed off.
@@ -1146,20 +1560,6 @@ struct ClaudeExpandedView: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 0) {
-                    eyebrow {
-                        projectLabel
-                        separator
-                        Label(question.header ?? "Question", systemImage: "questionmark.bubble.fill")
-                            .foregroundStyle(.white.opacity(0.8))
-                            .layoutPriority(-0.5)
-                        if request.questions.count > 1 {
-                            separator
-                            step(index: index, count: request.questions.count)
-                        }
-                    }
-
-                    Spacer().frame(height: L.eyebrowGap)
-
                     Text(question.question)
                         .font(L.questionFont)
                         .lineLimit(fit.questionLines)
@@ -1232,12 +1632,20 @@ struct ClaudeExpandedView: View {
                     }
                     if fit.scrolls {
                         Label("\(question.options.count) options", systemImage: "arrow.up.and.down")
-                            .font(L.eyebrowFont)
-                            .labelStyle(EyebrowLabelStyle())
-                            .foregroundStyle(.islandSecondary(0.5))
+                            .font(L.metaFont)
+                            .labelStyle(MetaLabelStyle())
+                            .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
                             .fixedSize()
                     }
                     Spacer(minLength: 0)
+                    // Which session is asking, in the row's slack: the
+                    // header has the wing.
+                    HStack(spacing: 5) { projectLabel }
+                        .font(L.metaFont)
+                        .labelStyle(MetaLabelStyle())
+                        .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
+                        .lineLimit(1)
+                        .layoutPriority(-1)
                     if question.multiSelect {
                         // Approve's key presses it, once there's a pick to send.
                         pill(isLast ? "Done" : "Next",
@@ -1250,6 +1658,26 @@ struct ClaudeExpandedView: View {
                     }
     }
 
+    /// The question's left wing: its marker and header, and where in a
+    /// multi-part ask this is. The project is the right wing's to give up
+    /// first.
+    private func questionWing(_ request: ClaudeRequest, question: ClaudeQuestion) -> some View {
+        let index = viewModel.questionIndex
+        return HStack(spacing: L.glyphGap) {
+            glyph
+            Text(question.header ?? "Question")
+                .font(L.statusFont)
+                .foregroundStyle(statusTint)
+                .truncationMode(.tail)
+                .layoutPriority(-1)
+            if request.questions.count > 1 {
+                step(index: index, count: request.questions.count)
+                    .font(L.metaFont)
+                    .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
+            }
+        }
+    }
+
     /// "‹ 2 of 3": where in a multi-part ask this is, and the way back.
     private func step(index: Int, count: Int) -> some View {
         HStack(spacing: 2) {
@@ -1259,7 +1687,7 @@ struct ClaudeExpandedView: View {
                 } label: {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 9.5, weight: .bold))
-                        .frame(width: 16, height: L.eyebrowHeight)
+                        .frame(width: 16, height: L.metaHeight)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -1317,7 +1745,7 @@ struct ClaudeExpandedView: View {
                             .padding(.trailing, clearance ?? 0)
                         Text(option.description ?? "")
                             .font(L.optionDescriptionFont)
-                            .foregroundStyle(.islandSecondary(0.55))
+                            .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
                             .lineLimit(lines)
                             .truncationMode(.tail)
                             .frame(height: CGFloat(lines) * L.optionDescriptionLine, alignment: .topLeading)
@@ -1328,7 +1756,7 @@ struct ClaudeExpandedView: View {
                     if style == .oneLine, let description = option.description {
                         Text(description)
                             .font(L.optionDescriptionFont)
-                            .foregroundStyle(.islandSecondary(0.55))
+                            .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
@@ -1374,11 +1802,14 @@ struct ClaudeExpandedView: View {
 
     /// The row every face shares: one height. A status or approval face
     /// sets it `bodyGap` below its body; the question face's grows to it.
-    private func actionRow<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        HStack(spacing: 8) {
+    /// Not `fixed` while a field that grows is in it: the row is then the
+    /// field's height.
+    private func actionRow<Content: View>(fixed: Bool = true, @ViewBuilder content: () -> Content) -> some View {
+        HStack(alignment: .bottom, spacing: 8) {
             content()
         }
-        .frame(height: L.actionHeight)
+        .frame(height: fixed ? L.actionHeight : nil)
+        .frame(minHeight: L.actionHeight)
         .padding(.trailing, switcherClearance)
         .padding(.bottom, L.bottomInset)
     }
@@ -1490,7 +1921,7 @@ struct ClaudeExpandedView: View {
         }
     }
 
-    /// The eyebrow says how long ago the session last moved only where the
+    /// The meta line says how long ago the session last moved only where the
     /// age means something: after a turn (Done, Waiting, Ready), on a
     /// request, a failure. Not while Claude is at work — working, thinking,
     /// compacting — when it's always a few seconds and only ticks.
@@ -1617,9 +2048,9 @@ private struct PillLabelStyle: LabelStyle {
     }
 }
 
-/// An eyebrow label: the symbol a touch smaller than the text and tucked in
+/// A meta label: the symbol a touch smaller than the text and tucked in
 /// closer than `Label`'s default, so a mark reads as one word.
-private struct EyebrowLabelStyle: LabelStyle {
+private struct MetaLabelStyle: LabelStyle {
     func makeBody(configuration: Configuration) -> some View {
         HStack(spacing: 3) {
             configuration.icon
@@ -1642,26 +2073,51 @@ private struct ComposeField: View {
     let sendTitle: String
     let sendFill: Color
     let sendForeground: Color
+    /// More than one, and the field grows a line at a time to this many as
+    /// the text wraps or Shift-Return starts a line, then scrolls.
+    var maxLines = 1
+    /// The height it's drawn at, as it changes.
+    var onHeight: ((CGFloat) -> Void)? = nil
     let onSend: () -> Void
     let onCancel: () -> Void
 
     @FocusState private var focused: Bool
+    /// The window the field is in, for Shift-Return's newline.
+    @State private var window = WindowReference()
 
     private var isEmpty: Bool {
         text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
-        HStack(spacing: 6) {
-            TextField(text: $text, prompt: Text(prompt).foregroundStyle(.white.opacity(0.4))) {
+        HStack(alignment: .bottom, spacing: 6) {
+            TextField(text: $text, prompt: Text(prompt).foregroundStyle(.white.opacity(0.4)),
+                      axis: maxLines > 1 ? .vertical : .horizontal) {
                 Text(prompt)
             }
+            .lineLimit(1...max(1, maxLines))
             .textFieldStyle(.plain)
-            .font(.system(size: 12, weight: .medium))
+            .font(IsleType.body)
             .foregroundStyle(.white)
             .focused($focused)
+            // Return sends; Shift-Return (or Option-Return) is a new line
+            // in a field that takes more than one.
+            .onKeyPress(keys: [.return], phases: .down) { press in
+                if press.modifiers.contains(.shift) || press.modifiers.contains(.option) {
+                    if maxLines > 1 {
+                        // Into this field's own editor — the first responder
+                        // of the window it's in — never whichever window
+                        // AppKit counts as key just then.
+                        (window.window?.firstResponder as? NSTextView)?.insertNewlineIgnoringFieldEditor(nil)
+                    }
+                    return .handled
+                }
+                if !isEmpty { onSend() }
+                return .handled
+            }
             .onSubmit { if !isEmpty { onSend() } }
             .onExitCommand(perform: onCancel)
+            .padding(.vertical, (ClaudePanelLayout.actionHeight - ClaudePanelLayout.detailLine) / 2)
 
             Button(action: onSend) {
                 HStack(spacing: 4) {
@@ -1672,20 +2128,30 @@ private struct ComposeField: View {
                 .font(ClaudePanelLayout.pillFont)
                 .foregroundStyle(sendForeground)
                 .padding(.horizontal, 9)
-                .frame(maxHeight: .infinity)
+                .frame(height: ClaudePanelLayout.actionHeight - 4)
                 .background(Capsule().fill(sendFill))
                 .contentShape(Capsule())
             }
             .buttonStyle(.plain)
             .disabled(isEmpty)
             .opacity(isEmpty ? 0.5 : 1)
-            .padding(.vertical, 2)
+            .padding(.bottom, 2)
         }
         .padding(.leading, 10)
         .padding(.trailing, 2)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Capsule().fill(.white.opacity(0.08)))
-        .overlay(Capsule().inset(by: 0.5).stroke(.white.opacity(0.4), lineWidth: 1))
+        .frame(maxWidth: .infinity, minHeight: ClaudePanelLayout.actionHeight)
+        .background(RoundedRectangle(cornerRadius: ClaudePanelLayout.actionHeight / 2, style: .continuous)
+            .fill(.white.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: ClaudePanelLayout.actionHeight / 2, style: .continuous)
+            .inset(by: 0.5).stroke(.white.opacity(0.4), lineWidth: 1))
+        .background(WindowReader(reference: window))
+        .background {
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { onHeight?(proxy.size.height) }
+                    .onChange(of: proxy.size.height) { _, height in onHeight?(height) }
+            }
+        }
         .onAppear {
             // After the panel has been made key, which the window controller
             // does on the same turn of the run loop that put this on screen.
@@ -1694,6 +2160,36 @@ private struct ComposeField: View {
         // Gone from the face for any reason — a swipe to another face, an
         // approval taking this one — and the keys go back with it, rather
         // than the panel holding focus for a field nobody can see.
-        .onDisappear(perform: onCancel)
+        .onDisappear {
+            onHeight?(ClaudePanelLayout.actionHeight)
+            onCancel()
+        }
+    }
+}
+
+/// Holds the window a view is in, weakly, without SwiftUI watching it.
+private final class WindowReference {
+    weak var window: NSWindow?
+}
+
+/// Fills a `WindowReference` with the window it's placed in.
+private struct WindowReader: NSViewRepresentable {
+    let reference: WindowReference
+
+    func makeNSView(context: Context) -> NSView { Probe(reference: reference) }
+    func updateNSView(_ view: NSView, context: Context) {}
+
+    private final class Probe: NSView {
+        let reference: WindowReference
+        init(reference: WindowReference) {
+            self.reference = reference
+            super.init(frame: .zero)
+        }
+        required init?(coder: NSCoder) { fatalError() }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            reference.window = window
+        }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }

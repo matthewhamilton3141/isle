@@ -20,6 +20,13 @@ struct NotchRootView: View {
     /// drawn on. One per display; the view model behind it is shared.
     @ObservedObject var island: IslandPresentation
 
+    /// Which part of the island this tree draws (`IslandGlassLayer`): all of
+    /// it, or, as Isle runs, the panel without the glass material over a
+    /// second tree in a non-key window that draws the material alone. The
+    /// material's tree builds no content and makes no haptics; its outline
+    /// follows the same state on the same springs.
+    var glassLayer: IslandGlassLayer = .all
+
     /// Reports the currently occupied rect (in this view's coordinate space)
     /// so the window can restrict hit-testing to it. Optional so previews can
     /// build the view without the window controller's hit-test plumbing.
@@ -47,10 +54,11 @@ struct NotchRootView: View {
         reduceTransparency ? .black : viewModel.panelBackground
     }
 
-    /// The camera housing the notch glow grows from: with the glow on, and
-    /// only on a screen with a real notch.
+    /// The camera housing the notch glow grows from: with the glow on, in a
+    /// mode that has one, and only on a screen with a real notch.
     private var glowHousing: CGSize? {
-        guard viewModel.panelNotchGlow, let metrics = island.metrics, metrics.hasPhysicalNotch else { return nil }
+        guard viewModel.panelNotchGlow, panelBackground.growsNotchGlow,
+              let metrics = island.metrics, metrics.hasPhysicalNotch else { return nil }
         return metrics.notchSize
     }
 
@@ -131,6 +139,14 @@ struct NotchRootView: View {
         viewModel.palette
     }
 
+    /// The cover's colours for Fade's light: only while there's a track up
+    /// and it has a cover. Not `palette`, whose accent stand-in would light
+    /// a panel with no music in it; without a cover the light stays
+    /// spectral.
+    private var lightPalette: ArtworkPalette? {
+        panelBackground == .fade && viewModel.hasMusicActivity ? viewModel.artworkPalette : nil
+    }
+
     /// Height of the physical camera housing. Content in the expanded panel
     /// has to start below this. Falls back to the common 32pt housing if
     /// metrics aren't available yet, which is safer than falling back to 0 —
@@ -199,10 +215,11 @@ struct NotchRootView: View {
             }
             // Only on the open/close transition itself, not on changes between
             // the two expanded states — those aren't a gesture the user made
-            // and buzzing for them would feel random.
-            guard previous.isExpanded != current.isExpanded else { return }
+            // and buzzing for them would feel random. Once, from the panel.
+            guard previous.isExpanded != current.isExpanded, glassLayer != .materialOnly else { return }
             viewModel.playTransitionHaptic()
         }
+        .environment(\.islandGlassLayer, glassLayer)
     }
 
     /// The island's outline, shared by the clip and the fill so the two can
@@ -235,7 +252,7 @@ struct NotchRootView: View {
                 // the top `notchHeight` points of the expanded panel — that's
                 // physical hardware, and anything placed there is simply
                 // invisible rather than merely obscured.
-                .padding(.top, state.isExpanded ? notchBandHeight + 2 : 0)
+                .padding(.top, state.isExpanded ? notchBandHeight + NotchMetrics.contentTopGap : 0)
                 .padding(.bottom, state.isExpanded ? 8 : 0)
 
             // The way home, inside a face (only when there is more than one
@@ -249,7 +266,9 @@ struct NotchRootView: View {
             // It comes and goes with the tile moves under it, on their spring
             // (see `TileMorph`), rather than popping as the face starts.
             ZStack {
-                if state.isExpanded, viewModel.showsHome, !island.isDropTarget, let face = viewModel.expandedPlace.face {
+                if glassLayer == .materialOnly {
+                    EmptyView()
+                } else if state.isExpanded, viewModel.showsHome, !island.isDropTarget, let face = viewModel.expandedPlace.face {
                     NotchCrumb(face: face, attention: viewModel.needsYouElsewhere) {
                         viewModel.selectHome()
                     }
@@ -311,7 +330,9 @@ struct NotchRootView: View {
                 background: panelBackground,
                 opened: state.isExpanded,
                 housing: glowHousing,
-                housingShift: collapsedShift
+                housingShift: collapsedShift,
+                bandHeight: notchBandHeight,
+                lightPalette: lightPalette
             )
         }
         // The corners lead the collapse: the clip's and the fill's radii.
@@ -371,7 +392,10 @@ struct NotchRootView: View {
 
     @ViewBuilder
     private var content: some View {
-        if state.isExpanded {
+        if glassLayer == .materialOnly {
+            // The material's window draws no content.
+            EmptyView()
+        } else if state.isExpanded {
             let glass = panelBackground.isGlass
             ExpandedNotchView(viewModel: viewModel, island: island, palette: glass ? palette.flooredForGlass : palette)
                 .environment(\.islandOnGlass, glass)

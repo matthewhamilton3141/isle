@@ -150,6 +150,18 @@ final class NotchViewModel: ObservableObject {
     /// `ClaudeSubagents` for the line made of it.
     @Published private(set) var claudeSubagents: [String] = []
 
+    /// Each live session's trail: the calls its turn has finished, as its
+    /// records reported them (see `ClaudeTrail`). Kept from every scan, not
+    /// just the island's session's, so a session picked from the list or
+    /// taking the island arrives with its trail; dropped with the session's
+    /// record.
+    @Published private(set) var claudeTrails: [String: ClaudeTrail] = [:]
+
+    /// The island's session's trail.
+    var claudeTrail: ClaudeTrail? {
+        claudeSessionId.flatMap { claudeTrails[$0] }
+    }
+
     /// The last call auto mode blocked in the island's session since its
     /// last prompt (Milestone 23), as its record carries it. An event, not a
     /// state: it changes no headline, and the face says it in a line of its
@@ -202,6 +214,40 @@ final class NotchViewModel: ObservableObject {
     private var sessionPin: ClaudeSelection.Pin? {
         didSet {
             if pinnedSessionId != sessionPin?.sessionId { pinnedSessionId = sessionPin?.sessionId }
+        }
+    }
+
+    /// Which session the island shows, kept steady as several change at
+    /// once (see `ClaudeSelection.Selector`): the collapsed pill and the
+    /// open face both show its pick.
+    private var selector = ClaudeSelection.Selector()
+    /// Asks selection again when a higher rank's hold runs out.
+    private var selectionRecheck: Task<Void, Never>?
+    /// The Done records the user has seen, by session: the record's
+    /// `updatedAt` when the panel closed on it.
+    private var seenDone: [String: Date] = [:]
+    /// Lets go of the pin once the panel has stayed closed a while.
+    private var pinRelease: Task<Void, Never>?
+    /// How long the panel stays closed before a picked session lets go.
+    private static let pinReleaseSeconds: TimeInterval = 10
+
+    /// A Done the user has seen — the panel was open on it — or one older
+    /// than the island shows Done for: no longer news, so just ready.
+    private func isSeen(_ status: ClaudeStatus) -> Bool {
+        guard status.state == .done, let id = status.sessionId, let updated = status.updatedAt else { return true }
+        if seenDone[id] == updated { return true }
+        return Date().timeIntervalSince(updated) >= settings.doneToastSeconds
+    }
+
+    private func scheduleSelectionRecheck(at date: Date?) {
+        selectionRecheck?.cancel()
+        selectionRecheck = nil
+        guard let date else { return }
+        let delay = max(0.05, date.timeIntervalSinceNow + 0.02)
+        selectionRecheck = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            self?.requestClaudeReading(.tick)
         }
     }
 
@@ -298,7 +344,83 @@ final class NotchViewModel: ObservableObject {
     /// Which text field is taking keys, if any. The window controller makes
     /// the panel key exactly while this is set, and hands focus back the
     /// moment it clears — see `NotchWindowController.observeComposing`.
-    @Published private(set) var composing: ComposeKind?
+    @Published private(set) var composing: ComposeKind? {
+        didSet {
+            // The reply's field let go — sent, Esc, or focus went elsewhere:
+            // what changed while it held the face still lands now.
+            if oldValue == .reply, composing != .reply { thawClaudeFace() }
+        }
+    }
+
+    // MARK: Holding the face still while a reply is written
+
+    /// The Claude face holds still while the reply field has the keys: a
+    /// face that changes under the pointer — rows sliding in, the headline
+    /// changing, Done swapping in for the working face, another session
+    /// taking the island — throws off what's being typed. What arrives is
+    /// kept, the latest of each, and applied once when the field lets go
+    /// (`thawClaudeFace`). Only the field itself grows meanwhile. The
+    /// draft is never touched by any of it.
+    var claudeFaceFrozen: Bool { composing == .reply }
+
+    /// The latest status that arrived while the face was held, and whether
+    /// it would have announced itself.
+    private var heldStatus: (status: ClaudeStatus, announce: Bool)?
+    /// The trails as they stood when the face was last allowed to move.
+    private var heldTrails: [String: ClaudeTrail]?
+    /// Something held back says Claude needs the user — a permission prompt
+    /// or a question — so the face says so, without moving, and switches to
+    /// it once the reply is sent or put away.
+    @Published private(set) var claudeNeedsYouWhileComposing = false
+    /// Why Return didn't send: a prompt is up in this session's terminal,
+    /// where the text would answer it. The field and the draft stay.
+    @Published private(set) var replyRefusal: String?
+    /// Held back: the eased revert to Ready, a request to refresh, queued
+    /// rows Claude has taken.
+    private var heldIdleRevert = false
+    private var heldRequestRefresh = false
+    private var heldQueueRemovals: [(session: String, id: UUID)] = []
+
+    private func noteHeldNeedsYou(_ state: ClaudeCodeState) {
+        if state.isAttention, !claudeNeedsYouWhileComposing { claudeNeedsYouWhileComposing = true }
+    }
+
+    /// Applies what the face held back while the reply was written, once,
+    /// with the usual animations.
+    private func thawClaudeFace() {
+        claudeNeedsYouWhileComposing = false
+        replyRefusal = nil
+        if let trails = heldTrails {
+            heldTrails = nil
+            if trails != claudeTrails { withAnimation(.easeOut(duration: 0.22)) { claudeTrails = trails } }
+        }
+        if let held = heldStatus {
+            heldStatus = nil
+            applyClaudeStatus(held.status, announce: held.announce)
+        } else if heldIdleRevert {
+            heldIdleRevert = false
+            scheduleIdleRevert(after: 0)
+        }
+        heldIdleRevert = false
+        if heldRequestRefresh {
+            heldRequestRefresh = false
+            refreshPendingRequest()
+        }
+        let removals = heldQueueRemovals
+        heldQueueRemovals = []
+        if !removals.isEmpty {
+            withAnimation(.easeOut(duration: 0.22)) {
+                for removal in removals {
+                    queuedReplies[removal.session]?.removeAll { $0.id == removal.id }
+                    if queuedReplies[removal.session]?.isEmpty == true { queuedReplies[removal.session] = nil }
+                }
+            }
+        }
+        readTurnPrompts()
+        // Selection held still too: a fresh reading picks what it would have
+        // meanwhile.
+        if claudeRunning { requestClaudeReading(.tick) }
+    }
 
     /// Reply drafts by session id, so text typed for one session never goes
     /// to another when the island moves on — it waits for its own session.
@@ -315,6 +437,43 @@ final class NotchViewModel: ObservableObject {
     /// Watches the transcript for a sent reply to land. Cancelled by a newer
     /// send or a session change.
     private var deliveryTask: Task<Void, Never>?
+
+    /// A reply Isle typed while Claude was mid-turn, which Claude Code has
+    /// queued: the transcript's `queue-operation` "enqueue" for its text
+    /// says so. Claude takes queued prompts at its next tool boundary (or
+    /// when the turn ends), writing "remove"; the row goes then. Measured
+    /// on Claude Code 2.1.321: the queued text reaches the model as a
+    /// `queued_command` in the same turn, every queued prompt at once, and
+    /// `UserPromptSubmit` fires as it's typed rather than when it's taken —
+    /// so the transcript is the one thing that says it was taken.
+    struct QueuedReply: Identifiable, Equatable {
+        let id: UUID
+        let text: String
+        /// When Claude Code queued it, by the transcript.
+        let queuedAt: Date
+    }
+
+    /// Each session's queued replies, oldest first. Only what Isle typed and
+    /// saw Claude Code queue; in memory, gone with the session.
+    @Published private(set) var queuedReplies: [String: [QueuedReply]] = [:]
+
+    /// The island's session's queued replies.
+    var claudeQueued: [QueuedReply] {
+        claudeSessionId.flatMap { queuedReplies[$0] } ?? []
+    }
+
+    /// Watches the transcript for each queued reply to be taken.
+    private var queueWatches: [UUID: Task<Void, Never>] = [:]
+
+    /// How much taller than one line the reply field is drawn, as the face
+    /// last measured it: the panel grows by this while composing.
+    @Published private(set) var replyFieldExtra: CGFloat = 0
+
+    func setReplyFieldExtra(_ extra: CGFloat) {
+        let rounded = max(0, extra.rounded())
+        guard rounded != replyFieldExtra else { return }
+        replyFieldExtra = rounded
+    }
 
     /// The face the user last went into. Backed by AppSettings so it survives
     /// relaunch. Display may override this during an interrupt — see
@@ -475,17 +634,13 @@ final class NotchViewModel: ObservableObject {
     /// changes without waiting for a status write.
     private var claudeStatuses: [ClaudeStatus] = []
 
-    /// Picks which session owns the island.
-    ///
-    /// Not "most recent": that was the old single-file behaviour and it's what
-    /// let a background session's `Stop` or idle notification wipe the session
-    /// the user was watching. Rank by how much the state wants attention, and
-    /// only break ties by recency — so a quiescent session can never displace
-    /// an active one, however recently it moved (`ClaudeSelection.ranked`).
-    ///
-    /// Except for a session the user picked from the list, which holds the
-    /// island until another session newly needs them, or it goes away (see
-    /// `ClaudeSelection.Pin`). Settles the pin as it goes.
+    /// Picks which session owns the island, steadily: a strict order of
+    /// ranks, the shown session kept through ties, another taking it only
+    /// for a higher rank that has held a second (an approval or a question
+    /// at once), never while a reply is written — see
+    /// `ClaudeSelection.Selector`. A session the user picked from the list
+    /// holds the island until a higher rank rises elsewhere, or it goes
+    /// away (`ClaudeSelection.Pin`). Settles the pin as it goes.
     private func selectStatus(from statuses: [ClaudeStatus]) -> ClaudeStatus {
         var pin = sessionPin
         // A pin needs a process the registry can see — never a leftover file
@@ -494,9 +649,12 @@ final class NotchViewModel: ObservableObject {
            backgroundMerge.agentOnly(held.sessionId) == nil {
             pin = nil
         }
-        let selection = ClaudeSelection.select(from: selectionPool(statuses, pinned: pin?.sessionId), pin: pin)
-        if sessionPin != selection.pin { sessionPin = selection.pin }
-        return selection.status
+        selector.pin = pin
+        let pick = selector.select(from: selectionPool(statuses, pinned: pin?.sessionId), seen: isSeen,
+                                   now: Date(), frozen: claudeFaceFrozen)
+        if sessionPin != selector.pin { sessionPin = selector.pin }
+        scheduleSelectionRecheck(at: pick.recheckAt)
+        return pick.status
     }
 
     /// The records selection chooses between, corrected.
@@ -1222,8 +1380,9 @@ final class NotchViewModel: ObservableObject {
     func pinSession(_ sessionId: String) {
         guard claudeSessions.contains(where: { $0.sessionId == sessionId })
                 || backgroundMerge.agentOnly(sessionId) != nil,
-              let pin = ClaudeSelection.pin(sessionId, in: selectionPool(claudeStatuses, pinned: sessionId))
+              let pin = ClaudeSelection.pin(sessionId, in: selectionPool(claudeStatuses, pinned: sessionId), seen: isSeen)
         else { return }
+        selector.lastSeen[sessionId] = Date()
         sessionPin = pin
         sessionListShown = false
         updateReselectTimer(for: claudeState)
@@ -1244,15 +1403,35 @@ final class NotchViewModel: ObservableObject {
         applyClaudeStatus(selectStatus(from: claudeStatuses), announce: false)
     }
 
-    /// The panel closed: the list goes, and so does the pin. The island
-    /// collapsed always means selection's own pick — a session picked once
-    /// and forgotten mustn't keep a more pressing one off it.
+    /// The panel closed: the list goes, and once the panel has stayed
+    /// closed `pinReleaseSeconds`, so does the pin — a session picked once
+    /// and forgotten mustn't keep a more pressing one off the island, but a
+    /// glance away and back keeps it.
     private func resetSessionList() {
         if sessionListShown {
             sessionListShown = false
             updateReselectTimer(for: claudeState)
         }
-        releasePin()
+        pinRelease?.cancel()
+        guard sessionPin != nil else { return }
+        pinRelease = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.pinReleaseSeconds))
+            guard !Task.isCancelled, let self, self.hoveredIslands == 0 else { return }
+            self.releasePin()
+        }
+    }
+
+    /// The panel closed on a session: the user has seen it. Its Done is no
+    /// longer news, and it's the one they saw last. Noted as the panel
+    /// closes rather than opens, so nothing moves under the pointer.
+    private func noteSessionSeen() {
+        guard let id = claudeSessionId else { return }
+        selector.lastSeen[id] = Date()
+        if let status = lastAppliedStatus, status.sessionId == id, status.state == .done, let updated = status.updatedAt {
+            seenDone[id] = updated
+            for key in seenDone.keys where !claudeStatuses.contains(where: { $0.sessionId == key }) { seenDone[key] = nil }
+            reselectQuietly()
+        }
     }
 
     /// Resolves where each listed session is, while the list is up. Off the
@@ -1340,7 +1519,7 @@ final class NotchViewModel: ObservableObject {
         workingWord = Self.workingWords[workingWordIndex]
         let timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self else { return }
+                guard let self, !self.claudeFaceFrozen else { return }
                 self.workingWordIndex = (self.workingWordIndex + 1) % Self.workingWords.count
                 withAnimation(.easeInOut(duration: 0.3)) {
                     self.workingWord = Self.workingWords[self.workingWordIndex]
@@ -1556,6 +1735,7 @@ final class NotchViewModel: ObservableObject {
             guard let self else { return }
             self.claudeStatuses = statuses
             self.announceBlocks(in: statuses)
+            self.followTrails(statuses)
             // Selection reads the registry's `status` and session ids, which
             // the CLI rewrites in place where the registry's watch can't see
             // it, so the read re-scans it: a snapshot left at `idle` from
@@ -1958,6 +2138,13 @@ final class NotchViewModel: ObservableObject {
     /// counts as already seen, so the panel doesn't pop open for it.
     private func applyClaudeStatus(_ status: ClaudeStatus, announce: Bool = true) {
         guard status != lastAppliedStatus else { return }
+        if claudeFaceFrozen {
+            // Held until the reply's field lets go; the latest wins, and an
+            // announcement held back is still made then.
+            heldStatus = (status, announce || (heldStatus?.announce ?? false))
+            noteHeldNeedsYou(status.state)
+            return
+        }
         lastAppliedStatus = status
 
         doneRevertTask?.cancel()
@@ -2087,6 +2274,11 @@ final class NotchViewModel: ObservableObject {
             guard !Task.isCancelled, let self else { return }
             guard self.pendingRequest == nil else {
                 self.doneRevertTask = nil
+                return
+            }
+            if self.claudeFaceFrozen {
+                self.doneRevertTask = nil
+                self.heldIdleRevert = true
                 return
             }
             // Idle is quiescent — nothing left to re-select for, unless a
@@ -2414,7 +2606,11 @@ final class NotchViewModel: ObservableObject {
     /// transition, in both directions.
     func islandHoverChanged(_ hovering: Bool) {
         hoveredIslands = max(0, hoveredIslands + (hovering ? 1 : -1))
-        if !hovering, hoveredIslands == 0 { resetSessionList() }
+        if !hovering, hoveredIslands == 0 {
+            resetSessionList()
+            noteSessionSeen()
+        }
+        if hovering { pinRelease?.cancel() }
         // Opening the panel puts the scrubber on screen: bring the position
         // current now rather than at the next relaxed read. With nothing
         // routed, every player gets asked, so whichever has a track is found.
@@ -2459,6 +2655,13 @@ final class NotchViewModel: ObservableObject {
     /// Re-derives `pendingRequest` from the status's request id and the
     /// requests on disk. Called whenever either side moves.
     private func refreshPendingRequest() {
+        if claudeFaceFrozen {
+            // A request taking the face would take the field with it: it
+            // waits, and the face says Claude needs you.
+            heldRequestRefresh = true
+            if claudeRequests.contains(where: { $0.sessionId == claudeSessionId }) { claudeNeedsYouWhileComposing = true }
+            return
+        }
         let match = claudeRequests.first { request in
             guard request.id == claudeRequestId else { return false }
             // The id is session-scoped already; this just refuses to show one
@@ -2736,11 +2939,45 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
-    /// Whether the face offers "Reply to Claude…": the session sits at its
-    /// prompt as far as the island knows, and its terminal is one Isle can
-    /// type into without focusing it. The stricter checks run at Send.
+    /// Whether the face offers "Reply to Claude…", and how it would land.
+    enum ReplyGate: Equatable {
+        /// No field: no terminal Isle can type into, the setting's off, a
+        /// request on the face has fields of its own, or no session.
+        case unavailable
+        /// At its prompt: the reply starts the next turn.
+        case open
+        /// Mid-turn: Claude Code queues the reply and takes it at its next
+        /// tool boundary (see `QueuedReply`).
+        case queues
+        /// A permission prompt or a question is up in the terminal, where a
+        /// typed Return would answer it. The field shows, disabled, saying
+        /// why.
+        case dialog(String)
+    }
+
+    /// See `ReplyGate`. From the island's state and the CLI's own status;
+    /// the same checks run again, fresh, at Send.
+    var replyGate: ReplyGate {
+        guard repliesFromNotch, pendingRequest == nil, !claudeStateFromAgent else { return .unavailable }
+        let dialog = ReplyGate.dialog("Answer Claude's prompt in \(sessionHost?.app?.name ?? "its terminal") first")
+        switch claudeState {
+        case .disconnected: return .unavailable
+        case .needsApproval, .needsQuestion: return dialog
+        default: break
+        }
+        switch selectedSession?.status {
+        case .waiting: return dialog
+        case .busy: return .queues
+        default: break
+        }
+        return claudeState == .working || claudeState == .compacting ? .queues : .open
+    }
+
+    /// The face offers a reply that can be sent now: at the prompt (idle,
+    /// Done, Ready, a shell running), or mid-turn, where Claude Code queues
+    /// it. Never while a prompt is up in the terminal.
     var canReply: Bool {
-        repliesFromNotch && pendingRequest == nil && Self.isAtPrompt(claudeState)
+        replyGate == .open || replyGate == .queues
     }
 
     /// Whether this session's row ever holds a reply: the setting is on and
@@ -2749,14 +2986,6 @@ final class NotchViewModel: ObservableObject {
     /// by this, so the pill doesn't move when the reply field appears.
     var repliesFromNotch: Bool {
         settings.answerFromNotch && sessionHost?.typingRoute != nil
-    }
-
-    /// States in which Claude Code is waiting for the next prompt.
-    private static func isAtPrompt(_ state: ClaudeCodeState) -> Bool {
-        switch state {
-        case .done, .waitingInput, .idle, .failed: return true
-        default: return false
-        }
     }
 
     /// The reply being written for the island's session.
@@ -2829,88 +3058,192 @@ final class NotchViewModel: ObservableObject {
         send(.denySaying(text), to: request)
     }
 
-    /// Types the draft into the session's terminal as the user's next prompt.
-    ///
-    /// Every check that decides whether keys would land in Claude's prompt
-    /// runs here, at the click, against fresh state: the CLI must report
-    /// itself idle (not mid-turn, not showing a dialog, where a typed Return
-    /// would answer it), and its process group must own the tab's terminal
-    /// (so it isn't a shell after Claude exited, where the text would run as
-    /// a command). Then it's typed, and only the transcript can say it
-    /// arrived — see `confirmDelivery`.
+    /// Sends the draft: typed into the session's terminal as the next
+    /// prompt, or mid-turn as one Claude Code queues. Never while a prompt
+    /// is up in the terminal: the field is disabled then, and the same check
+    /// runs again here, fresh, in `deliver`.
     private func sendReply() {
-        let text = Self.oneLine(replyDraft)
+        let text = Self.replyText(replyDraft)
         guard !text.isEmpty, let session = selectedSession else { return }
         if case .sending = replyDelivery { return }
-        composing = nil
-        deliveryTask?.cancel()
-
-        let sessionId = session.sessionId
-        // Read now, at the click: the CLI rewrites its record in place, and
-        // only a fresh read says it is at its prompt.
-        guard let fresh = sessionRegistry.currentSessions().first(where: { $0.sessionId == sessionId }),
-              fresh.status.isAtPrompt
-        else {
-            replyDelivery = .failed(text: text, reason: "Claude isn't at its prompt right now")
+        // A prompt has come up in this session's terminal while the reply
+        // was written: typed now, it would answer that. The field stays
+        // open with the draft in it, and says why.
+        if replyReadiness(session.sessionId) == false {
+            replyRefusal = "Claude is asking something in \(sessionHost?.app?.name ?? "its terminal") — answer it first (esc)"
             return
         }
-
+        composing = nil
+        let id = session.sessionId
+        // Out of the field now: it's sending, or comes back with the reason
+        // if it can't be sent.
+        replyDrafts[id] = nil
+        deliveryTask?.cancel()
         replyDelivery = .sending(text)
-        let pid = fresh.pid
-        let sentAt = Date()
         deliveryTask = Task { [weak self] in
-            let typed = await Task.detached(priority: .userInitiated) { () -> (Result<Void, TerminalBridge.Failure>, String)? in
-                guard let host = ClaudeHostResolver.resolve(cliPID: pid),
-                      let route = host.typingRoute,
-                      ProcessSnapshot(pid: pid)?.ownsTerminal == true
-                else { return nil }
-                return (await TerminalBridge.type(text, via: route), host.app?.name ?? "the terminal")
-            }.value
-            guard let self, !Task.isCancelled else { return }
-
-            guard let (result, app) = typed else {
-                self.replyDelivery = .failed(text: text, reason: "Something else is in front in Claude's tab")
-                return
+            guard let self else { return }
+            let outcome = await self.deliver(text, sessionId: id)
+            guard !Task.isCancelled else { return }
+            switch outcome {
+            case .sent:
+                self.replyDelivery = .sent(text)
+            case .queued(let at, let session):
+                self.replyDelivery = .none
+                self.queue(text, at: at, session: session)
+            case .failed(let reason):
+                if self.replyDraft(for: id).isEmpty { self.replyDrafts[id] = text }
+                self.replyDelivery = .failed(text: text, reason: reason)
             }
-            if case .failure(let failure) = result {
-                self.replyDelivery = .failed(text: text, reason: Self.reason(for: failure, app: app))
-                return
-            }
-            // In the terminal now: the field lets go of it, so a second Send
-            // can't type it twice.
-            if Self.oneLine(self.replyDraft(for: sessionId)) == text {
-                self.replyDrafts[sessionId] = nil
-            }
-            await self.confirmDelivery(text, session: fresh, since: sentAt, app: app)
         }
     }
 
     private func replyDraft(for sessionId: String) -> String { replyDrafts[sessionId] ?? "" }
 
-    /// Waits for the transcript to show `text` as a turn the user typed —
-    /// `origin.kind == "human"`, the same entry a prompt typed at the keyboard
-    /// makes. A few seconds is plenty: Claude Code writes the turn the moment
-    /// Return submits it. Not seeing it isn't proof it went nowhere — it may
-    /// be sitting in the prompt — so the text comes back to the field and the
-    /// reason says to look before sending again.
-    private func confirmDelivery(_ text: String, session: ClaudeSession, since: Date, app: String) async {
+    /// What became of one delivery.
+    private enum DeliveryOutcome {
+        /// The transcript has it as a turn the user typed.
+        case sent
+        /// Claude Code queued it mid-turn, at this moment.
+        case queued(Date, ClaudeSession)
+        case failed(String)
+    }
+
+    /// Types `text` into session `sessionId`'s terminal and waits for the
+    /// transcript to say it landed.
+    ///
+    /// Every check that decides whether keys would land in Claude's prompt
+    /// runs here, against fresh state: the CLI must report itself idle or
+    /// busy — never waiting, where a permission prompt or a question is up
+    /// and a typed Return would answer it — and its process group must own
+    /// the tab's terminal (so it isn't a shell after Claude exited, where the
+    /// text would run as a command). Then it's typed, and only the transcript
+    /// can say it arrived: a turn the user typed (`origin.kind == "human"`)
+    /// or, mid-turn, Claude Code queueing it. A few seconds is plenty: Claude
+    /// Code writes either the moment Return lands. Not seeing it isn't proof
+    /// it went nowhere — it may be sitting in the prompt — so the reason
+    /// says to look before sending again.
+    private func deliver(_ text: String, sessionId: String) async -> DeliveryOutcome {
+        // Read now: the CLI rewrites its record in place, and only a fresh
+        // read says what it's showing.
+        guard let fresh = sessionRegistry.currentSessions().first(where: { $0.sessionId == sessionId }) else {
+            return .failed("Claude's session has ended")
+        }
+        let queues: Bool
+        switch fresh.status {
+        case .idle, .shell: queues = false
+        case .busy: queues = true
+        case .waiting: return .failed(Self.dialogUp)
+        case .unknown: return .failed("Claude isn't at its prompt right now")
+        }
+        if replyReadiness(sessionId) == false { return .failed(Self.dialogUp) }
+
+        let pid = fresh.pid
+        let since = Date()
+        let typed = await Task.detached(priority: .userInitiated) { () -> (Result<Void, TerminalBridge.Failure>, String)? in
+            guard let host = ClaudeHostResolver.resolve(cliPID: pid),
+                  let route = host.typingRoute,
+                  ProcessSnapshot(pid: pid)?.ownsTerminal == true
+            else { return nil }
+            return (await TerminalBridge.type(text, via: route), host.app?.name ?? "the terminal")
+        }.value
+        guard let (result, app) = typed else { return .failed("Something else is in front in Claude's tab") }
+        if case .failure(let failure) = result { return .failed(Self.reason(for: failure, app: app)) }
+
         for _ in 0..<16 {
             try? await Task.sleep(for: .milliseconds(400))
-            guard !Task.isCancelled else { return }
+            if Task.isCancelled { return .failed("Cancelled") }
             // Off the main thread: the read and the JSON are the transcript's.
-            let cwd = session.cwd, id = session.sessionId
-            let found = await Task.detached(priority: .userInitiated) {
-                Self.transcriptHasHumanTurn(text, cwd: cwd, sessionId: id, since: since)
+            let cwd = fresh.cwd
+            let (turn, queuedAt) = await Task.detached(priority: .userInitiated) {
+                (Self.transcriptHasHumanTurn(text, cwd: cwd, sessionId: sessionId, since: since),
+                 queues ? Self.transcriptQueueOperation(["enqueue"], text, cwd: cwd, sessionId: sessionId, since: since) : nil)
             }.value
-            guard !Task.isCancelled else { return }
-            if found {
-                replyDelivery = .sent(text)
+            if turn { return .sent }
+            if let queuedAt { return .queued(queuedAt, fresh) }
+        }
+        return .failed("Typed into \(app), but Claude didn't take it — check its prompt")
+    }
+
+    /// Whether typing into session `id` now would land in its prompt, as
+    /// far as the island knows: nil when the session is gone, false while a
+    /// permission prompt or a question is up — a request waiting on the
+    /// notch, its record asking, or the CLI saying it's waiting.
+    private func replyReadiness(_ id: String) -> Bool? {
+        guard let session = claudeSessions.first(where: { $0.sessionId == id }) else { return nil }
+        switch session.status {
+        case .idle, .shell, .busy: break
+        case .waiting, .unknown: return false
+        }
+        if claudeRequests.contains(where: { $0.sessionId == id }) { return false }
+        if let status = claudeStatuses.first(where: { $0.sessionId == id }),
+           status.state == .needsApproval || status.state == .needsQuestion { return false }
+        return true
+    }
+
+    private static let dialogUp = "Claude is asking something in its terminal: answer it there first"
+
+    /// Shows `text` as queued, and watches the transcript for Claude to take
+    /// it: the "remove" Claude Code writes when it hands the queue to the
+    /// model, or the text arriving as a turn of its own. Gone, too, with the
+    /// session, and after an hour at most.
+    private func queue(_ text: String, at queuedAt: Date, session: ClaudeSession) {
+        let entry = QueuedReply(id: UUID(), text: text, queuedAt: queuedAt)
+        let id = session.sessionId
+        withAnimation(.easeOut(duration: 0.22)) { queuedReplies[id, default: []].append(entry) }
+        queueWatches[entry.id] = Task { [weak self] in
+            let cwd = session.cwd
+            let deadline = Date().addingTimeInterval(3600)
+            while Date() < deadline {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled, let self else { return }
+                guard self.claudeSessions.contains(where: { $0.sessionId == id }) else { break }
+                let taken = await Task.detached(priority: .utility) {
+                    Self.transcriptQueueOperation(["remove", "dequeue", "popAll"], text, cwd: cwd, sessionId: id,
+                                                  since: queuedAt) != nil
+                        || Self.transcriptHasHumanTurn(text, cwd: cwd, sessionId: id, since: queuedAt)
+                }.value
+                guard !Task.isCancelled else { return }
+                if taken { break }
+            }
+            guard let self else { return }
+            self.queueWatches[entry.id] = nil
+            if self.claudeFaceFrozen {
+                self.heldQueueRemovals.append((id, entry.id))
                 return
             }
+            withAnimation(.easeOut(duration: 0.22)) {
+                self.queuedReplies[id]?.removeAll { $0.id == entry.id }
+                if self.queuedReplies[id]?.isEmpty == true { self.queuedReplies[id] = nil }
+            }
         }
-        guard !Task.isCancelled else { return }
-        if replyDraft(for: session.sessionId).isEmpty { replyDrafts[session.sessionId] = text }
-        replyDelivery = .failed(text: text, reason: "Typed into \(app), but Claude didn't take it — check its prompt")
+    }
+
+    /// When the transcript, since `since`, has a `queue-operation` of one of
+    /// `operations` for `text`; nil when it hasn't.
+    nonisolated private static func transcriptQueueOperation(_ operations: Set<String>, _ text: String, cwd: String,
+                                                             sessionId: String, since: Date) -> Date? {
+        queueOperation(operations, text, in: transcriptLines(cwd: cwd, sessionId: sessionId), since: since)
+    }
+
+    /// The same, over transcript lines newest first — the entries Claude
+    /// Code 2.1.321 writes: `{"type":"queue-operation","operation":
+    /// "enqueue","timestamp":…,"content":"…"}`.
+    nonisolated static func queueOperation(_ operations: Set<String>, _ text: String, in lines: [Data],
+                                           since: Date) -> Date? {
+        let want = oneLine(text)
+        for line in lines {
+            guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                  let stamp = object["timestamp"] as? String,
+                  let at = transcriptDate(stamp)
+            else { continue }
+            guard at >= since.addingTimeInterval(-1) else { return nil }
+            guard object["type"] as? String == "queue-operation",
+                  let operation = object["operation"] as? String, operations.contains(operation),
+                  let content = object["content"] as? String
+            else { continue }
+            if oneLine(content) == want { return at }
+        }
+        return nil
     }
 
     /// Keeps the reply's outcome honest as the session moves on.
@@ -2937,7 +3270,18 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
-    /// One line: a Return inside the text would submit the half before it.
+    /// The reply as it's typed: its lines kept — they go in inside a
+    /// bracketed paste, where a newline is part of the prompt, not Return
+    /// (measured, 2.1.321) — with Windows and old-Mac line ends made plain
+    /// newlines, and blank lines at either end dropped.
+    nonisolated static func replyText(_ text: String) -> String {
+        text.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The text on one line, for matching what was typed against what the
+    /// transcript holds.
     nonisolated private static func oneLine(_ text: String) -> String {
         text.components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -2968,7 +3312,7 @@ final class NotchViewModel: ObservableObject {
             } else {
                 continue
             }
-            if oneLine(content).hasSuffix(text) { return true }
+            if oneLine(content).hasSuffix(oneLine(text)) { return true }
         }
         return false
     }
@@ -3075,10 +3419,45 @@ final class NotchViewModel: ObservableObject {
     /// current one out at its own height (see `FaceCarousel`).
     func faceContentHeight(of face: IsleTab, room: CGFloat) -> CGFloat? {
         switch face {
-        case .claude: return face == expandedPlace.face ? questionContentHeight(room: room) : nil
+        case .claude:
+            if face == expandedPlace.face, let question = questionContentHeight(room: room) { return question }
+            // A reply grown past one line takes the panel with it.
+            let extra = face == expandedPlace.face && composing == .reply ? replyFieldExtra : 0
+            return extra > 0 ? NotchMetrics.standardContentHeight(room: room) + extra : nil
         case .agenda: return min(room, AgendaLayout.contentHeight)
         case .shelf: return min(room, ShelfLayout.contentHeight(rows: shelfRows))
         case .music, .pomodoro: return nil
+        }
+    }
+
+    /// A turn is in progress on the island's session, as its hooks said:
+    /// working or compacting, from a record rather than `claude agents`.
+    var claudeTurnActive: Bool {
+        !claudeStateFromAgent && (claudeState == .working || claudeState == .compacting)
+    }
+
+    /// The working face has a row under its headline: an agent running, a
+    /// block, a reply on its way, or a finished call other than the one the
+    /// headline names. Read by the face and the panel's height alike.
+    var claudeWorkHasRows: Bool {
+        if !claudeSubagents.isEmpty || claudeBlock != nil || !claudeQueued.isEmpty { return true }
+        if claudeTrail?.prompt != nil { return true }
+        switch replyDelivery {
+        case .sending, .sent: return true
+        default: break
+        }
+        return !(claudeTrail?.shown(current: claudeActivity, limit: 1).isEmpty ?? true)
+    }
+
+    /// The status face has an action row: the session's app to jump to or
+    /// attach in, a reply to type or one on its way. Read by the face and
+    /// the panel's height alike, so the two agree.
+    var claudeHasActions: Bool {
+        if composing == .reply || jumpAttaches || jumpTarget != nil || canReply { return true }
+        if case .dialog = replyGate { return true }
+        switch replyDelivery {
+        case .sending, .sent: return true
+        default: return false
         }
     }
 
@@ -3330,6 +3709,65 @@ final class NotchViewModel: ObservableObject {
     private var statusSlot: CGFloat {
         let width = Self.textWidth(collapsedStatusText)
         return width > 0 ? CollapsedSize.gap + width : 0
+    }
+
+    /// Feeds every session's record to its trail, and lets go of the trails
+    /// of sessions whose record is gone. A step arriving slides in on the
+    /// face, and the panel grows to seat the first one.
+    private func followTrails(_ statuses: [ClaudeStatus]) {
+        var trails = claudeTrails
+        var live = Set<String>()
+        for status in statuses where !status.fromAgent {
+            guard let id = status.sessionId, !id.isEmpty else { continue }
+            live.insert(id)
+            var trail = trails[id] ?? ClaudeTrail()
+            trail.observe(phase: Self.trailPhase(status.state), action: status.action,
+                          target: status.target, toolActive: status.toolActive, at: status.updatedAt)
+            trails[id] = trail
+        }
+        for id in trails.keys where !live.contains(id) { trails[id] = nil }
+        if claudeFaceFrozen {
+            heldTrails = trails
+            return
+        }
+        if trails != claudeTrails {
+            withAnimation(.easeOut(duration: 0.22)) { claudeTrails = trails }
+        }
+        readTurnPrompts()
+    }
+
+    /// When each session's prompt read was last tried, so a turn whose
+    /// prompt isn't in the transcript yet is asked again on a later scan,
+    /// and no more than once a second.
+    private var promptReads: [String: Date] = [:]
+
+    /// Reads the prompt that started each running turn from its session's
+    /// transcript, for the trail's "You" row. Off the main thread.
+    private func readTurnPrompts() {
+        guard !claudeFaceFrozen else { return }
+        for (id, trail) in claudeTrails where trail.wantsPrompt {
+            if let last = promptReads[id], Date().timeIntervalSince(last) < 1 { continue }
+            guard let cwd = claudeSessions.first(where: { $0.sessionId == id })?.cwd else { continue }
+            promptReads[id] = Date()
+            let since = trail.turnStartedAt
+            Task { [weak self] in
+                let prompt = await Task.detached(priority: .utility) {
+                    ClaudeTrail.turnPrompt(in: Self.transcriptLines(cwd: cwd, sessionId: id), since: since)
+                }.value
+                guard let self, let prompt, !self.claudeFaceFrozen, self.claudeTrails[id]?.wantsPrompt == true,
+                      self.claudeTrails[id]?.turnStartedAt == since else { return }
+                withAnimation(.easeOut(duration: 0.22)) { self.claudeTrails[id]?.setPrompt(prompt) }
+            }
+        }
+        for id in promptReads.keys where claudeTrails[id] == nil { promptReads[id] = nil }
+    }
+
+    private static func trailPhase(_ state: ClaudeCodeState) -> ClaudeTrail.Phase {
+        switch state {
+        case .working, .compacting: return .working
+        case .needsApproval, .needsQuestion: return .waiting
+        case .done, .idle, .waitingInput, .failed, .disconnected: return .ended
+        }
     }
 
     /// The current tool call as a display model, used by the expanded "what it's
@@ -3832,6 +4270,18 @@ extension NotchViewModel {
         receiveAgents(agents)
     }
 
+    /// A record arriving from the watcher, through the same path a real
+    /// one takes — for tests of what the face does with it.
+    func previewReceive(_ status: ClaudeStatus) {
+        applyClaudeStatus(status)
+        followTrails([status])
+    }
+
+    /// The trail's steps, as a scan would deliver them, for tests.
+    func previewReceiveTrail(_ status: ClaudeStatus) {
+        followTrails([status])
+    }
+
     func applyPreviewFixture(_ fixture: ClaudePanelFixture) {
         claudeState = fixture.state
         claudeProject = fixture.project
@@ -3871,9 +4321,22 @@ extension NotchViewModel {
         replyDelivery = fixture.delivery
         claudeFinalLine = ClaudeDoneLine.line(from: fixture.lastMessage)
         claudeSubagents = fixture.subagents
+        if let id = claudeSessionId {
+            var trail = ClaudeTrail()
+            for step in fixture.steps {
+                trail.observe(phase: .working, action: step.action, target: step.target, toolActive: false)
+            }
+            trail.setPrompt(fixture.prompt)
+            claudeTrails = fixture.steps.isEmpty && fixture.prompt == nil ? [:] : [id: trail]
+        }
         claudeBlock = fixture.blocked
         claudeLeftovers = fixture.left
         if let toast = fixture.toast { pinPreviewToast(toast) }
+        if let id = claudeSessionId {
+            queuedReplies = fixture.queued.isEmpty ? [:] : [id: fixture.queued.map {
+                QueuedReply(id: UUID(), text: $0, queuedAt: Date())
+            }]
+        }
         // In the face, not on the home grid, whatever the suite last had —
         // unless the fixture is the grid's.
         isHome = fixture.home

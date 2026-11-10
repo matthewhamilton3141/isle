@@ -175,7 +175,7 @@ final class IslandProximityModel: ObservableObject {
 
 /// The island's fill, swollen and leaning by the proximity reading: flat
 /// black, or in a glass mode (`PanelBackground`) black that blends to glass
-/// while the island is open.
+/// (or, in Fade, to black fading into glass) while the island is open.
 ///
 /// It's the only fill: drawn behind the clipped content, outside the clip,
 /// so it can reach a few points past the outline the content and the hit
@@ -200,8 +200,14 @@ struct IslandFill: View {
     /// glow), and how far right of it the outline is drawn.
     var housing: CGSize? = nil
     var housingShift: CGFloat = 0
+    /// The band the open panel's content starts under, which Fade keeps
+    /// solid black.
+    var bandHeight: CGFloat = NotchMetrics.fallbackNotchSize.height
+    /// The current track's cover colours, for Fade's light (nil: spectral).
+    var lightPalette: ArtworkPalette? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.islandGlassLayer) private var glassLayer
 
     var body: some View {
         let reading = active && !reduceMotion ? proximity.reading : .rest
@@ -226,8 +232,13 @@ struct IslandFill: View {
                 shape: shape,
                 opened: opened,
                 housing: housing,
-                housingShift: housingShift
+                housingShift: housingShift,
+                bandHeight: bandHeight,
+                lightPalette: lightPalette
             )
+        } else if glassLayer == .materialOnly {
+            // The glass window has no glass to draw in Black.
+            Color.clear
         } else {
             shape.fill(.black)
         }

@@ -7,10 +7,11 @@
 //
 //  Two pieces, both pure so they can be checked without a running bridge:
 //
-//    * `ClaudeSelection` — the urgency ranking `NotchViewModel.selectStatus`
-//      has always used, now shared with the list so the two can't disagree
-//      about order, and the pin: the session the user picked from the list,
-//      held on the face over the ranking until something more urgent arrives.
+//    * `ClaudeSelection` — the list's order (`ranked`), and the island's
+//      choice (`Selector`): a strict order of ranks, the shown session kept
+//      through ties, a higher rank taking the island once it has held (an
+//      approval or a question at once), and the pin — the session the user
+//      picked, held until a higher rank rises elsewhere.
 //    * `ClaudeSessionRow` — one row of the list, as the face draws it.
 //
 //  Nothing here decides liveness. The view model hands in only records the
@@ -51,53 +52,194 @@ enum ClaudeSelection {
             .map(\.element)
     }
 
-    /// A session the user picked from the list, held on the face.
+    /// A session the user picked from the list, held on the island.
     ///
-    /// It yields to one thing only: another session that *newly* needs the
-    /// user — an approval, a question or a failure — while the pinned one
-    /// doesn't. `heldAgainst` is what already outranked the pinned session
-    /// that way when it was last resolved, so a session that was waiting on
-    /// you when you picked another doesn't take the face straight back; it
-    /// has to stop needing you and start again, or the pinned session has to
-    /// stop needing you while it still does. A session that only starts
-    /// working never takes the face from the one you're looking at.
+    /// It yields only to a session that rises above it in `Rank` while it's
+    /// pinned. `heldAgainst` is what was already above it when it was
+    /// picked (and still is): a session waiting on you when you picked
+    /// another doesn't take the island straight back; it has to drop below
+    /// and rise again.
     struct Pin: Equatable {
         let sessionId: String
         var heldAgainst: Set<String> = []
     }
 
-    /// Whether `other` would take the face from a pinned `pinned`: it needs
-    /// the user, and the pinned session doesn't.
-    static func overrides(_ other: ClaudeStatus, pinned: ClaudeStatus) -> Bool {
-        urgency(other.state) == 3 && urgency(pinned.state) < 3
-    }
-
-    /// Pins `sessionId`, held against whatever in `pool` already overrides
-    /// it. Nil when the session isn't in the pool.
-    static func pin(_ sessionId: String, in pool: [ClaudeStatus]) -> Pin? {
+    /// Pins `sessionId`, held against whatever in `pool` already ranks
+    /// above it. Nil when the session isn't in the pool.
+    static func pin(_ sessionId: String, in pool: [ClaudeStatus], seen: (ClaudeStatus) -> Bool) -> Pin? {
         guard let pinned = pool.first(where: { $0.sessionId == sessionId }) else { return nil }
-        return Pin(sessionId: sessionId, heldAgainst: overriding(pinned, in: pool))
+        let rank = rank(pinned, seen: seen(pinned))
+        return Pin(sessionId: sessionId, heldAgainst: Set(pool.compactMap { other in
+            guard let id = other.sessionId, id != sessionId, Self.rank(other, seen: seen(other)) > rank else { return nil }
+            return id
+        }))
     }
 
-    /// The record that owns the island, and the pin as it stands after this
-    /// pass: nil once the pinned session has gone from the pool or something
-    /// newly overrides it.
-    static func select(from pool: [ClaudeStatus], pin: Pin?) -> (status: ClaudeStatus, pin: Pin?) {
-        if let pin, let pinned = pool.first(where: { $0.sessionId == pin.sessionId }) {
-            let against = overriding(pinned, in: pool)
-            if against.isSubset(of: pin.heldAgainst) {
-                return (pinned, Pin(sessionId: pin.sessionId, heldAgainst: against))
+    // MARK: - Which session the island shows
+
+    /// How much a session's state deserves the island, in a strict order.
+    /// Within a rank the island keeps the session it's showing: a tie never
+    /// moves it, and recency never re-sorts it.
+    enum Rank: Int, Comparable {
+        case none = 0
+        /// Ready, Waiting for you, a Done already seen.
+        case ready
+        case working
+        /// A usage limit, an error.
+        case trouble
+        /// Done, and the user hasn't seen it yet.
+        case finished
+        case question
+        case approval
+
+        static func < (a: Rank, b: Rank) -> Bool { a.rawValue < b.rawValue }
+
+        /// Blocks Claude until the user acts: takes the island at once,
+        /// with no hold.
+        var blocks: Bool { self >= .question }
+    }
+
+    /// A status's rank. `seen` says whether a Done has been seen.
+    static func rank(_ status: ClaudeStatus, seen: Bool) -> Rank {
+        switch status.state {
+        case .needsApproval: return .approval
+        case .needsQuestion: return .question
+        case .done: return seen ? .ready : .finished
+        case .failed: return .trouble
+        case .working, .compacting: return .working
+        case .idle, .waitingInput: return .ready
+        case .disconnected: return .none
+        }
+    }
+
+    /// Chooses the session the island shows — the collapsed pill and the
+    /// open face alike — and keeps choosing it steadily as states change
+    /// in several sessions at once (Matthew: "different statuses changing
+    /// between different sessions often fight for priority").
+    ///
+    /// - Another session takes the island only for a higher rank, and only
+    ///   once it has held that rank for `hold` — a blip can't steal it —
+    ///   except an approval or a question, which take it at once.
+    /// - When the shown session drops (its approval answered, say), the
+    ///   next is the highest rank, then the session the user last saw or
+    ///   chose, then the newest record, then the id: the same pick every
+    ///   time from the same states.
+    /// - A session the user picked (`Pin`) holds the island until a higher
+    ///   rank rises somewhere else; a session already above it when it was
+    ///   picked has to drop and rise again to count.
+    /// - `frozen` (a reply being written): nothing switches.
+    ///
+    /// Pure and synchronous: it's handed the pool, which Dones are seen,
+    /// and the time, and says when it wants asking again (a hold running
+    /// out) rather than keeping a timer.
+    struct Selector: Equatable {
+        /// The session on the island, by id.
+        private(set) var shown: String?
+        var pin: Pin?
+        /// When each session last took the rank it has.
+        private(set) var rankSince: [String: RankSince] = [:]
+        /// When the user last saw or chose each session.
+        var lastSeen: [String: Date] = [:]
+
+        struct RankSince: Equatable {
+            var rank: Rank
+            var since: Date
+        }
+
+        /// How long a higher rank has to hold before it takes the island.
+        static let hold: TimeInterval = 1
+
+        init(shown: String? = nil, pin: Pin? = nil) {
+            self.shown = shown
+            self.pin = pin
+        }
+
+        struct Pick {
+            let status: ClaudeStatus
+            /// Ask again at this moment: a session's hold runs out then.
+            let recheckAt: Date?
+        }
+
+        mutating func select(from pool: [ClaudeStatus], seen: (ClaudeStatus) -> Bool,
+                             now: Date, frozen: Bool = false) -> Pick {
+            // Every session's rank, and since when.
+            var ranks: [String: Rank] = [:]
+            for status in pool {
+                guard let id = status.sessionId else { continue }
+                let rank = ClaudeSelection.rank(status, seen: seen(status))
+                ranks[id] = rank
+                if rankSince[id]?.rank != rank { rankSince[id] = RankSince(rank: rank, since: now) }
+            }
+            for id in rankSince.keys where ranks[id] == nil { rankSince[id] = nil }
+            func rankOf(_ status: ClaudeStatus) -> Rank { status.sessionId.flatMap { ranks[$0] } ?? .none }
+            func held(_ status: ClaudeStatus) -> Bool {
+                let rank = rankOf(status)
+                guard !rank.blocks, let id = status.sessionId, let since = rankSince[id]?.since else { return true }
+                return now.timeIntervalSince(since) >= Self.hold - 0.001
+            }
+            func holdEnds(_ statuses: [ClaudeStatus]) -> Date? {
+                statuses.compactMap { $0.sessionId.flatMap { rankSince[$0]?.since } }
+                    .map { $0.addingTimeInterval(Self.hold) }.min()
+            }
+            let current = shown.flatMap { id in pool.first { $0.sessionId == id } }
+
+            if frozen, let current { return Pick(status: current, recheckAt: nil) }
+
+            // A pinned session, while nothing newly above it.
+            if let holding = pin, let pinned = pool.first(where: { $0.sessionId == holding.sessionId }) {
+                let above = Set(pool.compactMap { other -> String? in
+                    guard let id = other.sessionId, id != holding.sessionId, rankOf(other) > rankOf(pinned) else { return nil }
+                    return id
+                })
+                let rising = pool.filter { other in
+                    guard let id = other.sessionId else { return false }
+                    return above.contains(id) && !holding.heldAgainst.contains(id)
+                }
+                let takes = rising.filter(held)
+                if takes.isEmpty {
+                    // What has dropped below it since stops counting against
+                    // it: rising again would be news.
+                    pin = Pin(sessionId: holding.sessionId, heldAgainst: holding.heldAgainst.intersection(above))
+                    shown = holding.sessionId
+                    return Pick(status: pinned, recheckAt: holdEnds(rising))
+                }
+                pin = nil
+            } else {
+                pin = nil
+            }
+
+            guard let current else {
+                // Nothing shown, or it's gone: the best there is, at once.
+                guard let best = best(of: pool, ranks: ranks) else {
+                    shown = nil
+                    return Pick(status: .disconnected, recheckAt: nil)
+                }
+                shown = best.sessionId
+                return Pick(status: best, recheckAt: nil)
+            }
+            let above = pool.filter { $0.sessionId != current.sessionId && rankOf($0) > rankOf(current) }
+            let ready = above.filter(held)
+            if let best = best(of: ready, ranks: ranks) {
+                shown = best.sessionId
+                return Pick(status: best, recheckAt: nil)
+            }
+            return Pick(status: current, recheckAt: holdEnds(above))
+        }
+
+        /// The highest rank; then the session the user last saw or chose;
+        /// then the newest record; then the id.
+        private func best(of pool: [ClaudeStatus], ranks: [String: Rank]) -> ClaudeStatus? {
+            pool.max { a, b in
+                let ra = a.sessionId.flatMap { ranks[$0] } ?? .none, rb = b.sessionId.flatMap { ranks[$0] } ?? .none
+                if ra != rb { return ra < rb }
+                let sa = a.sessionId.flatMap { lastSeen[$0] } ?? .distantPast
+                let sb = b.sessionId.flatMap { lastSeen[$0] } ?? .distantPast
+                if sa != sb { return sa < sb }
+                let ua = a.updatedAt ?? .distantPast, ub = b.updatedAt ?? .distantPast
+                if ua != ub { return ua < ub }
+                return (a.sessionId ?? "") > (b.sessionId ?? "")
             }
         }
-        return (ranked(pool).first ?? .disconnected, nil)
-    }
-
-    private static func overriding(_ pinned: ClaudeStatus, in pool: [ClaudeStatus]) -> Set<String> {
-        Set(pool.compactMap { other in
-            guard let id = other.sessionId, id != pinned.sessionId,
-                  overrides(other, pinned: pinned) else { return nil }
-            return id
-        })
     }
 }
 

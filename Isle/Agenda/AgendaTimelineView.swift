@@ -44,8 +44,8 @@ struct AgendaTimelineView: View {
             .padding(.top, 3)
 
             Text(AgendaLayout.summary(for: items, day: day, now: now))
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.islandSecondary(0.72))
+                .font(IsleType.body)
+                .foregroundStyle(.islandSecondary(IsleType.Tone.secondary))
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .padding(.top, 8)
@@ -60,7 +60,7 @@ struct AgendaTimelineView: View {
                 HStack(spacing: 4) {
                     Circle().fill(event.color).frame(width: 6, height: 6)
                     Text(event.title)
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(IsleType.caption)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
@@ -70,8 +70,8 @@ struct AgendaTimelineView: View {
             }
             if events.count > 3 {
                 Text("+\(events.count - 3)")
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(.islandSecondary(0.55))
+                    .font(IsleType.caption)
+                    .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
             }
         }
         .fixedSize(horizontal: false, vertical: true)
@@ -119,7 +119,7 @@ struct AgendaTimelineView: View {
                         // reading "L…" says less than its colour does.
                         if blockWidth >= 34, laneHeight >= 13 {
                             Text(item.title)
-                                .font(.system(size: 9.5, weight: .semibold))
+                                .font(IsleType.micro.weight(.semibold))
                                 .foregroundStyle(.black.opacity(past ? 0.55 : 0.8))
                                 .lineLimit(1)
                                 .truncationMode(.tail)
@@ -176,8 +176,8 @@ struct AgendaTimelineView: View {
             ForEach(shown, id: \.self) { hour in
                 let position = x(hour, in: window, width: width)
                 Text(hour.formatted(.dateTime.hour(.defaultDigits(amPM: .narrow))))
-                    .font(.system(size: 9, weight: .medium).monospacedDigit())
-                    .foregroundStyle(.islandSecondary(0.45))
+                    .font(IsleType.micro.monospacedDigit())
+                    .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
                     .fixedSize()
                     // Centred on its tick, but kept inside the bar's ends.
                     .frame(width: 30)

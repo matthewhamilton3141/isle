@@ -225,5 +225,19 @@ do {
                              collapsed: CGSize(width: 300, height: 32)) == 0, "a pill growing for a toast has no taper")
 }
 
+print("Open spring")
+do {
+    let open = IslandMotion.open
+    check(open.response == 0.34 && open.dampingFraction == 0.76, "the open spring is notchOpen's (0.34, 0.76)")
+    let reach = open.reach(1)
+    check(reach > 0.15 && reach < 0.25, "the open first reaches full size about 0.2s in", "\(reach)")
+    check(open.value(at: reach) >= 1 && open.value(at: reach - 0.002) < 1, "reach(1) is the first crossing", "\(reach)")
+    check(open.reach(0.5) < reach, "half way before all the way")
+    var peak = 0.0
+    for i in 0...1000 { peak = max(peak, open.value(at: Double(i) / 1000)) }
+    check(peak > 1 && peak < 1.12, "it overshoots a little after reaching", "\(peak)")
+    check(IslandMotion.collapseHeight.reach(1.5) == 3, "a spring that never gets there stops looking at 3s")
+}
+
 print("\n\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)
