@@ -149,6 +149,9 @@ struct SettingsView: View {
                 batterySection
             case .appearance:
                 appearanceSection
+                if settings.panelBackground == .fade {
+                    statusLightSection
+                }
                 if settings.effectiveMode.showsClaude {
                     accentSection
                 }
@@ -338,6 +341,42 @@ struct SettingsView: View {
             if settings.panelBackground.growsNotchGlow {
                 toggleRow("Glow from the notch", notchGlowCaption, isOn: $settings.panelNotchGlow)
             }
+        }
+    }
+
+    /// Fade's status light, and the closed island it lights. Shown with Fade,
+    /// the background the light is drawn on.
+    private var statusLightSection: some View {
+        Section("Status light") {
+            toggleRow("Status light", statusLightCaption, isOn: $settings.statusLight)
+            if settings.statusLight {
+                Picker(selection: $settings.closedIslandShows) {
+                    ForEach(ClosedIslandShows.allCases) { Text($0.title).tag($0) }
+                } label: {
+                    rowLabel("Closed island shows", "Beside the cover while music plays, lit by the status light.")
+                }
+                .pickerStyle(.segmented)
+                Picker(selection: $settings.closedIsland) {
+                    ForEach(ClosedIslandStyle.allCases) { Text($0.title).tag($0) }
+                } label: {
+                    rowLabel("Closed island", closedIslandCaption)
+                }
+                .pickerStyle(.segmented)
+            }
+        }
+    }
+
+    private var statusLightCaption: String {
+        if reduceTransparency {
+            return "Reduce Transparency is on in System Settings, so the island stays black and unlit."
+        }
+        return "The island's light takes Claude's colour, and wraps the island when Claude needs you, is done or is stopped."
+    }
+
+    private var closedIslandCaption: String {
+        switch settings.closedIsland {
+        case .black: return "Solid black, like the notch."
+        case .glass: return "Glass either side of the camera; the camera stays black."
         }
     }
 
