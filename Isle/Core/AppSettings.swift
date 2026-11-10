@@ -32,6 +32,8 @@ final class AppSettings: ObservableObject {
     private static let panelBackgroundKey = "isle.panelBackground"
     private static let panelNotchGlowKey = "isle.panelNotchGlow"
     private static let statusLightKey = "isle.statusLight"
+    private static let closedIslandShowsKey = "isle.closedIslandShows"
+    private static let closedIslandKey = "isle.closedIsland"
     private static let expandOnAlertKey = "isle.expandOnAlert"
     private static let dismissAlertPanelKey = "isle.dismissAlertPanel"
     private static let showWaitingKey = "isle.showWaiting"
@@ -138,6 +140,18 @@ final class AppSettings: ObservableObject {
     /// `StatusLight`). On by default; nothing else draws it.
     @Published var statusLight: Bool {
         didSet { defaults.set(statusLight, forKey: Self.statusLightKey) }
+    }
+
+    /// With the status light, what the closed island's right side shows
+    /// beside the cover: the waveform, or Claude's dot grid.
+    @Published var closedIslandShows: ClosedIslandShows {
+        didSet { defaults.set(closedIslandShows.rawValue, forKey: Self.closedIslandShowsKey) }
+    }
+
+    /// With the status light, the closed island in black (the default) or
+    /// glass.
+    @Published var closedIsland: ClosedIslandStyle {
+        didSet { defaults.set(closedIsland.rawValue, forKey: Self.closedIslandKey) }
     }
 
     // MARK: - Media controls (spec 3.4)
@@ -494,6 +508,8 @@ final class AppSettings: ObservableObject {
         panelBackground = PanelBackground.stored(defaults.string(forKey: Self.panelBackgroundKey))
         panelNotchGlow = defaults.object(forKey: Self.panelNotchGlowKey) as? Bool ?? true
         statusLight = defaults.object(forKey: Self.statusLightKey) as? Bool ?? true
+        closedIslandShows = ClosedIslandShows.stored(defaults.string(forKey: Self.closedIslandShowsKey))
+        closedIsland = ClosedIslandStyle.stored(defaults.string(forKey: Self.closedIslandKey))
         showScrubber = defaults.object(forKey: Self.showScrubberKey) as? Bool ?? true
         showShuffleRepeat = defaults.object(forKey: Self.showShuffleRepeatKey) as? Bool ?? true
         waveformSource = WaveformSource(rawValue: defaults.string(forKey: Self.waveformSourceKey) ?? "")

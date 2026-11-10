@@ -118,3 +118,53 @@ struct StatusLightMotionHost<Content: View>: NSViewRepresentable {
 final class PassThroughHostingView: NSHostingView<AnyView> {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
+
+/// The closed island's light: a thin lit lower edge in the light's colours,
+/// or — when Claude needs you, is done or is stopped — the whole outline,
+/// held off the screen's top edge. Moves as the status asks (a pulse, a
+/// flash). Drawn inside the island's outline, so half of each stroke shows.
+struct ClosedIslandLight: View {
+    var shape: NotchShape
+    var light: FadeLight
+
+    /// The stroke, half of which shows inside the outline.
+    static let lineWidth: CGFloat = 2.4
+    /// How far up from the bottom edge the lower-edge light shows, fading out.
+    static let edgeReach: CGFloat = 8
+
+    var body: some View {
+        StatusLightMotionHost(status: light.status) {
+            Group {
+                if light.wraps {
+                    shape
+                        .stroke(LinearGradient(stops: light.wrap, startPoint: .leading, endPoint: .trailing),
+                                lineWidth: Self.lineWidth)
+                        .mask {
+                            VStack(spacing: 0) {
+                                Color.clear.frame(height: CGFloat(StatusLight.wrapTopClearance))
+                                Color.white
+                            }
+                        }
+                } else {
+                    shape
+                        .stroke(LinearGradient(stops: light.edge, startPoint: .leading, endPoint: .trailing),
+                                lineWidth: Self.lineWidth)
+                        .mask {
+                            VStack(spacing: 0) {
+                                Color.clear
+                                LinearGradient(colors: [.clear, .white], startPoint: .top, endPoint: .bottom)
+                                    .frame(height: Self.edgeReach)
+                            }
+                        }
+                }
+            }
+            // Its own clip: a platform view's content isn't held by the
+            // island's.
+            .clipShape(shape)
+            .id(light)
+            .transition(.opacity)
+            .animation(.easeInOut(duration: IslandGlass.fadeLightCrossfade), value: light)
+        }
+        .allowsHitTesting(false)
+    }
+}
