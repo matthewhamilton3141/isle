@@ -3644,6 +3644,16 @@ final class NotchViewModel: ObservableObject {
             return (s.album + g, IslandToast.width(of: toast.text) + g)
         }
 
+        if statusLightMusicPill {
+            // The status light's music pill: the cover on the left, the
+            // waveform's seat (or Claude's dots, the same width) on the
+            // right, then the status icon, then a running timer.
+            var trailing = s.wave
+            if statusLightSymbol != nil { trailing += CGFloat(StatusLight.iconWidth) }
+            if pomodoroOnTrailingSide { trailing += s.gap + pomodoroSlot }
+            return (s.album + g, trailing + g)
+        }
+
         if shouldSplitCollapsed {
             // Music cluster is album + waveform, with the waveform tucked toward
             // the camera so the album sits outboard, clear of the housing. With
@@ -3667,6 +3677,7 @@ final class NotchViewModel: ObservableObject {
             // A running timer follows the word on the right.
             let word = Self.textWidth(collapsedStatusText)
             var trailing = word
+            if statusLightSymbol != nil { trailing += CGFloat(StatusLight.iconWidth) }
             if pomodoroOnTrailingSide {
                 trailing += (trailing > 0 ? s.gap : 0) + pomodoroSlot
             }
@@ -3843,6 +3854,37 @@ final class NotchViewModel: ObservableObject {
     /// limit's marker is amber, where the light means stopped, red.
     func statusLightHex(_ kind: StatusLightKind) -> String {
         kind.defaultHex
+    }
+
+    /// The closed island lit by the status light: Fade, with the light on,
+    /// and Reduce Transparency off (which holds Fade black). Off, the closed
+    /// island is exactly what it was.
+    var statusLightPill: Bool {
+        settings.statusLight && settings.panelBackground == .fade
+            && !NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+    }
+
+    /// The music pill under the status light: the cover on the left, the
+    /// waveform (or Claude's dots) on the right, Claude's status as the
+    /// light's colour and an icon rather than a word.
+    var statusLightMusicPill: Bool {
+        statusLightPill && hasMusicActivity && collapsedToast == nil
+    }
+
+    /// The status icon on the closed island, if the status has one.
+    var statusLightSymbol: String? {
+        statusLightPill ? statusLightKind?.symbol : nil
+    }
+
+    /// The closed island's right side shows Claude's dots, not the waveform:
+    /// asked for, and there's a session to show.
+    var closedShowsClaudeActivity: Bool {
+        settings.closedIslandShows == .claudeActivity && hasClaudeActivity
+    }
+
+    /// The closed island is glass (`ClosedIslandStyle.glass`).
+    var closedIslandGlass: Bool {
+        statusLightPill && settings.closedIsland == .glass
     }
 
     var claudeMarkerKind: MarkerKind {

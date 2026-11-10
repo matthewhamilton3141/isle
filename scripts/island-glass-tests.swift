@@ -269,6 +269,20 @@ do {
     check(IslandGlass.fadeSweepAlpha <= 1 && IslandGlass.fadeSweepHazeAlpha <= 0.5, "bright, not blinding")
 }
 
+print("closed island in glass")
+do {
+    // The wings: enough black to read over a bright wallpaper, light enough
+    // to read as glass — between Glass's tint and Smoked's.
+    check(IslandGlass.compactTint > IslandGlass.glassTint && IslandGlass.compactTint < IslandGlass.smokedTint,
+          "the wings' tint sits between Glass's and Smoked's", "\(IslandGlass.compactTint)")
+    // The band over the camera eases into the wings over a few points only:
+    // the hardware stays black, the wings stay glass.
+    check(IslandGlass.compactHousingFeather > 0 && IslandGlass.compactHousingFeather <= 10, "a short feather off the housing")
+    // The light's haze inside the glass: faint, and within the pill's height.
+    check(IslandGlass.compactHazeAlpha > 0 && IslandGlass.compactHazeAlpha < 0.5, "a faint haze")
+    check(IslandGlass.compactHazeHeight < 32, "the haze stays inside a pill as tall as the housing")
+}
+
 print("blend")
 do {
     check(IslandGlass.blackCover(progress: 0) == 1, "closed: all black")

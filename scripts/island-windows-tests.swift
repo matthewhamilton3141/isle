@@ -212,6 +212,36 @@ func run() {
     w.orderOut(nil)
     spin(0.1)
     checkInStep(w, "hidden")
+
+    print("the closed island under the status light")
+    func pill(_ fixtureName: String, background: String, statusLight: Bool) -> (NotchViewModel, AppSettings) {
+        let d = UserDefaults(suiteName: "isle.windowtests.pill.\(UUID().uuidString)")!
+        d.set(background, forKey: "isle.panelBackground")
+        let s = AppSettings(defaults: d)
+        s.statusLight = statusLight
+        let f = ClaudePanelFixture.all.first { $0.name == fixtureName }!
+        f.configure(s)
+        s.mode = .both
+        let m = NotchViewModel(settings: s)
+        m.applyPreviewFixture(f)
+        return (m, s)
+    }
+    let icon = CGFloat(StatusLight.iconWidth)
+    for (name, wants) in [("approval_short", true), ("done", true), ("usage_limit", true), ("working_tool", false)] {
+        let (lit, _) = pill(name, background: "fade", statusLight: true)
+        let (plain, _) = pill(name, background: "fade", statusLight: false)
+        let (black, _) = pill(name, background: "black", statusLight: true)
+        check(lit.statusLightPill && !plain.statusLightPill && !black.statusLightPill,
+              "\(name): the status light lights the closed island in Fade with it on, not otherwise")
+        check(black.collapsedSideWidths == plain.collapsedSideWidths, "\(name): off, or not Fade, the closed island is as it was")
+        let grows = lit.collapsedSideWidths.trailing - plain.collapsedSideWidths.trailing
+        check(wants ? abs(grows - icon) < 0.01 : abs(grows) < 0.01,
+              "\(name): the island grows by the icon's width \(wants ? "for its icon" : "only for a status with one")", "\(grows)")
+        check((lit.statusLightSymbol != nil) == wants, "\(name): an icon exactly when the status has one")
+    }
+    let (idle, _) = pill("idle", background: "fade", statusLight: true)
+    check(idle.statusLightKind == nil && idle.statusLightSymbol == nil, "idle: no status, no icon")
+
     print("\n\(passes) passed, \(failures) failed")
     exit(failures == 0 ? 0 : 1)
 }

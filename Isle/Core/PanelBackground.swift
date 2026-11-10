@@ -70,3 +70,47 @@ enum PanelBackground: String, CaseIterable, Identifiable {
         raw.flatMap(PanelBackground.init(rawValue:)) ?? .black
     }
 }
+
+/// What the closed island's right side shows beside the cover while music
+/// plays, with the status light on (`AppSettings.closedIslandShows`).
+enum ClosedIslandShows: String, CaseIterable, Identifiable {
+    /// The waveform, its bars in the light's colours. The default.
+    case waveform
+    /// Claude's dot grid, lit the same way.
+    case claudeActivity
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .waveform: return "Waveform"
+        case .claudeActivity: return "Claude activity"
+        }
+    }
+
+    static func stored(_ raw: String?) -> ClosedIslandShows {
+        raw.flatMap(ClosedIslandShows.init(rawValue:)) ?? .waveform
+    }
+}
+
+/// What the closed island is drawn on, with the status light on
+/// (`AppSettings.closedIsland`). Black, the default, is the pill Isle has
+/// always had; Glass is the wings either side of the camera in glass, the
+/// band around the camera black.
+enum ClosedIslandStyle: String, CaseIterable, Identifiable {
+    case black
+    case glass
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .black: return "Black"
+        case .glass: return "Glass"
+        }
+    }
+
+    static func stored(_ raw: String?) -> ClosedIslandStyle {
+        raw.flatMap(ClosedIslandStyle.init(rawValue:)) ?? .black
+    }
+}

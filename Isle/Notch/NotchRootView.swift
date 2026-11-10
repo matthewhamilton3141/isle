@@ -151,6 +151,25 @@ struct NotchRootView: View {
         return IslandLightSource(palette: palette, status: status, statusHex: viewModel.statusLightHex(status))
     }
 
+    /// The status light on the closed island: Fade, the light on, and
+    /// something to light — music, or a status. Nil leaves the closed island
+    /// exactly as it was.
+    private var closedLight: FadeLight? {
+        guard viewModel.statusLightPill, panelBackground == .fade,
+              viewModel.hasMusicActivity || viewModel.statusLightKind != nil,
+              viewModel.collapsedToast == nil else { return nil }
+        return FadeLight.resolve(lightSource)
+    }
+
+    /// The closed island in glass (`ClosedIslandStyle.glass`), with the
+    /// camera housing to keep black over on a screen with a notch. Fade only,
+    /// with the status light: nil is the black pill.
+    private var compactGlass: CompactGlass? {
+        guard viewModel.closedIslandGlass, panelBackground == .fade else { return nil }
+        guard let metrics = island.metrics, metrics.hasPhysicalNotch else { return CompactGlass(housing: nil) }
+        return CompactGlass(housing: metrics.notchSize)
+    }
+
     /// Height of the physical camera housing. Content in the expanded panel
     /// has to start below this. Falls back to the common 32pt housing if
     /// metrics aren't available yet, which is safer than falling back to 0 —
@@ -250,6 +269,18 @@ struct NotchRootView: View {
             // clip, so it can carry the proximity swell.
             Color.clear
 
+            // The status light's lit edge (or wrap) on the closed island,
+            // under its content, across the outline's frame.
+            if glassLayer != .materialOnly, !state.isExpanded, let light = closedLight {
+                ClosedIslandLight(
+                    shape: outline,
+                    light: light,
+                    glass: compactGlass,
+                    housingShift: collapsedShift
+                )
+                    .transition(.opacity)
+            }
+
             content
                 .padding(.horizontal, state.isExpanded ? 22 : 10)
                 // Reserve the camera housing's band. Nothing may be drawn in
@@ -336,7 +367,8 @@ struct NotchRootView: View {
                 housing: glowHousing,
                 housingShift: collapsedShift,
                 bandHeight: notchBandHeight,
-                light: lightSource
+                light: lightSource,
+                compact: compactGlass
             )
         }
         // The corners lead the collapse: the clip's and the fill's radii.
@@ -408,7 +440,7 @@ struct NotchRootView: View {
                 .opacity(expandedContentOpacity)
                 .transition(.opacity)
         } else {
-            CollapsedNotchView(viewModel: viewModel, island: island, palette: palette)
+            CollapsedNotchView(viewModel: viewModel, island: island, palette: palette, light: closedLight)
                 .transition(.opacity)
         }
     }

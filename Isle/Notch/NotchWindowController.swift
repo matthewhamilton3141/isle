@@ -1009,7 +1009,12 @@ extension NotchWindowController {
         context.requestShowing = viewModel.hasLiveActivity && viewModel.expandedPlace == .face(.claude)
         context.availableTabs = viewModel.availableTabs
 
-        guard case .open(let face) = SettingsPreviewPlan.decide(change, context: context) else { return }
+        let decision = SettingsPreviewPlan.decide(change, context: context)
+        if decision == .showClosed {
+            endSettingsPreview(.closedIslandChange)
+            return
+        }
+        guard case .open(let face) = decision else { return }
         if let face, viewModel.expandedPlace != .face(face) {
             viewModel.selectTab(face)
         }
