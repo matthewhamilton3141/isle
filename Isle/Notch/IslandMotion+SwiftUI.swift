@@ -203,8 +203,8 @@ struct IslandFill: View {
     /// The band the open panel's content starts under, which Fade keeps
     /// solid black.
     var bandHeight: CGFloat = NotchMetrics.fallbackNotchSize.height
-    /// The current track's cover colours, for Fade's light (nil: spectral).
-    var lightPalette: ArtworkPalette? = nil
+    /// Where Fade's light takes its colours: the cover's, Claude's status.
+    var light: IslandLightSource = .none
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.islandGlassLayer) private var glassLayer
@@ -234,7 +234,7 @@ struct IslandFill: View {
                 housing: housing,
                 housingShift: housingShift,
                 bandHeight: bandHeight,
-                lightPalette: lightPalette
+                light: light
             )
         } else if glassLayer == .materialOnly {
             // The glass window has no glass to draw in Black.

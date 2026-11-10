@@ -31,6 +31,7 @@ final class AppSettings: ObservableObject {
     private static let displayScopeKey = "isle.displayScope"
     private static let panelBackgroundKey = "isle.panelBackground"
     private static let panelNotchGlowKey = "isle.panelNotchGlow"
+    private static let statusLightKey = "isle.statusLight"
     private static let expandOnAlertKey = "isle.expandOnAlert"
     private static let dismissAlertPanelKey = "isle.dismissAlertPanel"
     private static let showWaitingKey = "isle.showWaiting"
@@ -130,6 +131,13 @@ final class AppSettings: ObservableObject {
     /// Black and Fade ignore it (Fade is black around the camera already).
     @Published var panelNotchGlow: Bool {
         didSet { defaults.set(panelNotchGlow, forKey: Self.panelNotchGlowKey) }
+    }
+
+    /// With Fade, the island's light takes Claude's status colour, blended
+    /// with the cover's, and wraps the outline when Claude needs you (see
+    /// `StatusLight`). On by default; nothing else draws it.
+    @Published var statusLight: Bool {
+        didSet { defaults.set(statusLight, forKey: Self.statusLightKey) }
     }
 
     // MARK: - Media controls (spec 3.4)
@@ -485,6 +493,7 @@ final class AppSettings: ObservableObject {
             ?? .builtIn
         panelBackground = PanelBackground.stored(defaults.string(forKey: Self.panelBackgroundKey))
         panelNotchGlow = defaults.object(forKey: Self.panelNotchGlowKey) as? Bool ?? true
+        statusLight = defaults.object(forKey: Self.statusLightKey) as? Bool ?? true
         showScrubber = defaults.object(forKey: Self.showScrubberKey) as? Bool ?? true
         showShuffleRepeat = defaults.object(forKey: Self.showShuffleRepeatKey) as? Bool ?? true
         waveformSource = WaveformSource(rawValue: defaults.string(forKey: Self.waveformSourceKey) ?? "")

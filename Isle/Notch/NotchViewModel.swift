@@ -3651,6 +3651,23 @@ final class NotchViewModel: ObservableObject {
     /// picks a specific error marker from `error_type` (rate-limit vs server vs
     /// generic) so the glyph itself distinguishes them; otherwise it's the plain
     /// lifecycle marker.
+    /// Claude's status for the island's light (`StatusLight`), or nil when
+    /// it isn't news — idle, at the prompt, no session — or the status light
+    /// is off or Claude isn't shown. The light is then the cover's alone.
+    var statusLightKind: StatusLightKind? {
+        guard settings.statusLight, settings.effectiveMode.showsClaude else { return nil }
+        return StatusLightKind.forMarker(claudeMarkerKind.rawValue)
+    }
+
+    /// The status's colour, as the app tints it: the marker's own fixed hue,
+    /// or the status light's default where the marker follows the palette
+    /// (working).
+    func statusLightHex(_ kind: StatusLightKind) -> String {
+        guard let marker = MarkerKind(rawValue: kind.marker) else { return kind.defaultHex }
+        let design = MarkerStore.shared.design(for: marker)
+        return design.colorMode == .fixed ? design.fixedColorHex : kind.defaultHex
+    }
+
     var claudeMarkerKind: MarkerKind {
         guard claudeState == .failed else { return MarkerKind(state: claudeState) }
         switch claudeErrorType {
