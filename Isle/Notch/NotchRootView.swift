@@ -151,16 +151,6 @@ struct NotchRootView: View {
         return IslandLightSource(palette: palette, status: status, statusHex: viewModel.statusLightHex(status))
     }
 
-    /// The status light on the closed island: Fade, the light on, and
-    /// something to light — music, or a status. Nil leaves the closed island
-    /// exactly as it was.
-    private var closedLight: FadeLight? {
-        guard viewModel.statusLightPill, panelBackground == .fade,
-              viewModel.hasMusicActivity || viewModel.statusLightKind != nil,
-              viewModel.collapsedToast == nil else { return nil }
-        return FadeLight.resolve(lightSource)
-    }
-
     /// Height of the physical camera housing. Content in the expanded panel
     /// has to start below this. Falls back to the common 32pt housing if
     /// metrics aren't available yet, which is safer than falling back to 0 —
@@ -259,13 +249,6 @@ struct NotchRootView: View {
             // The fill itself is now `IslandFill`, behind and outside the
             // clip, so it can carry the proximity swell.
             Color.clear
-
-            // The status light's lit edge (or wrap) on the closed island,
-            // under its content, across the outline's frame.
-            if glassLayer != .materialOnly, !state.isExpanded, let light = closedLight {
-                ClosedIslandLight(shape: outline, light: light)
-                    .transition(.opacity)
-            }
 
             content
                 .padding(.horizontal, state.isExpanded ? 22 : 10)
@@ -425,7 +408,7 @@ struct NotchRootView: View {
                 .opacity(expandedContentOpacity)
                 .transition(.opacity)
         } else {
-            CollapsedNotchView(viewModel: viewModel, island: island, palette: palette, light: closedLight)
+            CollapsedNotchView(viewModel: viewModel, island: island, palette: palette)
                 .transition(.opacity)
         }
     }

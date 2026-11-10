@@ -18,10 +18,6 @@ struct CollapsedNotchView: View {
     @ObservedObject var viewModel: NotchViewModel
     @ObservedObject var island: IslandPresentation
     var palette: ArtworkPalette
-    /// The status light, when it's lighting the closed island (see
-    /// `NotchViewModel.statusLightPill`): its colours for the waveform and
-    /// dots, and the status for the icon. Nil leaves the island as it was.
-    var light: FadeLight? = nil
 
     private var cutoutWidth: CGFloat {
         island.metrics?.notchSize.width ?? 0
@@ -58,9 +54,6 @@ struct CollapsedNotchView: View {
             // whatever was there slides back into exactly the same spot when
             // the toast ends.
             toastSymbol(toast)
-        } else if viewModel.statusLightMusicPill {
-            // The status light's music pill: the cover alone on the left.
-            artworkThumbnail
         } else if viewModel.shouldSplitCollapsed {
             // Music cluster: album + waveform, waveform tucked toward the camera.
             // Kept in place even during a Claude alert — the alert sits on the
@@ -94,23 +87,6 @@ struct CollapsedNotchView: View {
     private var trailing: some View {
         if let toast = viewModel.collapsedToast {
             toastText(toast)
-        } else if viewModel.statusLightMusicPill {
-            // The waveform in the light's colours — or Claude's dots, lit the
-            // same way — then the status icon, then a running timer. Claude's
-            // word isn't here: the light's colour and the icon say it.
-            HStack(spacing: 0) {
-                if viewModel.closedShowsClaudeActivity {
-                    claudeDots(size: CollapsedSize.album, lit: true)
-                        .frame(width: CollapsedSize.wave, alignment: .leading)
-                } else {
-                    waveformSlot
-                }
-                statusIcon
-                if viewModel.pomodoroOnTrailingSide {
-                    pomodoroCluster
-                        .padding(.leading, CollapsedSize.gap)
-                }
-            }
         } else if viewModel.shouldSplitCollapsed {
             // Split: the Claude cluster rides on the right beside the music —
             // dots next to the camera, status word beside them — and the timer
@@ -128,10 +104,7 @@ struct CollapsedNotchView: View {
             // Claude solo: only the status word here; the dots are on the left.
             // A live timer tags along after the word.
             HStack(spacing: CollapsedSize.gap) {
-                HStack(spacing: 0) {
-                    statusText
-                    statusIcon
-                }
+                statusText
                 if viewModel.pomodoroOnTrailingSide {
                     pomodoroCluster
                 }
@@ -220,43 +193,14 @@ struct CollapsedNotchView: View {
 
     // MARK: - Pieces
 
-    private func claudeDots(size: CGFloat, lit: Bool = false) -> some View {
+    private func claudeDots(size: CGFloat) -> some View {
         ClaudeStatusGlyphView(
             state: viewModel.claudeState,
             kind: viewModel.claudeMarkerKind,
-            palette: lit ? lightPalette : palette,
-            tint: lit ? light?.statusColor : viewModel.workingTint
+            palette: palette,
+            tint: viewModel.workingTint
         )
         .frame(width: size, height: size)
-    }
-
-    // MARK: - Status light
-
-    /// The light's three colours as a palette, for the waveform and dots;
-    /// the cover's own without the light. The equalizer draws its ramp from
-    /// whatever palette it's given, so nothing of it changes but the colours.
-    private var lightPalette: ArtworkPalette {
-        guard let colors = light?.colors, colors.count == 3 else { return palette }
-        return ArtworkPalette(primary: colors[0], secondary: colors[1], accent: colors[2])
-    }
-
-    /// The status's icon — ! for an approval, ? for a question, ✓ for done,
-    /// a clock for a limit — in its colour, after the waveform or the word,
-    /// moving with the light. The island has already grown to seat it
-    /// (`NotchViewModel.collapsedSideWidths`).
-    @ViewBuilder
-    private var statusIcon: some View {
-        if let symbol = viewModel.statusLightSymbol, let light {
-            StatusLightMotionHost(status: light.status) {
-                Image(systemName: symbol)
-                    .font(.system(size: 10, weight: .heavy))
-                    .foregroundStyle(light.statusColor ?? .white)
-                    .frame(width: CGFloat(StatusLight.iconSlot), height: 16)
-            }
-            .frame(width: CGFloat(StatusLight.iconSlot), height: 16)
-            .padding(.leading, CGFloat(StatusLight.iconGap))
-            .transition(.opacity)
-        }
     }
 
     private var statusText: some View {
@@ -334,7 +278,7 @@ struct CollapsedNotchView: View {
     private func equalizer(width: CGFloat) -> some View {
         LiveEqualizer(
             source: viewModel.audioLevelSource,
-            palette: viewModel.statusLightMusicPill ? lightPalette : palette,
+            palette: palette,
             isPlaying: viewModel.media.isPlaying,
             listens: viewModel.waveformSource.capturesAudio
         )
