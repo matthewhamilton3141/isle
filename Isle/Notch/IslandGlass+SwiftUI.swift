@@ -132,7 +132,19 @@ private struct IslandGlassBlend: View, Animatable {
 
     var body: some View {
         ZStack(alignment: .top) {
-            if IslandGlass.showsGlass(progress: progress) {
+            if layer == .materialOnly {
+                // The glass window keeps its material in the tree the whole
+                // time and shows it by opacity. Added when the open's blend
+                // got under way, as it is in the panel's own tree, a view is
+                // laid out at the open's final size at once rather than on
+                // the outline's spring; there the panel's clip and black
+                // cover hid that, but alone in its window it showed as a grey
+                // block the size of the open panel for the first few frames
+                // of every open. At zero opacity it isn't composited, so the
+                // closed pill costs nothing for it.
+                material
+                    .opacity(IslandGlass.showsGlass(progress: progress) ? 1 : 0)
+            } else if IslandGlass.showsGlass(progress: progress) {
                 material
                     .overlay(alignment: .top) {
                         if layer != .materialOnly {
