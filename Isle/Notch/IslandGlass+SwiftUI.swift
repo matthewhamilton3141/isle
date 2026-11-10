@@ -60,8 +60,9 @@ struct IslandGlassFill: View {
     /// housing's height, or the fallback band without one — which Fade
     /// keeps solid black and a little more (`IslandGlass.fadeBand`).
     var bandHeight: CGFloat
-    /// Where Fade's light takes its colours: the cover's, Claude's status.
-    var light: IslandLightSource = .none
+    /// The current track's cover colours, for Fade's light; nil with no
+    /// track or no cover, which leaves it spectral.
+    var lightPalette: ArtworkPalette? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -82,7 +83,7 @@ struct IslandGlassFill: View {
             housing: housing,
             housingShift: housingShift,
             bandHeight: bandHeight,
-            light: light,
+            lightPalette: lightPalette,
             sweepAt: sweepAt
         )
         // The blend runs on the width's spring during a collapse — the
@@ -119,7 +120,7 @@ private struct IslandGlassBlend: View, Animatable {
     var housing: CGSize?
     var housingShift: CGFloat
     var bandHeight: CGFloat
-    var light: IslandLightSource
+    var lightPalette: ArtworkPalette?
     var sweepAt: Date?
 
     @Environment(\.islandGlassLayer) private var layer
@@ -152,7 +153,7 @@ private struct IslandGlassBlend: View, Animatable {
                     }
                     .overlay(alignment: .top) {
                         if background == .fade, layer != .materialOnly {
-                            FadeLens(shape: shape, bandHeight: bandHeight, light: FadeLight.resolve(light), sweepAt: sweepAt)
+                            FadeLens(shape: shape, bandHeight: bandHeight, light: FadeLight.resolve(lightPalette), sweepAt: sweepAt)
                         }
                     }
                     .transition(.identity)
@@ -466,24 +467,11 @@ private struct FadeSweep: View, Animatable {
     }
 }
 
-/// Where Fade's light takes its colours from: the current track's cover
-/// (nil with no track or no cover: the spectrum), and Claude's status with
-/// its colour (nil: none, the cover's alone). See `StatusLight`.
-struct IslandLightSource: Equatable {
-    var palette: ArtworkPalette?
-    var status: StatusLightKind?
-    var statusHex: String?
-
-    static let none = IslandLightSource()
-}
-
-/// Fade's light: the rim's and the glint's gradients, the sweep's, and the
-/// status light's. Spectral with no cover; from a cover, the glint in its
-/// palette's colours (`IslandGlass.fadeGlint`, each lit to a brightness
-/// floor so a dark or grey cover still throws light) and the rim's white
-/// faintly tinted toward its primary (`IslandGlass.fadeRimColor`). With a
-/// status, every colour goes `StatusLight.mix` of the way to the status's,
-/// and the rim's white is tinted toward it. Consumes the palette the view
+/// Fade's light: the rim's and the glint's gradients. Spectral with no
+/// cover; from a cover, the glint in its palette's colours
+/// (`IslandGlass.fadeGlint`, each lit to a brightness floor so a dark or
+/// grey cover still throws light) and the rim's white faintly tinted toward
+/// its primary (`IslandGlass.fadeRimColor`). Consumes the palette the view
 /// model already extracted; extracts nothing.
 struct FadeLight: Hashable {
     var rim: [Gradient.Stop]
@@ -491,96 +479,47 @@ struct FadeLight: Hashable {
     /// The sweep's colours: the glint's at full strength across the middle
     /// and the rim's colour out at the corners, where the glint fades.
     var sweep: [Gradient.Stop]
-    /// The wrapped rim's colours, all the way across at full strength
-    /// (`StatusLight.wrapAlpha`): the light's colours, edge to edge.
-    var wrap: [Gradient.Stop]
-    /// The closed island's lit lower edge: the light's colours, fading in
-    /// from each end.
-    var edge: [Gradient.Stop]
-    /// The light's three colours — the cover's primary, secondary and
-    /// accent, lit and blended — for the closed island's waveform and dots.
-    var colors: [Color]
-    /// The status the light shows, and its colour (nil: none).
-    var status: StatusLightKind?
-    var statusColor: Color?
 
-    /// The light runs the whole outline, not just its lower edge.
-    var wraps: Bool { status?.wraps ?? false }
-    var motion: StatusLightMotion { status?.motion ?? .still }
+    static let spectral = FadeLight(glint: IslandGlass.fadeSpectralGlint(), rim: nil)
 
-    static let spectral = FadeLight(glint: IslandGlass.fadeSpectralGlint(), rim: nil, status: nil, statusRGB: nil)
-
-    private init(glint: [IslandGlass.GlintStop], rim primary: IslandGlass.HSB?, status: StatusLightKind?, statusRGB: StatusLight.RGB?) {
-        func color(_ c: StatusLight.RGB) -> Color { Color(.sRGB, red: c.r, green: c.g, blue: c.b) }
-        // Every colour of the light: lit, then blended with the status.
-        let lit = glint.map { stop -> StatusLight.RGB in
-            let c = IslandGlass.rgb(stop.color)
-            return StatusLight.blend(StatusLight.RGB(c.r, c.g, c.b), status: statusRGB)
-        }
-        let rimRGB: StatusLight.RGB = {
-            if let statusRGB { return StatusLight.RGB(1, 1, 1).mixed(toward: statusRGB, by: StatusLight.rimTint) }
-            let c = IslandGlass.fadeRimColor(primary: primary)
-            return StatusLight.RGB(c.r, c.g, c.b)
-        }()
-        let rimColor = color(rimRGB)
+    private init(glint: [IslandGlass.GlintStop], rim primary: IslandGlass.HSB?) {
+        let c = IslandGlass.fadeRimColor(primary: primary)
+        let rimColor = Color(.sRGB, red: c.r, green: c.g, blue: c.b)
         rim = IslandGlass.fadeRimStops().map {
             Gradient.Stop(color: rimColor.opacity($0.alpha), location: $0.location)
         }
-        self.glint = zip(glint, lit).map { stop, c in
-            Gradient.Stop(color: color(c).opacity(stop.strength), location: stop.location)
+        self.glint = glint.map {
+            Gradient.Stop(
+                color: Color(hue: $0.color.h, saturation: $0.color.s, brightness: $0.color.b).opacity($0.strength),
+                location: $0.location
+            )
         }
         sweep = [Gradient.Stop(color: rimColor, location: 0)]
-            + zip(glint, lit).map { stop, c in Gradient.Stop(color: color(c), location: stop.location) }
+            + glint.map { Gradient.Stop(color: Color(hue: $0.color.h, saturation: $0.color.s, brightness: $0.color.b), location: $0.location) }
             + [Gradient.Stop(color: rimColor, location: 1)]
-        // Across the whole width: the glint's colours, its first and last
-        // carried out to the edges.
-        let a = StatusLight.wrapAlpha
-        wrap = [Gradient.Stop(color: color(lit[1]).opacity(a), location: 0)]
-            + zip(glint, lit).dropFirst().dropLast().map { stop, c in Gradient.Stop(color: color(c).opacity(a), location: stop.location) }
-            + [Gradient.Stop(color: color(lit[lit.count - 2]).opacity(a), location: 1)]
-        let e = StatusLight.edgeAlpha, f = StatusLight.edgeFade
-        edge = [
-            Gradient.Stop(color: color(lit[1]).opacity(0), location: 0),
-            Gradient.Stop(color: color(lit[1]).opacity(e * 0.7), location: f),
-            Gradient.Stop(color: color(lit[3]).opacity(e), location: 0.5),
-            Gradient.Stop(color: color(lit[5]).opacity(e * 0.7), location: 1 - f),
-            Gradient.Stop(color: color(lit[5]).opacity(0), location: 1),
-        ]
-        // The glint lays secondary, secondary, primary, accent, primary, …
-        colors = [color(lit[2]), color(lit[1]), color(lit[3])]
-        self.status = status
-        statusColor = statusRGB.map(color)
     }
 
-    init(source: IslandLightSource) {
-        let statusRGB = source.status.flatMap { kind in
-            StatusLight.RGB(hex: source.statusHex ?? kind.defaultHex) ?? StatusLight.RGB(hex: kind.defaultHex)
-        }
-        let status = statusRGB == nil ? nil : source.status
-        if let palette = source.palette {
-            let primary = Self.hsb(palette.primary)
-            self.init(
-                glint: IslandGlass.fadeGlint(primary: primary, secondary: Self.hsb(palette.secondary), accent: Self.hsb(palette.accent)),
-                rim: primary, status: status, statusRGB: statusRGB
-            )
-        } else {
-            self.init(glint: IslandGlass.fadeSpectralGlint(), rim: nil, status: status, statusRGB: statusRGB)
-        }
+    init(palette: ArtworkPalette) {
+        let primary = Self.hsb(palette.primary)
+        self.init(
+            glint: IslandGlass.fadeGlint(primary: primary, secondary: Self.hsb(palette.secondary), accent: Self.hsb(palette.accent)),
+            rim: primary
+        )
     }
 
-    /// The light for a source. The last one is kept, since the lens is laid
-    /// out on every frame of an open or resize and the source changes only
-    /// with the cover or Claude's status.
+    /// The light for a palette (nil: spectral). The last one is kept, since
+    /// the lens is laid out on every frame of an open or resize and the
+    /// palette changes only with the cover.
     @MainActor
-    static func resolve(_ source: IslandLightSource) -> FadeLight {
-        if source == .none { return spectral }
-        if let last, last.source == source { return last.light }
-        let light = FadeLight(source: source)
-        last = (source, light)
+    static func resolve(_ palette: ArtworkPalette?) -> FadeLight {
+        guard let palette else { return spectral }
+        if let last, last.palette == palette { return last.light }
+        let light = FadeLight(palette: palette)
+        last = (palette, light)
         return light
     }
 
-    @MainActor private static var last: (source: IslandLightSource, light: FadeLight)?
+    @MainActor private static var last: (palette: ArtworkPalette, light: FadeLight)?
 
     private static func hsb(_ color: Color) -> IslandGlass.HSB {
         guard let c = NSColor(color).usingColorSpace(.sRGB) else { return IslandGlass.HSB(h: 0, s: 0, b: 1) }
