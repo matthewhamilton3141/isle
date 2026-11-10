@@ -3659,13 +3659,12 @@ final class NotchViewModel: ObservableObject {
         return StatusLightKind.forMarker(claudeMarkerKind.rawValue)
     }
 
-    /// The status's colour, as the app tints it: the marker's own fixed hue,
-    /// or the status light's default where the marker follows the palette
-    /// (working).
+    /// The status's colour: the status light's own (`StatusLightKind
+    /// .defaultHex`) — working purple, approval amber, a question blue, done
+    /// green, a limit or error red. Not the markers' fixed colours: a usage
+    /// limit's marker is amber, where the light means stopped, red.
     func statusLightHex(_ kind: StatusLightKind) -> String {
-        guard let marker = MarkerKind(rawValue: kind.marker) else { return kind.defaultHex }
-        let design = MarkerStore.shared.design(for: marker)
-        return design.colorMode == .fixed ? design.fixedColorHex : kind.defaultHex
+        kind.defaultHex
     }
 
     var claudeMarkerKind: MarkerKind {

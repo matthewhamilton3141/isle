@@ -309,15 +309,24 @@ private struct FadeLens: View {
             scrim(band: band)
             // Keyed by the light, so a new cover's colours come in as a new
             // view and the old fade out under them.
-            ZStack {
+            //
+            // Moved — a pulse, a flash — by Core Animation, in a layer of its
+            // own (`StatusLightMotionHost`); still for every other state.
+            StatusLightMotionHost(status: light.status) {
                 ZStack {
-                    rim(band: band)
-                    glint
+                    ZStack {
+                        if light.wraps {
+                            wrapRim
+                        } else {
+                            rim(band: band)
+                        }
+                        glint
+                    }
+                    .id(light)
+                    .transition(.opacity)
                 }
-                .id(light)
-                .transition(.opacity)
+                .animation(.easeInOut(duration: IslandGlass.fadeLightCrossfade), value: light)
             }
-            .animation(.easeInOut(duration: IslandGlass.fadeLightCrossfade), value: light)
             FadeSweepRun(sweepAt: sweepAt, shape: shape, light: light)
         }
         .allowsHitTesting(false)
@@ -353,6 +362,22 @@ private struct FadeLens: View {
                 VStack(spacing: 0) {
                     Color.clear.frame(height: band)
                     LinearGradient(colors: [.clear, .white], startPoint: .top, endPoint: .bottom)
+                }
+            }
+            .blendMode(.plusLighter)
+    }
+
+    /// The rim when Claude needs you, is done or is stopped: the light's
+    /// colours along the whole outline, up the sides to the top, held just
+    /// off the screen's edge so the top itself isn't lit.
+    private var wrapRim: some View {
+        shape
+            .stroke(LinearGradient(stops: light.wrap, startPoint: .leading, endPoint: .trailing),
+                    lineWidth: IslandGlass.fadeRimWidth)
+            .mask {
+                VStack(spacing: 0) {
+                    Color.clear.frame(height: StatusLight.wrapTopClearance)
+                    Color.white
                 }
             }
             .blendMode(.plusLighter)

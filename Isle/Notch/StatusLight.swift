@@ -38,9 +38,8 @@ enum StatusLightKind: String, CaseIterable, Equatable {
         }
     }
 
-    /// The status's colour unless the user has fixed one on its marker: as
-    /// sRGB hex. Working purple, approval amber, a question blue, done
-    /// green, a limit or error red.
+    /// The status's colour, as sRGB hex: working purple, approval amber, a
+    /// question blue, done green, a limit or error red.
     var defaultHex: String {
         switch self {
         case .working: return "#C47DFF"
@@ -51,8 +50,7 @@ enum StatusLightKind: String, CaseIterable, Equatable {
         }
     }
 
-    /// The marker whose fixed colour, if the user set one, the light uses
-    /// instead of `defaultHex` (`MarkerKind`'s raw value).
+    /// The status's marker (`MarkerKind`'s raw value).
     var marker: String {
         switch self {
         case .working: return "working"
@@ -108,6 +106,9 @@ enum StatusLight {
     /// Core Animation, so it costs the app nothing per frame.
     static let pulseLow: Double = 0.62
     static let pulsePeriod: Double = 2.0
+    /// The frames a second the pulse asks the window server for: plenty for
+    /// a slow breath, a fraction of the display's rate. Tune here.
+    static let pulseFrameRate: Double = 15
 
     /// The flash: a brighter copy of the light up to `flashPeak` and away
     /// again over `flashDuration` seconds, once, when done arrives.
@@ -118,6 +119,11 @@ enum StatusLight {
 
     /// The wrapped rim's strength along the whole outline (added light).
     static let wrapAlpha: Double = 0.85
+
+    /// How far below the screen's top edge the wrapped rim starts, in
+    /// points: the outline's top runs along the screen's edge, and lit
+    /// there it would read as a line across the top of the display.
+    static let wrapTopClearance: Double = 2
 
     /// The rim's white tinted toward the status colour by this much, on the
     /// open panel's lower edge (the wrap is the status colour outright).
