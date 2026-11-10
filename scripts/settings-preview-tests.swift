@@ -75,8 +75,7 @@ enum SettingsPreviewTests {
         for c in [Change.showCalendarEvents, .showReminders, .eventLeadMinutes] {
             equal(c.face, .agenda, "\(c.rawValue): the agenda")
         }
-        for c in [Change.mode, .panelBackground, .panelNotchGlow, .statusLight, .closedIslandShows, .closedIsland,
-                  .claudeAccent, .claudeAccentHex] {
+        for c in [Change.mode, .panelBackground, .panelNotchGlow, .claudeAccent, .claudeAccentHex] {
             equal(c.face, nil, "\(c.rawValue): whatever face is up (it shows on every one)")
         }
     }
@@ -95,16 +94,6 @@ enum SettingsPreviewTests {
         equal(Plan.decide(.panelNotchGlow, context: ctx), .open(face: nil), "the glow: open where it is")
         equal(Plan.decide(.claudeAccent, context: ctx), .open(face: nil), "the accent: open where it is")
         equal(Plan.decide(.mode, context: ctx), .open(face: nil), "the mode: open where it is (or Home)")
-        equal(Plan.decide(.statusLight, context: ctx), .open(face: nil), "the status light: open where it is, lit")
-        equal(Plan.decide(.closedIslandShows, context: ctx), .showClosed,
-              "what the closed island shows: leave it closed, where it shows")
-        equal(Plan.decide(.closedIsland, context: ctx), .showClosed, "black or glass closed: the same")
-        check(Change.allCases.filter(\.showsOnClosedIsland) == [.closedIslandShows, .closedIsland],
-              "only the closed island's own settings show closed")
-        var typingClosed = Ctx(); typingClosed.composing = true
-        equal(Plan.decide(.closedIsland, context: typingClosed), .none, "a field taking keys wins over a closed-island change")
-        var backClosed = Ctx(); backClosed.settingsInFront = false
-        equal(Plan.decide(.closedIslandShows, context: backClosed), .none, "and Settings not in front: nothing")
 
         var gone = Ctx(); gone.availableTabs = [.music, .claude]
         equal(Plan.decide(.pomodoroEnabled, context: gone), .open(face: nil),

@@ -40,10 +40,6 @@ enum SettingsPreviewChange: String, CaseIterable, Equatable {
     case mode
     case panelBackground
     case panelNotchGlow
-    case statusLight
-    // The closed island: shown on it, not on the open panel.
-    case closedIslandShows
-    case closedIsland
     case claudeAccent
     case claudeAccentHex
     // Music
@@ -67,8 +63,7 @@ enum SettingsPreviewChange: String, CaseIterable, Equatable {
     /// The face it's about, or nil for one that shows on every face.
     var face: IsleTab? {
         switch self {
-        case .mode, .panelBackground, .panelNotchGlow, .statusLight, .closedIslandShows, .closedIsland,
-             .claudeAccent, .claudeAccentHex:
+        case .mode, .panelBackground, .panelNotchGlow, .claudeAccent, .claudeAccentHex:
             return nil
         case .showScrubber, .showShuffleRepeat, .waveformSource:
             return .music
@@ -107,30 +102,17 @@ enum SettingsPreviewPlan {
         /// Open it, held, if it isn't open — and go to `face` if there is
         /// one (nil: stay where it is).
         case open(face: IsleTab?)
-        /// The change shows on the closed island: put away an island the
-        /// preview is holding open, so it can be seen.
-        case showClosed
     }
 
     static func decide(_ change: SettingsPreviewChange, context: Context) -> Decision {
         guard context.running, context.settingsInFront else { return .none }
         // What's under way in the island wins outright.
         guard !context.dropInProgress, !context.composing else { return .none }
-        // The closed island's look shows on the closed island itself.
-        if change.showsOnClosedIsland { return .showClosed }
         // A request on screen keeps its face; the change still shows on it
         // where it can (the panel's look, the option descriptions).
         guard !context.requestShowing else { return .open(face: nil) }
         guard let face = change.face, context.availableTabs.contains(face) else { return .open(face: nil) }
         return .open(face: face)
-    }
-}
-
-extension SettingsPreviewChange {
-    /// A setting of the closed island's, which the preview shows by leaving
-    /// the island closed rather than opening it.
-    var showsOnClosedIsland: Bool {
-        self == .closedIslandShows || self == .closedIsland
     }
 }
 
@@ -140,9 +122,6 @@ enum SettingsPreviewEnd: Equatable {
     case settingsClosed
     /// Isle stopped being the active app.
     case appResignedActive
-    /// A closed-island setting changed: the island the preview holds goes
-    /// back to closed to show it.
-    case closedIslandChange
 }
 
 /// Which island the preview is holding open, if any. `ID` is the island's
@@ -185,9 +164,6 @@ extension AppSettings {
             watch($mode, .mode),
             watch($panelBackground, .panelBackground),
             watch($panelNotchGlow, .panelNotchGlow),
-            watch($statusLight, .statusLight),
-            watch($closedIslandShows, .closedIslandShows),
-            watch($closedIsland, .closedIsland),
             watch($claudeAccent, .claudeAccent),
             watch($claudeAccentHex, .claudeAccentHex),
             watch($showScrubber, .showScrubber),
