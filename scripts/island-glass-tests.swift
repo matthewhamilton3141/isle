@@ -137,6 +137,10 @@ do {
           "the rim peaks at both corners")
     check(near(IslandGlass.fadeRimAlpha(x: 0.5), IslandGlass.fadeRimFloor), "the rim sits at its floor mid-panel")
     check(IslandGlass.fadeRimPeak > IslandGlass.fadeRimFloor && IslandGlass.fadeRimPeak <= 1, "peak above floor, and a real alpha")
+    // One line along the lower edge, not two bright corners: the floor is
+    // most of the peak.
+    check(IslandGlass.fadeRimFloor >= 0.8 * IslandGlass.fadeRimPeak, "the rim is near-even: its floor at least 80% of the corners",
+          "\(IslandGlass.fadeRimFloor) vs \(IslandGlass.fadeRimPeak)")
     var symmetric = true, rimStep = 0.0, prevRim = IslandGlass.fadeRimAlpha(x: 0)
     for i in 0...1000 {
         let x = Double(i) / 1000
@@ -148,13 +152,13 @@ do {
     check(rimStep < 0.005, "no step along the rim", "\(rimStep)")
     let rimStops = IslandGlass.fadeRimStops()
     check(rimStops.first!.location == 0 && rimStops.last!.location == 1, "rim stops span the panel")
-    // The glint: in order, nothing at either end (the rim's white corners
-    // take over there), clear of the corners, hues and strengths in range.
+    // The glint: in order, the whole width of the lower edge at near-full
+    // strength, easing off only at the very ends; hues and strengths in range.
     let g = IslandGlass.fadeGlintStops
     check(zip(g, g.dropFirst()).allSatisfy { $0.location < $1.location }, "glint stops in order")
-    check(g.first!.strength == 0 && g.last!.strength == 0, "the glint fades to nothing at both ends")
-    check(g.first!.location >= IslandGlass.fadeRimCornerSpan * 0.5 && g.last!.location <= 1 - IslandGlass.fadeRimCornerSpan * 0.5,
-          "the glint stays off the corners")
+    check(g.first!.location <= 0.05 && g.last!.location >= 0.95, "the glint runs the whole width, into the corners")
+    check(g.allSatisfy { $0.strength >= 0.8 }, "and is near-even all along it: no stop below 80%",
+          "\(g.map(\.strength))")
     check(g.allSatisfy { (0...1).contains($0.hue) && (0...1).contains($0.strength) }, "glint hues and strengths in 0...1")
     check(Set(g.map(\.hue)).count >= 5, "the glint is spectral, not one colour")
     check(IslandGlass.fadeGlintAlpha > 0 && IslandGlass.fadeGlintAlpha <= 1, "glint alpha")
@@ -194,7 +198,7 @@ do {
     let p = IslandGlass.fadeGlint(primary: C(h: 0.05, s: 0.9, b: 0.8), secondary: C(h: 0.95, s: 0.7, b: 0.4), accent: C(h: 0.12, s: 0.6, b: 0.9))
     check(p.count == spectral.count, "same stop count as the spectrum (a cross-fade lines up)")
     check(zip(p, spectral).allSatisfy { near($0.location, $1.location) && near($0.strength, $1.strength) }, "same locations and strengths")
-    check(p.first!.strength == 0 && p.last!.strength == 0, "still nothing at either end")
+    check(p.allSatisfy { $0.strength >= 0.8 }, "near-even all along, like the spectrum's")
     check(p.allSatisfy { $0.color.b >= IslandGlass.fadeLightMinBrightness && $0.color.s <= IslandGlass.fadeSpectralSaturation + 1e-12 }, "every stop lit and capped")
     check(near(p[3].color.h, 0.12) && near(p[2].color.h, 0.05) && near(p[4].color.h, 0.05) && near(p[1].color.h, 0.95),
           "accent at the centre, primary either side, secondary outside")

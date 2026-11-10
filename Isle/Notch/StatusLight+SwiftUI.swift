@@ -131,10 +131,10 @@ struct ClosedIslandLight: View {
     var glass: CompactGlass? = nil
     var housingShift: CGFloat = 0
 
-    /// The stroke, half of which shows inside the outline.
-    static let lineWidth: CGFloat = 2.4
+    /// The stroke, half of which shows inside the outline: a 2.4pt line.
+    static let lineWidth: CGFloat = 4.8
     /// How far up from the bottom edge the lower-edge light shows, fading out.
-    static let edgeReach: CGFloat = 8
+    static let edgeReach: CGFloat = 14
 
     var body: some View {
         StatusLightMotionHost(status: light.status) {
