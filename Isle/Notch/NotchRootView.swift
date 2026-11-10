@@ -139,12 +139,16 @@ struct NotchRootView: View {
         viewModel.palette
     }
 
-    /// The cover's colours for Fade's light: only while there's a track up
-    /// and it has a cover. Not `palette`, whose accent stand-in would light
-    /// a panel with no music in it; without a cover the light stays
-    /// spectral.
-    private var lightPalette: ArtworkPalette? {
-        panelBackground == .fade && viewModel.hasMusicActivity ? viewModel.artworkPalette : nil
+    /// Where Fade's light takes its colours. The cover's only while there's
+    /// a track up and it has a cover — not `palette`, whose accent stand-in
+    /// would light a panel with no music in it; without one the light is
+    /// spectral. Claude's status whenever there is one to show
+    /// (`NotchViewModel.statusLightKind`).
+    private var lightSource: IslandLightSource {
+        guard panelBackground == .fade else { return .none }
+        let palette = viewModel.hasMusicActivity ? viewModel.artworkPalette : nil
+        guard let status = viewModel.statusLightKind else { return IslandLightSource(palette: palette) }
+        return IslandLightSource(palette: palette, status: status, statusHex: viewModel.statusLightHex(status))
     }
 
     /// Height of the physical camera housing. Content in the expanded panel
@@ -332,7 +336,7 @@ struct NotchRootView: View {
                 housing: glowHousing,
                 housingShift: collapsedShift,
                 bandHeight: notchBandHeight,
-                lightPalette: lightPalette
+                light: lightSource
             )
         }
         // The corners lead the collapse: the clip's and the fill's radii.
