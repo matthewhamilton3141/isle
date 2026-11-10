@@ -205,8 +205,6 @@ struct IslandFill: View {
     var bandHeight: CGFloat = NotchMetrics.fallbackNotchSize.height
     /// Where Fade's light takes its colours: the cover's, Claude's status.
     var light: IslandLightSource = .none
-    /// The closed island in glass (nil: black).
-    var compact: CompactGlass? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.islandGlassLayer) private var glassLayer
@@ -236,8 +234,7 @@ struct IslandFill: View {
                 housing: housing,
                 housingShift: housingShift,
                 bandHeight: bandHeight,
-                light: light,
-                compact: compact
+                light: light
             )
         } else if glassLayer == .materialOnly {
             // The glass window has no glass to draw in Black.

@@ -161,15 +161,6 @@ struct NotchRootView: View {
         return FadeLight.resolve(lightSource)
     }
 
-    /// The closed island in glass (`ClosedIslandStyle.glass`), with the
-    /// camera housing to keep black over on a screen with a notch. Fade only,
-    /// with the status light: nil is the black pill.
-    private var compactGlass: CompactGlass? {
-        guard viewModel.closedIslandGlass, panelBackground == .fade else { return nil }
-        guard let metrics = island.metrics, metrics.hasPhysicalNotch else { return CompactGlass(housing: nil) }
-        return CompactGlass(housing: metrics.notchSize)
-    }
-
     /// Height of the physical camera housing. Content in the expanded panel
     /// has to start below this. Falls back to the common 32pt housing if
     /// metrics aren't available yet, which is safer than falling back to 0 —
@@ -272,12 +263,7 @@ struct NotchRootView: View {
             // The status light's lit edge (or wrap) on the closed island,
             // under its content, across the outline's frame.
             if glassLayer != .materialOnly, !state.isExpanded, let light = closedLight {
-                ClosedIslandLight(
-                    shape: outline,
-                    light: light,
-                    glass: compactGlass,
-                    housingShift: collapsedShift
-                )
+                ClosedIslandLight(shape: outline, light: light)
                     .transition(.opacity)
             }
 
@@ -367,8 +353,7 @@ struct NotchRootView: View {
                 housing: glowHousing,
                 housingShift: collapsedShift,
                 bandHeight: notchBandHeight,
-                light: lightSource,
-                compact: compactGlass
+                light: lightSource
             )
         }
         // The corners lead the collapse: the clip's and the fill's radii.

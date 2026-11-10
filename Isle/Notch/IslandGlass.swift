@@ -395,23 +395,6 @@ enum IslandGlass {
         }
     }
 
-    // MARK: - The closed island in glass
-
-    /// Black over the closed island's glass wings: enough that the cover,
-    /// the waveform and the icon read over a bright wallpaper, light enough
-    /// that the wings look like glass rather than black. Tune here.
-    static let compactTint: Double = 0.46
-
-    /// The band over the camera housing stays solid black — hardware can't
-    /// be glassed over — and eases into the wings over this many points
-    /// either side. Tune here.
-    static let compactHousingFeather: CGFloat = 6
-
-    /// The light's haze inside the glass pill, rising from its lower edge:
-    /// its strength at the edge, and how far up it reaches, in points.
-    static let compactHazeAlpha: Double = 0.32
-    static let compactHazeHeight: CGFloat = 14
-
     // MARK: - The blend
 
     /// Below this much of the open, the fill is all black; the glass is not

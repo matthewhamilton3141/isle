@@ -62,10 +62,6 @@ struct IslandGlassFill: View {
     var bandHeight: CGFloat
     /// Where Fade's light takes its colours: the cover's, Claude's status.
     var light: IslandLightSource = .none
-    /// The closed island in glass (`ClosedIslandStyle.glass`): the camera
-    /// housing to keep black over, or nil on a display without one. Nil
-    /// `compact` is the black pill.
-    var compact: CompactGlass? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -87,8 +83,7 @@ struct IslandGlassFill: View {
             housingShift: housingShift,
             bandHeight: bandHeight,
             light: light,
-            sweepAt: sweepAt,
-            compact: compact
+            sweepAt: sweepAt
         )
         // The blend runs on the width's spring during a collapse — the
         // channel `expandProgress`, and so the content's fade, read off —
@@ -126,7 +121,6 @@ private struct IslandGlassBlend: View, Animatable {
     var bandHeight: CGFloat
     var light: IslandLightSource
     var sweepAt: Date?
-    var compact: CompactGlass?
 
     @Environment(\.islandGlassLayer) private var layer
 
@@ -148,7 +142,7 @@ private struct IslandGlassBlend: View, Animatable {
                 // of every open. At zero opacity it isn't composited, so the
                 // closed pill costs nothing for it.
                 material
-                    .opacity(IslandGlass.showsGlass(progress: progress) || compact != nil ? 1 : 0)
+                    .opacity(IslandGlass.showsGlass(progress: progress) ? 1 : 0)
             } else if IslandGlass.showsGlass(progress: progress) {
                 material
                     .overlay(alignment: .top) {
@@ -185,32 +179,6 @@ private struct IslandGlassBlend: View, Animatable {
     /// The notch glow and the black that blends away on the open.
     @ViewBuilder
     private var cover: some View {
-        if let compact {
-            compactCover(compact)
-        } else {
-            plainCover
-        }
-    }
-
-    /// The closed island in glass, and the open blending away from it: the
-    /// wings lightly tinted, the band over the camera housing solid black,
-    /// both thinning to nothing on the open's progress as Fade's own shade
-    /// takes over.
-    private func compactCover(_ compact: CompactGlass) -> some View {
-        let c = IslandGlass.blackCover(progress: progress)
-        return ZStack(alignment: .top) {
-            Rectangle()
-                .fill(.black)
-                .opacity(IslandGlass.compactTint * c)
-            if let housing = compact.housing {
-                HousingBand(housing: housing, shift: housingShift)
-                    .opacity(c)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var plainCover: some View {
         ZStack(alignment: .top) {
             if let housing {
                 NotchGlow(housing: housing, shift: housingShift)
@@ -222,38 +190,6 @@ private struct IslandGlassBlend: View, Animatable {
             Rectangle()
                 .fill(.black)
                 .opacity(IslandGlass.blackCover(progress: progress))
-        }
-    }
-}
-
-/// The closed island drawn in glass: where the camera housing is, so the
-/// band over it stays black. Nil housing: a display without a notch, the
-/// whole pill glass.
-struct CompactGlass: Equatable {
-    var housing: CGSize?
-}
-
-/// Solid black over the camera housing, easing into the glass either side
-/// (`IslandGlass.compactHousingFeather`). Anchored on the camera like the
-/// notch glow: moved back by the outline's shift on the same spring, so it
-/// stays over the hardware while the pill is lopsided around it.
-struct HousingBand: View {
-    var housing: CGSize
-    var shift: CGFloat
-
-    var body: some View {
-        let feather = IslandGlass.compactHousingFeather
-        Color.clear.overlay(alignment: .top) {
-            HStack(spacing: 0) {
-                LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
-                    .frame(width: feather)
-                Rectangle().fill(.black).frame(width: housing.width)
-                LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
-                    .frame(width: feather)
-            }
-            .frame(height: housing.height)
-            .offset(x: -shift)
-            .islandCollapseChannel(.width)
         }
     }
 }
