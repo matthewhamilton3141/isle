@@ -113,6 +113,9 @@ func run() {
     checkInStep(w, "after setup")
     check(!w.glassWindow.canBecomeKey && !w.glassWindow.canBecomeMain && w.glassWindow.ignoresMouseEvents,
           "the glass window never becomes key or main, and never takes a click")
+    check(w.animationBehavior == .none && w.glassWindow.animationBehavior == .none,
+          "the panel and its glass go on and off screen without the system's fade",
+          "panel \(w.animationBehavior.rawValue) glass \(w.glassWindow.animationBehavior.rawValue)")
 
     print("open and close")
     island.setHovering(true)

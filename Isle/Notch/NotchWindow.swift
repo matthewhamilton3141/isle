@@ -25,6 +25,14 @@ final class NotchWindow: NSPanel {
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false
+        // On and off screen at once, never with the system's fade: handing
+        // the keys back after a reply can take the panel off screen and
+        // straight back (`NotchWindowController.giveKeysBack`), and with the
+        // fade that played out over the island — the panel fading away over
+        // its glass, which stayed behind at the open size as a grey block
+        // while the island closed, then nothing at all until the pill came
+        // back. The island's own motion is all in its content.
+        animationBehavior = .none
 
         // Sit above the menu bar. `.statusBar` alone still lands under the
         // menu bar on some configurations, so key off the main-menu level
@@ -341,6 +349,8 @@ final class IslandGlassWindow: NSPanel {
         isMovable = false
         hidesOnDeactivate = false
         isExcludedFromWindowsMenu = true
+        // Ordered with the panel, instantly, as the panel is (see there).
+        animationBehavior = .none
     }
 
     override var canBecomeKey: Bool { false }
