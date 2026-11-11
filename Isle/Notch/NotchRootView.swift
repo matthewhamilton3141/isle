@@ -84,7 +84,28 @@ struct NotchRootView: View {
                 height: metrics.notchSize.height
             )
         }
-        return CGSize(width: metrics.windowSize(for: state).width, height: expandedHeight)
+        return CGSize(width: metrics.windowSize(for: state).width, height: expandedHeight + lip)
+    }
+
+    /// Prism's lip: clear glass below the content, which only that mode's
+    /// open panel has. The content's room is the same in every mode; the
+    /// panel is this much taller around it.
+    private var lip: CGFloat {
+        panelBackground == .prism ? IslandPrism.lip : 0
+    }
+
+    /// What Prism's ribbon follows: the capture, and whether there's music
+    /// for it to show. For the tree that draws the material, which the
+    /// ribbon is part of (see `PrismRibbonStrip`).
+    private var ribbon: PrismRibbonInput? {
+        guard panelBackground == .prism, glassLayer != .withoutMaterial else { return nil }
+        return PrismRibbonInput(
+            source: viewModel.audioLevelSource,
+            listens: viewModel.waveformSource.capturesAudio,
+            isPlaying: viewModel.media.isPlaying,
+            shows: viewModel.hasMusicActivity && viewModel.showsWaveform,
+            open: state.isExpanded
+        )
     }
 
     /// The open panel's height: the standard 146, unless the face on screen
@@ -226,7 +247,8 @@ struct NotchRootView: View {
     /// never disagree. While collapsing it carries the sizes it's collapsing
     /// between, which is what lets it taper (see `NotchShape.genie`).
     private var outline: NotchShape {
-        let corners = state.isExpanded ? IslandMotion.openCorners : IslandMotion.collapsedCorners
+        var corners = state.isExpanded ? IslandMotion.openCorners : IslandMotion.collapsedCorners
+        if state.isExpanded, panelBackground == .prism { corners.bottom = IslandPrism.bottomCornerRadius }
         var genie: NotchShape.Genie?
         if state == .collapsed, !reduceMotion, let collapseOrigin {
             genie = NotchShape.Genie(
@@ -253,7 +275,7 @@ struct NotchRootView: View {
                 // physical hardware, and anything placed there is simply
                 // invisible rather than merely obscured.
                 .padding(.top, state.isExpanded ? notchBandHeight + NotchMetrics.contentTopGap : 0)
-                .padding(.bottom, state.isExpanded ? 8 : 0)
+                .padding(.bottom, state.isExpanded ? 8 + lip : 0)
 
             // The way home, inside a face (only when there is more than one
             // face, so there's a home to go back to). In the housing band to
@@ -332,7 +354,8 @@ struct NotchRootView: View {
                 housing: glowHousing,
                 housingShift: collapsedShift,
                 bandHeight: notchBandHeight,
-                lightPalette: lightPalette
+                lightPalette: lightPalette,
+                ribbon: ribbon
             )
         }
         // The corners lead the collapse: the clip's and the fill's radii.

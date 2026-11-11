@@ -2,8 +2,9 @@
 //  PanelBackground.swift
 //
 //  What the opened panel is drawn on: the flat black Isle has always had,
-//  frosted glass, light or smoked, or black that fades into glass toward
-//  the panel's bottom edge. Only the open panel changes — the
+//  frosted glass, light or smoked, black that fades into glass toward
+//  the panel's bottom edge, or a clear lens with the music's spectrum lying
+//  along its lip. Only the open panel changes — the
 //  collapsed pill stays flat black in every mode, because as glass it would
 //  be a sliver with the camera's black bite in the middle of it.
 //
@@ -29,6 +30,12 @@ enum PanelBackground: String, CaseIterable, Identifiable {
     /// thin spectral glint along the bottom edge (the lens in
     /// IslandGlass+SwiftUI.swift).
     case fade
+    /// A clear lens: black over the camera, a tint behind the content, and
+    /// below the content a lip of all but bare glass that bends what's
+    /// behind it, with a streak of light along it split into a spectrum by
+    /// the music (IslandPrism.swift). The one mode whose open panel has a
+    /// shape of its own: a lip taller, and rounder at the bottom.
+    case prism
 
     var id: String { rawValue }
 
@@ -46,6 +53,7 @@ enum PanelBackground: String, CaseIterable, Identifiable {
         case .glass: return "Glass"
         case .smoked: return "Smoked"
         case .fade: return "Fade"
+        case .prism: return "Prism"
         }
     }
 
@@ -59,6 +67,8 @@ enum PanelBackground: String, CaseIterable, Identifiable {
             return "Glass with a heavy dark tint when open: steadier over busy windows."
         case .fade:
             return "Black at the notch, easing into glass with a lit rim toward the bottom edge."
+        case .prism:
+            return "A clear lens that bends what’s behind it, with the music split into a spectrum along its lip."
         }
     }
 

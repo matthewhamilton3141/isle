@@ -212,6 +212,39 @@ func run() {
     checkInStep(w, "screen changed")
     checkPlaced(w, target, "at the end")
 
+    print("prism: the lens")
+    check(target.height >= NotchMetrics.panelMaxHeight + IslandPrism.lip,
+          "the window has room for Prism's lip under the tallest panel", "\(target.height)")
+    check(!w.glassWindow.lensed, "Fade's glass is the frosted one: the glass window isn't lensed")
+    settings.panelBackground = .prism
+    spin(0.4)
+    if #available(macOS 26.0, *) {
+        check(w.glassWindow.lensed, "Prism asks the glass window for the lens")
+        check(!w.glassWindow.canBecomeKey && !w.glassWindow.canBecomeMain && w.glassWindow.ignoresMouseEvents,
+              "which still can't become key or main, or take a click")
+        check(NSApp.keyWindow !== w.glassWindow && NSApp.mainWindow !== w.glassWindow,
+              "and is nobody's key or main window")
+        // AppKit taking the keys away from it, as when another of Isle's
+        // windows becomes key or the app deactivates.
+        w.glassWindow.resignKey(); spin(0.2)
+        check(w.glassWindow.lensed, "a resignKey leaves it lensed")
+        island.setHovering(true); spin(1.0)
+        checkPlaced(w, target, "prism, open")
+        checkInStep(w, "prism, open")
+        w.orderOut(nil); spin(0.1); w.orderFrontRegardless(); spin(0.2)
+        check(w.glassWindow.lensed, "off screen and back, still lensed")
+        checkInStep(w, "prism, off screen and back")
+        island.setHovering(false); spin(1.0)
+        checkInStep(w, "prism, closed")
+        settings.panelBackground = .fade
+        spin(0.4)
+        check(!w.glassWindow.lensed, "leaving Prism puts the frosted glass back")
+    } else {
+        check(!w.glassWindow.lensed, "before Liquid Glass there's no lens to ask for")
+        settings.panelBackground = .fade
+        spin(0.2)
+    }
+
     w.orderOut(nil)
     spin(0.1)
     checkInStep(w, "hidden")

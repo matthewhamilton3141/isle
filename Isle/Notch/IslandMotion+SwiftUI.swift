@@ -205,6 +205,8 @@ struct IslandFill: View {
     var bandHeight: CGFloat = NotchMetrics.fallbackNotchSize.height
     /// The current track's cover colours, for Fade's light (nil: spectral).
     var lightPalette: ArtworkPalette? = nil
+    /// What Prism's ribbon follows; nil in every other mode.
+    var ribbon: PrismRibbonInput? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.islandGlassLayer) private var glassLayer
@@ -234,7 +236,8 @@ struct IslandFill: View {
                 housing: housing,
                 housingShift: housingShift,
                 bandHeight: bandHeight,
-                lightPalette: lightPalette
+                lightPalette: lightPalette,
+                ribbon: ribbon
             )
         } else if glassLayer == .materialOnly {
             // The glass window has no glass to draw in Black.

@@ -157,6 +157,7 @@ final class NotchWindow: NSPanel {
                 // on the way (a Space switch, the window server) moved it.
                 glassWindow.order(.below, relativeTo: windowNumber)
             }
+            glassWindow.assertLens()
         } else {
             hideGlass()
         }
@@ -334,7 +335,42 @@ extension NotchWindow: NSDraggingDestination {
 /// The window the island's glass is drawn in (see `NotchWindow.glassWindow`):
 /// borderless, transparent, click-through, and never key or main, so its
 /// glass keeps the look it has at rest whatever the panel over it does.
+///
+/// That look is the frosted one, except in Prism, which wants the lens
+/// Liquid Glass keeps for key windows (`lensed`).
 final class IslandGlassWindow: NSPanel {
+    /// Whether this window's glass is drawn as a lens: what's behind it
+    /// nearly sharp, bent at the edges. Liquid Glass does that for a key
+    /// window's glass and switches in `becomeKey()`/`resignKey()`, so this
+    /// tells the window it is key without it ever being so: it still can't
+    /// become key, takes no events, and the window server's key window is
+    /// whichever it was. AppKit's own `resignKey()` — sent when the app
+    /// deactivates, or another of Isle's windows takes the keys — is
+    /// ignored while lensed, and the lens re-asserted after it.
+    var lensed = false {
+        didSet {
+            guard lensed != oldValue else { return }
+            if lensed { super.becomeKey() } else { super.resignKey() }
+        }
+    }
+
+    /// Puts the lens back after something that may have dropped it. Called
+    /// whenever the two windows are brought into step, so it does nothing
+    /// while the window still believes it is key.
+    func assertLens() {
+        if lensed, !isKeyWindow { super.becomeKey() }
+    }
+
+    override func resignKey() {
+        guard !lensed else {
+            // Next turn of the run loop, once AppKit has finished handing
+            // the keys around.
+            DispatchQueue.main.async { [weak self] in self?.assertLens() }
+            return
+        }
+        super.resignKey()
+    }
+
     init() {
         super.init(
             contentRect: .zero,

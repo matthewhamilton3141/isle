@@ -12,6 +12,8 @@
 //    specular rim and the spectral glint along the bottom edge, which take
 //    the current cover's colours while a track is up (`FadeLight`), and
 //    the sweep that runs along the rim once as the island opens.
+//  - Prism's shade and lens are in IslandPrism+SwiftUI.swift; this file
+//    draws them in the fill and asks the glass window for the lens.
 //  - The material: Liquid Glass on macOS 26, an `NSVisualEffectView` behind
 //    the window on 14 and 15. Both are window-server effects — an offscreen
 //    render draws neither — and both are forced dark, so the white content
@@ -63,6 +65,8 @@ struct IslandGlassFill: View {
     /// The current track's cover colours, for Fade's light; nil with no
     /// track or no cover, which leaves it spectral.
     var lightPalette: ArtworkPalette? = nil
+    /// What Prism's ribbon follows; nil in every other mode.
+    var ribbon: PrismRibbonInput? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -84,7 +88,8 @@ struct IslandGlassFill: View {
             housingShift: housingShift,
             bandHeight: bandHeight,
             lightPalette: lightPalette,
-            sweepAt: sweepAt
+            sweepAt: sweepAt,
+            ribbon: ribbon
         )
         // The blend runs on the width's spring during a collapse — the
         // channel `expandProgress`, and so the content's fade, read off —
@@ -122,6 +127,7 @@ private struct IslandGlassBlend: View, Animatable {
     var bandHeight: CGFloat
     var lightPalette: ArtworkPalette?
     var sweepAt: Date?
+    var ribbon: PrismRibbonInput?
 
     @Environment(\.islandGlassLayer) private var layer
 
@@ -154,6 +160,8 @@ private struct IslandGlassBlend: View, Animatable {
                     .overlay(alignment: .top) {
                         if background == .fade, layer != .materialOnly {
                             FadeLens(shape: shape, bandHeight: bandHeight, light: FadeLight.resolve(lightPalette), sweepAt: sweepAt)
+                        } else if background == .prism, layer != .materialOnly {
+                            PrismLens(shape: shape)
                         }
                     }
                     .transition(.identity)
@@ -173,7 +181,20 @@ private struct IslandGlassBlend: View, Animatable {
         if layer == .withoutMaterial {
             Color.clear
         } else {
-            IslandGlassMaterial(shape: shape, clear: background == .fade)
+            IslandGlassMaterial(
+                shape: shape,
+                clear: background == .fade || background == .prism,
+                lens: background == .prism
+            )
+            .overlay {
+                // Prism's frost and ribbon, in the material's own window
+                // with the lens: glass on glass and the light in it, under
+                // everything the panel draws.
+                if background == .prism {
+                    PrismFrost()
+                    PrismRibbonStrip(shape: shape, ribbon: ribbon)
+                }
+            }
         }
     }
 
@@ -263,6 +284,8 @@ private struct IslandGlassShade: View {
                     LinearGradient(stops: FadeStops.stops, startPoint: .top, endPoint: .bottom)
                 }
             }
+        } else if background == .prism {
+            PrismShade(bandHeight: bandHeight)
         } else {
             Color.black.opacity(IslandGlass.tint(for: background))
         }
@@ -609,14 +632,51 @@ private struct IslandGlassMaterial: View {
     var shape: NotchShape
     /// Liquid Glass's clear variant rather than the frosted.
     var clear: Bool = false
+    /// Drawn as a lens (Prism): asks the glass window for the look Liquid
+    /// Glass keeps for key windows (`IslandGlassWindow.lensed`). Only that
+    /// window answers, so in a preview or a render, where the material is
+    /// in the panel's own window, this is the frosted clear glass.
+    var lens: Bool = false
 
     var body: some View {
         if #available(macOS 26.0, *) {
             Color.clear
                 .glassEffect(clear ? .clear : .regular, in: shape)
                 .environment(\.colorScheme, .dark)
+                .background(IslandGlassLensSwitch(lens: lens))
         } else {
             IslandVisualEffect()
+        }
+    }
+}
+
+/// Tells the window the material is drawn in whether its glass is a lens.
+/// In every mode, so leaving Prism for another puts the frosted look back.
+private struct IslandGlassLensSwitch: NSViewRepresentable {
+    var lens: Bool
+
+    func makeNSView(context: Context) -> SwitchView {
+        let view = SwitchView()
+        view.lens = lens
+        return view
+    }
+
+    func updateNSView(_ view: SwitchView, context: Context) {
+        view.lens = lens
+    }
+
+    final class SwitchView: NSView {
+        var lens = false { didSet { apply() } }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            apply()
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        private func apply() {
+            (window as? IslandGlassWindow)?.lensed = lens
         }
     }
 }

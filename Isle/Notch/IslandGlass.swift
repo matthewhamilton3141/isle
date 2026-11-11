@@ -48,6 +48,7 @@ enum IslandGlass {
         case .glass: return glassTint
         case .smoked: return smokedTint
         case .fade: return fadeEndTint
+        case .prism: return IslandPrism.lipTint
         }
     }
 

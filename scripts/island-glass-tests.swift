@@ -36,10 +36,11 @@ do {
     for b in PanelBackground.allCases {
         check(PanelBackground.stored(b.rawValue) == b, "\(b.rawValue) round-trips")
     }
-    check(PanelBackground.allCases == [.black, .glass, .smoked, .fade], "picker order: Black, Glass, Smoked, Fade")
+    check(PanelBackground.allCases == [.black, .glass, .smoked, .fade, .prism], "picker order: Black, Glass, Smoked, Fade, Prism")
     check(!PanelBackground.black.isGlass, "Black isn't glass")
-    check(PanelBackground.allCases.filter(\.isGlass).count == 3, "the other three are glass")
-    check(Set(PanelBackground.allCases.map(\.title)).count == 4, "titles distinct")
+    check(PanelBackground.allCases.filter(\.isGlass).count == 4, "the other four are glass")
+    check(Set(PanelBackground.allCases.map(\.title)).count == 5, "titles distinct")
+    check(PanelBackground.stored("prism") == .prism, "Prism is stored as \"prism\"")
     check(PanelBackground.stored("fade") == .fade, "Fade is stored as \"fade\"")
     check(PanelBackground.allCases.filter(\.growsNotchGlow) == [.glass, .smoked], "the notch glow is Glass's and Smoked's alone")
     check(PanelBackground.stored("glassNotchFade") == .black && PanelBackground.stored("glassNotchGlow") == .black, "unshipped interim values read as Black")
@@ -53,6 +54,7 @@ do {
     check(near(IslandGlass.smokedTint, 0.48), "Smoked is the mockups' 48%")
     check(IslandGlass.smokedTint > IslandGlass.glassTint, "Smoked is darker than Glass")
     check(IslandGlass.tint(for: .fade) == IslandGlass.fadeEndTint, "Fade's tint is the one at its bottom edge")
+    check(IslandGlass.tint(for: .prism) == IslandPrism.lipTint, "Prism's tint is its lip's")
 }
 
 print("fade")
@@ -344,6 +346,99 @@ do {
     check(bright.r == 0.9 && bright.g == 0.7 && bright.b == 0.2, "already-light colours untouched")
     let black = IslandGlass.floored(r: 0, g: 0, b: 0)
     check(near(black.r, IslandGlass.paletteLumaFloor) && near(black.g, black.r) && near(black.b, black.r), "black lifts to a grey at the floor")
+}
+
+print("prism: the shade")
+do {
+    let notch: CGFloat = 32
+    let band = IslandGlass.fadeBand(notchHeight: notch)
+    // The standard panel and the tallest, each with Prism's lip under it.
+    for height in [CGFloat(146) + IslandPrism.lip, 230 + IslandPrism.lip] {
+        func a(_ y: CGFloat) -> Double { IslandPrism.shadeAlpha(y: y, height: height, band: band) }
+        let horizon = height - IslandPrism.lip
+        let top = horizon - IslandPrism.horizonFeather / 2, bottom = horizon + IslandPrism.horizonFeather / 2
+        check(a(0) == 1 && a(band) == 1, "solid black over the housing and to the band's foot (\(Int(height)))")
+        check(near(a(top), IslandPrism.edgeTint), "the edge tint by the top of the horizon")
+        check(near(a(horizon), (IslandPrism.edgeTint + IslandPrism.lipTint) / 2), "half cleared on the horizon")
+        check(near(a(bottom), IslandPrism.lipTint) && near(a(height), IslandPrism.lipTint), "the lip's tint from the horizon's foot to the bottom edge")
+        var falling = true
+        var y = band
+        while y < height { if a(y + 1) > a(y) + 1e-12 { falling = false }; y += 1 }
+        check(falling, "never darkens on the way down")
+    }
+    check(IslandPrism.lipTint < IslandPrism.edgeTint && IslandPrism.edgeTint < IslandPrism.contentAlpha, "lip lighter than the walls, walls lighter than behind the content")
+    check(near(IslandPrism.contentAlpha, 1 - (1 - IslandPrism.edgeTint) * (1 - IslandPrism.scrim)), "content: the shade and the scrim composited")
+    check(IslandPrism.horizonFeather / 2 <= IslandPrism.lip, "the horizon's lower half fits in the lip")
+    let stops = IslandPrism.shadeStops()
+    check(stops.first!.location == 0 && near(stops.first!.alpha, 1) && stops.last!.location == 1 && near(stops.last!.alpha, IslandPrism.edgeTint),
+          "shade stops: black at the band's foot, the edge tint at the horizon")
+    check(zip(stops, stops.dropFirst()).allSatisfy { $0.location < $1.location }, "shade stops ascend")
+    let h = IslandPrism.horizonStops()
+    check(near(h.first!.alpha, IslandPrism.edgeTint) && near(h.last!.alpha, IslandPrism.lipTint), "horizon stops: edge tint to lip tint")
+}
+
+print("prism: the lens's shape")
+do {
+    check(IslandPrism.lip > 0 && IslandPrism.bottomCornerRadius > IslandMotion.openCorners.bottom, "a lip, and rounder than the other modes")
+    check(IslandPrism.bottomCornerRadius <= IslandPrism.lip + 8, "the bottom corners turn inside the lip and the content's bottom inset")
+    check(IslandPrism.ribbonCentre > 0 && IslandPrism.ribbonCentre < IslandPrism.lip, "the ribbon's centre line is in the lip")
+    check(IslandPrism.ribbonCentre - IslandPrism.fullSpread > 0, "a full fan's violet edge stays above the bottom edge")
+    check(IslandPrism.ribbonCentre + IslandPrism.fullSpread < IslandPrism.ribbonStrip, "and its red edge inside the strip")
+}
+
+print("prism: the ribbon's profile")
+do {
+    let silent = [Double](repeating: 0, count: 6)
+    let full = [Double](repeating: 1, count: 6)
+    check(IslandPrism.mirrored(0.5) == 0 && IslandPrism.mirrored(0) == 1 && IslandPrism.mirrored(1) == 1, "mirrored: 0 at the centre, 1 at the tips")
+    check(near(IslandPrism.taper(0.5), 1) && IslandPrism.taper(0) == 0 && IslandPrism.taper(1) == 0, "taper: full at the centre, nothing at the tips")
+    check(near(IslandPrism.spread(at: 0.5, bands: silent), IslandPrism.restSpread), "silent: the resting fan at the centre")
+    check(near(IslandPrism.spread(at: 0.5, bands: full), IslandPrism.fullSpread), "full: the full fan at the centre")
+    check(near(IslandPrism.spread(at: 0.5, bands: []), IslandPrism.restSpread), "no bands is silence")
+    check(IslandPrism.spread(at: 0, bands: full) == 0 && IslandPrism.glow(at: 1, bands: full) == 0, "nothing at the tips, however loud")
+    // Bass at the centre, treble toward the tips.
+    let bass = [1.0, 0, 0, 0, 0, 0], treble = [0.0, 0, 0, 0, 0, 1]
+    check(near(IslandPrism.level(at: 0.5, bands: bass), 1) && IslandPrism.level(at: 0.9, bands: bass) == 0, "bass sits at the centre")
+    check(IslandPrism.level(at: 0.5, bands: treble) == 0 && near(IslandPrism.level(at: 0.5 + IslandPrism.bandSpan / 2, bands: treble), 1), "treble sits bandSpan of the way out")
+    var mirrored = true, bounded = true, smooth = true
+    let mixed = [0.9, 0.2, 0.7, 0.1, 0.6, 0.3]
+    var last = IslandPrism.spread(at: 0, bands: mixed)
+    for k in 0...400 {
+        let u = Double(k) / 400
+        let s = IslandPrism.spread(at: u, bands: mixed), g = IslandPrism.glow(at: u, bands: mixed)
+        if !near(s, IslandPrism.spread(at: 1 - u, bands: mixed), 1e-9) { mirrored = false }
+        if s < 0 || s > IslandPrism.fullSpread + 1e-9 || g < 0 || g > 1 + 1e-9 { bounded = false }
+        if abs(s - last) > 0.35 { smooth = false }
+        last = s
+    }
+    check(mirrored, "the outline is a mirror image about the centre")
+    check(bounded, "spread within the full fan, glow within 0...1")
+    check(smooth, "no step in the outline (under 0.35pt between samples 1/400 apart)")
+    check(IslandPrism.level(at: 0.5, bands: [2, -1]) == 1, "levels clamp to 0...1")
+    let p = IslandPrism.profile(bands: mixed)
+    check(p.spread.count == IslandPrism.ribbonColumns && p.glow.count == IslandPrism.ribbonColumns, "profile: one sample per column")
+    check(near(Double(p.spread[0]), 0) && near(Double(p.spread[IslandPrism.ribbonColumns - 1]), 0), "profile ends at the tips")
+    check(near(IslandPrism.glow(at: 0.5, bands: silent), IslandPrism.restGlow) && near(IslandPrism.glow(at: 0.5, bands: full), 1), "glow: resting when silent, full when loud")
+}
+
+print("prism: the ribbon's motion")
+do {
+    check(IslandPrism.follow(0.3, toward: 0.3, dt: 1) == 0.3, "at its target, it stays")
+    check(IslandPrism.follow(0, toward: 1, dt: 0) == 0, "no time, no movement")
+    let up = IslandPrism.follow(0, toward: 1, dt: 1.0 / 60), down = 1 - IslandPrism.follow(1, toward: 0, dt: 1.0 / 60)
+    check(up > 0 && up < 1 && down > 0 && down < 1, "a frame moves it part of the way")
+    check(up > down, "rises faster than it falls")
+    check(near(IslandPrism.follow(0, toward: 1, dt: IslandPrism.attack), 1 - exp(-1)), "one attack constant: 63% of the way")
+    // Frame-rate independent: two half steps are one whole step.
+    let whole = IslandPrism.follow(0, toward: 1, dt: 1.0 / 30)
+    let halves = IslandPrism.follow(IslandPrism.follow(0, toward: 1, dt: 1.0 / 60), toward: 1, dt: 1.0 / 60)
+    check(near(whole, halves, 1e-12), "the same at 30 and 60 frames a second")
+    var v = 1.0, frames = 0
+    while abs(v) > IslandPrism.settled, frames < 600 { v = IslandPrism.follow(v, toward: 0, dt: 1.0 / 60); frames += 1 }
+    check(frames < 90, "silence settles, and the drawing stops, within a second and a half", "\(frames) frames")
+    var inRange = true
+    for band in 0..<6 { for k in 0..<600 { let l = IslandPrism.procedural(band: band, at: Double(k) / 30); if l < 0.15 || l > 0.85 { inRange = false } } }
+    check(inRange, "the animated pattern stays between a low and a high level")
 }
 
 print("\n\(passes) passed, \(failures) failed")

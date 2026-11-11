@@ -207,13 +207,16 @@ struct NotchMetrics {
         let expanded = windowFrame(for: .hoverExpanded)
         let collapsed = windowFrame(for: .collapsed)
         // Room for the tallest a face can grow the panel — every face that
-        // grows shares the one cap. Transparent and click-through like the
-        // rest of the window outside the drawn notch.
+        // grows shares the one cap — and for Prism's lip below it, whatever
+        // the mode, so a change of mode never resizes the window.
+        // Transparent and click-through like the rest of the window outside
+        // the drawn notch.
+        let tallest = Self.panelMaxHeight + IslandPrism.lip
         let grown = NSRect(
             x: expanded.minX,
-            y: screen.frame.maxY - Self.panelMaxHeight,
+            y: screen.frame.maxY - tallest,
             width: expanded.width,
-            height: Self.panelMaxHeight
+            height: tallest
         )
         // And the stay-open pad either side of the open panel. A hover reads
         // the pad off the global pointer monitor and doesn't need the window
