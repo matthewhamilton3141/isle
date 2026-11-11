@@ -383,8 +383,15 @@ let ribbonSigned = IslandPrism.ribbonStyle == .crystal || IslandPrism.ribbonShap
 // The ribbon's shape and style are one choice each (`IslandPrism.ribbonShape`,
 // `ribbonStyle`); these are what that choice makes the resting and full
 // half-heights and the full lift.
-let ribbonRest = IslandPrism.ribbonStyle == .crystal ? IslandPrism.crystalRest : IslandPrism.restSpread
+let ribbonRest: Double = {
+    switch IslandPrism.ribbonStyle {
+    case .light: return IslandPrism.restSpread
+    case .crystal: return IslandPrism.crystalRest
+    case .twist: return IslandPrism.twistRest
+    }
+}()
 let ribbonFull: Double = {
+    if IslandPrism.ribbonStyle == .twist { return IslandPrism.twistFull }
     if IslandPrism.ribbonStyle == .crystal { return IslandPrism.mirroredSpread }
     switch IslandPrism.ribbonShape {
     case .up: return IslandPrism.fullSpread
@@ -393,7 +400,9 @@ let ribbonFull: Double = {
     }
 }()
 let ribbonLift: Double = {
-    // The crystal doesn't lift; its sheets sway by this much instead.
+    // The twist stays on its line. The crystal doesn't lift either; its
+    // sheets sway by this much instead.
+    if IslandPrism.ribbonStyle == .twist { return 0 }
     if IslandPrism.ribbonStyle == .crystal { return IslandPrism.crystalSway }
     switch IslandPrism.ribbonShape {
     case .up: return IslandPrism.fullLift
@@ -428,7 +437,7 @@ do {
           "silent: the resting ribbon on the resting line")
     check(near(IslandPrism.spread(at: 0.5, bands: full), ribbonFull), "full: its full half-height at the centre")
     let centreLift = IslandPrism.lift(at: 0.5, bands: full)
-    check(ribbonSigned ? (centreLift > ribbonLift * 0.8 && centreLift <= ribbonLift) : near(centreLift, ribbonLift),
+    check(ribbonSigned && ribbonLift > 0 ? (centreLift > ribbonLift * 0.8 && centreLift <= ribbonLift) : near(centreLift, ribbonLift),
           "full: lifted (or swayed) its full amount at the centre", "\(centreLift)")
     check(near(IslandPrism.spread(at: 0.5, bands: []), ribbonRest), "no bands is silence")
     // The snake's crests go up and down in turn; the others never go below the line.
@@ -476,6 +485,24 @@ do {
     // Columns enough that the shader's straight lines between them hold a crest's shape.
     check(Double(n) / 2 * spacing / (IslandPrism.crestWidth * spacing) >= 0 && IslandPrism.crestWidth * spacing * Double(n - 1) >= 3,
           "at least three columns across a crest's width", "\(IslandPrism.crestWidth * spacing * Double(n - 1))")
+}
+
+print("prism: the twist")
+do {
+    // The twist's outline swells where the music is but doesn't break into crests.
+    let pair = [0.0, 1, 1, 0, 0, 0]
+    let spacing = IslandPrism.bandSpan / 2 / 5
+    let between = IslandPrism.level(at: 0.5 + 1.5 * spacing, bands: pair, crest: IslandPrism.twistCrest)
+    let on = IslandPrism.level(at: 0.5 + spacing, bands: pair, crest: IslandPrism.twistCrest)
+    check(between >= on * 0.97, "two neighbouring bands are one swell, with no dip between", "\(between) vs \(on)")
+    check(IslandPrism.level(at: 0.5, bands: [1, 0, 0, 0, 0, 0], crest: IslandPrism.twistCrest) > IslandPrism.level(at: 0.5 + 3 * spacing, bands: [1, 0, 0, 0, 0, 0], crest: IslandPrism.twistCrest) * 20,
+          "and still where the music is: bass at the centre, not three bands out")
+    check(IslandPrism.twistFull + 0.34 * IslandPrism.twistFull * 0.34 < Double(IslandPrism.ribbonCentre) || IslandPrism.twistFull * 1.06 < Double(IslandPrism.ribbonCentre),
+          "a full lobe, with its axis riding up and down, stays above the bottom edge")
+    check(IslandPrism.energy([]) == 0 && IslandPrism.energy([0, 0, 0]) == 0 && near(IslandPrism.energy([1, 1, 1]), 1) && near(IslandPrism.energy([0.5, 0, 1, 2]), 0.625),
+          "energy: the bands' mean, each clamped to 0...1")
+    check(IslandPrism.twistIdle > 0 && IslandPrism.twistSpeed > IslandPrism.twistIdle, "it turns a little whenever it moves, and faster the louder it is")
+    check((IslandPrism.twistIdle + IslandPrism.twistSpeed) / (2 * .pi) < 1.2, "under about one turn a second at its fastest")
 }
 
 print("prism: the ribbon's motion")
