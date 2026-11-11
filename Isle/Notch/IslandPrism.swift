@@ -93,16 +93,21 @@ enum IslandPrism {
         /// edge of each lobe is crisp, with a thin fringe of colour, and
         /// the other melts away; a soft bloom lies round the whole.
         ///
-        /// It is a waveform, and it travels: the ribbon is the last couple
-        /// of seconds of the music, the newest at its right end, moving
-        /// left. Each burst of sound is a lobe, as tall as the burst was
-        /// loud, that comes in at the right and crosses to the left; the
-        /// ribbon turns edge-on in the dip between two bursts and shows its
-        /// other face for the next, so the lobes alternate and cross
-        /// (`TwistTrace`). Silent, there is nothing to carry and it is a
-        /// line. With Reduce Motion it doesn't travel: it stands still as
-        /// three lobes, bass at the centre, mids either side, treble
-        /// beyond (`twistFacing`).
+        /// It is a waveform, in three layers that travel. The bass, the
+        /// mids and the treble each have a ribbon of their own, in their
+        /// own part of the fan's colours (the bass its first, the treble
+        /// its last), laid over one another so their light adds where they
+        /// overlap. Each is the last couple of seconds of its part of the
+        /// music, the newest at the right end, moving left: a burst of
+        /// sound is a lobe that comes in at the right as tall as the burst
+        /// was loud, and shrinks as it crosses, gone before it reaches the
+        /// left end. A layer turns edge-on in the dip between two bursts
+        /// and shows its other face for the next, so its lobes alternate
+        /// and cross (`TwistTrace`). The layers cross at different speeds,
+        /// the treble quickest, so they slide over one another. Silent,
+        /// there is nothing to carry and the ribbon is a line. With Reduce
+        /// Motion nothing travels: each layer stands still as its own
+        /// lobe, bass at the centre, mids either side, treble beyond.
         case twist
     }
 
@@ -142,16 +147,59 @@ enum IslandPrism {
         return min(max(sum, -1), 1)
     }
 
-    /// How many seconds of the music the ribbon holds from its right end
-    /// to its left: how long a burst takes to cross it. Tune here.
-    static let twistWindow: Double = 2.4
+    /// How many seconds of the music each layer holds from its right end
+    /// to its left — how long a burst takes to cross — bass, mids, treble.
+    /// Different, so the layers slide over one another. Tune here.
+    static let twistWindows: [Double] = [2.6, 2.1, 1.7]
 
-    /// How much there is to hear across the bands, 0...1, for the
-    /// travelling ribbon: mostly the bass, where the beat is, with the
-    /// mids and treble enough to show on their own.
-    static func twistEnergy(_ bands: [Double]) -> Double {
-        let g = twistGroups(bands)
-        return pow(min(0.6 * g[0] + 0.35 * g[1] + 0.25 * g[2], 1), levelGamma)
+    /// How loud each layer's part of the music is, 0...1: bass, mids,
+    /// treble, each lifted as every level is.
+    static func twistLayerEnergy(_ bands: [Double]) -> [Double] {
+        twistGroups(bands).map { pow($0, levelGamma) }
+    }
+
+    /// How much of its size a travelling lobe has at `u` (0 the ribbon's
+    /// left end, 1 its right): nothing at the right tip where it comes in,
+    /// full a little way in, then shrinking all the way across, and gone
+    /// `travelGone` of the way from the left end. Tune here.
+    static func travelEnvelope(_ u: Double) -> Double {
+        let x = min(max(u, 0), 1)
+        let enter = IslandGlass.smoothstep(1, 1 - travelEnter, x)
+        let shrink = pow(min(max((x - travelGone) / (1 - travelEnter - travelGone), 0), 1), travelShrink)
+        return enter * shrink
+    }
+
+    static let travelEnter: Double = 0.12
+    static let travelGone: Double = 0.07
+    static let travelShrink: Double = 1.15
+
+    /// The three layers standing still, for Reduce Motion and the fixed
+    /// renders: how far each is turned at `u`, each its own lobe of
+    /// `twistFacing` (they sum to it).
+    static func twistLayers(at u: Double, bands: [Double]) -> [Double] {
+        let groups = twistGroups(bands)
+        let p = mirrored(u) / bandSpan * Double(groups.count - 1)
+        return groups.enumerated().map { g, level in
+            let d = (p - Double(g)) / twistLobe
+            return (g % 2 == 0 ? 1 : -1) * pow(level, levelGamma) * exp(-d * d / 2)
+        }
+    }
+
+    /// The twist's profile for the drawing: how far each of the three
+    /// layers is turned at each column, left to right, and the ribbon's
+    /// own half-width there in points. Travelling, the width shrinks
+    /// leftward (`travelEnvelope`); standing, it is the ribbon's taper.
+    static func profile(layers: [[Double]], travelling: Bool) -> (layers: [[Float]], width: [Float]) {
+        var out = [[Float]](repeating: [Float](repeating: 0, count: ribbonColumns), count: 3)
+        var width = [Float](repeating: 0, count: ribbonColumns)
+        for k in 0..<ribbonColumns {
+            let u = Double(k) / Double(ribbonColumns - 1)
+            width[k] = Float(twistFull * (travelling ? travelEnvelope(u) : taper(u)))
+            for g in 0..<3 where g < layers.count && k < layers[g].count {
+                out[g][k] = Float(min(max(layers[g][k], -1), 1))
+            }
+        }
+        return (out, width)
     }
 
     /// Turns how loud the music is, moment by moment, into how far the
@@ -200,23 +248,6 @@ enum IslandPrism {
     static let twistFloorRise: Double = 1.6
     static let twistGate: Double = 0.012
     static let twistGain: Double = 1.6
-
-    /// The travelling ribbon's profile from how far it is turned at each
-    /// column, left to right (`ribbonColumns` of them): what shows (as
-    /// `lift`), its own width (as `spread`) and its brightness.
-    static func profile(facing: [Double]) -> (lift: [Float], spread: [Float], glow: [Float]) {
-        var l = [Float](repeating: 0, count: ribbonColumns)
-        var s = [Float](repeating: 0, count: ribbonColumns)
-        var g = [Float](repeating: 0, count: ribbonColumns)
-        for k in 0..<ribbonColumns {
-            let u = Double(k) / Double(ribbonColumns - 1)
-            let f = k < facing.count ? min(max(facing[k], -1), 1) : 0
-            l[k] = Float(f * twistWidth(at: u))
-            s[k] = Float(twistWidth(at: u))
-            g[k] = Float(pow(taper(u), 0.6) * (restGlow + (1 - restGlow) * min(abs(f) * 1.25, 1)))
-        }
-        return (l, s, g)
-    }
 
     /// The ribbon's own half-width at `u`, in points: what a lobe there
     /// would show if it were turned fully face-on.

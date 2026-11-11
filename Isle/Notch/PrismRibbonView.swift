@@ -57,6 +57,10 @@ final class PrismRibbonRenderer {
         var glow: [Float]
         /// The fan's colours, top to bottom, `IslandPrism.stopCount` of them.
         var stops: [SIMD3<Float>]
+        /// The twist's own half-width across the ribbon, in points. For the
+        /// twist, `lift`, `spread` and `glow` carry how far its bass, mids
+        /// and treble layers are turned instead.
+        var width: [Float] = []
     }
 
     private init?() {
@@ -103,10 +107,10 @@ final class PrismRibbonRenderer {
     }
 
     /// The frame laid out as the shader's `Uniforms`: the colours (four
-    /// floats each), twelve floats of header, then the three profiles.
+    /// floats each), twelve floats of header, then the four profiles.
     private static func uniforms(_ frame: Frame) -> [Float] {
         let n = IslandPrism.ribbonColumns, c = IslandPrism.stopCount
-        var u = [Float](repeating: 0, count: 4 * c + 12 + 3 * n)
+        var u = [Float](repeating: 0, count: 4 * c + 12 + 4 * n)
         for k in 0..<c where k < frame.stops.count {
             u[4 * k] = frame.stops[k].x
             u[4 * k + 1] = frame.stops[k].y
@@ -129,6 +133,7 @@ final class PrismRibbonRenderer {
             u[h + 12 + k] = k < frame.lift.count ? frame.lift[k] : 0
             u[h + 12 + n + k] = k < frame.spread.count ? frame.spread[k] : 0
             u[h + 12 + 2 * n + k] = k < frame.glow.count ? frame.glow[k] : 0
+            u[h + 12 + 3 * n + k] = k < frame.width.count ? frame.width[k] : 0
         }
         return u
     }
@@ -168,6 +173,7 @@ final class PrismRibbonRenderer {
         float lift[\(IslandPrism.ribbonColumns)];
         float spread[\(IslandPrism.ribbonColumns)];
         float glow[\(IslandPrism.ribbonColumns)];
+        float width[\(IslandPrism.ribbonColumns)];
     };
 
     struct Varyings {
@@ -300,43 +306,52 @@ final class PrismRibbonRenderer {
         return float4(color, cover);
     }
 
-    // The ribbon as twisted light: two strips on one axis. The first is
-    // turned as the music has it (`lift` is what shows of it, signed by
-    // the face showing; `spread` its own width). The second is the same
-    // ribbon a little further along, narrower, dimmer, and on the opposite
-    // face, so wherever the first is up and bright the second is down and
-    // behind it, and they cross where the first turns edge-on. Their light
-    // adds. It is white light, tinted toward the fan's colours — the upper
-    // colours above the axis, the lower below — and a soft bloom in those
-    // colours lies round it.
-    static float4 twist(constant Uniforms &u, float x, float y, float g, float2 pixel) {
-        float w = max(column(u.spread, x), 0.6);
-        float shown = column(u.lift, x);
-        float ahead = x + 10.0 / u.size.x;
-        float w2 = max(column(u.spread, ahead), 0.6) * 0.8;
-        float shown2 = -column(u.lift, ahead) * 0.72;
-        float s = abs(shown);
-        float split = 0.2 + 0.022 * s;
-        float4 a = strip(y, w, clamp(shown / w, -1.0, 1.0), split);
-        float4 b = strip(y, w2, clamp(shown2 / w2, -1.0, 1.0), -split);
+    // The ribbon as twisted light, in three layers on one axis: the bass,
+    // the mids and the treble, each a strip of its own turned as its part
+    // of the music has it (`lift`, `spread` and `glow` carry how far each
+    // is turned, signed by the face showing; `width` the ribbon's own
+    // half-width). Each is in its own part of the fan's colours — the bass
+    // its first, the mids its middle, the treble its last — and narrower
+    // than the one before, so the treble rides inside the mids and the
+    // mids inside the bass. Their light adds: where they lie over one
+    // another it runs toward white, and where one stands alone it is that
+    // layer's colour. A soft bloom in those colours lies round it.
+    static float4 twist(constant Uniforms &u, float x, float y, float2 pixel) {
+        float w = column(u.width, x);
+        float fa = column(u.lift, x), fb = column(u.spread, x), fc = column(u.glow, x);
+        float3 ca = fan(u, 0.16), cb = fan(u, 0.5), cc = fan(u, 0.84);
+        float wa = max(w, 0.6), wb = max(w * 0.82, 0.6), wc = max(w * 0.64, 0.6);
+        float tall = max(abs(fa) * wa, max(abs(fb) * wb, abs(fc) * wc));
+        float split = 0.2 + 0.022 * tall;
+        float4 a = strip(y, wa, clamp(fa, -1.0, 1.0), split);
+        float4 b = strip(y, wb, clamp(fb, -1.0, 1.0), -split);
+        float4 c = strip(y, wc, clamp(fc, -1.0, 1.0), split);
 
-        float3 light = a.rgb + b.rgb * 0.85;
-        float body = 1.0 - (1.0 - a.a) * (1.0 - b.a * 0.85);
-        float3 tint = fan(u, clamp(0.5 - y / (2.0 * s + 2.0), 0.0, 1.0));
-        float3 color = light * mix(float3(1.0), tint, 0.38);
+        float3 color = a.rgb * mix(float3(1.0), ca, 0.72)
+            + b.rgb * mix(float3(1.0), cb, 0.72) * 0.9
+            + c.rgb * mix(float3(1.0), cc, 0.72) * 0.85;
+        float body = 1.0 - (1.0 - a.a) * (1.0 - b.a * 0.9) * (1.0 - c.a * 0.85);
+        // Three slivers lie on one another where nothing is turned: as
+        // bright together as one ribbon edge-on, not three.
+        float turned = smoothstep(0.0, 0.25, max(abs(fa), max(abs(fb), abs(fc))));
+        color *= mix(0.42, 1.0, turned);
+        // The ribbon thins to nothing where its width does.
+        float there = smoothstep(0.0, 1.6, w);
 
-        // The bloom: wide and soft, taller than the ribbon.
-        float bd = y / (3.5 + 1.7 * s);
+        // The bloom: wide and soft, taller than the ribbon, in the colour
+        // nearest this height.
+        float3 tint = fan(u, clamp(0.5 - y / (2.0 * tall + 2.0), 0.0, 1.0));
+        float bd = y / (3.5 + 1.7 * tall);
         float bloom = exp(-bd * bd);
-        color += mix(float3(1.0), tint, 0.55) * 0.17 * bloom * (0.4 + 0.6 * smoothstep(1.0, 9.0, s));
+        color += mix(float3(1.0), tint, 0.6) * 0.17 * bloom * (0.4 + 0.6 * smoothstep(1.0, 9.0, tall));
 
-        color *= g * 1.5;
+        color *= there * 1.25;
         float peak = max(color.r, max(color.g, color.b));
         color *= (1.0 - exp(-peak * 1.7)) / max(peak, 1e-4);
-        // White light needs something to be seen against: over a bright
-        // window the bloom's footprint is shaded, more the wider it is.
-        float shade = u.bed * (0.55 + 0.4 * smoothstep(1.0, 9.0, s)) * bloom;
-        float cover = clamp(max(body * g, max(shade * g, max(color.r, max(color.g, color.b)) * 0.85)), 0.0, 1.0);
+        // Light needs something to be seen against: over a bright window
+        // the bloom's footprint is shaded, more the taller it is.
+        float shade = u.bed * (0.55 + 0.4 * smoothstep(1.0, 9.0, tall)) * bloom * there;
+        float cover = clamp(max(body * there, max(shade, max(color.r, max(color.g, color.b)) * 0.85)), 0.0, 1.0);
         float n = (hash(pixel) - 0.5) / 255.0;
         return float4(max(color + n, 0.0), cover);
     }
@@ -348,7 +363,7 @@ final class PrismRibbonRenderer {
         float dx = 1.5 / u.size.x;
         if (u.style > 1.5) {
             float rest = (1.0 - in.uv.y) * u.size.y - u.centre;
-            return twist(u, x, rest, g, in.position.xy);
+            return twist(u, x, rest, in.position.xy);
         }
         if (u.style > 0.5) {
             // The crystal stays on the resting line; `lift` is its sway.
@@ -425,12 +440,16 @@ final class PrismRibbonView: NSView {
     /// first tick after it changed.
     private var motionStart: CFTimeInterval?
 
-    /// The travelling twist: what writes it, what it has written (how far
-    /// the ribbon is turned at each step back in time, the newest first),
-    /// and how far into the next step the clock has run.
-    private var trace = IslandPrism.TwistTrace()
-    private var history = [Double](repeating: 0, count: IslandPrism.ribbonColumns + 2)
-    private var sinceStep: Double = 0
+    /// The travelling twist's three layers (bass, mids, treble): for each,
+    /// what writes it, what it has written (how far its ribbon is turned
+    /// at each step back in time, the newest first), and how far into its
+    /// next step the clock has run.
+    private struct Layer {
+        var trace = IslandPrism.TwistTrace()
+        var history = [Double](repeating: 0, count: IslandPrism.ribbonColumns + 2)
+        var sinceStep: Double = 0
+    }
+    private var layers = [Layer](repeating: Layer(), count: 3)
     /// Levels were fixed by `setStatic`: draw them as they stand.
     private var isStatic = false
 
@@ -616,34 +635,46 @@ final class PrismRibbonView: NSView {
         if travels {
             // Write the ribbon on, a step at a time, and keep drawing while
             // anything written is still on its way across.
-            let step = IslandPrism.twistWindow / Double(IslandPrism.ribbonColumns - 1)
-            sinceStep += dt
-            while sinceStep >= step {
-                history.insert(trace.step(IslandPrism.twistEnergy(bands), dt: step), at: 0)
-                history.removeLast()
-                sinceStep -= step
+            let energy = IslandPrism.twistLayerEnergy(bands)
+            for g in layers.indices {
+                let step = IslandPrism.twistWindows[g] / Double(IslandPrism.ribbonColumns - 1)
+                layers[g].sinceStep += dt
+                while layers[g].sinceStep >= step {
+                    layers[g].history.insert(layers[g].trace.step(energy[g], dt: step), at: 0)
+                    layers[g].history.removeLast()
+                    layers[g].sinceStep -= step
+                }
+                if layers[g].history.contains(where: { abs($0) > 0.002 }) { moving = true }
             }
-            if history.contains(where: { abs($0) > 0.002 }) { moving = true }
         }
         draw()
         // Settled: nothing more to draw until a level or a setting changes.
         if !moving { link.isPaused = true }
     }
 
-    /// How far the travelling ribbon is turned at each column, left to
-    /// right: the newest of what's been written at the right end, each
-    /// column further left that much older, read between the written
-    /// steps so it moves smoothly rather than a column at a time.
-    private func travelling() -> [Double] {
+    /// How far one layer of the travelling ribbon is turned at each
+    /// column, left to right: the newest of what's been written at the
+    /// right end, each column further left that much older, read between
+    /// the written steps so it moves smoothly rather than a column at a
+    /// time.
+    private func travelling(_ g: Int) -> [Double] {
         let n = IslandPrism.ribbonColumns
-        let step = IslandPrism.twistWindow / Double(n - 1)
-        let into = min(max(sinceStep / step, 0), 1)
+        let step = IslandPrism.twistWindows[g] / Double(n - 1)
+        let layer = layers[g]
+        let into = min(max(layer.sinceStep / step, 0), 1)
         return (0..<n).map { k in
             let age = Double(n - 1 - k) + into
-            let i = min(Int(age), history.count - 2)
+            let i = min(Int(age), layer.history.count - 2)
             let f = age - Double(i)
-            return history[i] * (1 - f) + history[i + 1] * f
+            return layer.history[i] * (1 - f) + layer.history[i + 1] * f
         }
+    }
+
+    /// The three layers standing still, for Reduce Motion and fixed levels.
+    private func standing() -> [[Double]] {
+        let n = IslandPrism.ribbonColumns
+        let columns = (0..<n).map { IslandPrism.twistLayers(at: Double($0) / Double(n - 1), bands: bands) }
+        return (0..<3).map { g in columns.map { $0[g] } }
     }
 
     private func draw() {
@@ -651,13 +682,18 @@ final class PrismRibbonView: NSView {
               metalLayer.drawableSize.width >= 1, metalLayer.drawableSize.height >= 1,
               let drawable = metalLayer.nextDrawable() else { return }
         drawnSize = bounds.size
-        let profile = travels ? IslandPrism.profile(facing: travelling()) : IslandPrism.profile(bands: bands)
-        renderer.draw(
-            .init(size: bounds.size, centre: IslandPrism.ribbonCentre,
-                  lift: profile.lift, spread: profile.spread, glow: profile.glow, stops: stops),
-            into: drawable.texture,
-            presenting: drawable
-        )
+        let frame: PrismRibbonRenderer.Frame
+        if IslandPrism.ribbonStyle == .twist {
+            let twist = IslandPrism.profile(layers: travels ? (0..<3).map(travelling) : standing(), travelling: travels)
+            frame = .init(size: bounds.size, centre: IslandPrism.ribbonCentre,
+                          lift: twist.layers[0], spread: twist.layers[1], glow: twist.layers[2],
+                          stops: stops, width: twist.width)
+        } else {
+            let profile = IslandPrism.profile(bands: bands)
+            frame = .init(size: bounds.size, centre: IslandPrism.ribbonCentre,
+                          lift: profile.lift, spread: profile.spread, glow: profile.glow, stops: stops)
+        }
+        renderer.draw(frame, into: drawable.texture, presenting: drawable)
     }
 }
 

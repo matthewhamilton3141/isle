@@ -582,22 +582,46 @@ do {
     // Louder is taller.
     func peak(_ level: Double) -> Double { var tr = Trace(); return (0..<8).map { _ in abs(tr.step(level, dt: dt)) }.max()! }
     check(peak(0.9) > peak(0.5) && peak(0.5) > peak(0.2) && peak(0.2) > 0, "a louder burst stands taller")
-    // The energy: mostly the bass, the rest enough to show.
-    check(IslandPrism.twistEnergy([]) == 0 && IslandPrism.twistEnergy([0, 0, 0, 0, 0, 0]) == 0, "no sound, no energy")
-    check(IslandPrism.twistEnergy([1, 0, 0, 0, 0, 0]) > IslandPrism.twistEnergy([0, 0, 1, 0, 0, 0])
-          && IslandPrism.twistEnergy([0, 0, 1, 0, 0, 0]) > IslandPrism.twistEnergy([0, 0, 0, 0, 1, 0])
-          && IslandPrism.twistEnergy([0, 0, 0, 0, 1, 0]) > 0.2, "bass counts most, then mids, then treble, and treble alone still shows")
-    check(IslandPrism.twistEnergy([1, 1, 1, 1, 1, 1]) == 1, "everything at full is full")
-    // The profile the drawing takes from what's been written.
+    // A layer each for bass, mids and treble, moved only by its own part.
+    check(IslandPrism.twistLayerEnergy([]) == [0, 0, 0], "no sound, nothing in any layer")
+    let kick = IslandPrism.twistLayerEnergy([0.9, 0.4, 0, 0, 0, 0])
+    check(kick[0] > 0.9 && kick[1] == 0 && kick[2] == 0, "a kick is the bass layer's alone")
+    let hat = IslandPrism.twistLayerEnergy([0, 0, 0, 0, 0.2, 0.7])
+    check(hat[0] == 0 && hat[1] == 0 && hat[2] > 0.7, "a hat is the treble layer's alone")
+    check(IslandPrism.twistLayerEnergy([1, 1, 1, 1, 1, 1]) == [1, 1, 1], "everything at full fills all three")
+    // Standing still, the three layers are the three lobes, and sum to the whole.
+    for u in [0.5, 0.62, 0.8, 0.3] {
+        let layers = IslandPrism.twistLayers(at: u, bands: [0.9, 0.2, 0.7, 0.1, 0.6, 0.3])
+        check(layers.count == 3 && near(layers.reduce(0, +), IslandPrism.twistFacing(at: u, bands: [0.9, 0.2, 0.7, 0.1, 0.6, 0.3]), 1e-9), "three layers that sum to the standing ribbon at \(u)")
+    }
+    check(IslandPrism.twistLayers(at: 0.5, bands: [1, 0, 0, 0, 0, 0])[0] > 0.99 && IslandPrism.twistLayers(at: 0.5, bands: [0, 0, 1, 0, 0, 0])[0] == 0, "the bass layer's lobe is the bass's")
+    // A travelling lobe comes in at the right, and shrinks away before the left end.
+    func env(_ u: Double) -> Double { IslandPrism.travelEnvelope(u) }
+    check(env(1) == 0, "nothing at the right tip, where a burst comes in")
+    check(near(env(1 - IslandPrism.travelEnter), 1), "full a little way in")
+    check(env(IslandPrism.travelGone) == 0 && env(0) == 0 && env(IslandPrism.travelGone / 2) == 0, "gone before the left end")
+    var shrinking = true
+    var u = 1 - IslandPrism.travelEnter
+    while u > 0 { if env(u - 0.01) > env(u) + 1e-12 { shrinking = false }; u -= 0.01 }
+    check(shrinking, "and shrinking all the way across, never growing again")
+    check(env(0.5) > 0.3 && env(0.5) < 0.7, "about half its size half way across", "\(env(0.5))")
+    check(env(0.25) < 0.3, "small by three quarters of the way", "\(env(0.25))")
+    // The profile the drawing takes.
     let n = IslandPrism.ribbonColumns
-    var facing = [Double](repeating: 0, count: n)
-    facing[n / 2] = 1; facing[n / 4] = -0.5
-    let p = IslandPrism.profile(facing: facing)
-    check(p.lift.count == n && p.spread.count == n && p.glow.count == n, "a sample per column")
-    check(near(Double(p.lift[n / 2]), IslandPrism.twistWidth(at: Double(n / 2) / Double(n - 1)), 1e-4), "face-on shows the ribbon's whole width there")
-    check(p.lift[n / 4] < 0 && near(Double(p.lift[n / 4]), -0.5 * IslandPrism.twistWidth(at: Double(n / 4) / Double(n - 1)), 1e-4), "half turned to the far face shows half, signed")
-    check(p.lift[0] == 0 && p.lift[n - 1] == 0 && p.spread[0] == 0, "drawn to a point at both ends, where bursts come in and leave")
-    check(IslandPrism.twistWindow > 1.5 && IslandPrism.twistWindow < 4, "a burst takes a couple of seconds to cross")
+    var bass = [Double](repeating: 0, count: n), treble = [Double](repeating: 0, count: n)
+    bass[n / 2] = 1; treble[n / 4] = -0.5
+    let p = IslandPrism.profile(layers: [bass, [], treble], travelling: true)
+    check(p.layers.count == 3 && p.layers.allSatisfy { $0.count == n } && p.width.count == n, "three layers and a width, a sample per column")
+    check(p.layers[0][n / 2] == 1 && p.layers[2][n / 4] == -0.5 && p.layers[1].allSatisfy { $0 == 0 }, "each layer's turn as written, signed; a missing layer is edge-on")
+    check(near(Double(p.width[n / 2]), IslandPrism.twistFull * env(Double(n / 2) / Double(n - 1)), 1e-4), "travelling, the width is the envelope's")
+    check(p.width[0] == 0 && p.width[n - 1] == 0, "nothing at either end")
+    let standing = IslandPrism.profile(layers: [bass, [], treble], travelling: false)
+    check(near(Double(standing.width[n / 2]), IslandPrism.twistWidth(at: Double(n / 2) / Double(n - 1)), 1e-4), "standing, the width is the ribbon's taper")
+    check(IslandPrism.profile(layers: [[3, -3]], travelling: false).layers[0][0] == 1 && IslandPrism.profile(layers: [[3, -3]], travelling: false).layers[0][1] == -1, "turns clamp to face-on")
+    // The layers cross at different speeds, the treble quickest.
+    let windows = IslandPrism.twistWindows
+    check(windows.count == 3 && windows[0] > windows[1] && windows[1] > windows[2], "bass slowest, treble quickest")
+    check(windows.allSatisfy { $0 > 1.2 && $0 < 4 }, "each takes a couple of seconds to cross")
 }
 
 print("prism: the ribbon's motion")
