@@ -425,6 +425,18 @@ final class PrismRibbonView: NSView {
     /// first tick after it changed.
     private var motionStart: CFTimeInterval?
 
+    /// The travelling twist: what writes it, what it has written (how far
+    /// the ribbon is turned at each step back in time, the newest first),
+    /// and how far into the next step the clock has run.
+    private var trace = IslandPrism.TwistTrace()
+    private var history = [Double](repeating: 0, count: IslandPrism.ribbonColumns + 2)
+    private var sinceStep: Double = 0
+    /// Levels were fixed by `setStatic`: draw them as they stand.
+    private var isStatic = false
+
+    /// Whether the ribbon is the travelling one.
+    private var travels: Bool { IslandPrism.ribbonStyle == .twist && !reduceMotion && !isStatic }
+
     /// The fan's colours as drawn, and where they're turning to.
     private var stops = PrismRibbonView.vectors(IslandPrism.spectrum)
     private var stopGoal = PrismRibbonView.vectors(IslandPrism.spectrum)
@@ -495,6 +507,7 @@ final class PrismRibbonView: NSView {
     /// Fixed levels and colours, drawn at once: for the gallery and the
     /// renders.
     func setStatic(levels: [Double], stops: [IslandPrism.RGB] = IslandPrism.spectrum) {
+        isStatic = true
         motion = .rest
         bands = Self.padded(levels)
         self.stops = Self.vectors(stops)
@@ -600,9 +613,37 @@ final class PrismRibbonView: NSView {
                 stops[i] = stopGoal[i]
             }
         }
+        if travels {
+            // Write the ribbon on, a step at a time, and keep drawing while
+            // anything written is still on its way across.
+            let step = IslandPrism.twistWindow / Double(IslandPrism.ribbonColumns - 1)
+            sinceStep += dt
+            while sinceStep >= step {
+                history.insert(trace.step(IslandPrism.twistEnergy(bands), dt: step), at: 0)
+                history.removeLast()
+                sinceStep -= step
+            }
+            if history.contains(where: { abs($0) > 0.002 }) { moving = true }
+        }
         draw()
         // Settled: nothing more to draw until a level or a setting changes.
         if !moving { link.isPaused = true }
+    }
+
+    /// How far the travelling ribbon is turned at each column, left to
+    /// right: the newest of what's been written at the right end, each
+    /// column further left that much older, read between the written
+    /// steps so it moves smoothly rather than a column at a time.
+    private func travelling() -> [Double] {
+        let n = IslandPrism.ribbonColumns
+        let step = IslandPrism.twistWindow / Double(n - 1)
+        let into = min(max(sinceStep / step, 0), 1)
+        return (0..<n).map { k in
+            let age = Double(n - 1 - k) + into
+            let i = min(Int(age), history.count - 2)
+            let f = age - Double(i)
+            return history[i] * (1 - f) + history[i + 1] * f
+        }
     }
 
     private func draw() {
@@ -610,7 +651,7 @@ final class PrismRibbonView: NSView {
               metalLayer.drawableSize.width >= 1, metalLayer.drawableSize.height >= 1,
               let drawable = metalLayer.nextDrawable() else { return }
         drawnSize = bounds.size
-        let profile = IslandPrism.profile(bands: bands)
+        let profile = travels ? IslandPrism.profile(facing: travelling()) : IslandPrism.profile(bands: bands)
         renderer.draw(
             .init(size: bounds.size, centre: IslandPrism.ribbonCentre,
                   lift: profile.lift, spread: profile.spread, glow: profile.glow, stops: stops),

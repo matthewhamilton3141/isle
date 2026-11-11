@@ -93,13 +93,16 @@ enum IslandPrism {
         /// edge of each lobe is crisp, with a thin fringe of colour, and
         /// the other melts away; a soft bloom lies round the whole.
         ///
-        /// It is a waveform, not an animation: the ribbon has a lobe for
-        /// the bass at its centre, one for the mids either side of that
-        /// and one for the treble beyond, each on the opposite face from
-        /// its neighbours, and how far each lobe is turned to face you —
-        /// how tall it stands — is how loud that part of the music is.
-        /// Nothing turns on a clock. Silent, every lobe is edge-on and
-        /// the ribbon is a line.
+        /// It is a waveform, and it travels: the ribbon is the last couple
+        /// of seconds of the music, the newest at its right end, moving
+        /// left. Each burst of sound is a lobe, as tall as the burst was
+        /// loud, that comes in at the right and crosses to the left; the
+        /// ribbon turns edge-on in the dip between two bursts and shows its
+        /// other face for the next, so the lobes alternate and cross
+        /// (`TwistTrace`). Silent, there is nothing to carry and it is a
+        /// line. With Reduce Motion it doesn't travel: it stands still as
+        /// three lobes, bass at the centre, mids either side, treble
+        /// beyond (`twistFacing`).
         case twist
     }
 
@@ -137,6 +140,82 @@ enum IslandPrism {
             sum += (g % 2 == 0 ? 1 : -1) * pow(level, levelGamma) * exp(-d * d / 2)
         }
         return min(max(sum, -1), 1)
+    }
+
+    /// How many seconds of the music the ribbon holds from its right end
+    /// to its left: how long a burst takes to cross it. Tune here.
+    static let twistWindow: Double = 2.4
+
+    /// How much there is to hear across the bands, 0...1, for the
+    /// travelling ribbon: mostly the bass, where the beat is, with the
+    /// mids and treble enough to show on their own.
+    static func twistEnergy(_ bands: [Double]) -> Double {
+        let g = twistGroups(bands)
+        return pow(min(0.6 * g[0] + 0.35 * g[1] + 0.25 * g[2], 1), levelGamma)
+    }
+
+    /// Turns how loud the music is, moment by moment, into how far the
+    /// ribbon is turned to face you at the point being written (-1...1,
+    /// signed by the face showing).
+    ///
+    /// A burst is how far the music stands above its own recent quiet: a
+    /// floor drops to the level the moment the level is under it and
+    /// climbs back toward it only slowly, so it sits in the dips between
+    /// beats, a little higher each time, and the burst is what's above it.
+    /// The next dip comes down to meet it, so the burst goes to nothing in
+    /// each dip even when the music never does, which is where the ribbon
+    /// is edge-on; and each time it does, the next burst is given the
+    /// other face. A held note with no dips in it thins away to a line
+    /// over a few seconds: a waveform shows change.
+    struct TwistTrace {
+        /// The music's recent quiet.
+        var floor = 0.0
+        /// The face the current burst shows: 1 near, -1 far.
+        var face = 1.0
+        /// A burst is under way.
+        var open = false
+
+        mutating func step(_ energy: Double, dt: Double) -> Double {
+            let e = min(max(energy, 0), 1)
+            if e <= floor {
+                floor = e
+            } else if dt > 0 {
+                floor += (e - floor) * (1 - exp(-dt / IslandPrism.twistFloorRise))
+            }
+            let burst = max(e - floor - IslandPrism.twistGate, 0) * IslandPrism.twistGain
+            if burst > 0 {
+                open = true
+            } else if open {
+                // The dip after a burst: edge-on, and over to the other face.
+                open = false
+                face = -face
+            }
+            return face * min(burst, 1)
+        }
+    }
+
+    /// How slowly the floor climbs (a time constant, in seconds), the
+    /// least that counts as a burst, and how much a burst is scaled up to
+    /// fill the ribbon. Tune here.
+    static let twistFloorRise: Double = 1.6
+    static let twistGate: Double = 0.012
+    static let twistGain: Double = 1.6
+
+    /// The travelling ribbon's profile from how far it is turned at each
+    /// column, left to right (`ribbonColumns` of them): what shows (as
+    /// `lift`), its own width (as `spread`) and its brightness.
+    static func profile(facing: [Double]) -> (lift: [Float], spread: [Float], glow: [Float]) {
+        var l = [Float](repeating: 0, count: ribbonColumns)
+        var s = [Float](repeating: 0, count: ribbonColumns)
+        var g = [Float](repeating: 0, count: ribbonColumns)
+        for k in 0..<ribbonColumns {
+            let u = Double(k) / Double(ribbonColumns - 1)
+            let f = k < facing.count ? min(max(facing[k], -1), 1) : 0
+            l[k] = Float(f * twistWidth(at: u))
+            s[k] = Float(twistWidth(at: u))
+            g[k] = Float(pow(taper(u), 0.6) * (restGlow + (1 - restGlow) * min(abs(f) * 1.25, 1)))
+        }
+        return (l, s, g)
     }
 
     /// The ribbon's own half-width at `u`, in points: what a lobe there

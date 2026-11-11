@@ -533,6 +533,73 @@ do {
     check(IslandPrism.twistFull + 0.2 * IslandPrism.twistFull < Double(IslandPrism.ribbonCentre), "a full lobe, riding above or below the axis, stays above the bottom edge")
 }
 
+print("prism: the twist, travelling")
+do {
+    typealias Trace = IslandPrism.TwistTrace
+    let dt = 1.0 / 40
+    // Silence writes nothing.
+    var quiet = Trace()
+    check((0..<200).allSatisfy { _ in quiet.step(0, dt: dt) == 0 }, "silence writes a line")
+    // A beat: bursts with dips between them. Each burst is a lobe, and
+    // successive lobes are on alternate faces, with nothing between.
+    var beat = Trace()
+    var written: [Double] = []
+    for k in 0..<400 {
+        let t = Double(k) * dt
+        let phase = t.truncatingRemainder(dividingBy: 0.5)
+        written.append(beat.step(0.15 + 0.8 * exp(-phase / 0.11), dt: dt))
+    }
+    let late = Array(written[120...])
+    var lobes: [(face: Double, peak: Double)] = []
+    var current: (face: Double, peak: Double)? = nil
+    var jumped = false
+    for (a, b) in zip(late, late.dropFirst()) where a * b < 0 { _ = (a, b); jumped = true }
+    for v in late {
+        if v == 0 { if let c = current { lobes.append(c); current = nil } }
+        else if let c = current { current = (c.face, max(c.peak, abs(v))) }
+        else { current = (v > 0 ? 1 : -1, abs(v)) }
+    }
+    check(lobes.count >= 10, "a beat every half second writes a lobe for each", "\(lobes.count)")
+    check(zip(lobes, lobes.dropFirst()).allSatisfy { $0.face == -$1.face }, "each lobe on the other face from the last")
+    check(!jumped, "the ribbon passes through edge-on between them: it never jumps face to face")
+    check(lobes.allSatisfy { $0.peak > 0.6 }, "a strong beat fills most of the ribbon", "\(lobes.map(\.peak).min() ?? 0)")
+    check(late.allSatisfy { abs($0) <= 1 }, "never more than full face-on")
+    // Music that never drops to silence still dips to edge-on between beats.
+    var dense = Trace()
+    var crossings = 0, was = 0.0
+    for k in 0..<400 {
+        let t = Double(k) * dt
+        let v = dense.step(0.5 + 0.4 * exp(-t.truncatingRemainder(dividingBy: 0.5) / 0.1), dt: dt)
+        if k > 120, v == 0, was != 0 { crossings += 1 }
+        was = v
+    }
+    check(crossings >= 8, "over a loud bed the ribbon still turns edge-on between beats", "\(crossings)")
+    // A held note stands up, then thins away: a waveform shows change.
+    var held = Trace()
+    var first = 0.0, last = 0.0
+    for k in 0..<600 { last = held.step(0.7, dt: dt); if k == 0 { first = last } }
+    check(abs(first) > 0.8 && abs(last) < 0.02, "a held note stands up at once and thins to a line", "\(first) \(last)")
+    // Louder is taller.
+    func peak(_ level: Double) -> Double { var tr = Trace(); return (0..<8).map { _ in abs(tr.step(level, dt: dt)) }.max()! }
+    check(peak(0.9) > peak(0.5) && peak(0.5) > peak(0.2) && peak(0.2) > 0, "a louder burst stands taller")
+    // The energy: mostly the bass, the rest enough to show.
+    check(IslandPrism.twistEnergy([]) == 0 && IslandPrism.twistEnergy([0, 0, 0, 0, 0, 0]) == 0, "no sound, no energy")
+    check(IslandPrism.twistEnergy([1, 0, 0, 0, 0, 0]) > IslandPrism.twistEnergy([0, 0, 1, 0, 0, 0])
+          && IslandPrism.twistEnergy([0, 0, 1, 0, 0, 0]) > IslandPrism.twistEnergy([0, 0, 0, 0, 1, 0])
+          && IslandPrism.twistEnergy([0, 0, 0, 0, 1, 0]) > 0.2, "bass counts most, then mids, then treble, and treble alone still shows")
+    check(IslandPrism.twistEnergy([1, 1, 1, 1, 1, 1]) == 1, "everything at full is full")
+    // The profile the drawing takes from what's been written.
+    let n = IslandPrism.ribbonColumns
+    var facing = [Double](repeating: 0, count: n)
+    facing[n / 2] = 1; facing[n / 4] = -0.5
+    let p = IslandPrism.profile(facing: facing)
+    check(p.lift.count == n && p.spread.count == n && p.glow.count == n, "a sample per column")
+    check(near(Double(p.lift[n / 2]), IslandPrism.twistWidth(at: Double(n / 2) / Double(n - 1)), 1e-4), "face-on shows the ribbon's whole width there")
+    check(p.lift[n / 4] < 0 && near(Double(p.lift[n / 4]), -0.5 * IslandPrism.twistWidth(at: Double(n / 4) / Double(n - 1)), 1e-4), "half turned to the far face shows half, signed")
+    check(p.lift[0] == 0 && p.lift[n - 1] == 0 && p.spread[0] == 0, "drawn to a point at both ends, where bursts come in and leave")
+    check(IslandPrism.twistWindow > 1.5 && IslandPrism.twistWindow < 4, "a burst takes a couple of seconds to cross")
+}
+
 print("prism: the ribbon's motion")
 do {
     check(IslandPrism.follow(0.3, toward: 0.3, dt: 1) == 0.3, "at its target, it stays")
