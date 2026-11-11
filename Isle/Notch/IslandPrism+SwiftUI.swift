@@ -38,7 +38,7 @@ struct PrismShade: View {
             VStack(spacing: 0) {
                 Rectangle()
                     .fill(.black)
-                    .frame(height: IslandGlass.fadeBand(notchHeight: bandHeight))
+                    .frame(height: max(bandHeight, 0) + IslandPrism.bandExtra)
                 LinearGradient(stops: PrismStops.shade, startPoint: .top, endPoint: .bottom)
                 LinearGradient(stops: PrismStops.horizon, startPoint: .top, endPoint: .bottom)
                     .frame(height: IslandPrism.horizonFeather)
@@ -155,8 +155,8 @@ struct PrismFrost: View {
                 .environment(\.colorScheme, .dark)
                 .mask {
                     VStack(spacing: 0) {
-                        Color.white
-                        LinearGradient(colors: [.white, .clear], startPoint: .top, endPoint: .bottom)
+                        Color.white.opacity(IslandPrism.frost)
+                        LinearGradient(colors: [.white.opacity(IslandPrism.frost), .clear], startPoint: .top, endPoint: .bottom)
                             .frame(height: IslandPrism.horizonFeather)
                         Color.clear.frame(height: IslandPrism.lip - IslandPrism.horizonFeather / 2)
                     }

@@ -120,6 +120,7 @@ final class PrismRibbonRenderer {
         u[h + 4] = Float(IslandPrism.sigmaPerSpread)
         u[h + 5] = Float(IslandPrism.ribbonCover)
         u[h + 6] = Float(IslandPrism.ribbonBed)
+        u[h + 7] = IslandPrism.ribbonStyle == .crystal ? 1 : 0
         for k in 0..<n {
             u[h + 8 + k] = k < frame.lift.count ? frame.lift[k] : 0
             u[h + 8 + n + k] = k < frame.spread.count ? frame.spread[k] : 0
@@ -155,7 +156,7 @@ final class PrismRibbonRenderer {
         float sigmaPerSpread;
         float cover;
         float bed;
-        float pad;
+        float style;
         float lift[\(IslandPrism.ribbonColumns)];
         float spread[\(IslandPrism.ribbonColumns)];
         float glow[\(IslandPrism.ribbonColumns)];
@@ -191,6 +192,79 @@ final class PrismRibbonRenderer {
         return fract(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453);
     }
 
+    // The ribbon as a body of glass. `y` is the height above the body's
+    // middle, `t` its half-thickness there, `rise` how steeply its upper
+    // surface climbs to the right; all in points.
+    //
+    // Across its thickness the body is shaded as a rounded bar lit from
+    // above and a little to the left: `h` runs -1 at its lower edge to 1
+    // at its upper, and the surface faces the viewer squarely at 0 and
+    // turns away toward either edge. Glass is clearest where it faces
+    // you and densest, and brightest, where it turns away, so the colour
+    // gathers at the edges and the middle lets the panel show through. A
+    // bright line lies where the surface faces the light, sliding toward
+    // the crest's lit side as the surface tilts; a softer one near the
+    // lower edge is the light coming back up through it. Each colour
+    // channel is cut at a slightly different thickness, which leaves a
+    // fringe of colour along the silhouette, as a cut edge does. Under
+    // the body, the light it lets through pools as a soft glow.
+    static float4 crystal(constant Uniforms &u, float y, float t, float rise, float g, float2 pixel) {
+        float h = y / t;
+        float aa = 0.7 / t;
+        // The silhouette, once per channel: red cut a little wider than
+        // green, blue a little narrower.
+        float3 edge = float3(1.03, 1.0, 0.97);
+        float3 inside = 1.0 - smoothstep(edge - aa, edge + aa, float3(abs(h)));
+        float within = clamp(abs(h), 0.0, 1.0);
+        float facing = sqrt(1.0 - within * within);
+        float away = 1.0 - facing;
+        // How much body there is here: a thread at rest, full on a crest.
+        float full = smoothstep(2.3, 7.0, t);
+
+        // The fan's colours through the body, first at the top.
+        float3 tint = fan(u, (1.0 - clamp(h, -1.0, 1.0)) * 0.5);
+        // Dense at the edges, thin through the middle.
+        float density = mix(0.1, 0.85, pow(away, 2.2));
+        float3 color = tint * density;
+        // Where the light gathers inside, below the middle: glass is
+        // brightest on the side away from the light.
+        float pool = (h + 0.34) / 0.34;
+        color += tint * (0.3 + 0.35 * full) * exp(-pool * pool);
+
+        // Where the surface faces the light: a soft sheen across the upper
+        // half, and in it a glint, both moved by the tilt. The glint is a
+        // crest's: it thins away where the body does.
+        float lit = 0.46 - 0.3 * clamp(rise, -1.0, 1.0);
+        float sheen = (h - lit) / 0.3;
+        float glint = (h - lit - 0.08) / 0.085;
+        float facingLight = 1.0 + 0.6 * clamp(-rise * 1.5, -0.7, 1.0);
+        float shine = (0.2 * exp(-sheen * sheen) + 0.9 * exp(-glint * glint) * mix(0.25, 1.0, full)) * facingLight;
+        // The light coming back up along the lower edge, in the body's colour.
+        float back = (h + 0.76) / 0.13;
+        float3 bounce = mix(float3(1.0), tint, 0.7) * 0.34 * exp(-back * back);
+
+        color = (color + bounce) * inside + float3(shine) * inside.g;
+        // How much the body hides what's under it: little through the
+        // middle, most at the edges and under the shine.
+        float body = clamp(mix(0.14, 0.8, pow(away, 1.6)) + shine * 0.85, 0.0, 1.0) * inside.g;
+
+        // Under the body: the light it lets through, and its shade.
+        float below = max(-y - t, 0.0);
+        float above = max(y - t, 0.0);
+        float out = below + above * 2.5;
+        float3 glow = fan(u, 0.8) * (0.16 + 0.22 * full) * exp(-out / (2.2 + 0.35 * t)) * (1.0 - inside.g);
+        color += glow;
+        float shade = u.bed * 0.55 * exp(-out / (4.0 + 0.5 * t)) * (1.0 - inside.g);
+
+        // A thread at rest is brighter than its share of the glow: it is
+        // all edge.
+        float lift = mix(1.35, 1.0, full);
+        color *= g * lift;
+        float cover = clamp(max(body * g, max(shade * g, max(color.r, max(color.g, color.b)) * 0.7)), 0.0, 1.0);
+        float n = (hash(pixel) - 0.5) / 255.0;
+        return float4(max(color + n, 0.0), cover);
+    }
+
     fragment float4 prismFragment(Varyings in [[stage_in]], constant Uniforms &u [[buffer(0)]]) {
         float x = in.uv.x;
         float y = (1.0 - in.uv.y) * u.size.y - u.centre - column(u.lift, x);
@@ -200,6 +274,11 @@ final class PrismRibbonRenderer {
         float dx = 1.5 / u.size.x;
         float slope = (column(u.lift, x + dx) - column(u.lift, x - dx)) / 3.0;
         float steep = sqrt(1.0 + slope * slope);
+        if (u.style > 0.5) {
+            // The upper surface's slope: the line's, and the thickness's.
+            float grow = (column(u.spread, x + dx) - column(u.spread, x - dx)) / 3.0;
+            return crystal(u, y, max(s, 0.85) * steep, slope + grow, g, in.position.xy);
+        }
         float sigma = (u.sigma + u.sigmaPerSpread * s) * steep;
 
         const int N = 16;

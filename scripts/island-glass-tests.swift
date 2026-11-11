@@ -377,14 +377,35 @@ do {
     check(near(h.first!.alpha, IslandPrism.edgeTint) && near(h.last!.alpha, IslandPrism.lipTint), "horizon stops: edge tint to lip tint")
 }
 
+// The ribbon's shape and style are one choice each (`IslandPrism.ribbonShape`,
+// `ribbonStyle`); these are what that choice makes the resting and full
+// half-heights and the full lift.
+let ribbonRest = IslandPrism.ribbonStyle == .crystal ? IslandPrism.crystalRest : IslandPrism.restSpread
+let ribbonFull: Double = {
+    switch IslandPrism.ribbonShape {
+    case .up: return IslandPrism.fullSpread
+    case .mirrored: return IslandPrism.mirroredSpread
+    case .snake: return IslandPrism.snakeSpread
+    }
+}()
+let ribbonLift: Double = {
+    switch IslandPrism.ribbonShape {
+    case .up: return IslandPrism.fullLift
+    case .mirrored: return 0
+    case .snake: return IslandPrism.snakeLift
+    }
+}()
+
 print("prism: the lens's shape")
 do {
     check(IslandPrism.lip > 0 && IslandPrism.bottomCornerRadius > IslandMotion.openCorners.bottom, "a lip, and rounder than the other modes")
     check(IslandPrism.bottomCornerRadius <= IslandPrism.lip + 8, "the bottom corners turn inside the lip and the content's bottom inset")
     check(IslandPrism.ribbonCentre > 0 && IslandPrism.ribbonCentre < IslandPrism.lip, "the ribbon's resting line is in the lip")
-    check(IslandPrism.ribbonCentre - IslandPrism.restSpread > 0, "the resting fan stays above the bottom edge")
-    check(IslandPrism.ribbonCentre + IslandPrism.fullLift - IslandPrism.fullSpread > 0, "a full crest's lower edge is above the bottom edge")
-    check(IslandPrism.ribbonCentre + IslandPrism.fullLift + IslandPrism.fullSpread < IslandPrism.ribbonStrip, "and its upper edge inside the strip")
+    check(IslandPrism.ribbonCentre - ribbonRest > 0, "the resting ribbon stays above the bottom edge")
+    check(IslandPrism.ribbonCentre - ribbonLift - ribbonFull > 0 || IslandPrism.ribbonShape == .up, "a full crest's lower edge is above the bottom edge, whichever way it goes")
+    check(IslandPrism.ribbonCentre + (IslandPrism.ribbonShape == .up ? ribbonLift : 0) - ribbonFull > 0, "and a rising crest's too")
+    check(IslandPrism.ribbonCentre + ribbonLift + ribbonFull < IslandPrism.ribbonStrip, "its upper edge is inside the strip")
+    check(ribbonFull > ribbonRest * 2, "a full band is plainly more than rest")
 }
 
 print("prism: the ribbon's profile")
@@ -393,11 +414,14 @@ do {
     let full = [Double](repeating: 1, count: 6)
     check(IslandPrism.mirrored(0.5) == 0 && IslandPrism.mirrored(0) == 1 && IslandPrism.mirrored(1) == 1, "mirrored: 0 at the centre, 1 at the tips")
     check(near(IslandPrism.taper(0.5), 1) && IslandPrism.taper(0) == 0 && IslandPrism.taper(1) == 0, "taper: full at the centre, nothing at the tips")
-    check(near(IslandPrism.spread(at: 0.5, bands: silent), IslandPrism.restSpread) && IslandPrism.lift(at: 0.5, bands: silent) == 0,
-          "silent: the resting fan on the resting line")
-    check(near(IslandPrism.spread(at: 0.5, bands: full), IslandPrism.fullSpread) && near(IslandPrism.lift(at: 0.5, bands: full), IslandPrism.fullLift),
-          "full: the full fan, lifted the full lift, at the centre")
-    check(near(IslandPrism.spread(at: 0.5, bands: []), IslandPrism.restSpread), "no bands is silence")
+    check(near(IslandPrism.spread(at: 0.5, bands: silent), ribbonRest) && IslandPrism.lift(at: 0.5, bands: silent) == 0,
+          "silent: the resting ribbon on the resting line")
+    check(near(IslandPrism.spread(at: 0.5, bands: full), ribbonFull) && near(IslandPrism.lift(at: 0.5, bands: full), ribbonLift),
+          "full: its full half-height, lifted its full lift, at the centre")
+    check(near(IslandPrism.spread(at: 0.5, bands: []), ribbonRest), "no bands is silence")
+    // The snake's crests go up and down in turn; the others never go below the line.
+    check(near(IslandPrism.signedLevel(at: 0.5, bands: [1, 0, 0, 0, 0, 0]), 1), "signed: the centre band counts up")
+    check(IslandPrism.signedLevel(at: 0.5 + IslandPrism.bandSpan / 2 / 5, bands: [0, 1, 0, 0, 0, 0]) < -0.9, "signed: the next band counts down")
     check(IslandPrism.spread(at: 0, bands: full) == 0 && IslandPrism.lift(at: 1, bands: full) == 0 && IslandPrism.glow(at: 1, bands: full) == 0,
           "nothing at the tips, however loud")
     // Bass at the centre, treble toward the tips, each a crest of its own.
@@ -417,17 +441,20 @@ do {
     var mirrored = true, bounded = true, smooth = true
     let mixed = [0.9, 0.2, 0.7, 0.1, 0.6, 0.3]
     var last = IslandPrism.lift(at: 0, bands: mixed)
+    var lastSpread = IslandPrism.spread(at: 0, bands: mixed)
     for k in 0...800 {
         let u = Double(k) / 800
         let s = IslandPrism.spread(at: u, bands: mixed), g = IslandPrism.glow(at: u, bands: mixed), l = IslandPrism.lift(at: u, bands: mixed)
         if !near(l, IslandPrism.lift(at: 1 - u, bands: mixed), 1e-9) || !near(s, IslandPrism.spread(at: 1 - u, bands: mixed), 1e-9) { mirrored = false }
-        if s < 0 || s > IslandPrism.fullSpread + 1e-9 || g < 0 || g > 1 + 1e-9 || l < 0 || l > IslandPrism.fullLift + 1e-9 { bounded = false }
-        if abs(l - last) > 0.5 { smooth = false }
+        if s < 0 || s > ribbonFull + 1e-9 || g < 0 || g > 1 + 1e-9 || abs(l) > ribbonLift + 1e-9 { bounded = false }
+        if IslandPrism.ribbonShape != .snake, l < 0 { bounded = false }
+        if abs(l - last) > 0.5 || abs(s - lastSpread) > 0.5 { smooth = false }
         last = l
+        lastSpread = s
     }
-    check(mirrored, "the line and the fan are mirror images about the centre")
-    check(bounded, "lift within the full lift, spread within the full fan, glow within 0...1")
-    check(smooth, "no step in the line (under half a point between samples 1/800 apart)")
+    check(mirrored, "the line and its thickness are mirror images about the centre")
+    check(bounded, "lift within the full lift, half-height within the full one, glow within 0...1")
+    check(smooth, "no step in the line or its thickness (under half a point between samples 1/800 apart)")
     check(near(IslandPrism.level(at: 0.5, bands: [2, -1]), 1), "levels clamp to 0...1")
     let p = IslandPrism.profile(bands: mixed)
     let n = IslandPrism.ribbonColumns
