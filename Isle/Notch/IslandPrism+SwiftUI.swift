@@ -11,8 +11,8 @@
 //    lens only along the lip.
 //  - `PrismRibbonStrip`: the ribbon along the lip, part of the material
 //    like the frost.
-//  - `PrismReflection`: the ribbon's colours reflected along the lens's
-//    lower edge and corners.
+//  - `PrismReflection`: a little of the ribbon's colours reflected in the
+//    lens's two bottom corners.
 //  - `PrismLens`: the scrim behind the content, that reflection, and — where the system has
 //    no Liquid Glass to draw a lens's edge — a specular rim of Isle's own.
 //
@@ -183,10 +183,10 @@ struct PrismPane: View {
     }
 }
 
-/// The reflection along the lens's lower edge and corners, in the ribbon's
-/// colours (see the numbers in IslandPrism.swift): a line on the outline,
-/// a fainter one inside it, and a soft band of colour, all strongest in
-/// the bottom corners. Added light, static, and laid out against the
+/// The reflection in the lens's two bottom corners, in the ribbon's
+/// colours (see the numbers in IslandPrism.swift): a line on the outline
+/// where it turns, a fainter one inside it, and a soft band of colour,
+/// in the corners alone. Added light, static, and laid out against the
 /// outline's current frame, so it follows the panel as it opens, collapses
 /// and changes height; the black that covers the closed island hides it.
 struct PrismReflection: View {
@@ -226,23 +226,36 @@ struct PrismReflection: View {
                 .stroke(colors, lineWidth: IslandPrism.reflectionEdgeWidth)
                 .opacity(IslandPrism.reflectionEdge)
         }
-        // The lower outline only, thinning out up the walls...
+        // The two bottom corners only: a round patch on the middle of each
+        // turn, fading out before the edge has run far along the bottom or
+        // up the wall.
         .mask {
-            VStack(spacing: 0) {
-                Color.clear
-                LinearGradient(colors: [.clear, .white], startPoint: .top, endPoint: .bottom)
-                    .frame(height: IslandPrism.reflectionReach)
+            let reach = IslandPrism.reflectionReach
+            // The walls stand the top flare's radius in from the frame.
+            let inWall = shape.topCornerRadius + IslandPrism.reflectionCentre(radius: shape.bottomCornerRadius)
+            let up = IslandPrism.reflectionCentre(radius: shape.bottomCornerRadius)
+            ZStack {
+                Color.clear.overlay(alignment: .bottomLeading) {
+                    patch.offset(x: inWall - reach, y: reach - up)
+                }
+                Color.clear.overlay(alignment: .bottomTrailing) {
+                    patch.offset(x: reach - inWall, y: reach - up)
+                }
             }
         }
-        // ...and strongest in the corners.
-        .mask(LinearGradient(stops: PrismReflectionStops.across, startPoint: .leading, endPoint: .trailing))
         .drawingGroup()
         .blendMode(.plusLighter)
+    }
+
+    /// One corner's patch: full at its centre, gone at the reach.
+    private var patch: some View {
+        RadialGradient(stops: PrismReflectionStops.out, center: .center, startRadius: 0, endRadius: IslandPrism.reflectionReach)
+            .frame(width: 2 * IslandPrism.reflectionReach, height: 2 * IslandPrism.reflectionReach)
     }
 }
 
 private enum PrismReflectionStops {
-    static let across: [Gradient.Stop] = IslandPrism.reflectionStops().map {
+    static let out: [Gradient.Stop] = IslandPrism.reflectionStops().map {
         Gradient.Stop(color: .white.opacity($0.alpha), location: $0.location)
     }
 }

@@ -175,55 +175,62 @@ enum IslandPrism {
 
     // MARK: - The reflection
 
-    // The lens's lower edge and corners carry a reflection in the
-    // ribbon's colours — the fan laid left to right round the outline —
-    // which is what gives the glass an edge with some depth to it: a
-    // bright line on the outline itself, a second fainter line a few
-    // points inside it (the far side of the glass's thickness), and a
-    // soft band of colour between and beyond them. Strongest in the two
-    // bottom corners, where a rounded edge gathers light, fainter along
-    // the bottom between them, and gone up the walls before the band.
+    // Each of the lens's two bottom corners carries a little of the
+    // ribbon's colours — the fan laid left to right, so the left corner
+    // takes its first colours and the right its last — which is what
+    // shows the corners as rounded glass rather than a flat cut-out: a
+    // bright line on the outline where it turns, a second fainter line a
+    // few points inside it (the far side of the glass's thickness), and a
+    // soft band of colour between them. It is the corners' alone: full
+    // where the outline turns, gone a short way along the bottom edge and
+    // up the wall, with nothing between the corners.
 
     /// The line on the outline: its stroke (centred on the outline and
     /// clipped to it, so half shows) and its strength. Tune here.
     static let reflectionEdgeWidth: CGFloat = 3
-    static let reflectionEdge: Double = 0.95
+    static let reflectionEdge: Double = 0.9
 
     /// The second line: how far inside the outline it runs, and its
     /// strength.
     static let reflectionInnerOffset: CGFloat = 6.5
-    static let reflectionInner: Double = 0.42
+    static let reflectionInner: Double = 0.38
 
     /// The soft band: its stroke (again half showing), its blur and its
     /// strength.
-    static let reflectionBevelWidth: CGFloat = 26
-    static let reflectionBevelBlur: CGFloat = 6
-    static let reflectionBevel: Double = 0.5
+    static let reflectionBevelWidth: CGFloat = 22
+    static let reflectionBevelBlur: CGFloat = 5
+    static let reflectionBevel: Double = 0.4
 
-    /// How far up from the bottom edge the reflection reaches before it
-    /// has faded out, in points.
-    static let reflectionReach: CGFloat = 84
+    /// How far from the middle of a corner's turn the reflection reaches
+    /// before it is gone, in points, and how much of that reach it holds
+    /// full strength over. The turn itself is about 30pt either side of
+    /// its middle (a 38pt radius), so this lets the reflection die away
+    /// just past where the edge straightens. Tune here.
+    static let reflectionReach: CGFloat = 46
+    static let reflectionCore: Double = 0.25
 
-    /// The reflection's strength across the panel: full in the corners,
-    /// this along the bottom between them, and how far in from each end,
-    /// as a fraction of the width, a corner's share runs.
-    static let reflectionFloor: Double = 0.34
-    static let reflectionCornerSpan: Double = 0.2
-
-    /// The reflection's strength at `x`, 0 the panel's left edge and 1 its
-    /// right.
-    static func reflectionAlpha(x: Double) -> Double {
-        let u = min(max(x, 0), 1)
-        let corner = max(0, 1 - min(u, 1 - u) / reflectionCornerSpan)
-        return reflectionFloor + (1 - reflectionFloor) * IslandGlass.fadeEase(corner)
+    /// Where the middle of a bottom corner's turn is, in from the wall and
+    /// up from the bottom edge, for a corner of `radius`: the point on the
+    /// arc half way round it.
+    static func reflectionCentre(radius: CGFloat) -> CGFloat {
+        radius * CGFloat(1 - 0.5.squareRoot())
     }
 
-    /// That as gradient stops across the panel.
+    /// The reflection's strength `distance` points from the middle of a
+    /// corner's turn: full over the core, eased to nothing at the reach.
+    static func reflectionAlpha(distance: CGFloat) -> Double {
+        let t = Double(max(distance, 0) / reflectionReach)
+        guard t > reflectionCore else { return 1 }
+        return 1 - IslandGlass.fadeEase((t - reflectionCore) / (1 - reflectionCore))
+    }
+
+    /// That as gradient stops, location 0 at the middle of the turn and 1
+    /// at the reach.
     static func reflectionStops() -> [(location: Double, alpha: Double)] {
         let n = IslandGlass.fadeStopCount
         return (0...n).map {
             let t = Double($0) / Double(n)
-            return (t, reflectionAlpha(x: t))
+            return (t, reflectionAlpha(distance: CGFloat(t) * reflectionReach))
         }
     }
 

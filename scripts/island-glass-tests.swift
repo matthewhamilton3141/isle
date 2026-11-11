@@ -489,26 +489,32 @@ do {
 
 print("prism: the reflection")
 do {
-    check(near(IslandPrism.reflectionAlpha(x: 0), 1) && near(IslandPrism.reflectionAlpha(x: 1), 1), "full in both bottom corners")
-    check(near(IslandPrism.reflectionAlpha(x: 0.5), IslandPrism.reflectionFloor), "its floor along the bottom between them")
-    check(near(IslandPrism.reflectionAlpha(x: IslandPrism.reflectionCornerSpan), IslandPrism.reflectionFloor)
-          && near(IslandPrism.reflectionAlpha(x: 1 - IslandPrism.reflectionCornerSpan), IslandPrism.reflectionFloor), "a corner's share ends at its span")
-    var symmetric = true, falling = true
-    for k in 0...200 {
-        let x = Double(k) / 200
-        if !near(IslandPrism.reflectionAlpha(x: x), IslandPrism.reflectionAlpha(x: 1 - x), 1e-12) { symmetric = false }
-        if x < 0.5, IslandPrism.reflectionAlpha(x: x + 0.005) > IslandPrism.reflectionAlpha(x: x) + 1e-12 { falling = false }
+    let reach = IslandPrism.reflectionReach
+    check(IslandPrism.reflectionAlpha(distance: 0) == 1 && IslandPrism.reflectionAlpha(distance: reach * CGFloat(IslandPrism.reflectionCore)) == 1,
+          "full at the middle of the turn and over its core")
+    check(near(IslandPrism.reflectionAlpha(distance: reach), 0) && IslandPrism.reflectionAlpha(distance: reach * 2) <= 1e-12, "gone at its reach, and past it")
+    var falling = true
+    for k in 0..<200 {
+        let d = reach * CGFloat(k) / 200
+        if IslandPrism.reflectionAlpha(distance: d + reach / 200) > IslandPrism.reflectionAlpha(distance: d) + 1e-12 { falling = false }
     }
-    check(symmetric, "the same in both corners")
-    check(falling, "falls from a corner toward the middle, never rising again")
-    check(IslandPrism.reflectionAlpha(x: -1) == IslandPrism.reflectionAlpha(x: 0) && IslandPrism.reflectionAlpha(x: 2) == IslandPrism.reflectionAlpha(x: 1), "clamps outside the panel")
+    check(falling, "never brightens going away from the corner")
+    // The middle of a corner's turn: half way round the arc.
+    let r = IslandPrism.bottomCornerRadius
+    let c = IslandPrism.reflectionCentre(radius: r)
+    check(near(Double(c), Double(r) * (1 - 0.5.squareRoot()), 1e-9) && c > 0 && c < r / 2, "the centre is on the arc, half way round")
+    // It is the corners' alone: the turn's ends are r·2·sin(22.5°) from its middle.
+    let turnEnd = 2 * r * CGFloat(sin(Double.pi / 8))
+    check(reach > turnEnd, "it reaches the ends of the turn", "\(reach) vs \(turnEnd)")
+    check(IslandPrism.reflectionAlpha(distance: turnEnd) < 0.5, "and is already fading there")
+    check(reach < turnEnd + 22, "and is gone within 22pt of where the edge straightens")
+    // Nothing between the corners: on the 544pt panel their patches are far apart.
+    check(2 * (12 + c + reach) < (520 + 2 * IslandPrism.sideLip) / 2, "the two corners' patches leave the middle half of the bottom edge bare")
+    check(reach < 146 + IslandPrism.lip - 40, "and stop well below the band")
     let stops = IslandPrism.reflectionStops()
-    check(stops.first!.location == 0 && stops.last!.location == 1 && zip(stops, stops.dropFirst()).allSatisfy { $0.location < $1.location }, "stops span the panel, ascending")
-    check(IslandPrism.reflectionFloor > 0 && IslandPrism.reflectionFloor < 0.6, "the bottom edge is lit, and plainly less than the corners")
+    check(stops.first!.location == 0 && near(stops.first!.alpha, 1) && stops.last!.location == 1 && near(stops.last!.alpha, 0), "stops: full at the centre, clear at the reach")
     check(IslandPrism.reflectionInner < IslandPrism.reflectionEdge, "the inner line is fainter than the one on the outline")
     check(IslandPrism.reflectionInnerOffset * 2 < IslandPrism.reflectionBevelWidth, "and runs inside the soft band")
-    check(IslandPrism.reflectionReach > IslandPrism.lip + IslandPrism.bottomCornerRadius / 2, "the reflection reaches past the lip, round the corners")
-    check(IslandPrism.reflectionReach < 146 - 40, "and is gone before the band, on the standard panel")
 }
 
 print("prism: the twist")
