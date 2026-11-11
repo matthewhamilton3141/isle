@@ -173,74 +173,6 @@ enum IslandPrism {
         }
     }
 
-    // MARK: - The reflection
-
-    // Each of the lens's two bottom corners carries the ribbon's colours,
-    // all of them, across the thickness of its edge: the fan's first
-    // colour on the outline, then each of the others in a band inside the
-    // last, following the corner's curve, fading as they go in. It is how
-    // a thick piece of glass splits the light at a rounded edge, and what
-    // shows the corners as rounded glass rather than a flat cut-out. Both
-    // corners carry the whole fan; it isn't shared out between them. It is
-    // the corners' alone: full where the outline turns, gone a short way
-    // along the bottom edge and up the wall, with nothing between them.
-
-    /// How far in from the outline the bands run, in points: the edge's
-    /// apparent thickness. Tune here.
-    static let reflectionDepth: CGFloat = 15
-
-    /// How soft the bands' boundaries are (a blur's radius, in points):
-    /// enough that eight bands read as one gradient, not eight stripes.
-    static let reflectionSoftness: CGFloat = 1.3
-
-    /// The reflection at its strongest, on the outline. It fades evenly to
-    /// nothing at `reflectionDepth`. Tune here.
-    static let reflectionStrength: Double = 0.9
-
-    /// How strong the band `index` of `count` is, 0 the one on the outline:
-    /// the outermost full, each one in a step fainter.
-    static func reflectionBand(_ index: Int, of count: Int) -> Double {
-        guard count > 0 else { return 0 }
-        return Double(count - min(max(index, 0), count)) / Double(count)
-    }
-
-    /// How far from the middle of a corner's turn the reflection reaches
-    /// before it is gone, in points, and how much of that reach it holds
-    /// full strength over. The turn itself is about 30pt either side of
-    /// its middle (a 38pt radius), so this lets the reflection die away
-    /// just past where the edge straightens. Tune here.
-    static let reflectionReach: CGFloat = 46
-    static let reflectionCore: Double = 0.25
-
-    /// Where the middle of a bottom corner's turn is, in from the wall and
-    /// up from the bottom edge, for a corner of `radius`: the point on the
-    /// arc half way round it.
-    static func reflectionCentre(radius: CGFloat) -> CGFloat {
-        radius * CGFloat(1 - 0.5.squareRoot())
-    }
-
-    /// The reflection's strength `distance` points from the middle of a
-    /// corner's turn: full over the core, eased to nothing at the reach.
-    static func reflectionAlpha(distance: CGFloat) -> Double {
-        let t = Double(max(distance, 0) / reflectionReach)
-        guard t > reflectionCore else { return 1 }
-        return 1 - IslandGlass.fadeEase((t - reflectionCore) / (1 - reflectionCore))
-    }
-
-    /// That as gradient stops, location 0 at the middle of the turn and 1
-    /// at the reach.
-    static func reflectionStops() -> [(location: Double, alpha: Double)] {
-        let n = IslandGlass.fadeStopCount
-        return (0...n).map {
-            let t = Double($0) / Double(n)
-            return (t, reflectionAlpha(distance: CGFloat(t) * reflectionReach))
-        }
-    }
-
-    /// How long the reflection takes to cross-fade to new colours, in
-    /// seconds.
-    static let reflectionCrossfade: Double = 0.5
-
     // MARK: - The ribbon
 
     /// The strip the ribbon is drawn in, measured up from the panel's
@@ -544,7 +476,7 @@ enum IslandPrism {
     // MARK: - The ribbon's colours
 
     /// A colour as sRGB, each channel 0...1.
-    struct RGB: Hashable {
+    struct RGB: Equatable {
         var r: Double
         var g: Double
         var b: Double

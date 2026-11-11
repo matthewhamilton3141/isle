@@ -487,43 +487,6 @@ do {
           "at least three columns across a crest's width", "\(IslandPrism.crestWidth * spacing * Double(n - 1))")
 }
 
-print("prism: the reflection")
-do {
-    let reach = IslandPrism.reflectionReach
-    check(IslandPrism.reflectionAlpha(distance: 0) == 1 && IslandPrism.reflectionAlpha(distance: reach * CGFloat(IslandPrism.reflectionCore)) == 1,
-          "full at the middle of the turn and over its core")
-    check(near(IslandPrism.reflectionAlpha(distance: reach), 0) && IslandPrism.reflectionAlpha(distance: reach * 2) <= 1e-12, "gone at its reach, and past it")
-    var falling = true
-    for k in 0..<200 {
-        let d = reach * CGFloat(k) / 200
-        if IslandPrism.reflectionAlpha(distance: d + reach / 200) > IslandPrism.reflectionAlpha(distance: d) + 1e-12 { falling = false }
-    }
-    check(falling, "never brightens going away from the corner")
-    // The middle of a corner's turn: half way round the arc.
-    let r = IslandPrism.bottomCornerRadius
-    let c = IslandPrism.reflectionCentre(radius: r)
-    check(near(Double(c), Double(r) * (1 - 0.5.squareRoot()), 1e-9) && c > 0 && c < r / 2, "the centre is on the arc, half way round")
-    // It is the corners' alone: the turn's ends are r·2·sin(22.5°) from its middle.
-    let turnEnd = 2 * r * CGFloat(sin(Double.pi / 8))
-    check(reach > turnEnd, "it reaches the ends of the turn", "\(reach) vs \(turnEnd)")
-    check(IslandPrism.reflectionAlpha(distance: turnEnd) < 0.5, "and is already fading there")
-    check(reach < turnEnd + 22, "and is gone within 22pt of where the edge straightens")
-    // Nothing between the corners: on the 544pt panel their patches are far apart.
-    check(2 * (12 + c + reach) < (520 + 2 * IslandPrism.sideLip) / 2, "the two corners' patches leave the middle half of the bottom edge bare")
-    check(reach < 146 + IslandPrism.lip - 40, "and stop well below the band")
-    let stops = IslandPrism.reflectionStops()
-    check(stops.first!.location == 0 && near(stops.first!.alpha, 1) && stops.last!.location == 1 && near(stops.last!.alpha, 0), "stops: full at the centre, clear at the reach")
-    // The bands across the edge: all of the fan in each corner, fading inward.
-    let n = IslandPrism.stopCount
-    check(IslandPrism.reflectionBand(0, of: n) == 1, "the band on the outline is full")
-    check(near(IslandPrism.reflectionBand(n - 1, of: n), 1 / Double(n)), "the innermost is one step from nothing")
-    check((0..<n - 1).allSatisfy { IslandPrism.reflectionBand($0, of: n) > IslandPrism.reflectionBand($0 + 1, of: n) }, "each band is fainter than the one outside it")
-    check(IslandPrism.reflectionBand(n, of: n) == 0 && IslandPrism.reflectionBand(3, of: 0) == 0, "nothing past the last, and nothing with no colours")
-    check(IslandPrism.reflectionDepth < IslandPrism.bottomCornerRadius / 2, "the bands stay well inside the corner's curve")
-    check(IslandPrism.reflectionDepth / CGFloat(n) > IslandPrism.reflectionSoftness * 0.9 && IslandPrism.reflectionDepth / CGFloat(n) < IslandPrism.reflectionSoftness * 3,
-          "soft enough to read as a gradient, not so soft the colours run together")
-}
-
 print("prism: the twist")
 do {
     // The twist's outline swells where the music is but doesn't break into crests.
