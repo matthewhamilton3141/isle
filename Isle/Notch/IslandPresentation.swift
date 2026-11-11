@@ -53,6 +53,11 @@ final class IslandPresentation: ObservableObject {
     /// not just the window frame.
     @Published var metrics: NotchMetrics?
 
+    /// Whether this island hangs from its notch or has been taken off it
+    /// (see `IslandPlacement`). The views read it for what to draw; the
+    /// window controller moves the window to match.
+    @Published var placement: IslandPlacement = .docked
+
     /// While true, pointer-driven expansion is refused. Set the instant the
     /// notch starts collapsing and cleared once the close animation has
     /// settled — see `setHovering`.
