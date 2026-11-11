@@ -513,8 +513,15 @@ do {
     check(reach < 146 + IslandPrism.lip - 40, "and stop well below the band")
     let stops = IslandPrism.reflectionStops()
     check(stops.first!.location == 0 && near(stops.first!.alpha, 1) && stops.last!.location == 1 && near(stops.last!.alpha, 0), "stops: full at the centre, clear at the reach")
-    check(IslandPrism.reflectionInner < IslandPrism.reflectionEdge, "the inner line is fainter than the one on the outline")
-    check(IslandPrism.reflectionInnerOffset * 2 < IslandPrism.reflectionBevelWidth, "and runs inside the soft band")
+    // The bands across the edge: all of the fan in each corner, fading inward.
+    let n = IslandPrism.stopCount
+    check(IslandPrism.reflectionBand(0, of: n) == 1, "the band on the outline is full")
+    check(near(IslandPrism.reflectionBand(n - 1, of: n), 1 / Double(n)), "the innermost is one step from nothing")
+    check((0..<n - 1).allSatisfy { IslandPrism.reflectionBand($0, of: n) > IslandPrism.reflectionBand($0 + 1, of: n) }, "each band is fainter than the one outside it")
+    check(IslandPrism.reflectionBand(n, of: n) == 0 && IslandPrism.reflectionBand(3, of: 0) == 0, "nothing past the last, and nothing with no colours")
+    check(IslandPrism.reflectionDepth < IslandPrism.bottomCornerRadius / 2, "the bands stay well inside the corner's curve")
+    check(IslandPrism.reflectionDepth / CGFloat(n) > IslandPrism.reflectionSoftness * 0.9 && IslandPrism.reflectionDepth / CGFloat(n) < IslandPrism.reflectionSoftness * 3,
+          "soft enough to read as a gradient, not so soft the colours run together")
 }
 
 print("prism: the twist")

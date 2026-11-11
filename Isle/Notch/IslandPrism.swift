@@ -175,31 +175,34 @@ enum IslandPrism {
 
     // MARK: - The reflection
 
-    // Each of the lens's two bottom corners carries a little of the
-    // ribbon's colours — the fan laid left to right, so the left corner
-    // takes its first colours and the right its last — which is what
-    // shows the corners as rounded glass rather than a flat cut-out: a
-    // bright line on the outline where it turns, a second fainter line a
-    // few points inside it (the far side of the glass's thickness), and a
-    // soft band of colour between them. It is the corners' alone: full
-    // where the outline turns, gone a short way along the bottom edge and
-    // up the wall, with nothing between the corners.
+    // Each of the lens's two bottom corners carries the ribbon's colours,
+    // all of them, across the thickness of its edge: the fan's first
+    // colour on the outline, then each of the others in a band inside the
+    // last, following the corner's curve, fading as they go in. It is how
+    // a thick piece of glass splits the light at a rounded edge, and what
+    // shows the corners as rounded glass rather than a flat cut-out. Both
+    // corners carry the whole fan; it isn't shared out between them. It is
+    // the corners' alone: full where the outline turns, gone a short way
+    // along the bottom edge and up the wall, with nothing between them.
 
-    /// The line on the outline: its stroke (centred on the outline and
-    /// clipped to it, so half shows) and its strength. Tune here.
-    static let reflectionEdgeWidth: CGFloat = 3
-    static let reflectionEdge: Double = 0.9
+    /// How far in from the outline the bands run, in points: the edge's
+    /// apparent thickness. Tune here.
+    static let reflectionDepth: CGFloat = 15
 
-    /// The second line: how far inside the outline it runs, and its
-    /// strength.
-    static let reflectionInnerOffset: CGFloat = 6.5
-    static let reflectionInner: Double = 0.38
+    /// How soft the bands' boundaries are (a blur's radius, in points):
+    /// enough that eight bands read as one gradient, not eight stripes.
+    static let reflectionSoftness: CGFloat = 1.3
 
-    /// The soft band: its stroke (again half showing), its blur and its
-    /// strength.
-    static let reflectionBevelWidth: CGFloat = 22
-    static let reflectionBevelBlur: CGFloat = 5
-    static let reflectionBevel: Double = 0.4
+    /// The reflection at its strongest, on the outline. It fades evenly to
+    /// nothing at `reflectionDepth`. Tune here.
+    static let reflectionStrength: Double = 0.9
+
+    /// How strong the band `index` of `count` is, 0 the one on the outline:
+    /// the outermost full, each one in a step fainter.
+    static func reflectionBand(_ index: Int, of count: Int) -> Double {
+        guard count > 0 else { return 0 }
+        return Double(count - min(max(index, 0), count)) / Double(count)
+    }
 
     /// How far from the middle of a corner's turn the reflection reaches
     /// before it is gone, in points, and how much of that reach it holds

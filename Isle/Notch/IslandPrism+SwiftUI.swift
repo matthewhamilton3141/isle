@@ -11,8 +11,8 @@
 //    lens only along the lip.
 //  - `PrismRibbonStrip`: the ribbon along the lip, part of the material
 //    like the frost.
-//  - `PrismReflection`: a little of the ribbon's colours reflected in the
-//    lens's two bottom corners.
+//  - `PrismReflection`: the ribbon's colours as bands across the edge of
+//    the lens's two bottom corners.
 //  - `PrismLens`: the scrim behind the content, that reflection, and — where the system has
 //    no Liquid Glass to draw a lens's edge — a specular rim of Isle's own.
 //
@@ -183,49 +183,45 @@ struct PrismPane: View {
     }
 }
 
-/// The reflection in the lens's two bottom corners, in the ribbon's
-/// colours (see the numbers in IslandPrism.swift): a line on the outline
-/// where it turns, a fainter one inside it, and a soft band of colour,
-/// in the corners alone. Added light, static, and laid out against the
-/// outline's current frame, so it follows the panel as it opens, collapses
-/// and changes height; the black that covers the closed island hides it.
+/// The reflection in the lens's two bottom corners (see the numbers in
+/// IslandPrism.swift): the ribbon's colours as bands across the thickness
+/// of the edge, the first on the outline and each of the others inside
+/// the last, following the corner's curve and fading as they go in. Both
+/// corners carry all of them. Added light, static, and laid out against
+/// the outline's current frame, so it follows the panel as it opens,
+/// collapses and changes height; the black that covers the closed island
+/// hides it.
 struct PrismReflection: View {
     var shape: NotchShape
     var stops: [IslandPrism.RGB]
 
     var body: some View {
-        let colors = LinearGradient(
-            stops: stops.enumerated().map { index, c in
-                Gradient.Stop(
-                    color: Color(.sRGB, red: c.r, green: c.g, blue: c.b),
-                    location: stops.count > 1 ? Double(index) / Double(stops.count - 1) : 0
-                )
-            },
-            startPoint: .leading, endPoint: .trailing
-        )
-        let inner = IslandPrism.reflectionInnerOffset
-        ZStack {
-            // The soft band, under the lines.
-            shape
-                .stroke(colors, lineWidth: IslandPrism.reflectionBevelWidth)
-                .blur(radius: IslandPrism.reflectionBevelBlur)
-                .opacity(IslandPrism.reflectionBevel)
-            // The second line: a stroke that reaches `inner` inside the
-            // outline, with all but its last point cut away.
-            shape
-                .stroke(colors, lineWidth: 2 * inner + 1.5)
-                .mask {
-                    Rectangle()
-                        .fill(.white)
-                        .overlay { shape.stroke(.black, lineWidth: 2 * inner - 0.5).blendMode(.destinationOut) }
-                        .compositingGroup()
-                }
-                .opacity(IslandPrism.reflectionInner)
-            // The line on the outline.
-            shape
-                .stroke(colors, lineWidth: IslandPrism.reflectionEdgeWidth)
-                .opacity(IslandPrism.reflectionEdge)
+        let count = stops.count
+        // A band `k` in from the outline is what shows of a stroke that
+        // reaches that far in, once the narrower strokes are laid over it.
+        // Centred on the outline and clipped to it, half of each shows.
+        func width(_ k: Int) -> CGFloat {
+            2 * IslandPrism.reflectionDepth * CGFloat(k + 1) / CGFloat(max(count, 1))
         }
+        return ZStack {
+            ForEach(Array(stops.enumerated()).reversed(), id: \.offset) { k, c in
+                shape.stroke(Color(.sRGB, red: c.r, green: c.g, blue: c.b), lineWidth: width(k))
+            }
+        }
+        .compositingGroup()
+        .blur(radius: IslandPrism.reflectionSoftness)
+        // Fading as it goes in: the same strokes as an alpha, each a share
+        // of the whole, so the outline has them all and the innermost
+        // band one.
+        .mask {
+            ZStack {
+                ForEach(0..<count, id: \.self) { k in
+                    shape.stroke(.white.opacity(1 / Double(max(count, 1))), lineWidth: width(k))
+                }
+            }
+            .blur(radius: IslandPrism.reflectionSoftness)
+        }
+        .opacity(IslandPrism.reflectionStrength)
         // The two bottom corners only: a round patch on the middle of each
         // turn, fading out before the edge has run far along the bottom or
         // up the wall.
