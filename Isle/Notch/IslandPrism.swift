@@ -90,9 +90,11 @@ enum IslandPrism {
         /// A ribbon of light, twisted along its length and seen from the
         /// side: where it faces you it is a wide bright lobe, where it
         /// turns edge-on it draws to a point, and the lobes cross. One
-        /// edge of each lobe is crisp, with a thin fringe of colour, and
-        /// the other melts away; a soft bloom lies round the whole. The
-        /// music opens the ribbon along its length and turns it.
+        /// edge of each lobe is crisp and the other melts away; a soft
+        /// bloom lies round the whole. The light is split into the fan's
+        /// three colours, a little apart in depth, so where the ribbon is
+        /// wide or turning it comes apart into them and reads as thick.
+        /// The music opens the ribbon along its length and turns it.
         case twist
     }
 

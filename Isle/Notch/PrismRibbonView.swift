@@ -270,7 +270,8 @@ final class PrismRibbonRenderer {
 
     // One twisted strip of light, seen from the side. `y` is the height
     // above its axis, `w` its half-width here (points), `theta` how far it
-    // has turned here, `split` how far apart the colours are drawn.
+    // has turned here. Returns how bright it is here, and how much of
+    // what's under it it hides.
     //
     // Turned by theta, a strip w wide shows w·|cos theta| of itself: a
     // wide lobe face-on, a point edge-on, and past edge-on its other
@@ -278,49 +279,75 @@ final class PrismRibbonRenderer {
     // what bends the lobes. Across the lobe the light is strongest toward
     // one edge, which is crisp, and falls away to nothing toward the
     // other; which edge is which swaps with the side showing. The far
-    // side is dimmer. Red and blue are drawn a fraction of a point above
-    // and below green, so the crisp edge carries a thin fringe of colour.
-    static float4 strip(float y, float w, float theta, float split) {
+    // side is dimmer.
+    static float2 strip(float y, float w, float theta) {
         float c = cos(theta), sn = sin(theta);
         float side = c >= 0.0 ? 1.0 : -1.0;
         float lobe = max(w * abs(c), 0.55);
-        float axis = y - 0.34 * w * sn;
-        float3 v = float3(axis - split, axis, axis + split) / lobe * side;
+        float v = (y - 0.34 * w * sn) / lobe * side;
         float aa = 0.95 / lobe;
-        float3 inside = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, abs(v));
+        float inside = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, abs(v));
         // Face-on is bright; the far side of the strip less so.
         float lit = (0.16 + 0.84 * pow(abs(c), 0.75)) * (side > 0.0 ? 1.0 : 0.55);
         // Strongest toward the crisp edge, melting away toward the other.
-        float3 across = smoothstep(-1.08, 0.3, v) * (0.5 + 0.5 * v);
+        float across = smoothstep(-1.08, 0.3, v) * (0.5 + 0.5 * v);
         // And hottest a little inside the crisp edge.
-        float3 hot = exp(-((v - 0.5) / 0.42) * ((v - 0.5) / 0.42));
-        float3 color = inside * lit * (across * 0.85 + hot * 0.55);
-        float cover = inside.g * clamp(lit * (0.15 + 0.85 * across.g + 0.4 * hot.g), 0.0, 1.0);
-        return float4(color, cover);
+        float hot = exp(-((v - 0.5) / 0.42) * ((v - 0.5) / 0.42));
+        float light = inside * lit * (across * 0.85 + hot * 0.55);
+        float cover = inside * clamp(lit * (0.15 + 0.85 * across + 0.4 * hot), 0.0, 1.0);
+        return float2(light, cover);
+    }
+
+    // A strip as glass splits it: three of it, one in each of three
+    // colours, set a little apart in depth — the first above and behind,
+    // a touch wider and turning a moment late; the last below and in
+    // front, a touch narrower and a moment early. Where all three lie
+    // over one another their light is white; where they part, each shows
+    // in its own colour. The parting is `depth` points and `lag` radians,
+    // so a strip that is wide, or turning, comes apart into its colours
+    // and a thin still one closes up to a white line. That parting is
+    // what gives the ribbon its thickness.
+    static float4 split(float y, float w, float theta, float depth, float lag, float3 ca, float3 cb, float3 cc) {
+        float2 back = strip(y - depth, w * 1.06, theta - lag);
+        float2 mid = strip(y, w, theta);
+        float2 front = strip(y + depth, w * 0.94, theta + lag);
+        float white = min(back.x, min(mid.x, front.x));
+        float3 color = float3(white)
+            + (back.x - white) * ca + (mid.x - white) * cb + (front.x - white) * cc;
+        return float4(color, max(back.y, max(mid.y, front.y)));
     }
 
     // The ribbon as twisted light: two strips on one axis, turning at
     // different rates and in opposite senses, so their lobes slide over
-    // one another and the crossings travel. Their light adds. It is white
-    // light, tinted toward the fan's colours — the upper colours above the
-    // axis, the lower below — and a soft bloom in those colours lies
-    // round it.
+    // one another and the crossings travel. Each is split into the fan's
+    // three colours — a cover's accents, a status's, or the spectrum's —
+    // the second strip the other way up, so the colours that lead on one
+    // trail on the other. Their light adds, and a soft bloom in those
+    // colours lies round it.
     static float4 twist(constant Uniforms &u, float x, float y, float s, float g, float2 pixel) {
         float along = 6.2832 * u.turns * (x - 0.5);
         float s2 = max(column(u.spread, x + 12.0 / u.size.x), 0.6) * 0.82;
-        float split = 0.2 + 0.022 * s;
-        float4 a = strip(y, s, along + u.phase, split);
-        float4 b = strip(y, s2, along * 0.62 - 0.63 * u.phase + 1.9, -split);
+        // The fan's three colours, each as bright as it can be.
+        float3 ca = fan(u, 0.16), cb = fan(u, 0.5), cc = fan(u, 0.84);
+        ca /= max(ca.r, max(ca.g, ca.b));
+        cb /= max(cb.r, max(cb.g, cb.b));
+        cc /= max(cc.r, max(cc.g, cc.b));
+        // How far the colours part: more the wider the ribbon is here.
+        float depth = 0.3 + 0.11 * s;
+        float lag = 0.05 + 0.014 * s;
+        float4 a = split(y, s, along + u.phase, depth, lag, ca, cb, cc);
+        float4 b = split(y, s2, along * 0.62 - 0.63 * u.phase + 1.9, -depth * 0.8, -lag, cc, cb, ca);
 
-        float3 light = a.rgb + b.rgb * 0.85;
-        float body = 1.0 - (1.0 - a.a) * (1.0 - b.a * 0.85);
+        // The second strip is the one behind: dimmer.
+        float3 color = a.rgb + b.rgb * 0.8;
+        float body = 1.0 - (1.0 - a.a) * (1.0 - b.a * 0.8);
+
+        // The bloom: wide and soft, taller than the ribbon, in the colour
+        // nearest this height.
         float3 tint = fan(u, clamp(0.5 - y / (2.0 * s + 2.0), 0.0, 1.0));
-        float3 color = light * mix(float3(1.0), tint, 0.38);
-
-        // The bloom: wide and soft, taller than the ribbon.
         float bd = y / (3.5 + 1.7 * s);
         float bloom = exp(-bd * bd);
-        color += mix(float3(1.0), tint, 0.55) * 0.17 * bloom * (0.4 + 0.6 * smoothstep(1.0, 9.0, s));
+        color += mix(float3(1.0), tint, 0.6) * 0.17 * bloom * (0.4 + 0.6 * smoothstep(1.0, 9.0, s));
 
         color *= g * 1.5;
         float peak = max(color.r, max(color.g, color.b));
