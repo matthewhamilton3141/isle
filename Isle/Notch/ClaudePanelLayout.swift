@@ -84,8 +84,11 @@ enum ClaudePanelLayout {
 
     /// The wings for a housing `notch` wide and `band` tall, or for a screen
     /// with none. `crumb` is the width of what sits at the right wing's end.
-    static func wings(notch: CGFloat, band: CGFloat, physical: Bool, crumb: CGFloat) -> Wings {
-        let gap = physical ? notch + wingClearance * 2 : wingGutter
+    /// Off the notch (`floating`) the band is the panel's header and there
+    /// is no camera in it: the wings part only for the grabber in its
+    /// middle (`IslandFloat.grabberGap`), whatever the screen.
+    static func wings(notch: CGFloat, band: CGFloat, physical: Bool, crumb: CGFloat, floating: Bool = false) -> Wings {
+        let gap = floating ? IslandFloat.grabberGap : physical ? notch + wingClearance * 2 : wingGutter
         let side = max(0, (faceWidth - gap) / 2)
         let trailing = crumb > 0 ? crumb + crumbGap : 0
         return Wings(left: side, right: max(0, side - trailing), trailing: trailing, band: band)

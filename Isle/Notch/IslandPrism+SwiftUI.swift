@@ -6,9 +6,11 @@
 //  material by `IslandGlassFill`:
 //
 //  - `PrismShade`: solid black over the camera housing, easing to a tint,
-//    and clearing across the horizon to the lip's all but bare glass.
+//    and clearing across the horizon to the lip's all but bare glass. Off
+//    the notch there's no camera to be black over: the tint from the top.
 //  - `PrismFrost`: frosted glass behind the content, so the lens is a
-//    lens only along the lip.
+//    lens only along the lip — and, off the notch, in a rim all the way
+//    round, closed as well as open (`PrismPaneInsets`).
 //  - `PrismRibbonStrip`: the ribbon along the lip, part of the material
 //    like the frost.
 //  - `PrismLens`: the scrim behind the content and — where the system has
@@ -32,20 +34,51 @@ import SwiftUI
 /// that whole while the cover is solid black anyway.
 struct PrismShade: View {
     var bandHeight: CGFloat
+    /// 0 on the notch, 1 off it; between while the island morphs from one
+    /// to the other, when the two shades cross-fade.
+    var lift: Double = 0
 
     var body: some View {
         Color.clear.overlay(alignment: .top) {
-            VStack(spacing: 0) {
-                Rectangle()
-                    .fill(.black)
-                    .frame(height: max(bandHeight, 0) + IslandPrism.bandExtra)
-                LinearGradient(stops: PrismStops.shade, startPoint: .top, endPoint: .bottom)
-                LinearGradient(stops: PrismStops.horizon, startPoint: .top, endPoint: .bottom)
-                    .frame(height: IslandPrism.horizonFeather)
-                Rectangle()
-                    .fill(.black.opacity(IslandPrism.lipTint))
-                    .frame(height: IslandPrism.lip - IslandPrism.horizonFeather / 2)
+            ZStack(alignment: .top) {
+                if lift < 1 {
+                    docked.opacity(1 - lift)
+                }
+                if lift > 0 {
+                    floating.opacity(lift)
+                }
             }
+        }
+    }
+
+    private var docked: some View {
+        VStack(spacing: 0) {
+            Rectangle()
+                .fill(.black)
+                .frame(height: max(bandHeight, 0) + IslandPrism.bandExtra)
+            LinearGradient(stops: PrismStops.shade, startPoint: .top, endPoint: .bottom)
+            LinearGradient(stops: PrismStops.horizon, startPoint: .top, endPoint: .bottom)
+                .frame(height: IslandPrism.horizonFeather)
+            Rectangle()
+                .fill(.black.opacity(IslandPrism.lipTint))
+                .frame(height: IslandPrism.lip - IslandPrism.horizonFeather / 2)
+        }
+    }
+
+    /// Off the notch: the walls' tint from the top edge down, with no
+    /// black band, and the same horizon and lip. On a closed capsule,
+    /// shallower than the horizon and the lip together, the fixed parts
+    /// run past the clip; what shows is one or other of two tints a
+    /// hundredth apart.
+    private var floating: some View {
+        VStack(spacing: 0) {
+            Rectangle()
+                .fill(.black.opacity(IslandPrism.edgeTint))
+            LinearGradient(stops: PrismStops.horizon, startPoint: .top, endPoint: .bottom)
+                .frame(height: IslandPrism.horizonFeather)
+            Rectangle()
+                .fill(.black.opacity(IslandPrism.lipTint))
+                .frame(height: IslandPrism.lip - IslandPrism.horizonFeather / 2)
         }
     }
 }
@@ -90,6 +123,7 @@ struct PrismRibbonStrip: View {
 /// Prism's lens, over its shade and under the content.
 struct PrismLens: View {
     var shape: NotchShape
+    var pane: PrismPaneInsets = .docked
 
     var body: some View {
         ZStack {
@@ -104,7 +138,7 @@ struct PrismLens: View {
     /// Soft-edged black behind the content, over the frost and to the same
     /// outline (`PrismPane`).
     private var scrim: some View {
-        Color.black.opacity(IslandPrism.scrim).mask { PrismPane(shape: shape) }
+        Color.black.opacity(IslandPrism.scrim).mask { PrismPane(shape: shape, insets: pane) }
     }
 
     /// Before Liquid Glass there's no lens and no edge to it: a thin white
@@ -135,13 +169,14 @@ struct PrismLens: View {
 /// this draws nothing.
 struct PrismFrost: View {
     var shape: NotchShape
+    var pane: PrismPaneInsets = .docked
 
     var body: some View {
         if #available(macOS 26.0, *) {
             Color.clear
                 .glassEffect(.regular, in: Rectangle())
                 .environment(\.colorScheme, .dark)
-                .mask { PrismPane(shape: shape).opacity(IslandPrism.frost) }
+                .mask { PrismPane(shape: shape, insets: pane).opacity(IslandPrism.frost) }
         }
     }
 }
@@ -152,20 +187,79 @@ struct PrismFrost: View {
 /// scrim drawn in it, so both stop short of the walls and the lip and
 /// leave them clear glass. Flattened to one bitmap, so its blur costs
 /// nothing at rest.
+///
+/// Off the notch its top can be seen, so it has a top rim and top corners
+/// too, and closed it is the capsule's own shape a little way inside it
+/// (`IslandFloat.prismPane`).
 struct PrismPane: View {
     var shape: NotchShape
+    var insets: PrismPaneInsets = .docked
 
     var body: some View {
-        let radius: CGFloat = 18
         Color.clear.overlay {
-            UnevenRoundedRectangle(bottomLeadingRadius: radius, bottomTrailingRadius: radius, style: .continuous)
-                .fill(.white)
-                // The walls stand the top flare's radius in from the frame.
-                .padding(.horizontal, shape.topCornerRadius + IslandPrism.rim)
-                .padding(.bottom, IslandPrism.lip)
-                .padding(.top, -3 * IslandPrism.rimFeather)
-                .blur(radius: IslandPrism.rimFeather)
+            UnevenRoundedRectangle(
+                topLeadingRadius: insets.topRadius,
+                bottomLeadingRadius: insets.bottomRadius,
+                bottomTrailingRadius: insets.bottomRadius,
+                topTrailingRadius: insets.topRadius,
+                style: .continuous
+            )
+            .fill(.white)
+            // The walls stand the top flare's radius in from the frame.
+            .padding(.horizontal, shape.topCornerRadius + insets.side)
+            .padding(.bottom, insets.bottom)
+            .padding(.top, insets.top)
+            .blur(radius: insets.feather)
         }
         .drawingGroup()
+    }
+}
+
+/// Where the pane lies inside the outline: how far inside the walls, the
+/// bottom edge and the top edge, how round, and how soft.
+struct PrismPaneInsets: Equatable {
+    var top: CGFloat
+    var side: CGFloat
+    var bottom: CGFloat
+    var topRadius: CGFloat
+    var bottomRadius: CGFloat
+    var feather: CGFloat
+
+    /// On the notch: square at the top and run up under the black band,
+    /// where its edge can't be seen.
+    static let docked = PrismPaneInsets(
+        top: -3 * IslandPrism.rimFeather,
+        side: IslandPrism.rim,
+        bottom: IslandPrism.lip,
+        topRadius: 0,
+        bottomRadius: IslandFloat.prismPaneRadius,
+        feather: IslandPrism.rimFeather
+    )
+
+    init(top: CGFloat, side: CGFloat, bottom: CGFloat, topRadius: CGFloat, bottomRadius: CGFloat, feather: CGFloat) {
+        self.top = top
+        self.side = side
+        self.bottom = bottom
+        self.topRadius = topRadius
+        self.bottomRadius = bottomRadius
+        self.feather = feather
+    }
+
+    /// Off the notch (`IslandFloat.prismPane`).
+    init(_ pane: IslandFloat.PrismPane) {
+        self.init(top: pane.top, side: pane.side, bottom: pane.bottom,
+                  topRadius: pane.topRadius, bottomRadius: pane.bottomRadius, feather: pane.feather)
+    }
+
+    /// This pane `t` of the way to `other`: the island leaving the notch,
+    /// or returning to it.
+    func mixed(with other: PrismPaneInsets, by t: Double) -> PrismPaneInsets {
+        let t = CGFloat(min(max(t, 0), 1))
+        func mix(_ a: CGFloat, _ b: CGFloat) -> CGFloat { a + (b - a) * t }
+        return PrismPaneInsets(
+            top: mix(top, other.top), side: mix(side, other.side), bottom: mix(bottom, other.bottom),
+            topRadius: mix(topRadius, other.topRadius), bottomRadius: mix(bottomRadius, other.bottomRadius),
+            feather: mix(feather, other.feather)
+        )
     }
 }

@@ -3,9 +3,11 @@
 //
 //  What the opened panel is drawn on: the flat black Isle has always had,
 //  frosted glass, or a clear lens with the music's spectrum lying along its
-//  lip. Only the open panel changes — the collapsed pill stays flat black
-//  in every mode, because as glass it would be a sliver with the camera's
-//  black bite in the middle of it.
+//  lip. On the notch only the open panel changes — the collapsed pill
+//  stays flat black in every mode, because as glass it would be a sliver
+//  with the camera's black bite in the middle of it. Taken off the notch
+//  (`IslandPlacement.floating`) there's no camera in it, and the closed
+//  capsule is the mode's material too (IslandFloat.swift).
 //
 //  Kept free of SwiftUI so the stored-value parsing compiles on its own for
 //  scripts/test-island-glass.sh. The drawing is in IslandGlass+SwiftUI.swift.

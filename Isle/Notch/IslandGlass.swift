@@ -5,9 +5,10 @@
 //  kept free of AppKit and SwiftUI so they compile on their own and can be
 //  checked without an app (scripts/test-island-glass.sh):
 //
-//  - The blend. The pill is black in every mode, so opening crossfades the
-//    fill from black to glass and closing back again, on the open's progress:
-//    `blackCover` is how much black still lies over the glass.
+//  - The blend. On the notch the pill is black in every mode, so opening
+//    crossfades the fill from black to glass and closing back again, on the
+//    open's progress: `blackCover` is how much black still lies over the
+//    glass. Off the notch (`IslandPlacement.floating`) none does.
 //  - The notch glow (a setting of its own, over Glass): black that grows
 //    out of the physical camera housing, solid over it and fading outward,
 //    wider sideways than down.
@@ -110,6 +111,32 @@ enum IslandGlass {
     /// the black fill it is in Black mode.
     static func showsGlass(progress: Double) -> Bool {
         progress > blendStart
+    }
+
+    // MARK: - Off the notch
+
+    /// The blend for an island `lift` of the way off its notch (0 docked,
+    /// 1 floating; between only while it morphs from one to the other).
+    /// The pill is black on the notch because of the camera in the middle
+    /// of it. Off the notch that reason is gone: the black is lifted, and
+    /// the island is glass closed as well as open.
+    static func blackCover(progress: Double, lift: Double) -> Double {
+        blackCover(progress: progress) * (1 - min(max(lift, 0), 1))
+    }
+
+    /// Whether the glass needs drawing: always once the island has begun
+    /// to leave the notch, else as `showsGlass(progress:)`.
+    static func showsGlass(progress: Double, lift: Double) -> Bool {
+        lift > 0 || showsGlass(progress: progress)
+    }
+
+    /// How much of something that belongs to the open panel alone shows
+    /// at `progress` of the open — Prism's ribbon, which lies along a lip
+    /// the closed capsule doesn't have. On the notch the black cover hides
+    /// it while closed; off the notch there is no cover, so it is brought
+    /// in on the same curve the cover would have left on.
+    static func openOnlyOpacity(progress: Double) -> Double {
+        1 - blackCover(progress: progress)
     }
 
     // MARK: - The notch glow

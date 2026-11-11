@@ -14,6 +14,12 @@
 //    hidden or faded — never bare glass with the panel missing, never glass
 //    over the panel.
 //
+//  - Off the notch (`IslandPlacement.floating`): what the island draws —
+//    the bead, the capsule, a toast, the open panel and the tallest one, in
+//    every mode — is at the top centre of the window and inside it, shadow
+//    included; the panel's tree and the glass window's report the same
+//    outline; and docking puts back exactly what was there.
+//
 //  The windows are at alpha 0 and ignore the mouse: nothing is shown, nothing
 //  is clickable, and they never activate or take keys (key status is driven
 //  through `becomeKey`/`resignKey`, as AppKit calls them, without the window
@@ -77,6 +83,109 @@ func checkInStep(_ w: NotchWindow, _ step: String) {
 func checkPlaced(_ w: NotchWindow, _ target: NSRect, _ step: String) {
     check(w.frame == target, "\(step): the panel is at maximumFrame", "\(w.frame) want \(target)")
     check(w.glassWindow.frame == target, "\(step): the glass window is at maximumFrame", "\(w.glassWindow.frame) want \(target)")
+}
+
+/// The island off its notch, in the same two windows. Each tree reports the
+/// outline it drew (`onActiveRectChange`), so the two can be compared with
+/// each other and with the window.
+@MainActor
+func floatingChecks(_ w: NotchWindow, vm: NotchViewModel, island: IslandPresentation, settings: AppSettings,
+                    metrics: NotchMetrics, target: NSRect) {
+    print("off the notch")
+    final class Reported { var panel = CGRect.null; var glass = CGRect.null }
+    let reported = Reported()
+    let panelHost = NSHostingView(rootView: NotchRootView(viewModel: vm, island: island, glassLayer: .withoutMaterial) { reported.panel = $0 })
+    panelHost.sizingOptions = []
+    let glassHost = NSHostingView(rootView: NotchRootView(viewModel: vm, island: island, glassLayer: .materialOnly) { reported.glass = $0 })
+    glassHost.sizingOptions = []
+    // The window's own two views go back when this is done.
+    let ownPanel = w.contentView, ownGlass = w.glassWindow.contentView
+    defer {
+        w.contentView = ownPanel
+        if let ownGlass { w.attachGlass(ownGlass) }
+        spin(0.3)
+    }
+    w.contentView = panelHost
+    w.attachGlass(glassHost)
+    func fixture(_ name: String) -> ClaudePanelFixture { ClaudePanelFixture.all.first { $0.name == name }! }
+    let bounds = CGRect(origin: .zero, size: target.size)
+    let flare = IslandMotion.openCorners.top
+    let reach = IslandFloat.shadowReach
+
+    /// What the two trees drew, against the window and each other.
+    func checkDrawn(_ what: String, shadow: Bool) {
+        let r = reported.panel
+        check(r == reported.glass, "\(what): the panel's tree and the glass window's draw the same outline", "\(r) vs \(reported.glass)")
+        check(bounds.contains(r), "\(what): inside the window", "\(r) in \(bounds)")
+        check(r.minY == 0 && abs(r.midX - bounds.midX) < 0.01, "\(what): hanging from the window's top centre", "\(r)")
+        if shadow {
+            let fallen = CGRect(x: r.minX - reach.side, y: r.minY, width: r.width + 2 * reach.side, height: r.height + reach.below)
+            check(bounds.contains(fallen), "\(what): and its shadow with it", "\(fallen) in \(bounds)")
+        }
+        checkPlaced(w, target, what)
+    }
+
+    island.setHovering(false)
+    vm.applyPreviewFixture(fixture("idle"))
+    spin(1.0)
+    let dockedIdle = reported.panel
+    check(dockedIdle.size == metrics.notchSize, "on the notch, with nothing live: the camera's own size", "\(dockedIdle)")
+
+    for background in PanelBackground.allCases {
+        settings.panelBackground = background
+        let name = background.title
+        let black = background == .black
+        withAnimation(.notchOpen) { island.placement = .floating(anchor: CGPoint(x: target.midX, y: target.maxY - 200)) }
+        vm.applyPreviewFixture(fixture("idle"))
+        spin(0.9)
+        check(reported.panel.size == IslandFloat.bead, "\(name), nothing live: the bead", "\(reported.panel)")
+        checkDrawn("\(name), bead", shadow: black)
+
+        vm.applyPreviewFixture(fixture("working_tool"))
+        spin(0.9)
+        let pill = FloatingPillLayout.pill(for: vm)
+        check(pill.claude != nil && pill.music == nil && !pill.isBead, "\(name), Claude working: a capsule with Claude's cluster")
+        check(reported.panel.size == pill.size && pill.size.height == IslandFloat.pillHeight, "\(name), capsule: as wide as what it holds, and the capsule's height",
+              "\(reported.panel) vs \(pill.size)")
+        check(reported.panel.width > IslandFloat.bead.width, "\(name), capsule: wider than the bead")
+        checkDrawn("\(name), capsule", shadow: black)
+
+        island.setHovering(true)
+        spin(1.2)
+        let lips = background == .prism ? (side: IslandPrism.sideLip, bottom: IslandPrism.lip) : (side: 0, bottom: 0)
+        let open = CGSize(width: NotchMetrics.expandedSize.width - 2 * flare + 2 * lips.side, height: NotchMetrics.expandedSize.height + lips.bottom)
+        check(reported.panel.size == open, "\(name), open: the docked panel less its flares", "\(reported.panel) vs \(open)")
+        checkDrawn("\(name), open", shadow: black)
+        checkInStep(w, "\(name), open off the notch")
+
+        // The tallest: a question with four options.
+        vm.applyPreviewFixture(fixture("question_4"))
+        spin(1.2)
+        check(reported.panel.height > open.height && reported.panel.height <= NotchMetrics.panelMaxHeight + lips.bottom,
+              "\(name), a question: taller, within the cap", "\(reported.panel)")
+        checkDrawn("\(name), the tall panel", shadow: black)
+
+        island.setHovering(false)
+        vm.applyPreviewFixture(fixture("idle"))
+        spin(1.0)
+        check(reported.panel.size == IslandFloat.bead, "\(name): closed again, the bead", "\(reported.panel)")
+
+        withAnimation(.notchClose) { island.placement = .docked }
+        spin(0.9)
+        check(reported.panel.height == metrics.notchSize.height && reported.panel == reported.glass,
+              "\(name): docked again, back at the camera band's height", "\(reported.panel)")
+    }
+    // A toast borrows the capsule. (Last: a pinned preview toast stays up.)
+    settings.panelBackground = .black
+    island.placement = .floating(anchor: CGPoint(x: target.midX, y: target.maxY - 200))
+    vm.pinPreviewToast(NotchViewModel.previewToasts()[0])
+    spin(0.9)
+    let toast = FloatingPillLayout.pill(for: vm)
+    check(toast.toast != nil && reported.panel.size == toast.size, "a toast: the capsule sized to its message", "\(reported.panel) vs \(toast.size)")
+    checkDrawn("a toast", shadow: true)
+    island.placement = .docked
+    settings.panelBackground = .glass
+    spin(0.9)
 }
 
 @MainActor
@@ -246,6 +355,8 @@ func run() {
         settings.panelBackground = .glass
         spin(0.2)
     }
+
+    floatingChecks(w, vm: vm, island: island, settings: settings, metrics: metrics, target: target)
 
     w.orderOut(nil)
     spin(0.1)

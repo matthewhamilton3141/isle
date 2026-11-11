@@ -6,7 +6,8 @@
 //
 //  - `IslandGlassFill`, the glass half of `IslandFill`: the system material,
 //    its tint, the notch glow and the black that covers it all while the
-//    island is closed, blended away on the open's progress.
+//    island is closed, blended away on the open's progress. Off the notch
+//    (`IslandPlacement.floating`) nothing covers it: glass closed and open.
 //  - Prism's shade and lens are in IslandPrism+SwiftUI.swift; this file
 //    draws them in the fill and asks the glass window for the lens.
 //  - The material: Liquid Glass on macOS 26, an `NSVisualEffectView` behind
@@ -32,7 +33,9 @@ import AppKit
 
 /// The fill for a glass panel background, drawn by `IslandFill` in place of
 /// its flat black. Closed it is that same black; opening, the black thins
-/// to glass on the open's progress, and closing it thickens again.
+/// to glass on the open's progress, and closing it thickens again. Off the
+/// notch there is no black: the capsule is glass too, and no glow grows
+/// out of a camera that isn't under it.
 ///
 /// Clipped to the outline once, outside the blend: the clip takes the
 /// corner radii's own spring during a collapse, like the black fill, so the
@@ -54,10 +57,13 @@ struct IslandGlassFill: View {
     var bandHeight: CGFloat
     /// What Prism's ribbon follows; nil in every other mode.
     var ribbon: PrismRibbonInput? = nil
+    /// Whether the island is off its notch — the lift's target, 1 or 0.
+    var floating: Bool = false
 
     var body: some View {
         IslandGlassBlend(
             progress: opened ? 1 : 0,
+            lift: floating ? 1 : 0,
             background: background,
             shape: shape,
             housing: housing,
@@ -75,9 +81,12 @@ struct IslandGlassFill: View {
 
 /// The blend from black to glass as an animatable value, so it follows the
 /// spring that moves the outline frame by frame rather than jumping to its
-/// end.
+/// end — and with it the lift off the notch, which takes the black away
+/// altogether (`IslandGlass.blackCover(progress:lift:)`).
 private struct IslandGlassBlend: View, Animatable {
     var progress: Double
+    /// 0 on the notch, 1 off it.
+    var lift: Double
     var background: PanelBackground
     var shape: NotchShape
     var housing: CGSize?
@@ -87,12 +96,16 @@ private struct IslandGlassBlend: View, Animatable {
 
     @Environment(\.islandGlassLayer) private var layer
 
-    var animatableData: Double {
-        get { progress }
-        set { progress = newValue }
+    var animatableData: AnimatablePair<Double, Double> {
+        get { AnimatablePair(progress, lift) }
+        set {
+            progress = newValue.first
+            lift = newValue.second
+        }
     }
 
     var body: some View {
+        let showsGlass = IslandGlass.showsGlass(progress: progress, lift: lift)
         ZStack(alignment: .top) {
             if layer == .materialOnly {
                 // The glass window keeps its material in the tree the whole
@@ -105,17 +118,17 @@ private struct IslandGlassBlend: View, Animatable {
                 // of every open. At zero opacity it isn't composited, so the
                 // closed pill costs nothing for it.
                 material
-                    .opacity(IslandGlass.showsGlass(progress: progress) ? 1 : 0)
-            } else if IslandGlass.showsGlass(progress: progress) {
+                    .opacity(showsGlass ? 1 : 0)
+            } else if showsGlass {
                 material
                     .overlay(alignment: .top) {
                         if layer != .materialOnly {
-                            IslandGlassShade(background: background, bandHeight: bandHeight)
+                            IslandGlassShade(background: background, bandHeight: bandHeight, lift: lift)
                         }
                     }
                     .overlay(alignment: .top) {
                         if background == .prism, layer != .materialOnly {
-                            PrismLens(shape: shape)
+                            PrismLens(shape: shape, pane: pane)
                         }
                     }
                     .transition(.identity)
@@ -124,6 +137,12 @@ private struct IslandGlassBlend: View, Animatable {
             // window's: there, under full black, there's simply no glass yet.
             if layer != .materialOnly {
                 cover
+                // Off the notch, Glass's hairline (Prism's lens has an edge
+                // of its own): in with the lift, on its spring.
+                if background == .glass, lift > 0 {
+                    IslandRim(shape: shape, opacity: IslandFloat.glassRimOpacity)
+                        .opacity(lift)
+                }
             }
         }
     }
@@ -145,11 +164,24 @@ private struct IslandGlassBlend: View, Animatable {
                 // with the lens: glass on glass and the light in it, under
                 // everything the panel draws.
                 if background == .prism {
-                    PrismFrost(shape: shape)
+                    PrismFrost(shape: shape, pane: pane)
                     PrismRibbonStrip(shape: shape, ribbon: ribbon)
+                        // The ribbon is the open lip's. On the notch the
+                        // black cover hides it while closed; off it, it
+                        // comes and goes with the open instead.
+                        .opacity(lift > 0 ? IslandGlass.openOnlyOpacity(progress: progress) : 1)
                 }
             }
         }
+    }
+
+    /// Where Prism's frost and scrim lie: the docked pane, the floating
+    /// one at this much of the open, or — while the island morphs between
+    /// the two — the one part way from the first to the second.
+    private var pane: PrismPaneInsets {
+        let docked = PrismPaneInsets.docked
+        guard lift > 0 else { return docked }
+        return docked.mixed(with: PrismPaneInsets(IslandFloat.prismPane(progress: progress, closedHeight: IslandFloat.pillHeight)), by: lift)
     }
 
     /// The notch glow and the black that blends away on the open.
@@ -165,7 +197,7 @@ private struct IslandGlassBlend: View, Animatable {
             }
             Rectangle()
                 .fill(.black)
-                .opacity(IslandGlass.blackCover(progress: progress))
+                .opacity(IslandGlass.blackCover(progress: progress, lift: lift))
         }
     }
 }
@@ -216,10 +248,12 @@ extension EnvironmentValues {
 private struct IslandGlassShade: View {
     var background: PanelBackground
     var bandHeight: CGFloat
+    /// 0 on the notch, 1 off it, where Prism has no black over a camera.
+    var lift: Double
 
     var body: some View {
         if background == .prism {
-            PrismShade(bandHeight: bandHeight)
+            PrismShade(bandHeight: bandHeight, lift: lift)
         } else {
             Color.black.opacity(IslandGlass.tint(for: background))
         }
