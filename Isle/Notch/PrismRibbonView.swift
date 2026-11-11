@@ -57,8 +57,6 @@ final class PrismRibbonRenderer {
         var glow: [Float]
         /// The fan's colours, top to bottom, `IslandPrism.stopCount` of them.
         var stops: [SIMD3<Float>]
-        /// How far the twist has turned, in radians.
-        var phase: Float = 0
     }
 
     private init?() {
@@ -127,8 +125,6 @@ final class PrismRibbonRenderer {
         case .crystal: u[h + 7] = 1
         case .twist: u[h + 7] = 2
         }
-        u[h + 8] = frame.phase
-        u[h + 9] = Float(IslandPrism.twistTurns)
         for k in 0..<n {
             u[h + 12 + k] = k < frame.lift.count ? frame.lift[k] : 0
             u[h + 12 + n + k] = k < frame.spread.count ? frame.spread[k] : 0
@@ -165,10 +161,10 @@ final class PrismRibbonRenderer {
         float cover;
         float bed;
         float style;
-        float phase;
-        float turns;
         float pad0;
         float pad1;
+        float pad2;
+        float pad3;
         float lift[\(IslandPrism.ribbonColumns)];
         float spread[\(IslandPrism.ribbonColumns)];
         float glow[\(IslandPrism.ribbonColumns)];
@@ -269,27 +265,32 @@ final class PrismRibbonRenderer {
     }
 
     // One twisted strip of light, seen from the side. `y` is the height
-    // above its axis, `w` its half-width here (points), `theta` how far it
-    // has turned here, `split` how far apart the colours are drawn.
+    // above its axis, `w` its half-width here (points), `c` how far it is
+    // turned to face you here (1 its near face full on, 0 edge-on, -1 its
+    // far face), `split` how far apart the colours are drawn.
     //
-    // Turned by theta, a strip w wide shows w·|cos theta| of itself: a
-    // wide lobe face-on, a point edge-on, and past edge-on its other
-    // side. Its axis rides up and down a little as it turns, which is
-    // what bends the lobes. Across the lobe the light is strongest toward
-    // one edge, which is crisp, and falls away to nothing toward the
-    // other; which edge is which swaps with the side showing. The far
-    // side is dimmer. Red and blue are drawn a fraction of a point above
-    // and below green, so the crisp edge carries a thin fringe of colour.
-    static float4 strip(float y, float w, float theta, float split) {
-        float c = cos(theta), sn = sin(theta);
+    // Turned so, a strip w wide shows w·|c| of itself: a wide lobe face-on,
+    // a point edge-on, and past edge-on its other side. A lobe on the near
+    // face rides a little above the axis and one on the far face a little
+    // below, which is what makes the ribbon cross itself between them.
+    // Across the lobe the light is strongest toward one edge, which is
+    // crisp, and falls away to nothing toward the other; which edge is
+    // which swaps with the side showing. The far side is dimmer. Red and
+    // blue are drawn a fraction of a point above and below green, so the
+    // crisp edge carries a thin fringe of colour.
+    static float4 strip(float y, float w, float c, float split) {
         float side = c >= 0.0 ? 1.0 : -1.0;
-        float lobe = max(w * abs(c), 0.55);
-        float axis = y - 0.34 * w * sn;
+        // Edge-on it still shows a sliver: the line a silent ribbon is.
+        float lobe = max(w * abs(c), 0.1 * w + 0.2);
+        float axis = y - 0.2 * w * c;
         float3 v = float3(axis - split, axis, axis + split) / lobe * side;
         float aa = 0.95 / lobe;
         float3 inside = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, abs(v));
-        // Face-on is bright; the far side of the strip less so.
-        float lit = (0.16 + 0.84 * pow(abs(c), 0.75)) * (side > 0.0 ? 1.0 : 0.55);
+        // Face-on is bright, edge-on half as bright; the far side of the
+        // strip is dimmer the more of it shows, so nothing jumps as it
+        // turns through edge-on.
+        float far = side > 0.0 ? 1.0 : mix(1.0, 0.55, smoothstep(0.0, 0.3, abs(c)));
+        float lit = (0.5 + 0.5 * pow(abs(c), 0.75)) * far;
         // Strongest toward the crisp edge, melting away toward the other.
         float3 across = smoothstep(-1.08, 0.3, v) * (0.5 + 0.5 * v);
         // And hottest a little inside the crisp edge.
@@ -299,18 +300,25 @@ final class PrismRibbonRenderer {
         return float4(color, cover);
     }
 
-    // The ribbon as twisted light: two strips on one axis, turning at
-    // different rates and in opposite senses, so their lobes slide over
-    // one another and the crossings travel. Their light adds. It is white
-    // light, tinted toward the fan's colours — the upper colours above the
-    // axis, the lower below — and a soft bloom in those colours lies
-    // round it.
-    static float4 twist(constant Uniforms &u, float x, float y, float s, float g, float2 pixel) {
-        float along = 6.2832 * u.turns * (x - 0.5);
-        float s2 = max(column(u.spread, x + 12.0 / u.size.x), 0.6) * 0.82;
+    // The ribbon as twisted light: two strips on one axis. The first is
+    // turned as the music has it (`lift` is what shows of it, signed by
+    // the face showing; `spread` its own width). The second is the same
+    // ribbon a little further along, narrower, dimmer, and on the opposite
+    // face, so wherever the first is up and bright the second is down and
+    // behind it, and they cross where the first turns edge-on. Their light
+    // adds. It is white light, tinted toward the fan's colours — the upper
+    // colours above the axis, the lower below — and a soft bloom in those
+    // colours lies round it.
+    static float4 twist(constant Uniforms &u, float x, float y, float g, float2 pixel) {
+        float w = max(column(u.spread, x), 0.6);
+        float shown = column(u.lift, x);
+        float ahead = x + 10.0 / u.size.x;
+        float w2 = max(column(u.spread, ahead), 0.6) * 0.8;
+        float shown2 = -column(u.lift, ahead) * 0.72;
+        float s = abs(shown);
         float split = 0.2 + 0.022 * s;
-        float4 a = strip(y, s, along + u.phase, split);
-        float4 b = strip(y, s2, along * 0.62 - 0.63 * u.phase + 1.9, -split);
+        float4 a = strip(y, w, clamp(shown / w, -1.0, 1.0), split);
+        float4 b = strip(y, w2, clamp(shown2 / w2, -1.0, 1.0), -split);
 
         float3 light = a.rgb + b.rgb * 0.85;
         float body = 1.0 - (1.0 - a.a) * (1.0 - b.a * 0.85);
@@ -340,7 +348,7 @@ final class PrismRibbonRenderer {
         float dx = 1.5 / u.size.x;
         if (u.style > 1.5) {
             float rest = (1.0 - in.uv.y) * u.size.y - u.centre;
-            return twist(u, x, rest, max(s, 0.6), g, in.position.xy);
+            return twist(u, x, rest, g, in.position.xy);
         }
         if (u.style > 0.5) {
             // The crystal stays on the resting line; `lift` is its sway.
@@ -416,11 +424,6 @@ final class PrismRibbonView: NSView {
     /// When the motion began, on the display link's clock: nil until the
     /// first tick after it changed.
     private var motionStart: CFTimeInterval?
-
-    /// How far the twist has turned, in radians: it turns while something
-    /// is moving it, faster the more there is going on, and holds where
-    /// it is otherwise.
-    private var phase: Double = 0
 
     /// The fan's colours as drawn, and where they're turning to.
     private var stops = PrismRibbonView.vectors(IslandPrism.spectrum)
@@ -597,14 +600,6 @@ final class PrismRibbonView: NSView {
                 stops[i] = stopGoal[i]
             }
         }
-        if IslandPrism.ribbonStyle == .twist, !reduceMotion, motion != .steady, motion != .rest {
-            // The twist turns for as long as there's anything in the bands.
-            let energy = IslandPrism.energy(bands)
-            if energy > 0.004 {
-                phase += dt * (IslandPrism.twistIdle + IslandPrism.twistSpeed * energy)
-                moving = true
-            }
-        }
         draw()
         // Settled: nothing more to draw until a level or a setting changes.
         if !moving { link.isPaused = true }
@@ -618,8 +613,7 @@ final class PrismRibbonView: NSView {
         let profile = IslandPrism.profile(bands: bands)
         renderer.draw(
             .init(size: bounds.size, centre: IslandPrism.ribbonCentre,
-                  lift: profile.lift, spread: profile.spread, glow: profile.glow, stops: stops,
-                  phase: Float(phase.truncatingRemainder(dividingBy: 200 * .pi))),
+                  lift: profile.lift, spread: profile.spread, glow: profile.glow, stops: stops),
             into: drawable.texture,
             presenting: drawable
         )

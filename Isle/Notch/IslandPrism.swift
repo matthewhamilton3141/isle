@@ -91,29 +91,65 @@ enum IslandPrism {
         /// side: where it faces you it is a wide bright lobe, where it
         /// turns edge-on it draws to a point, and the lobes cross. One
         /// edge of each lobe is crisp, with a thin fringe of colour, and
-        /// the other melts away; a soft bloom lies round the whole. The
-        /// music opens the ribbon along its length and turns it.
+        /// the other melts away; a soft bloom lies round the whole.
+        ///
+        /// It is a waveform, not an animation: the ribbon has a lobe for
+        /// the bass at its centre, one for the mids either side of that
+        /// and one for the treble beyond, each on the opposite face from
+        /// its neighbours, and how far each lobe is turned to face you —
+        /// how tall it stands — is how loud that part of the music is.
+        /// Nothing turns on a clock. Silent, every lobe is edge-on and
+        /// the ribbon is a line.
         case twist
     }
 
     static let ribbonStyle: RibbonStyle = .twist
 
-    /// The twist's half-width at rest and at a full level, in points, and
-    /// how wide each band's share of it is, in band spacings: wider than
-    /// the spacing, so the ribbon swells where the music is without
-    /// breaking into separate crests. Tune here.
-    static let twistRest: Double = 1.5
+    /// The twist's half-width where it is full face-on, in points. Edge-on
+    /// it still shows a sliver (a tenth of its width, in the shader), which
+    /// is the line a silent ribbon rests as. Tune here.
     static let twistFull: Double = 12.5
-    static let twistCrest: Double = 1.05
 
-    /// How many turns the ribbon makes along its length.
-    static let twistTurns: Double = 1.15
+    /// How wide each lobe is, as a Gaussian's width in lobe spacings: such
+    /// that two neighbours at the same level cancel half way between them,
+    /// which is where the ribbon turns edge-on and crosses.
+    static let twistLobe: Double = 0.42
 
-    /// How fast the ribbon turns, in radians a second: this much whenever
-    /// something is moving it, and this much more at a full level. Silent,
-    /// it doesn't turn at all, so a ribbon at rest draws nothing.
-    static let twistIdle: Double = 0.7
-    static let twistSpeed: Double = 5.5
+    /// The bands as the twist's three lobes — bass, mids, treble — each
+    /// the louder of a pair of bands, so a kick in either low band fills
+    /// the centre lobe. Fewer bands than six fold the same way.
+    static func twistGroups(_ bands: [Double]) -> [Double] {
+        func band(_ k: Int) -> Double { k < bands.count ? min(max(bands[k], 0), 1) : 0 }
+        return [max(band(0), band(1)), max(band(2), band(3)), max(band(4), band(5))]
+    }
+
+    /// How far the ribbon is turned to face you at `u`, -1...1: positive
+    /// its near face, negative its far one; 0 is edge-on. Each lobe is its
+    /// group's level (lifted, as every level is), the centre lobe on the
+    /// near face and each one out on the other face from the last,
+    /// mirrored about the centre.
+    static func twistFacing(at u: Double, bands: [Double]) -> Double {
+        let groups = twistGroups(bands)
+        let p = mirrored(u) / bandSpan * Double(groups.count - 1)
+        var sum = 0.0
+        for (g, level) in groups.enumerated() {
+            let d = (p - Double(g)) / twistLobe
+            sum += (g % 2 == 0 ? 1 : -1) * pow(level, levelGamma) * exp(-d * d / 2)
+        }
+        return min(max(sum, -1), 1)
+    }
+
+    /// The ribbon's own half-width at `u`, in points: what a lobe there
+    /// would show if it were turned fully face-on.
+    static func twistWidth(at u: Double) -> Double {
+        taper(u) * twistFull
+    }
+
+    /// What shows of the ribbon at `u`, signed like `twistFacing`, in
+    /// points: its width times how far it is turned.
+    static func twistShown(at u: Double, bands: [Double]) -> Double {
+        twistFacing(at: u, bands: bands) * twistWidth(at: u)
+    }
 
     /// Black left over the lip: all but bare glass. It lies over the ribbon
     /// too, which is in the glass under it, so what the ribbon needs to
@@ -302,8 +338,9 @@ enum IslandPrism {
 
     /// How far the line is lifted off its rest at `u`, in points.
     static func lift(at u: Double, bands: [Double]) -> Double {
-        // The twist stays on its line; its turning is what moves.
-        if ribbonStyle == .twist { return 0 }
+        // The twist doesn't lift: this is what shows of it, signed by
+        // the face showing.
+        if ribbonStyle == .twist { return twistShown(at: u, bands: bands) }
         // The crystal doesn't lift: this is its sheets' sway instead.
         if ribbonStyle == .crystal { return taper(u) * crystalSway * signedLevel(at: u, bands: bands) }
         switch ribbonShape {
@@ -315,9 +352,8 @@ enum IslandPrism {
 
     /// The fan's half-height at `u`, in points.
     static func spread(at u: Double, bands: [Double]) -> Double {
-        if ribbonStyle == .twist {
-            return taper(u) * (twistRest + (twistFull - twistRest) * level(at: u, bands: bands, crest: twistCrest))
-        }
+        // The twist's own width; how much of it shows is `lift`.
+        if ribbonStyle == .twist { return twistWidth(at: u) }
         var full: Double
         switch ribbonShape {
         case .up: full = fullSpread
@@ -340,15 +376,10 @@ enum IslandPrism {
     /// cross and the ribbon looks twisted rather than stacked.
     static let crystalSway: Double = 3
 
-    /// How much is going on across the bands, 0...1: what turns the twist.
-    static func energy(_ bands: [Double]) -> Double {
-        guard !bands.isEmpty else { return 0 }
-        return min(max(bands.reduce(0) { $0 + min(max($1, 0), 1) } / Double(bands.count), 0), 1)
-    }
-
     /// The streak's brightness at `u`, 0...1.
     static func glow(at u: Double, bands: [Double]) -> Double {
-        let lift = min(level(at: u, bands: bands, crest: ribbonStyle == .twist ? twistCrest : crestWidth) * 1.25, 1)
+        let shown = ribbonStyle == .twist ? abs(twistFacing(at: u, bands: bands)) : level(at: u, bands: bands)
+        let lift = min(shown * 1.25, 1)
         return pow(taper(u), 0.6) * (restGlow + (1 - restGlow) * lift)
     }
 

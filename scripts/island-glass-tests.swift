@@ -378,7 +378,7 @@ do {
 }
 
 /// Whether the line (or the crystal's sheets) goes below its rest as well as above.
-let ribbonSigned = IslandPrism.ribbonStyle == .crystal || IslandPrism.ribbonShape == .snake
+let ribbonSigned = IslandPrism.ribbonStyle != .light || IslandPrism.ribbonShape == .snake
 
 // The ribbon's shape and style are one choice each (`IslandPrism.ribbonShape`,
 // `ribbonStyle`); these are what that choice makes the resting and full
@@ -387,7 +387,7 @@ let ribbonRest: Double = {
     switch IslandPrism.ribbonStyle {
     case .light: return IslandPrism.restSpread
     case .crystal: return IslandPrism.crystalRest
-    case .twist: return IslandPrism.twistRest
+    case .twist: return IslandPrism.twistFull
     }
 }()
 let ribbonFull: Double = {
@@ -400,9 +400,10 @@ let ribbonFull: Double = {
     }
 }()
 let ribbonLift: Double = {
-    // The twist stays on its line. The crystal doesn't lift either; its
-    // sheets sway by this much instead.
-    if IslandPrism.ribbonStyle == .twist { return 0 }
+    // The twist doesn't lift: its "lift" is what shows of it, up to its
+    // full width. The crystal doesn't lift either; its sheets sway by
+    // this much instead.
+    if IslandPrism.ribbonStyle == .twist { return IslandPrism.twistFull }
     if IslandPrism.ribbonStyle == .crystal { return IslandPrism.crystalSway }
     switch IslandPrism.ribbonShape {
     case .up: return IslandPrism.fullLift
@@ -420,11 +421,14 @@ do {
     check(IslandPrism.rim + IslandPrism.rimFeather <= 22 + IslandPrism.sideLip - IslandMotion.openCorners.top + 2,
           "the frost is full by where the content starts", "\(IslandPrism.rim + IslandPrism.rimFeather)")
     check(IslandPrism.ribbonCentre > 0 && IslandPrism.ribbonCentre < IslandPrism.lip, "the ribbon's resting line is in the lip")
-    check(IslandPrism.ribbonCentre - ribbonRest > 0, "the resting ribbon stays above the bottom edge")
-    check(IslandPrism.ribbonCentre - ribbonLift - ribbonFull > 0 || IslandPrism.ribbonShape == .up, "a full crest's lower edge is above the bottom edge, whichever way it goes")
-    check(IslandPrism.ribbonCentre + (IslandPrism.ribbonShape == .up ? ribbonLift : 0) - ribbonFull > 0, "and a rising crest's too")
-    check(IslandPrism.ribbonCentre + ribbonLift + ribbonFull < IslandPrism.ribbonStrip, "its upper edge is inside the strip")
-    check(ribbonFull > ribbonRest * 2, "a full band is plainly more than rest")
+    // (The twist's geometry is its own: see "prism: the twist".)
+    if IslandPrism.ribbonStyle != .twist {
+        check(IslandPrism.ribbonCentre - ribbonRest > 0, "the resting ribbon stays above the bottom edge")
+        check(IslandPrism.ribbonCentre - ribbonLift - ribbonFull > 0 || IslandPrism.ribbonShape == .up, "a full crest's lower edge is above the bottom edge, whichever way it goes")
+        check(IslandPrism.ribbonCentre + (IslandPrism.ribbonShape == .up ? ribbonLift : 0) - ribbonFull > 0, "and a rising crest's too")
+        check(IslandPrism.ribbonCentre + ribbonLift + ribbonFull < IslandPrism.ribbonStrip, "its upper edge is inside the strip")
+        check(ribbonFull > ribbonRest * 2, "a full band is plainly more than rest")
+    }
 }
 
 print("prism: the ribbon's profile")
@@ -489,20 +493,44 @@ do {
 
 print("prism: the twist")
 do {
-    // The twist's outline swells where the music is but doesn't break into crests.
-    let pair = [0.0, 1, 1, 0, 0, 0]
-    let spacing = IslandPrism.bandSpan / 2 / 5
-    let between = IslandPrism.level(at: 0.5 + 1.5 * spacing, bands: pair, crest: IslandPrism.twistCrest)
-    let on = IslandPrism.level(at: 0.5 + spacing, bands: pair, crest: IslandPrism.twistCrest)
-    check(between >= on * 0.97, "two neighbouring bands are one swell, with no dip between", "\(between) vs \(on)")
-    check(IslandPrism.level(at: 0.5, bands: [1, 0, 0, 0, 0, 0], crest: IslandPrism.twistCrest) > IslandPrism.level(at: 0.5 + 3 * spacing, bands: [1, 0, 0, 0, 0, 0], crest: IslandPrism.twistCrest) * 20,
-          "and still where the music is: bass at the centre, not three bands out")
-    check(IslandPrism.twistFull + 0.34 * IslandPrism.twistFull * 0.34 < Double(IslandPrism.ribbonCentre) || IslandPrism.twistFull * 1.06 < Double(IslandPrism.ribbonCentre),
-          "a full lobe, with its axis riding up and down, stays above the bottom edge")
-    check(IslandPrism.energy([]) == 0 && IslandPrism.energy([0, 0, 0]) == 0 && near(IslandPrism.energy([1, 1, 1]), 1) && near(IslandPrism.energy([0.5, 0, 1, 2]), 0.625),
-          "energy: the bands' mean, each clamped to 0...1")
-    check(IslandPrism.twistIdle > 0 && IslandPrism.twistSpeed > IslandPrism.twistIdle, "it turns a little whenever it moves, and faster the louder it is")
-    check((IslandPrism.twistIdle + IslandPrism.twistSpeed) / (2 * .pi) < 1.2, "under about one turn a second at its fastest")
+    let silent = [Double](repeating: 0, count: 6), full = [Double](repeating: 1, count: 6)
+    // Three lobes from six bands: the louder of each pair.
+    check(IslandPrism.twistGroups([0.2, 0.9, 0.1, 0.3, 0.7, 0.4]) == [0.9, 0.3, 0.7], "bass, mids, treble: the louder band of each pair")
+    check(IslandPrism.twistGroups([]) == [0, 0, 0] && IslandPrism.twistGroups([0.5]) == [0.5, 0, 0] && IslandPrism.twistGroups([2, -1]) == [1, 0, 0],
+          "missing bands are silence; levels clamp")
+    // Where each lobe sits, and which face it shows.
+    let mid = 0.5 + IslandPrism.bandSpan / 4, out = 0.5 + IslandPrism.bandSpan / 2
+    func facing(_ u: Double, _ b: [Double]) -> Double { IslandPrism.twistFacing(at: u, bands: b) }
+    check(near(facing(0.5, [1, 0, 0, 0, 0, 0]), 1) && facing(mid, [1, 0, 0, 0, 0, 0]) < 0.1, "bass turns the centre lobe to face you, and little else")
+    check(facing(mid, [0, 0, 1, 0, 0, 0]) < -0.95 && abs(facing(0.5, [0, 0, 1, 0, 0, 0])) < 0.1, "mids turn the lobes either side, on the far face")
+    check(facing(out, [0, 0, 0, 0, 0, 1]) > 0.95, "treble turns the outer lobes, on the near face again")
+    check(near(facing(0.5 - IslandPrism.bandSpan / 4, [0, 0, 1, 0, 0, 0]), facing(mid, [0, 0, 1, 0, 0, 0]), 1e-12), "the same either side of the centre")
+    // Silent: edge-on everywhere. Nothing shows but the resting sliver.
+    check((0...100).allSatisfy { facing(Double($0) / 100, silent) == 0 }, "silent: edge-on everywhere")
+    check((0...100).allSatisfy { IslandPrism.twistShown(at: Double($0) / 100, bands: silent) == 0 }, "and nothing of its face shows: the shader's sliver is all there is")
+    // A lobe stands as tall as its part of the music is loud.
+    let half = abs(IslandPrism.twistShown(at: 0.5, bands: [0.5, 0, 0, 0, 0, 0])), whole = abs(IslandPrism.twistShown(at: 0.5, bands: full))
+    check(whole > IslandPrism.twistFull * 0.9 && whole <= IslandPrism.twistFull, "a full bass lobe stands all but the ribbon's whole width", "\(whole)")
+    check(half > whole * 0.5 && half < whole * 0.75, "half as loud stands lower, lifted a little as every level is", "\(half)")
+    var rising = true
+    var last = 0.0
+    for k in 1...20 { let s = abs(IslandPrism.twistShown(at: 0.5, bands: [Double(k) / 20, 0, 0, 0, 0, 0])); if s < last - 1e-12 { rising = false }; last = s }
+    check(rising, "louder never stands lower")
+    // Neighbours at the same level cross half way between them.
+    let between = 0.5 + IslandPrism.bandSpan / 8
+    check(abs(facing(between, full)) < 0.03, "two neighbouring lobes at the same level turn edge-on half way between them", "\(facing(between, full))")
+    check(facing(0.5, full) > 0.9 && facing(mid, full) < -0.75 && facing(out, full) > 0.45, "all three lobes show at full, on alternate faces")
+    // One lobe moving doesn't move the others: a kick is the centre's alone.
+    check(near(facing(out, [1, 1, 0, 0, 0, 0.4]), facing(out, [0, 0, 0, 0, 0, 0.4]), 0.01), "the bass doesn't reach the treble's lobe")
+    // The drawing's inputs.
+    check(near(IslandPrism.spread(at: 0.5, bands: silent), IslandPrism.twistFull) && near(IslandPrism.spread(at: 0.5, bands: full), IslandPrism.twistFull),
+          "spread is the ribbon's own width, whatever the music")
+    check(near(IslandPrism.lift(at: 0.5, bands: full), IslandPrism.twistShown(at: 0.5, bands: full)), "lift is what shows of it")
+    var smooth = true
+    var prev = IslandPrism.twistFacing(at: 0, bands: [0.9, 0.2, 0.7, 0.1, 0.6, 0.3])
+    for k in 1...800 { let f = IslandPrism.twistFacing(at: Double(k) / 800, bands: [0.9, 0.2, 0.7, 0.1, 0.6, 0.3]); if abs(f - prev) > 0.03 { smooth = false }; prev = f }
+    check(smooth, "the turn has no step in it along the ribbon")
+    check(IslandPrism.twistFull + 0.2 * IslandPrism.twistFull < Double(IslandPrism.ribbonCentre), "a full lobe, riding above or below the axis, stays above the bottom edge")
 }
 
 print("prism: the ribbon's motion")
