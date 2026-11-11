@@ -228,4 +228,40 @@ struct NotchMetrics {
         let pad = expanded.insetBy(dx: -(Self.stayOpenSidePad + IslandPrism.sideLip), dy: 0)
         return expanded.union(collapsed).union(grown).union(pad)
     }
+
+    // MARK: - Off the notch
+
+    /// The window's frame for a placement: `maximumFrame` on the notch, and
+    /// the same size with its top centre on the anchor off it. The island
+    /// is drawn at the top centre of its window either way (see
+    /// `IslandPlacement`), so moving the window is all a placement is.
+    func frame(for placement: IslandPlacement) -> NSRect {
+        let docked = maximumFrame
+        guard let anchor = placement.anchor else { return docked }
+        return NSRect(
+            x: anchor.x - docked.width / 2,
+            y: anchor.y - docked.height,
+            width: docked.width,
+            height: docked.height
+        )
+    }
+
+    /// The top centre of the island in a window at `frame`: the anchor that
+    /// frame is the placement of.
+    static func anchor(of frame: NSRect) -> CGPoint {
+        CGPoint(x: frame.midX, y: frame.maxY)
+    }
+
+    /// Where on this screen an island off its notch may be, and how near
+    /// the notch counts as back on it. The widest and tallest the island is
+    /// drawn are the ones `maximumFrame` holds, less the stay-open pad,
+    /// which is pointer room and may hang off the screen.
+    var placementBounds: IslandPlacementBounds {
+        IslandPlacementBounds(
+            screen: screen.frame,
+            visible: screen.visibleFrame,
+            halfWidth: Self.expandedSize.width / 2 + IslandPrism.sideLip,
+            tallest: Self.panelMaxHeight + IslandPrism.lip
+        )
+    }
 }

@@ -34,6 +34,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The three mode radio items, restated each time the menu opens so a mode
     /// picked in Settings (or onboarding) shows the right checkmark here.
     private var modeItems: [NSMenuItem] = []
+    /// "Return Island to Notch": in the menu only while an island is off its
+    /// notch, checked each time the menu opens.
+    private var returnToNotchItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setUpStatusItem()
@@ -122,6 +125,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             keyEquivalent: ""
         ).target = self
 
+        // The way back for an island that's been taken off its notch,
+        // without having to carry it there. Hidden while there's nothing
+        // to return (`menuNeedsUpdate`).
+        let returnItem = NSMenuItem(
+            title: "Return Island to Notch",
+            action: #selector(returnIslandToNotch),
+            keyEquivalent: ""
+        )
+        returnItem.target = self
+        returnItem.isHidden = true
+        menu.addItem(returnItem)
+        returnToNotchItem = returnItem
+
         // Quick access to the "expand for alerts" preference without opening
         // Settings — a checkbox that mirrors AppSettings.expandOnAlert.
         let alertsItem = NSMenuItem(
@@ -204,6 +220,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleNotch() {
         guard let notchController else { return }
         notchController.isVisible ? notchController.hide() : notchController.show()
+    }
+
+    @objc private func returnIslandToNotch() {
+        notchController?.returnIslandsToNotch()
     }
 
     @objc private func toggleExpandOnAlert() {
@@ -377,6 +397,7 @@ extension AppDelegate: NSMenuDelegate {
     /// time the menu opens rather than trusting the last toggle.
     func menuNeedsUpdate(_ menu: NSMenu) {
         expandAlertsItem?.state = AppSettings.shared.expandOnAlert ? .on : .off
+        returnToNotchItem?.isHidden = notchController?.hasFloatingIsland != true
 
         let active = AppSettings.shared.effectiveMode.rawValue
         for item in modeItems {

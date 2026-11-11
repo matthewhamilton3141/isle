@@ -64,6 +64,7 @@ final class AppSettings: ObservableObject {
     private static let agendaSoundKey = "isle.agendaSound"
     private static let shelfPathsKey = "isle.shelf.paths"
     private static let shortcutsKey = "isle.shortcuts"
+    private static let islandOffsetsKey = "isle.islandOffsets"
 
     /// The user's chosen mode, or `nil` until onboarding sets one
     /// (Milestone 2). Persisted on change.
@@ -444,6 +445,31 @@ final class AppSettings: ObservableObject {
         }
     }
 
+    // MARK: - Island placement
+
+    /// Where each display's island was left when it's off its notch: how
+    /// far its top centre sits from the top centre of the screen, in points
+    /// (x right, y up, so y is never positive), keyed by the display's
+    /// UUID — which, unlike its display ID, is the same display after a
+    /// reconnect or a reboot. A display with no entry has its island on the
+    /// notch. Relative to the screen so it survives the displays being
+    /// rearranged; checked against the screen as it is now each time it's
+    /// read back (`IslandPlacementBounds.placement(restoring:)`).
+    ///
+    /// Not published: the window controller is the only reader and writer,
+    /// and each island publishes its own `placement`.
+    var islandOffsets: [String: CGPoint] {
+        didSet {
+            guard islandOffsets != oldValue else { return }
+            if islandOffsets.isEmpty {
+                defaults.removeObject(forKey: Self.islandOffsetsKey)
+            } else {
+                // Plain numbers, so `defaults read` shows them.
+                defaults.set(islandOffsets.mapValues { [Double($0.x), Double($0.y)] }, forKey: Self.islandOffsetsKey)
+            }
+        }
+    }
+
     // MARK: - Shortcuts
 
     /// The global keyboard shortcuts — their keys and whether each is on.
@@ -529,6 +555,12 @@ final class AppSettings: ObservableObject {
             ?? .fanfare
         shelfPaths = defaults.stringArray(forKey: Self.shelfPathsKey) ?? []
         shortcuts = ShortcutBindings.decode(defaults.string(forKey: Self.shortcutsKey).map { Data($0.utf8) })
+        // Anything that isn't a pair of numbers is dropped, which docks
+        // that display's island.
+        islandOffsets = (defaults.dictionary(forKey: Self.islandOffsetsKey) ?? [:]).compactMapValues { value in
+            guard let pair = value as? [Double], pair.count == 2 else { return nil }
+            return CGPoint(x: pair[0], y: pair[1])
+        }
 
         // A change to the system accent in System Settings changes what
         // `.system` resolves to without either cache key moving. Drop the cache
