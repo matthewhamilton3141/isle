@@ -33,6 +33,9 @@ struct ExpandedNotchView: View {
     @State private var showsOutputs = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Prism's ribbon is along the lip: it is the waveform, so the bars in
+    /// the corner would be the same thing said twice.
+    @Environment(\.islandHasRibbon) private var hasRibbon
 
     private static let crossDissolve = Animation.easeInOut(duration: 0.28)
 
@@ -83,8 +86,12 @@ struct ExpandedNotchView: View {
     /// The Music face's waveform: on that face alone, with a track to draw
     /// and the setting on.
     private var showsCornerWaveform: Bool {
-        media.hasTrack && viewModel.showsWaveform && viewModel.expandedPlace == .face(.music) && dropPayload == nil
+        !hasRibbon && media.hasTrack && viewModel.showsWaveform && viewModel.expandedPlace == .face(.music) && dropPayload == nil
     }
+
+    /// What the title and the outputs header keep clear on their right for
+    /// the corner waveform; nothing where the ribbon stands in for it.
+    private var waveformInset: CGFloat { hasRibbon ? 0 : 36 }
 
     @ViewBuilder
     private var content: some View {
@@ -184,7 +191,7 @@ struct ExpandedNotchView: View {
                     // Trailing inset keeps the title/artist clear of the fixed
                     // waveform pinned at the panel's top-right (see body).
                     trackLabels
-                        .padding(.trailing, 36)
+                        .padding(.trailing, waveformInset)
                     if viewModel.showScrubber {
                         Spacer().frame(height: 6)
                         scrubber
@@ -598,6 +605,11 @@ private struct OutputList: View {
     @ObservedObject var devices: OutputDevices
     var close: () -> Void
 
+    /// As on the Music face under it: no corner waveform to keep clear of
+    /// where Prism's ribbon stands in for it.
+    @Environment(\.islandHasRibbon) private var hasRibbon
+    private var waveformInset: CGFloat { hasRibbon ? 0 : 36 }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 0) {
@@ -641,7 +653,7 @@ private struct OutputList: View {
         .padding(.top, 5)
         // Clear of the waveform pinned at the panel's top-right, the same
         // inset the title keeps.
-        .padding(.trailing, 36)
+        .padding(.trailing, waveformInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .foregroundStyle(.white)
         // The volume listens to the HAL only while the list is up.

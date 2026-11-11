@@ -60,6 +60,31 @@ enum ArtworkColors {
         )
     }
 
+    // MARK: - The colourful pick
+
+    /// How finely the cover is read for `vividPalette`: fine enough that a
+    /// small subject keeps its own colour instead of being averaged into
+    /// the ground behind it.
+    private static let vividGridSize = 32
+
+    /// The cover's colourful colours, for Prism: its strongest hues rather
+    /// than its commonest (see VividPalette.swift), lifted off black the
+    /// way `palette`'s are. Nil with no artwork, or for a cover with no
+    /// colour in it — the caller falls back to `palette`.
+    static func vividPalette(from image: NSImage?) -> ArtworkPalette? {
+        guard let image, let samples = sample(image, side: vividGridSize), !samples.isEmpty,
+              let picked = VividPalette.pick(samples.map { VividPalette.RGB(r: $0.r, g: $0.g, b: $0.b) })
+        else { return nil }
+        func color(_ c: VividPalette.RGB, _ minBrightness: Double) -> Color {
+            Sample(r: c.r, g: c.g, b: c.b).color(minBrightness: minBrightness)
+        }
+        return ArtworkPalette(
+            primary: color(picked.primary, 0.35),
+            secondary: color(picked.secondary, 0.28),
+            accent: color(picked.accent, 0.45)
+        )
+    }
+
     // MARK: - Sampling
 
     private struct Sample {
@@ -102,12 +127,11 @@ enum ArtworkColors {
         }
     }
 
-    private static func sample(_ image: NSImage) -> [Sample]? {
+    private static func sample(_ image: NSImage, side: Int = gridSize) -> [Sample]? {
         guard let cgImage = image.cgImage(
             forProposedRect: nil, context: nil, hints: nil
         ) else { return nil }
 
-        let side = gridSize
         var pixels = [UInt8](repeating: 0, count: side * side * 4)
 
         // The draw and the read both have to happen *inside* this closure.
@@ -133,7 +157,7 @@ enum ArtworkColors {
                   )
             else { return false }
 
-            // Drawing the whole image into an 8x8 context is the downscale —
+            // Drawing the whole image into the small context is the downscale —
             // the interpolation does the averaging for us.
             context.interpolationQuality = .medium
             context.draw(

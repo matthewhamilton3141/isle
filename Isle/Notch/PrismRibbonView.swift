@@ -2,8 +2,9 @@
 //  PrismRibbonView.swift
 //
 //  Prism's ribbon (see IslandPrism.swift): a streak of light along the
-//  lens's lip, split into a spectrum whose fan at each point across the
-//  panel is the music's level in one band.
+//  lens's lip, split into a fan of colours, lifted and spread at each
+//  point across the panel by the music's level in one band — or, when the
+//  island is showing Claude, moved by Claude's status.
 //
 //  Drawn by a small Metal shader into a layer of its own, outside the view
 //  graph, for the same reason the bars are Core Animation
@@ -47,12 +48,15 @@ final class PrismRibbonRenderer {
     struct Frame {
         /// The strip's size in points.
         var size: CGSize
-        /// The ribbon's centre line, in points above the strip's bottom.
+        /// The ribbon's line at rest, in points above the strip's bottom.
         var centre: CGFloat
-        /// The fan's half-height and the brightness across the ribbon,
-        /// `IslandPrism.ribbonColumns` of each.
+        /// The line's lift, the fan's half-height and the brightness
+        /// across the ribbon, `IslandPrism.ribbonColumns` of each.
+        var lift: [Float]
         var spread: [Float]
         var glow: [Float]
+        /// The fan's colours, top to bottom, `IslandPrism.stopCount` of them.
+        var stops: [SIMD3<Float>]
     }
 
     private init?() {
@@ -98,21 +102,28 @@ final class PrismRibbonRenderer {
         if wait { buffer.waitUntilCompleted() }
     }
 
-    /// The frame laid out as the shader's `Uniforms`: eight floats of
-    /// header, then the two profiles.
+    /// The frame laid out as the shader's `Uniforms`: the colours (four
+    /// floats each), eight floats of header, then the three profiles.
     private static func uniforms(_ frame: Frame) -> [Float] {
-        let n = IslandPrism.ribbonColumns
-        var u = [Float](repeating: 0, count: 8 + 2 * n)
-        u[0] = Float(frame.size.width)
-        u[1] = Float(frame.size.height)
-        u[2] = Float(frame.centre)
-        u[3] = Float(IslandPrism.restSigma)
-        u[4] = Float(IslandPrism.sigmaPerSpread)
-        u[5] = Float(IslandPrism.ribbonCover)
-        u[6] = Float(IslandPrism.ribbonBed)
+        let n = IslandPrism.ribbonColumns, c = IslandPrism.stopCount
+        var u = [Float](repeating: 0, count: 4 * c + 8 + 3 * n)
+        for k in 0..<c where k < frame.stops.count {
+            u[4 * k] = frame.stops[k].x
+            u[4 * k + 1] = frame.stops[k].y
+            u[4 * k + 2] = frame.stops[k].z
+        }
+        let h = 4 * c
+        u[h] = Float(frame.size.width)
+        u[h + 1] = Float(frame.size.height)
+        u[h + 2] = Float(frame.centre)
+        u[h + 3] = Float(IslandPrism.restSigma)
+        u[h + 4] = Float(IslandPrism.sigmaPerSpread)
+        u[h + 5] = Float(IslandPrism.ribbonCover)
+        u[h + 6] = Float(IslandPrism.ribbonBed)
         for k in 0..<n {
-            u[8 + k] = k < frame.spread.count ? frame.spread[k] : 0
-            u[8 + n + k] = k < frame.glow.count ? frame.glow[k] : 0
+            u[h + 8 + k] = k < frame.lift.count ? frame.lift[k] : 0
+            u[h + 8 + n + k] = k < frame.spread.count ? frame.spread[k] : 0
+            u[h + 8 + 2 * n + k] = k < frame.glow.count ? frame.glow[k] : 0
         }
         return u
     }
@@ -121,19 +132,23 @@ final class PrismRibbonRenderer {
     /// harnesses, which compile the sources with swiftc alone, draw the
     /// same ribbon the app does.
     ///
-    /// For each pixel: where it is across the ribbon gives the fan's
-    /// half-height `s` and the brightness `g` (interpolated from the
-    /// profile); how far it is above the centre line gives, for each of
-    /// sixteen colours across the spectrum, how much of that colour's
-    /// Gaussian reaches it — red centred `s` above the line, violet `s`
-    /// below. The sum is divided by the spectrum's own sum, so with no fan
-    /// the colours coincide as white. Over that, a narrow white core on the
-    /// line itself, and a wide faint halo in the local colour.
+    /// For each pixel: where it is across the ribbon gives the line's lift,
+    /// the fan's half-height `s` and the brightness `g` (interpolated from
+    /// the profile); how far it is above the lifted line gives, for each of
+    /// sixteen colours down the fan, how much of that colour's Gaussian
+    /// reaches it — the first centred `s` above the line, the last `s`
+    /// below. With no spread the colours coincide as their own mix (near
+    /// white for the spectrum, the cover's blend for a cover). Over that, a
+    /// narrow white core on the line itself, so the resting streak is
+    /// white whatever the colours, and a wide faint halo in the local colour. Distances
+    /// are measured straight up, so on a crest's steep sides the widths are
+    /// stretched by the slope to keep the line as thick as it is on the flat.
     private static let source = """
     #include <metal_stdlib>
     using namespace metal;
 
     struct Uniforms {
+        float4 stops[\(IslandPrism.stopCount)];
         float2 size;
         float centre;
         float sigma;
@@ -141,6 +156,7 @@ final class PrismRibbonRenderer {
         float cover;
         float bed;
         float pad;
+        float lift[\(IslandPrism.ribbonColumns)];
         float spread[\(IslandPrism.ribbonColumns)];
         float glow[\(IslandPrism.ribbonColumns)];
     };
@@ -158,22 +174,11 @@ final class PrismRibbonRenderer {
         return out;
     }
 
-    // The spectrum, 0 red (drawn uppermost) to 1 violet: piecewise linear
-    // through eight colours, lighter and less green than a true rainbow.
-    static float3 spectrum(float t) {
-        const float3 c[8] = {
-            float3(1.00, 0.16, 0.20),
-            float3(1.00, 0.45, 0.10),
-            float3(1.00, 0.80, 0.22),
-            float3(0.62, 1.00, 0.55),
-            float3(0.18, 0.90, 1.00),
-            float3(0.20, 0.48, 1.00),
-            float3(0.50, 0.28, 1.00),
-            float3(0.95, 0.30, 0.90)
-        };
-        float x = clamp(t, 0.0, 1.0) * 7.0;
-        int i = min(int(x), 6);
-        return mix(c[i], c[i + 1], x - float(i));
+    // The fan's colour at t, 0 its top to 1 its bottom.
+    static float3 fan(constant Uniforms &u, float t) {
+        float x = clamp(t, 0.0, 1.0) * float(\(IslandPrism.stopCount - 1));
+        int i = min(int(x), \(IslandPrism.stopCount - 2));
+        return mix(u.stops[i].rgb, u.stops[i + 1].rgb, x - float(i));
     }
 
     static float column(constant float *a, float u) {
@@ -187,33 +192,35 @@ final class PrismRibbonRenderer {
     }
 
     fragment float4 prismFragment(Varyings in [[stage_in]], constant Uniforms &u [[buffer(0)]]) {
-        float y = (1.0 - in.uv.y) * u.size.y - u.centre;
-        float s = column(u.spread, in.uv.x);
-        float g = column(u.glow, in.uv.x);
-        float sigma = u.sigma + u.sigmaPerSpread * s;
+        float x = in.uv.x;
+        float y = (1.0 - in.uv.y) * u.size.y - u.centre - column(u.lift, x);
+        float s = column(u.spread, x);
+        float g = column(u.glow, x);
+        // The line's slope here, in points up per point across.
+        float dx = 1.5 / u.size.x;
+        float slope = (column(u.lift, x + dx) - column(u.lift, x - dx)) / 3.0;
+        float steep = sqrt(1.0 + slope * slope);
+        float sigma = (u.sigma + u.sigmaPerSpread * s) * steep;
 
         const int N = 16;
         float3 lit = float3(0.0);
-        float3 whole = float3(0.0);
         for (int i = 0; i < N; i++) {
             float l = (float(i) + 0.5) / float(N);
-            float3 c = spectrum(l);
             float d = (y - (1.0 - 2.0 * l) * s) / sigma;
-            lit += c * exp(-d * d);
-            whole += c;
+            lit += fan(u, l) * exp(-d * d);
         }
-        // Fanned out, each colour's light is spread thinner; give most of
-        // that back so a loud band is vivid rather than washed out.
-        float fan = 1.0 + 1.1 * s / (sigma * 4.0);
-        float3 color = lit / whole * fan * 1.3;
+        // Spread out, each colour's light is thinner; give most of that
+        // back so a loud band is vivid rather than washed out.
+        float gain = 1.0 + 1.1 * s / (sigma * 4.0);
+        float3 color = lit / float(N) * gain * 2.1;
 
         // The local colour, for the halo: where this pixel sits in the fan.
-        float3 local = spectrum(clamp(0.5 - y / (2.0 * max(s, 0.75)), 0.0, 1.0));
+        float3 local = fan(u, clamp(0.5 - y / (2.0 * max(s, 0.75)), 0.0, 1.0));
         float hd = y / (sigma * 2.6 + s * 0.9 + 2.0);
         color += mix(float3(1.0), local, 0.75) * 0.20 * exp(-hd * hd);
 
         // The core: white, on the line, narrower than any colour.
-        float cd = y / (u.sigma * 0.62);
+        float cd = y / (u.sigma * 0.62 * steep);
         color += float3(1.0) * 0.55 * exp(-cd * cd) / (1.0 + 0.12 * s);
 
         color *= g;
@@ -238,34 +245,35 @@ final class PrismRibbonRenderer {
 // MARK: - The view
 
 /// The ribbon's layer and what moves it. Like `EqualizerLayerView`, it
-/// takes the levels straight from the capture; SwiftUI only tells it
-/// whether to listen and whether anything is playing.
+/// takes the levels straight from the capture; SwiftUI only tells it what
+/// to follow and in which colours.
 final class PrismRibbonView: NSView {
     private let metalLayer = CAMetalLayer()
     private let renderer = PrismRibbonRenderer.shared
 
     private static let bandCount = 6
 
-    /// Where the bands are, and where they're headed.
+    /// Where the bands are; the capture's levels, when it's listened to.
     private var bands = [Double](repeating: 0, count: PrismRibbonView.bandCount)
     private var levels: [Double] = []
 
+    private var motion: IslandPrism.Motion = .rest
     private var isPlaying = false
-    private var shows = true
+    private var reduceMotion = false
+    /// When the motion began, on the display link's clock: nil until the
+    /// first tick after it changed.
+    private var motionStart: CFTimeInterval?
+
+    /// The fan's colours as drawn, and where they're turning to.
+    private var stops = PrismRibbonView.vectors(IslandPrism.spectrum)
+    private var stopGoal = PrismRibbonView.vectors(IslandPrism.spectrum)
+    private var hasColors = false
 
     private var source: SystemAudioLevels?
     private var subscription: AnyCancellable?
     private var link: CADisplayLink?
     private var lastTick: CFTimeInterval = 0
     private var drawnSize: CGSize = .zero
-
-    private enum Mode { case live, procedural, resting }
-
-    private var mode: Mode {
-        guard shows else { return .resting }
-        if levels.count >= Self.bandCount { return .live }
-        return isPlaying ? .procedural : .resting
-    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -304,20 +312,33 @@ final class PrismRibbonView: NSView {
         setLevels([])
     }
 
-    /// `shows` is whether a waveform is wanted at all (the waveform setting
-    /// isn't Off) and there's music for it to be of.
-    func configure(isPlaying: Bool, shows: Bool) {
-        guard isPlaying != self.isPlaying || shows != self.shows else { return }
+    /// What moves the ribbon, and in which colours. A new motion starts
+    /// from its beginning; new colours are turned to, not cut to — except
+    /// the first, which there is nothing to turn from.
+    func configure(motion: IslandPrism.Motion, isPlaying: Bool, stops: [IslandPrism.RGB], reduceMotion: Bool) {
+        let goal = Self.vectors(stops)
+        let changed = motion != self.motion || isPlaying != self.isPlaying
+            || reduceMotion != self.reduceMotion || goal != stopGoal
+        if motion != self.motion { motionStart = nil }
+        self.motion = motion
         self.isPlaying = isPlaying
-        self.shows = shows
-        wake()
+        self.reduceMotion = reduceMotion
+        stopGoal = goal
+        if !hasColors {
+            self.stops = goal
+            hasColors = true
+        }
+        if changed { wake() }
     }
 
-    /// Fixed levels, drawn at once: for the gallery and the renders.
-    func setStaticLevels(_ levels: [Double]) {
-        self.levels = levels
-        shows = true
+    /// Fixed levels and colours, drawn at once: for the gallery and the
+    /// renders.
+    func setStatic(levels: [Double], stops: [IslandPrism.RGB] = IslandPrism.spectrum) {
+        motion = .rest
         bands = Self.padded(levels)
+        self.stops = Self.vectors(stops)
+        stopGoal = self.stops
+        hasColors = true
         draw()
     }
 
@@ -328,6 +349,13 @@ final class PrismRibbonView: NSView {
 
     private static func padded(_ levels: [Double]) -> [Double] {
         (0..<bandCount).map { $0 < levels.count ? levels[$0] : 0 }
+    }
+
+    private static func vectors(_ stops: [IslandPrism.RGB]) -> [SIMD3<Float>] {
+        (0..<IslandPrism.stopCount).map {
+            let c = stops.isEmpty ? IslandPrism.spectrum[$0] : stops[min($0, stops.count - 1)]
+            return SIMD3(Float(c.r), Float(c.g), Float(c.b))
+        }
     }
 
     // MARK: Motion
@@ -364,19 +392,30 @@ final class PrismRibbonView: NSView {
         if bounds.size != drawnSize { draw() }
     }
 
-    /// Something changed: run the link until the bands have settled again.
+    /// Something changed: run the link until everything has settled again.
     private func wake() {
         guard let link, link.isPaused else { return }
         lastTick = 0
         link.isPaused = false
     }
 
-    private func targets(at time: CFTimeInterval) -> [Double] {
-        switch mode {
-        case .live: return Self.padded(levels)
-        case .procedural: return (0..<Self.bandCount).map { IslandPrism.procedural(band: $0, at: time) }
-        case .resting: return [Double](repeating: 0, count: Self.bandCount)
+    /// Where the bands are headed at `time`, and whether what's moving
+    /// them will still be moving after it.
+    private func targets(at time: CFTimeInterval) -> (bands: [Double], moving: Bool) {
+        if motion == .music {
+            // The capture's levels, or the bars' own pattern while
+            // something plays and there are none.
+            if levels.count >= Self.bandCount { return (Self.padded(levels), false) }
+            guard isPlaying else { return ([Double](repeating: 0, count: Self.bandCount), false) }
+            return ((0..<Self.bandCount).map { IslandPrism.procedural(band: $0, at: time) }, true)
         }
+        let start = motionStart ?? time
+        motionStart = start
+        let t = time - start
+        return (
+            (0..<Self.bandCount).map { IslandPrism.pattern(motion, band: $0, at: t, reduceMotion: reduceMotion) },
+            IslandPrism.isMoving(motion, at: t, reduceMotion: reduceMotion)
+        )
     }
 
     @objc private func tick(_ link: CADisplayLink) {
@@ -384,10 +423,21 @@ final class PrismRibbonView: NSView {
         let dt = lastTick > 0 ? min(now - lastTick, 0.1) : 1.0 / 60
         lastTick = now
         let goal = targets(at: now)
-        var moving = mode == .procedural
+        var moving = goal.moving
         for i in 0..<Self.bandCount {
-            bands[i] = IslandPrism.follow(bands[i], toward: goal[i], dt: dt)
-            if abs(bands[i] - goal[i]) > IslandPrism.settled { moving = true } else { bands[i] = goal[i] }
+            bands[i] = IslandPrism.follow(bands[i], toward: goal.bands[i], dt: dt)
+            if abs(bands[i] - goal.bands[i]) > IslandPrism.settled { moving = true } else { bands[i] = goal.bands[i] }
+        }
+        // The colours turn toward their goal on the same clock.
+        let turn = Float(1 - exp(-dt / IslandPrism.colorTurn))
+        for i in 0..<stops.count {
+            let d = stopGoal[i] - stops[i]
+            if max(abs(d.x), abs(d.y), abs(d.z)) > 0.004 {
+                stops[i] += d * turn
+                moving = true
+            } else {
+                stops[i] = stopGoal[i]
+            }
         }
         draw()
         // Settled: nothing more to draw until a level or a setting changes.
@@ -401,7 +451,8 @@ final class PrismRibbonView: NSView {
         drawnSize = bounds.size
         let profile = IslandPrism.profile(bands: bands)
         renderer.draw(
-            .init(size: bounds.size, centre: IslandPrism.ribbonCentre, spread: profile.spread, glow: profile.glow),
+            .init(size: bounds.size, centre: IslandPrism.ribbonCentre,
+                  lift: profile.lift, spread: profile.spread, glow: profile.glow, stops: stops),
             into: drawable.texture,
             presenting: drawable
         )
@@ -410,20 +461,22 @@ final class PrismRibbonView: NSView {
 
 // MARK: - SwiftUI
 
-/// What the ribbon follows: the capture, whether to listen to it, and
-/// whether there's anything playing for it to show.
+/// What the ribbon follows.
 struct PrismRibbonInput {
     var source: SystemAudioLevels
     /// Follow the capture (the waveform setting is Live).
     var listens: Bool
     var isPlaying: Bool
-    /// A waveform is wanted and there's music up: off, the ribbon rests.
-    var shows: Bool
+    /// What moves it: the music, or one of Claude's statuses.
+    var motion: IslandPrism.Motion
+    /// The fan's colours, top to bottom.
+    var stops: [IslandPrism.RGB]
     /// The panel is open. Closed, the ribbon is still in the glass
     /// window's tree, unseen: it lets go of the capture and rests, so
     /// nothing is drawn for an island that's shut, and each open starts
-    /// from the resting streak and rises into the music.
+    /// from the resting streak and rises into whatever it's following.
     var open: Bool
+    var reduceMotion: Bool
 }
 
 /// The ribbon wired to the live capture, for the open panel.
@@ -439,22 +492,23 @@ struct PrismRibbon: NSViewRepresentable {
     func updateNSView(_ view: PrismRibbonView, context: Context) { wire(view) }
 
     private func wire(_ view: PrismRibbonView) {
-        let shows = input.shows && input.open
-        input.listens && shows ? view.attach(to: input.source) : view.detach()
-        view.configure(isPlaying: input.isPlaying, shows: shows)
+        let motion = input.open ? input.motion : .rest
+        input.listens && motion == .music ? view.attach(to: input.source) : view.detach()
+        view.configure(motion: motion, isPlaying: input.isPlaying, stops: input.stops, reduceMotion: input.reduceMotion)
     }
 }
 
-/// The ribbon at fixed levels, for the gallery and the renders. Empty
-/// levels are the resting streak.
+/// The ribbon at fixed levels and colours, for the gallery and the
+/// renders. Empty levels are the resting streak.
 struct StaticPrismRibbon: NSViewRepresentable {
     var levels: [Double] = []
+    var stops: [IslandPrism.RGB] = IslandPrism.spectrum
 
     func makeNSView(context: Context) -> PrismRibbonView {
         let view = PrismRibbonView()
-        view.setStaticLevels(levels)
+        view.setStatic(levels: levels, stops: stops)
         return view
     }
 
-    func updateNSView(_ view: PrismRibbonView, context: Context) { view.setStaticLevels(levels) }
+    func updateNSView(_ view: PrismRibbonView, context: Context) { view.setStatic(levels: levels, stops: stops) }
 }

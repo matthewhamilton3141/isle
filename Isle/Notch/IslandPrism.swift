@@ -12,10 +12,15 @@
 //    content can be read on, and clearing through the horizon — where the
 //    content ends and the lip begins — to all but bare glass.
 //  - The ribbon: a streak of light lying along the lip, split into a
-//    spectrum. How far the spectrum fans out at each point across the
-//    panel is the music's level in one band — bass at the centre, treble
-//    toward the tips, mirrored — so the streak's outline is the waveform.
-//    Silent, it's a thin white line with colour only at its fringes.
+//    fan of colours. At each point across the panel the line is lifted,
+//    and the fan spread, by the music's level in one band — a crest for
+//    each band, bass at the centre, treble toward the tips, mirrored — so
+//    the streak is the waveform. Silent, it's a thin white line with
+//    colour only at its fringes.
+//  - What moves it when it isn't the music: Claude's status, as a wave, a
+//    breath or a single crest.
+//  - Its colours: the spectrum, or a fan made from a cover's colours or a
+//    status's.
 //
 //  The drawing is in IslandPrism+SwiftUI.swift and PrismRibbonView.swift.
 //
@@ -113,24 +118,29 @@ enum IslandPrism {
     // MARK: - The ribbon
 
     /// The strip the ribbon is drawn in, measured up from the panel's
-    /// bottom edge: the lip, and room above it for the spectrum's upper
-    /// half to fade out behind the content's bottom inset.
+    /// bottom edge: the lip, and room above it for a loud band's crest to
+    /// rise behind the content's bottom inset.
     static let ribbonStrip: CGFloat = 58
 
-    /// The ribbon's centre line, in points above the panel's bottom edge:
-    /// a little above the lip's middle, where the lens is at its clearest
-    /// and the rim's own highlight doesn't crowd it.
-    static let ribbonCentre: CGFloat = 17
+    /// The ribbon's line at rest, in points above the panel's bottom edge:
+    /// the lip's middle, where the lens is at its clearest and the rim's
+    /// own highlight doesn't crowd it.
+    static let ribbonCentre: CGFloat = 15
 
     /// How far in from the glass's side walls the ribbon's tips sit.
     static let ribbonInset: CGFloat = 26
 
+    /// How far a full level lifts the line off its rest, in points: the
+    /// line is the waveform, a crest for each band, and the fan below is
+    /// what rides on it. Tune here.
+    static let fullLift: Double = 12
+
     /// The fan at rest and at a full level, in points either side of the
-    /// centre line: red at the top of it, violet at the bottom. At rest
-    /// the colours all but coincide and the streak is white; a loud band
-    /// spreads them across most of the lip. Tune here.
+    /// line: the spectrum's first colour at the top of it, its last at the
+    /// bottom. At rest the colours all but coincide and the streak is
+    /// white; a loud band spreads them. Tune here.
     static let restSpread: Double = 1.1
-    static let fullSpread: Double = 11.5
+    static let fullSpread: Double = 8.5
 
     /// Each colour's own softness, as a Gaussian's width in points: at
     /// rest, and what a point of spread adds.
@@ -149,36 +159,59 @@ enum IslandPrism {
 
     /// How many points across the panel the profile is sampled at for the
     /// drawing. The shader interpolates between them.
-    static let ribbonColumns = 64
+    static let ribbonColumns = 96
 
     /// How much of the way from the centre to a tip the bands are laid
     /// over: bass at the centre, the top band here, and the rest of the
-    /// way out only the taper.
-    static let bandSpan: Double = 0.86
+    /// way out only the taper. Well short of the tip, so the top bands
+    /// crest where the streak is still near its full strength rather than
+    /// in its point.
+    static let bandSpan: Double = 0.74
+
+    /// How wide each band's crest is, as a Gaussian's width in band
+    /// spacings. Narrower than the spacing, so neighbouring bands are
+    /// separate crests with a dip between them and each moves on its own;
+    /// laid edge to edge they ran together into one slow swell. Tune here.
+    static let crestWidth: Double = 0.46
+
+    /// A level's shape before it is drawn: quiet bands are lifted (the
+    /// capture's levels are scaled for bars an island tall, and a ribbon a
+    /// few points deep needs more of the low end). Tune here.
+    static let levelGamma: Double = 0.72
 
     /// 0 at the ribbon's centre, 1 at either tip, for `u` 0...1 across it.
     static func mirrored(_ u: Double) -> Double {
         abs(2 * min(max(u, 0), 1) - 1)
     }
 
-    /// The streak's taper: 1 at the centre, 0 at the tips, a lens's
-    /// outline — full for most of its length and drawn to a point.
+    /// The streak's taper: 1 at the centre, 0 at the tips — full for most
+    /// of its length and drawn to a point.
     static func taper(_ u: Double) -> Double {
         let m = mirrored(u)
-        return pow(1 - pow(m, 2.4), 1.5)
+        return pow(1 - pow(m, 4), 1.3)
     }
 
     /// The level at `u` across the ribbon, from `bands` (0...1 each, bass
-    /// first): the bands laid from the centre outward and mirrored, eased
-    /// from one to the next so the outline has no corners. No bands is
-    /// silence.
+    /// first): a crest for each band, laid from the centre outward and
+    /// mirrored, the highest of them at each point (their soft maximum, so
+    /// the dips between crests have no corner). No bands is silence.
     static func level(at u: Double, bands: [Double]) -> Double {
         guard !bands.isEmpty else { return 0 }
-        let p = min(mirrored(u) / bandSpan, 1) * Double(bands.count - 1)
-        let i = min(Int(p), bands.count - 1)
-        let j = min(i + 1, bands.count - 1)
-        let a = min(max(bands[i], 0), 1), b = min(max(bands[j], 0), 1)
-        return a + (b - a) * IslandGlass.fadeEase(p - Double(i))
+        let p = mirrored(u) / bandSpan * Double(max(bands.count - 1, 1))
+        // Sum of the fourth powers, fourth-rooted: near the maximum where
+        // one crest dominates, smooth where two meet.
+        var sum = 0.0
+        for (i, band) in bands.enumerated() {
+            let d = (p - Double(i)) / crestWidth
+            let crest = pow(min(max(band, 0), 1), levelGamma) * exp(-d * d / 2)
+            sum += crest * crest * crest * crest
+        }
+        return min(pow(sum, 0.25), 1)
+    }
+
+    /// How far the line is lifted off its rest at `u`, in points.
+    static func lift(at u: Double, bands: [Double]) -> Double {
+        taper(u) * fullLift * level(at: u, bands: bands)
     }
 
     /// The fan's half-height at `u`, in points.
@@ -192,27 +225,30 @@ enum IslandPrism {
         return pow(taper(u), 0.6) * (restGlow + (1 - restGlow) * lift)
     }
 
-    /// The profile the drawing takes: spread and brightness at
-    /// `ribbonColumns` points across the ribbon.
-    static func profile(bands: [Double]) -> (spread: [Float], glow: [Float]) {
+    /// The profile the drawing takes: the line's lift, the fan's spread
+    /// and the brightness at `ribbonColumns` points across the ribbon.
+    static func profile(bands: [Double]) -> (lift: [Float], spread: [Float], glow: [Float]) {
+        var l = [Float](repeating: 0, count: ribbonColumns)
         var s = [Float](repeating: 0, count: ribbonColumns)
         var g = [Float](repeating: 0, count: ribbonColumns)
         for k in 0..<ribbonColumns {
             let u = Double(k) / Double(ribbonColumns - 1)
+            l[k] = Float(lift(at: u, bands: bands))
             s[k] = Float(spread(at: u, bands: bands))
             g[k] = Float(glow(at: u, bands: bands))
         }
-        return (s, g)
+        return (l, s, g)
     }
 
     // MARK: - The ribbon's motion
 
     /// How fast a band follows the music up and lets go of it, as time
     /// constants in seconds. The capture publishes about thirty levels a
-    /// second, already smoothed for six bars; this carries them between
-    /// publishes at the display's rate. Tune here.
-    static let attack: Double = 0.05
-    static let release: Double = 0.14
+    /// second, already smoothed for six bars; this only carries them
+    /// between publishes at the display's rate, so it is quick — any
+    /// slower and a beat reads as a swell. Tune here.
+    static let attack: Double = 0.028
+    static let release: Double = 0.095
 
     /// A band's next value, `dt` seconds on, on its way to `target`.
     static func follow(_ value: Double, toward target: Double, dt: Double) -> Double {
@@ -225,6 +261,80 @@ enum IslandPrism {
     /// stops drawing until something changes.
     static let settled: Double = 0.002
 
+    /// What moves the ribbon.
+    enum Motion: Equatable {
+        /// The music: the capture's levels, or the bars' own pattern when
+        /// the waveform is set to Animated.
+        case music
+        /// Claude is working: a low wave running from the centre out to
+        /// the tips, over and over.
+        case working
+        /// Claude needs an answer — an approval, a question: the whole
+        /// ribbon swelling and ebbing, slowly, like a breath held.
+        case attention
+        /// Claude has finished: one crest running from the centre out to
+        /// the tips, then the resting streak.
+        case done
+        /// Something to notice that isn't moving — an error: the streak a
+        /// little fuller than at rest, still.
+        case steady
+        /// Nothing to show: the resting streak.
+        case rest
+    }
+
+    /// The bands `motion` asks for, `t` seconds after it began. `music` has
+    /// none of its own here (its levels are the capture's); with
+    /// `reduceMotion` the moving ones hold a still shape instead.
+    static func pattern(_ motion: Motion, band: Int, at t: Double, reduceMotion: Bool = false) -> Double {
+        switch motion {
+        case .music, .rest:
+            return 0
+        case .working:
+            if reduceMotion { return 0.22 }
+            // A crest every `workingPeriod`, a band's width behind for each
+            // band out from the centre.
+            let phase = 2 * Double.pi * (t / workingPeriod - Double(band) / 5)
+            return 0.1 + 0.34 * pow((1 + cos(phase)) / 2, 2)
+        case .attention:
+            if reduceMotion { return 0.34 }
+            let breath = (1 - cos(2 * Double.pi * t / attentionPeriod)) / 2
+            return (0.12 + 0.4 * breath) * (1 - 0.1 * Double(band))
+        case .done:
+            if reduceMotion { return 0 }
+            // One crest leaving the centre `doneDelay` in, reaching the
+            // last band `doneRun` later, each band up and down as it passes.
+            let run = t - doneDelay
+            guard run > 0 else { return 0 }
+            let at = run / doneRun * 5 - Double(band)
+            return 0.75 * exp(-at * at / 0.9) * max(0, 1 - run / (doneRun * 1.6))
+        case .steady:
+            return 0.14
+        }
+    }
+
+    /// The working wave's period, the attention breath's, and how long the
+    /// done crest takes to run out to the tips, in seconds. Tune here.
+    static let workingPeriod: Double = 1.9
+    static let attentionPeriod: Double = 2.4
+    static let doneRun: Double = 0.8
+
+    /// How long the done crest waits before it leaves the centre. A motion
+    /// begins as the panel opens, and the glass is under black for the
+    /// first part of the open: started at once, the crest was half way out
+    /// before there was anything to see it on.
+    static let doneDelay: Double = 0.35
+
+    /// Whether `motion` is still moving `t` seconds after it began — the
+    /// ribbon draws frames only while this holds (or a band hasn't
+    /// settled). `music` is the caller's to judge.
+    static func isMoving(_ motion: Motion, at t: Double, reduceMotion: Bool = false) -> Bool {
+        switch motion {
+        case .working, .attention: return !reduceMotion
+        case .done: return !reduceMotion && t < doneDelay + doneRun * 1.6
+        case .music, .steady, .rest: return false
+        }
+    }
+
     /// The pattern when the waveform is set to Animated (no capture), or
     /// the capture has nothing to say: each band its own slow sine, the
     /// frequencies the bars use so the two never disagree about the beat
@@ -235,4 +345,120 @@ enum IslandPrism {
         let f = frequencies[band % frequencies.count], p = phases[band % phases.count]
         return 0.18 + (sin(t * f * 3.1 + p) + 1) / 2 * 0.62
     }
+
+    // MARK: - The ribbon's colours
+
+    /// A colour as sRGB, each channel 0...1.
+    struct RGB: Equatable {
+        var r: Double
+        var g: Double
+        var b: Double
+    }
+
+    /// How many colours the fan is drawn through, top to bottom.
+    static let stopCount = 8
+
+    /// The ribbon with nothing to take its colours from: the spectrum,
+    /// red uppermost to violet, lighter and less green than a true rainbow.
+    static let spectrum: [RGB] = [
+        RGB(r: 1.00, g: 0.16, b: 0.20),
+        RGB(r: 1.00, g: 0.45, b: 0.10),
+        RGB(r: 1.00, g: 0.80, b: 0.22),
+        RGB(r: 0.62, g: 1.00, b: 0.55),
+        RGB(r: 0.18, g: 0.90, b: 1.00),
+        RGB(r: 0.20, g: 0.48, b: 1.00),
+        RGB(r: 0.50, g: 0.28, b: 1.00),
+        RGB(r: 0.95, g: 0.30, b: 0.90),
+    ]
+
+    static func hsb(_ c: RGB) -> IslandGlass.HSB {
+        let mx = max(c.r, c.g, c.b), mn = min(c.r, c.g, c.b), d = mx - mn
+        var h = 0.0
+        if d > 0 {
+            if mx == c.r { h = ((c.g - c.b) / d).truncatingRemainder(dividingBy: 6) }
+            else if mx == c.g { h = (c.b - c.r) / d + 2 }
+            else { h = (c.r - c.g) / d + 4 }
+            h /= 6
+            if h < 0 { h += 1 }
+        }
+        return IslandGlass.HSB(h: h, s: mx > 0 ? d / mx : 0, b: mx)
+    }
+
+    static func rgb(_ c: IslandGlass.HSB) -> RGB {
+        let v = IslandGlass.rgb(c)
+        return RGB(r: v.r, g: v.g, b: v.b)
+    }
+
+    /// A colour as the ribbon's light: its hue kept, bright, and — if it
+    /// has a hue at all — at least `lightMinSaturation` saturated, so a
+    /// dark or dusty colour still throws light of its own colour. Greys
+    /// stay grey: silver light, not a hue made up from noise.
+    static func light(_ c: RGB) -> IslandGlass.HSB {
+        let v = hsb(c)
+        let hued = IslandGlass.smoothstep(0.06, 0.18, v.s)
+        return IslandGlass.HSB(h: v.h, s: max(v.s, lightMinSaturation * hued), b: max(v.b, lightMinBrightness))
+    }
+
+    static let lightMinSaturation: Double = 0.62
+    static let lightMinBrightness: Double = 0.95
+
+    /// How far apart, as a fraction of the colour wheel, the fan's two
+    /// ends are held when the colours it's given are closer than that: a
+    /// prism splits even one colour a little.
+    static let minHueFan: Double = 0.07
+
+    /// The fan's colours from up to three of a cover's (or an accent's):
+    /// each as light, ordered round the colour wheel the short way from the
+    /// first, so neighbours in the fan are neighbours in hue, then laid
+    /// top to bottom with a paler tip above the first and a deeper one
+    /// below the last. Colours closer in hue than `minHueFan` are fanned
+    /// out to it. No colours is the spectrum.
+    static func stops(from colors: [RGB]) -> [RGB] {
+        guard !colors.isEmpty else { return spectrum }
+        let lit = colors.prefix(3).map(light)
+        let base = lit[0].h
+        // Each hue as an offset from the first's, -0.5...0.5, ascending.
+        var keyed = lit.map { c -> (offset: Double, color: IslandGlass.HSB) in
+            var d = c.h - base
+            if d > 0.5 { d -= 1 }
+            if d < -0.5 { d += 1 }
+            return (c.s < 0.06 ? 0 : d, c)
+        }
+        keyed.sort { $0.offset < $1.offset }
+        var lo = keyed.first!.offset, hi = keyed.last!.offset
+        if hi - lo < minHueFan {
+            let mid = (lo + hi) / 2
+            lo = mid - minHueFan / 2
+            hi = mid + minHueFan / 2
+            if keyed.count == 1 { keyed = [keyed[0], keyed[0]] }
+            keyed[0].offset = lo
+            keyed[keyed.count - 1].offset = hi
+        }
+        func color(_ k: (offset: Double, color: IslandGlass.HSB)) -> IslandGlass.HSB {
+            var h = base + k.offset
+            h -= h.rounded(.down)
+            return IslandGlass.HSB(h: h, s: k.color.s, b: k.color.b)
+        }
+        let top = color(keyed.first!), bottom = color(keyed.last!)
+        // Keys along the fan: a paler tip, the colours, a deeper tip.
+        var keys: [(at: Double, color: RGB)] = [(0, rgb(IslandGlass.HSB(h: top.h, s: top.s * 0.55, b: 1)))]
+        for (i, k) in keyed.enumerated() {
+            let at = keyed.count == 1 ? 0.5 : 0.16 + 0.68 * Double(i) / Double(keyed.count - 1)
+            keys.append((at, rgb(color(k))))
+        }
+        keys.append((1, rgb(IslandGlass.HSB(h: bottom.h, s: min(1, bottom.s * 1.15), b: bottom.b * 0.82))))
+        return (0..<stopCount).map { n in
+            let t = Double(n) / Double(stopCount - 1)
+            let j = max(1, keys.firstIndex { $0.at >= t } ?? keys.count - 1)
+            let a = keys[j - 1], b = keys[j]
+            let f = b.at > a.at ? (t - a.at) / (b.at - a.at) : 0
+            return RGB(r: a.color.r + (b.color.r - a.color.r) * f,
+                       g: a.color.g + (b.color.g - a.color.g) * f,
+                       b: a.color.b + (b.color.b - a.color.b) * f)
+        }
+    }
+
+    /// How long the ribbon takes to turn from one set of colours to the
+    /// next, as a time constant in seconds.
+    static let colorTurn: Double = 0.18
 }

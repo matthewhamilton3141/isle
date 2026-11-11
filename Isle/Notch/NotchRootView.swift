@@ -94,18 +94,73 @@ struct NotchRootView: View {
         panelBackground == .prism ? IslandPrism.lip : 0
     }
 
-    /// What Prism's ribbon follows: the capture, and whether there's music
-    /// for it to show. For the tree that draws the material, which the
-    /// ribbon is part of (see `PrismRibbonStrip`).
+    /// What Prism's ribbon follows and in which colours. For the tree that
+    /// draws the material, which the ribbon is part of (see
+    /// `PrismRibbonStrip`).
     private var ribbon: PrismRibbonInput? {
         guard panelBackground == .prism, glassLayer != .withoutMaterial else { return nil }
+        let subject = ribbonSubject
         return PrismRibbonInput(
             source: viewModel.audioLevelSource,
             listens: viewModel.waveformSource.capturesAudio,
             isPlaying: viewModel.media.isPlaying,
-            shows: viewModel.hasMusicActivity && viewModel.showsWaveform,
-            open: state.isExpanded
+            motion: subject.motion,
+            stops: subject.stops,
+            open: state.isExpanded,
+            reduceMotion: reduceMotion
         )
+    }
+
+    /// The ribbon is about what the panel is about. On the Claude face it
+    /// is Claude's status, moving as the status does and in its colour.
+    /// Everywhere else it is the music, in the cover's colours, while
+    /// there is any — and Claude's status when there isn't, so an island
+    /// with no music still has a pulse. With neither, the resting streak
+    /// in the plain spectrum.
+    private var ribbonSubject: (motion: IslandPrism.Motion, stops: [IslandPrism.RGB]) {
+        let music = viewModel.hasMusicActivity
+        if !island.isDropTarget {
+            let kind = viewModel.claudeMarkerKind
+            let motion = Self.ribbonMotion(for: kind)
+            let onClaude = viewModel.expandedPlace == .face(.claude)
+            if motion != .rest, onClaude || (!music && viewModel.hasClaudeActivity) {
+                let design = MarkerStore.shared.design(for: kind)
+                // A status with a colour of its own is that colour; one
+                // that draws from the palette (working) is the palette.
+                let colors = design.colorMode == .fixed
+                    ? [Self.rgb(Color(hex: design.fixedColorHex))]
+                    : Self.rgb(palette)
+                return (motion, IslandPrism.stops(from: colors))
+            }
+        }
+        guard music else { return (.rest, IslandPrism.spectrum) }
+        // A cover's colours, or the spectrum when the track has none.
+        let stops = viewModel.artworkPalette == nil
+            ? IslandPrism.spectrum
+            : IslandPrism.stops(from: Self.rgb(viewModel.prismPalette))
+        return (viewModel.showsWaveform ? .music : .rest, stops)
+    }
+
+    /// How the ribbon moves for a status: the ones that are under way run,
+    /// the ones waiting on an answer breathe, a finish crests once, and a
+    /// failure holds still. Anything else is no news, and rests.
+    private static func ribbonMotion(for kind: MarkerKind) -> IslandPrism.Motion {
+        switch kind {
+        case .working, .compacting: return .working
+        case .needsApproval, .needsQuestion, .planReview: return .attention
+        case .done, .success: return .done
+        case .apiError, .serverError, .rateLimited, .networkOffline, .warning: return .steady
+        case .disconnected, .idle, .waitingInput, .paused: return .rest
+        }
+    }
+
+    private static func rgb(_ palette: ArtworkPalette) -> [IslandPrism.RGB] {
+        [rgb(palette.primary), rgb(palette.accent), rgb(palette.secondary)]
+    }
+
+    private static func rgb(_ color: Color) -> IslandPrism.RGB {
+        guard let c = NSColor(color).usingColorSpace(.sRGB) else { return IslandPrism.RGB(r: 1, g: 1, b: 1) }
+        return IslandPrism.RGB(r: Double(c.redComponent), g: Double(c.greenComponent), b: Double(c.blueComponent))
     }
 
     /// The open panel's height: the standard 146, unless the face on screen
@@ -156,8 +211,12 @@ struct NotchRootView: View {
     /// colours and the accent): deriving it here re-ran extraction on every
     /// body evaluation, which both cost real CPU at 30fps and let a near-tied
     /// colour ranking flip frame to frame.
+    ///
+    /// Prism draws from the cover's colourful colours instead
+    /// (`NotchViewModel.prismPalette`), open and closed alike, so the bars
+    /// on the pill are the colour the ribbon will be.
     private var palette: ArtworkPalette {
-        viewModel.palette
+        panelBackground == .prism ? viewModel.prismPalette : viewModel.palette
     }
 
     /// The cover's colours for Fade's light: only while there's a track up
@@ -422,6 +481,7 @@ struct NotchRootView: View {
             let glass = panelBackground.isGlass
             ExpandedNotchView(viewModel: viewModel, island: island, palette: glass ? palette.flooredForGlass : palette)
                 .environment(\.islandOnGlass, glass)
+                .environment(\.islandHasRibbon, panelBackground == .prism)
                 // Opacity gated on how far the notch has actually opened; the
                 // transition still handles the fade-out on collapse.
                 .opacity(expandedContentOpacity)

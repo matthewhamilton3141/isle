@@ -528,6 +528,17 @@ final class NotchViewModel: ObservableObject {
         artworkPalette ?? settings.claudeAccentPalette
     }
 
+    /// The cover's colourful colours (`ArtworkColors.vividPalette`), held
+    /// like `artworkPalette` and for the same reasons. Nil with no artwork
+    /// or a cover with no colour in it.
+    @Published private(set) var vividArtworkPalette: ArtworkPalette?
+
+    /// The palette Prism draws from: the cover's colourful colours where it
+    /// has any, else whatever every other mode draws from.
+    var prismPalette: ArtworkPalette {
+        vividArtworkPalette ?? palette
+    }
+
     /// Identity of the cover `palette` was built from, to skip the work when
     /// an update carries the same image.
     private var paletteArtwork: NSImage?
@@ -2515,6 +2526,7 @@ final class NotchViewModel: ObservableObject {
             // nil artwork leaves this nil rather than storing `.fallback`, so
             // `palette` can hand over to the accent instead of the greys.
             artworkPalette = model.artwork.map { ArtworkColors.palette(from: $0) }
+            vividArtworkPalette = ArtworkColors.vividPalette(from: model.artwork)
         }
 
         // The anchor above is the only thing that needs the timing fields, and

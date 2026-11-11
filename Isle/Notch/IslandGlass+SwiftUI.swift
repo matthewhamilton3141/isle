@@ -721,6 +721,19 @@ extension EnvironmentValues {
     }
 }
 
+private struct IslandHasRibbonKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// Whether the panel has Prism's ribbon along its lip. The ribbon is
+    /// the waveform there, so the Music face leaves its own bars out.
+    var islandHasRibbon: Bool {
+        get { self[IslandHasRibbonKey.self] }
+        set { self[IslandHasRibbonKey.self] = newValue }
+    }
+}
+
 /// Secondary text: white at `opacity` on black, a little brighter on glass
 /// (`IslandGlass.liftedOpacity`). On black it resolves to exactly
 /// `.white.opacity(opacity)`.

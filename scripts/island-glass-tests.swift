@@ -381,9 +381,10 @@ print("prism: the lens's shape")
 do {
     check(IslandPrism.lip > 0 && IslandPrism.bottomCornerRadius > IslandMotion.openCorners.bottom, "a lip, and rounder than the other modes")
     check(IslandPrism.bottomCornerRadius <= IslandPrism.lip + 8, "the bottom corners turn inside the lip and the content's bottom inset")
-    check(IslandPrism.ribbonCentre > 0 && IslandPrism.ribbonCentre < IslandPrism.lip, "the ribbon's centre line is in the lip")
-    check(IslandPrism.ribbonCentre - IslandPrism.fullSpread > 0, "a full fan's violet edge stays above the bottom edge")
-    check(IslandPrism.ribbonCentre + IslandPrism.fullSpread < IslandPrism.ribbonStrip, "and its red edge inside the strip")
+    check(IslandPrism.ribbonCentre > 0 && IslandPrism.ribbonCentre < IslandPrism.lip, "the ribbon's resting line is in the lip")
+    check(IslandPrism.ribbonCentre - IslandPrism.restSpread > 0, "the resting fan stays above the bottom edge")
+    check(IslandPrism.ribbonCentre + IslandPrism.fullLift - IslandPrism.fullSpread > 0, "a full crest's lower edge is above the bottom edge")
+    check(IslandPrism.ribbonCentre + IslandPrism.fullLift + IslandPrism.fullSpread < IslandPrism.ribbonStrip, "and its upper edge inside the strip")
 }
 
 print("prism: the ribbon's profile")
@@ -392,33 +393,50 @@ do {
     let full = [Double](repeating: 1, count: 6)
     check(IslandPrism.mirrored(0.5) == 0 && IslandPrism.mirrored(0) == 1 && IslandPrism.mirrored(1) == 1, "mirrored: 0 at the centre, 1 at the tips")
     check(near(IslandPrism.taper(0.5), 1) && IslandPrism.taper(0) == 0 && IslandPrism.taper(1) == 0, "taper: full at the centre, nothing at the tips")
-    check(near(IslandPrism.spread(at: 0.5, bands: silent), IslandPrism.restSpread), "silent: the resting fan at the centre")
-    check(near(IslandPrism.spread(at: 0.5, bands: full), IslandPrism.fullSpread), "full: the full fan at the centre")
+    check(near(IslandPrism.spread(at: 0.5, bands: silent), IslandPrism.restSpread) && IslandPrism.lift(at: 0.5, bands: silent) == 0,
+          "silent: the resting fan on the resting line")
+    check(near(IslandPrism.spread(at: 0.5, bands: full), IslandPrism.fullSpread) && near(IslandPrism.lift(at: 0.5, bands: full), IslandPrism.fullLift),
+          "full: the full fan, lifted the full lift, at the centre")
     check(near(IslandPrism.spread(at: 0.5, bands: []), IslandPrism.restSpread), "no bands is silence")
-    check(IslandPrism.spread(at: 0, bands: full) == 0 && IslandPrism.glow(at: 1, bands: full) == 0, "nothing at the tips, however loud")
-    // Bass at the centre, treble toward the tips.
+    check(IslandPrism.spread(at: 0, bands: full) == 0 && IslandPrism.lift(at: 1, bands: full) == 0 && IslandPrism.glow(at: 1, bands: full) == 0,
+          "nothing at the tips, however loud")
+    // Bass at the centre, treble toward the tips, each a crest of its own.
     let bass = [1.0, 0, 0, 0, 0, 0], treble = [0.0, 0, 0, 0, 0, 1]
-    check(near(IslandPrism.level(at: 0.5, bands: bass), 1) && IslandPrism.level(at: 0.9, bands: bass) == 0, "bass sits at the centre")
-    check(IslandPrism.level(at: 0.5, bands: treble) == 0 && near(IslandPrism.level(at: 0.5 + IslandPrism.bandSpan / 2, bands: treble), 1), "treble sits bandSpan of the way out")
+    let trebleAt = 0.5 + IslandPrism.bandSpan / 2
+    check(near(IslandPrism.level(at: 0.5, bands: bass), 1) && IslandPrism.level(at: trebleAt, bands: bass) < 1e-6, "bass crests at the centre")
+    check(IslandPrism.level(at: 0.5, bands: treble) < 1e-6 && near(IslandPrism.level(at: trebleAt, bands: treble), 1), "treble crests bandSpan of the way out")
+    check(IslandPrism.taper(trebleAt) > 0.6, "where the streak is still most of its strength", "\(IslandPrism.taper(trebleAt))")
+    // Neighbouring bands at the same level are two crests with a dip between.
+    let spacing = IslandPrism.bandSpan / 2 / 5
+    let pair = [0.0, 1, 1, 0, 0, 0]
+    let dip = IslandPrism.level(at: 0.5 + 1.5 * spacing, bands: pair)
+    check(dip > 0.4 && dip < 0.85, "a dip between two equal crests, not a gap and not a plateau", "\(dip)")
+    check(IslandPrism.level(at: 0.5 + spacing, bands: [0, 1, 0, 0, 0, 0]) > IslandPrism.level(at: 0.5 + 2 * spacing, bands: [0, 1, 0, 0, 0, 0]) * 5,
+          "a crest is its own band's: next to nothing a band away")
+    check(IslandPrism.level(at: 0.5, bands: [0.25, 0, 0, 0, 0, 0]) > 0.25, "quiet bands are lifted")
     var mirrored = true, bounded = true, smooth = true
     let mixed = [0.9, 0.2, 0.7, 0.1, 0.6, 0.3]
-    var last = IslandPrism.spread(at: 0, bands: mixed)
-    for k in 0...400 {
-        let u = Double(k) / 400
-        let s = IslandPrism.spread(at: u, bands: mixed), g = IslandPrism.glow(at: u, bands: mixed)
-        if !near(s, IslandPrism.spread(at: 1 - u, bands: mixed), 1e-9) { mirrored = false }
-        if s < 0 || s > IslandPrism.fullSpread + 1e-9 || g < 0 || g > 1 + 1e-9 { bounded = false }
-        if abs(s - last) > 0.35 { smooth = false }
-        last = s
+    var last = IslandPrism.lift(at: 0, bands: mixed)
+    for k in 0...800 {
+        let u = Double(k) / 800
+        let s = IslandPrism.spread(at: u, bands: mixed), g = IslandPrism.glow(at: u, bands: mixed), l = IslandPrism.lift(at: u, bands: mixed)
+        if !near(l, IslandPrism.lift(at: 1 - u, bands: mixed), 1e-9) || !near(s, IslandPrism.spread(at: 1 - u, bands: mixed), 1e-9) { mirrored = false }
+        if s < 0 || s > IslandPrism.fullSpread + 1e-9 || g < 0 || g > 1 + 1e-9 || l < 0 || l > IslandPrism.fullLift + 1e-9 { bounded = false }
+        if abs(l - last) > 0.5 { smooth = false }
+        last = l
     }
-    check(mirrored, "the outline is a mirror image about the centre")
-    check(bounded, "spread within the full fan, glow within 0...1")
-    check(smooth, "no step in the outline (under 0.35pt between samples 1/400 apart)")
-    check(IslandPrism.level(at: 0.5, bands: [2, -1]) == 1, "levels clamp to 0...1")
+    check(mirrored, "the line and the fan are mirror images about the centre")
+    check(bounded, "lift within the full lift, spread within the full fan, glow within 0...1")
+    check(smooth, "no step in the line (under half a point between samples 1/800 apart)")
+    check(near(IslandPrism.level(at: 0.5, bands: [2, -1]), 1), "levels clamp to 0...1")
     let p = IslandPrism.profile(bands: mixed)
-    check(p.spread.count == IslandPrism.ribbonColumns && p.glow.count == IslandPrism.ribbonColumns, "profile: one sample per column")
-    check(near(Double(p.spread[0]), 0) && near(Double(p.spread[IslandPrism.ribbonColumns - 1]), 0), "profile ends at the tips")
+    let n = IslandPrism.ribbonColumns
+    check(p.lift.count == n && p.spread.count == n && p.glow.count == n, "profile: one sample per column")
+    check(near(Double(p.spread[0]), 0) && near(Double(p.lift[n - 1]), 0), "profile ends at the tips")
     check(near(IslandPrism.glow(at: 0.5, bands: silent), IslandPrism.restGlow) && near(IslandPrism.glow(at: 0.5, bands: full), 1), "glow: resting when silent, full when loud")
+    // Columns enough that the shader's straight lines between them hold a crest's shape.
+    check(Double(n) / 2 * spacing / (IslandPrism.crestWidth * spacing) >= 0 && IslandPrism.crestWidth * spacing * Double(n - 1) >= 3,
+          "at least three columns across a crest's width", "\(IslandPrism.crestWidth * spacing * Double(n - 1))")
 }
 
 print("prism: the ribbon's motion")
@@ -429,16 +447,135 @@ do {
     check(up > 0 && up < 1 && down > 0 && down < 1, "a frame moves it part of the way")
     check(up > down, "rises faster than it falls")
     check(near(IslandPrism.follow(0, toward: 1, dt: IslandPrism.attack), 1 - exp(-1)), "one attack constant: 63% of the way")
+    check(IslandPrism.follow(0, toward: 1, dt: 1.0 / 30) > 0.6, "most of the way to a new level by the capture's next publish")
     // Frame-rate independent: two half steps are one whole step.
     let whole = IslandPrism.follow(0, toward: 1, dt: 1.0 / 30)
     let halves = IslandPrism.follow(IslandPrism.follow(0, toward: 1, dt: 1.0 / 60), toward: 1, dt: 1.0 / 60)
     check(near(whole, halves, 1e-12), "the same at 30 and 60 frames a second")
     var v = 1.0, frames = 0
     while abs(v) > IslandPrism.settled, frames < 600 { v = IslandPrism.follow(v, toward: 0, dt: 1.0 / 60); frames += 1 }
-    check(frames < 90, "silence settles, and the drawing stops, within a second and a half", "\(frames) frames")
+    check(frames < 60, "silence settles, and the drawing stops, within a second", "\(frames) frames")
     var inRange = true
     for band in 0..<6 { for k in 0..<600 { let l = IslandPrism.procedural(band: band, at: Double(k) / 30); if l < 0.15 || l > 0.85 { inRange = false } } }
     check(inRange, "the animated pattern stays between a low and a high level")
+}
+
+print("prism: Claude's status in the ribbon")
+do {
+    typealias M = IslandPrism.Motion
+    func bands(_ m: M, _ t: Double, reduce: Bool = false) -> [Double] { (0..<6).map { IslandPrism.pattern(m, band: $0, at: t, reduceMotion: reduce) } }
+    func ranged(_ m: M) -> Bool { stride(from: 0.0, to: 8, by: 1.0 / 60).allSatisfy { t in bands(m, t).allSatisfy { $0 >= 0 && $0 <= 1 } } }
+    check([M.working, .attention, .done, .steady, .rest, .music].allSatisfy(ranged), "every pattern stays within 0...1")
+    check(bands(.rest, 3).allSatisfy { $0 == 0 } && bands(.music, 3).allSatisfy { $0 == 0 }, "rest is the resting streak; music has no pattern of its own")
+    // Working: a crest that travels outward, and comes round again.
+    let period = IslandPrism.workingPeriod
+    func crestBand(_ t: Double) -> Int { let b = bands(.working, t); return b.firstIndex(of: b.max()!)! }
+    check(crestBand(0) == 0 && crestBand(period * 0.2) == 1 && crestBand(period * 0.6) == 3, "working: the crest moves from the centre outward")
+    check(zip(bands(.working, 0.4), bands(.working, 0.4 + period)).allSatisfy { near($0, $1, 1e-9) }, "and repeats each period")
+    check(bands(.working, 0).max()! < 0.5, "working stays low: it's ambient")
+    // Attention: the whole ribbon up and down together.
+    let breath = IslandPrism.attentionPeriod
+    check(zip(bands(.attention, 0), bands(.attention, breath / 2)).allSatisfy { $0 < $1 }, "attention: every band swells together")
+    check(zip(bands(.attention, 0.3), bands(.attention, 0.3 + breath)).allSatisfy { near($0, $1, 1e-9) }, "and ebbs back each period")
+    check(bands(.attention, breath / 2)[0] > bands(.attention, breath / 2)[5], "fullest at the centre")
+    check(bands(.attention, breath / 2).max()! > bands(.working, 0).max()!, "attention swells higher than working runs")
+    // Done: nothing while the panel opens, one crest out, then rest.
+    let delay = IslandPrism.doneDelay, run = IslandPrism.doneRun
+    check(bands(.done, delay * 0.9).allSatisfy { $0 == 0 }, "done: waits for the panel to open")
+    check(bands(.done, delay + 0.01)[0] > 0.5, "then crests at the centre")
+    let mid = bands(.done, delay + run * 0.5)
+    check(mid.firstIndex(of: mid.max()!)! >= 2 && mid.firstIndex(of: mid.max()!)! <= 3, "the crest half way out, half way through its run")
+    check(bands(.done, delay + run * 1.6).allSatisfy { $0 == 0 }, "and gone when the run is over")
+    check(IslandPrism.isMoving(.done, at: delay + run) && !IslandPrism.isMoving(.done, at: delay + run * 1.6 + 0.01), "done moves for its run and no longer")
+    check(IslandPrism.isMoving(.working, at: 100) && IslandPrism.isMoving(.attention, at: 100), "working and attention keep moving")
+    check(!IslandPrism.isMoving(.steady, at: 0) && !IslandPrism.isMoving(.rest, at: 0) && !IslandPrism.isMoving(.music, at: 0), "steady and rest never do")
+    let steady = bands(.steady, 0)
+    check(steady.allSatisfy { $0 == steady[0] && $0 > 0 } && steady == bands(.steady, 5), "steady: a little fuller than rest, and still")
+    // Reduce Motion: a still shape for each, no motion at all.
+    for m in [M.working, .attention, .done] {
+        check(!IslandPrism.isMoving(m, at: 0.5, reduceMotion: true) && bands(m, 0.2, reduce: true) == bands(m, 1.7, reduce: true), "\(m): still under Reduce Motion")
+    }
+}
+
+print("prism: the ribbon's colours")
+do {
+    typealias RGB = IslandPrism.RGB
+    func hue(_ c: RGB) -> Double { IslandPrism.hsb(c).h }
+    func sat(_ c: RGB) -> Double { IslandPrism.hsb(c).s }
+    func hueGap(_ a: Double, _ b: Double) -> Double { let d = abs(a - b); return min(d, 1 - d) }
+    check(IslandPrism.spectrum.count == IslandPrism.stopCount, "the spectrum has a colour per stop")
+    check(IslandPrism.stops(from: []) == IslandPrism.spectrum, "no colours: the spectrum")
+    for c in [RGB(r: 1, g: 0, b: 0), RGB(r: 0.2, g: 0.6, b: 0.9), RGB(r: 0.9, g: 0.8, b: 0.1), RGB(r: 0.4, g: 0.1, b: 0.7)] {
+        let back = IslandPrism.rgb(IslandPrism.hsb(c))
+        check(near(back.r, c.r, 1e-9) && near(back.g, c.g, 1e-9) && near(back.b, c.b, 1e-9), "rgb → hsb → rgb round-trips")
+    }
+    // One colour (a status): a fan round its hue, never another colour.
+    let green = RGB(r: 0.20, g: 0.78, b: 0.35)
+    let one = IslandPrism.stops(from: [green])
+    check(one.count == IslandPrism.stopCount, "a stop for each of the fan's colours")
+    check(one.allSatisfy { hueGap(hue($0), hue(green)) <= IslandPrism.minHueFan / 2 + 1e-6 }, "one colour: every stop within the minimum fan of its hue")
+    check(hueGap(hue(one[1]), hue(one[IslandPrism.stopCount - 2])) > IslandPrism.minHueFan * 0.5, "and fanned out, not flat")
+    check(sat(one[0]) < sat(one[3]), "a paler tip at the top")
+    // Three colours (a cover): each of them in the fan, in hue order.
+    let cover = [RGB(r: 0.85, g: 0.15, b: 0.55), RGB(r: 1.0, g: 0.6, b: 0.2), RGB(r: 0.45, g: 0.2, b: 0.8)]
+    let three = IslandPrism.stops(from: cover)
+    for c in cover {
+        check(three.contains { hueGap(hue($0), hue(c)) < 0.04 }, "the cover's colour is in the fan (hue \(hue(c)))")
+    }
+    // Hues run one way round the wheel down the fan: no doubling back.
+    var offsets = three.map { h -> Double in var d = hue(h) - hue(three[0]); if d > 0.5 { d -= 1 }; if d < -0.5 { d += 1 }; return d }
+    offsets = offsets.map { $0 - offsets[0] }
+    check(zip(offsets, offsets.dropFirst()).allSatisfy { $1 >= $0 - 1e-6 } || zip(offsets, offsets.dropFirst()).allSatisfy { $1 <= $0 + 1e-6 },
+          "hues run one way down the fan", "\(offsets)")
+    check(three.dropFirst().dropLast().allSatisfy { max($0.r, $0.g, $0.b) > 0.75 }, "the fan's colours are light: bright whatever the cover")
+    // A dark, dusty colour still throws light of its own hue; a grey stays grey.
+    let dusty = IslandPrism.light(RGB(r: 0.25, g: 0.18, b: 0.15))
+    check(dusty.b >= IslandPrism.lightMinBrightness && dusty.s >= IslandPrism.lightMinSaturation * 0.9, "a dark brown is lit and saturated")
+    check(near(dusty.h, IslandPrism.hsb(RGB(r: 0.25, g: 0.18, b: 0.15)).h), "with its hue kept")
+    let grey = IslandPrism.light(RGB(r: 0.5, g: 0.5, b: 0.5))
+    check(grey.s == 0 && grey.b >= IslandPrism.lightMinBrightness, "a grey is silver light, no hue made up")
+    check(IslandPrism.stops(from: [RGB(r: 0.6, g: 0.6, b: 0.6)]).allSatisfy { sat($0) < 0.02 }, "a grey cover's fan is white")
+}
+
+print("the colourful pick")
+do {
+    typealias RGB = VividPalette.RGB
+    func hue(_ c: RGB) -> Double { VividPalette.hue(c) }
+    func hueGap(_ a: Double, _ b: Double) -> Double { let d = abs(a - b); return min(d, 1 - d) }
+    func chroma(_ c: RGB) -> Double { max(c.r, c.g, c.b) - min(c.r, c.g, c.b) }
+    let beige = RGB(r: 0.78, g: 0.72, b: 0.62), red = RGB(r: 0.9, g: 0.1, b: 0.12), teal = RGB(r: 0.1, g: 0.75, b: 0.7)
+    let navy = RGB(r: 0.05, g: 0.06, b: 0.2), grey = RGB(r: 0.5, g: 0.5, b: 0.5)
+    func cover(_ parts: [(RGB, Int)]) -> [RGB] { parts.flatMap { Array(repeating: $0.0, count: $0.1) } }
+    check(VividPalette.pick([]) == nil, "no pixels, no palette")
+    check(VividPalette.pick(cover([(grey, 900), (RGB(r: 0.1, g: 0.1, b: 0.1), 124)])) == nil, "a black-and-white cover has none")
+    // A small vivid subject on a large dull ground: the subject wins.
+    let small = VividPalette.pick(cover([(beige, 900), (red, 60), (teal, 64)]))!
+    check(hueGap(hue(small.primary), hue(red)) < 0.03 || hueGap(hue(small.primary), hue(teal)) < 0.03, "6% of a strong colour beats 88% of a dull one")
+    let found = [small.primary, small.secondary, small.accent]
+    check(found.contains { hueGap(hue($0), hue(red)) < 0.03 } && found.contains { hueGap(hue($0), hue(teal)) < 0.03 }, "both strong colours are in the palette")
+    check(found.contains { hueGap(hue($0), hue(beige)) < 0.04 }, "and the ground is its third, not left out")
+    // Dark doesn't outvote bright: a deep navy field and a bright accent.
+    let dark = VividPalette.pick(cover([(navy, 800), (teal, 224)]))!
+    check(hueGap(hue(dark.primary), hue(teal)) < 0.03, "a bright colour beats a larger dark one")
+    // One colour: the others are its shades, never a new hue.
+    let mono = VividPalette.pick(cover([(red, 500), (grey, 524)]))!
+    check(hueGap(hue(mono.secondary), hue(red)) < 0.02 && hueGap(hue(mono.accent), hue(red)) < 0.02, "one hue on the cover: three shades of it")
+    check(mono.secondary != mono.primary && mono.accent != mono.primary, "and three different shades")
+    // The second colour is a different colour, not the first again.
+    let near = VividPalette.pick(cover([(red, 400), (RGB(r: 0.9, g: 0.16, b: 0.1), 400), (teal, 224)]))!
+    check(hueGap(hue(near.secondary), hue(red)) > 0.06, "two reds and a teal: the second colour is the teal")
+    // Pastels are told apart when there's nothing stronger.
+    let pink = RGB(r: 0.98, g: 0.86, b: 0.90), mint = RGB(r: 0.80, g: 0.95, b: 0.88), lilac = RGB(r: 0.86, g: 0.88, b: 0.99)
+    let pastel = VividPalette.pick(cover([(pink, 400), (mint, 300), (lilac, 324)]))!
+    let hues = [pastel.primary, pastel.secondary, pastel.accent].map(hue)
+    check(hueGap(hues[0], hues[1]) > 0.08 && hueGap(hues[1], hues[2]) > 0.08 && hueGap(hues[0], hues[2]) > 0.08, "a pastel cover: its three hues, not one cream")
+    // The same pixels in any order give the same palette.
+    let pixels = cover([(beige, 300), (red, 200), (teal, 200), (navy, 324)])
+    let a = VividPalette.pick(pixels)!, b = VividPalette.pick(pixels.reversed())!
+    check(a.primary == b.primary || (abs(a.primary.r - b.primary.r) < 1e-9 && abs(a.primary.g - b.primary.g) < 1e-9), "order doesn't change the pick")
+    check(chroma(a.primary) >= chroma(beige), "the pick is at least as colourful as the ground")
+    let shade = VividPalette.shade(red, brightness: 0.5, saturation: 1)
+    check(hueGap(hue(shade), hue(red)) < 1e-6 && max(shade.r, shade.g, shade.b) < 0.5, "a shade keeps its hue")
 }
 
 print("\n\(passes) passed, \(failures) failed")
