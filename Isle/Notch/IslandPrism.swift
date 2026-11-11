@@ -292,20 +292,20 @@ enum IslandPrism {
         if y >= horizonBottom { return lipTint }
         if y > horizonTop {
             let t = Double((y - horizonTop) / horizonFeather)
-            return edgeTint + (lipTint - edgeTint) * IslandGlass.fadeEase(t)
+            return edgeTint + (lipTint - edgeTint) * IslandGlass.ease(t)
         }
         let span = horizonTop - band
         guard span > 0 else { return 1 }
-        return 1 - (1 - edgeTint) * IslandGlass.fadeEase(Double((y - band) / span) / reach)
+        return 1 - (1 - edgeTint) * IslandGlass.ease(Double((y - band) / span) / reach)
     }
 
     /// The ease below the band as (location, alpha) stops, location 0 at
     /// the band's foot and 1 at the top of the horizon.
     static func shadeStops() -> [(location: Double, alpha: Double)] {
-        let n = IslandGlass.fadeStopCount
+        let n = IslandGlass.easeStopCount
         let ease = (0...n).map {
             let t = Double($0) / Double(n)
-            return (t * reach, 1 - (1 - edgeTint) * IslandGlass.fadeEase(t))
+            return (t * reach, 1 - (1 - edgeTint) * IslandGlass.ease(t))
         }
         return reach < 1 ? ease + [(1, edgeTint)] : ease
     }
@@ -315,7 +315,7 @@ enum IslandPrism {
         let n = 8
         return (0...n).map {
             let t = Double($0) / Double(n)
-            return (t, edgeTint + (lipTint - edgeTint) * IslandGlass.fadeEase(t))
+            return (t, edgeTint + (lipTint - edgeTint) * IslandGlass.ease(t))
         }
     }
 

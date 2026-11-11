@@ -87,8 +87,10 @@ func run() {
         exit(0)
     }
     let defaults = UserDefaults(suiteName: "isle.windowtests.\(UUID().uuidString)")!
+    // A background from before Smoked and Fade were removed: read as Glass.
     defaults.set("fade", forKey: "isle.panelBackground")
     let settings = AppSettings(defaults: defaults)
+    check(settings.panelBackground == .glass, "a stored Fade starts up as Glass", "\(settings.panelBackground)")
     settings.mode = .both
     let vm = NotchViewModel(settings: settings)
     let island = IslandPresentation(content: vm)
@@ -215,7 +217,7 @@ func run() {
     print("prism: the lens")
     check(target.height >= NotchMetrics.panelMaxHeight + IslandPrism.lip,
           "the window has room for Prism's lip under the tallest panel", "\(target.height)")
-    check(!w.glassWindow.lensed, "Fade's glass is the frosted one: the glass window isn't lensed")
+    check(!w.glassWindow.lensed, "Glass's glass is the frosted one: the glass window isn't lensed")
     settings.panelBackground = .prism
     spin(0.4)
     if #available(macOS 26.0, *) {
@@ -236,12 +238,12 @@ func run() {
         checkInStep(w, "prism, off screen and back")
         island.setHovering(false); spin(1.0)
         checkInStep(w, "prism, closed")
-        settings.panelBackground = .fade
+        settings.panelBackground = .glass
         spin(0.4)
         check(!w.glassWindow.lensed, "leaving Prism puts the frosted glass back")
     } else {
         check(!w.glassWindow.lensed, "before Liquid Glass there's no lens to ask for")
-        settings.panelBackground = .fade
+        settings.panelBackground = .glass
         spin(0.2)
     }
 

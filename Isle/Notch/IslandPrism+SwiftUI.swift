@@ -14,7 +14,7 @@
 //  - `PrismLens`: the scrim behind the content and — where the system has
 //    no Liquid Glass to draw a lens's edge — a specular rim of Isle's own.
 //
-//  Like Fade's, the shade and the scrim are laid out, not measured: fixed
+//  The shade and the scrim are laid out, not measured: fixed
 //  lengths at the top (the band) and the bottom (the horizon and the lip)
 //  with a gradient taking whatever is between, so they follow the outline
 //  as it opens, collapses and changes height. Nothing here runs on a

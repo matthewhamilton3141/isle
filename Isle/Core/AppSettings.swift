@@ -124,10 +124,10 @@ final class AppSettings: ObservableObject {
         }
     }
 
-    /// With Glass or Smoked, black grows out of the camera housing and
-    /// fades into the glass, so the notch melts into the panel instead of
-    /// biting into it. On by default; only drawn on a screen with a notch.
-    /// Black and Fade ignore it (Fade is black around the camera already).
+    /// With Glass, black grows out of the camera housing and thins into the
+    /// glass, so the notch melts into the panel instead of biting into it.
+    /// On by default; only drawn on a screen with a notch. Black and Prism
+    /// ignore it (Prism is black over the camera already).
     @Published var panelNotchGlow: Bool {
         didSet { defaults.set(panelNotchGlow, forKey: Self.panelNotchGlowKey) }
     }

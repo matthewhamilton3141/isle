@@ -1,13 +1,12 @@
 #!/bin/zsh
 # Builds and runs the glass panel tests (scripts/island-glass-tests.swift):
-# Glass, Smoked and Fade (its band, curve and clear-glass lens: scrim, rim,
-# glint, the cover's light and the sweep on open), Prism (its shade, its
-# lens's shape, the ribbon's profile, motion, status patterns and colours,
-# and the colourful pick of a cover's colours), the blend, the glow and the
-# lifts, against Isle/Notch/IslandGlass.swift, Isle/Notch/IslandPrism.swift,
-# Isle/Components/VividPalette.swift, Isle/Notch/IslandMotion.swift (the open
-# spring the sweep waits on) and Isle/Core/PanelBackground.swift alone. No
-# app, no window.
+# the stored background and the retired ones it still reads, Glass's tint,
+# Prism (its shade, its lens's shape, the ribbon's profile, motion, status
+# patterns and colours, and the colourful pick of a cover's colours), the
+# blend, the glow and the lifts, against Isle/Notch/IslandGlass.swift,
+# Isle/Notch/IslandPrism.swift, Isle/Components/VividPalette.swift,
+# Isle/Notch/IslandMotion.swift (the settled corner radii) and
+# Isle/Core/PanelBackground.swift alone. No app, no window.
 set -e
 ROOT=${0:A:h:h}
 OUT=${TMPDIR:-/tmp}/isle-island-glass-tests

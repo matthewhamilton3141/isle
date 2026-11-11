@@ -90,7 +90,7 @@ enum SettingsPreviewTests {
         equal(Plan.decide(.optionDescriptions, context: ctx), .open(face: .claude), "option descriptions: open on Claude")
         equal(Plan.decide(.pomodoroEnabled, context: ctx), .open(face: .pomodoro), "Pomodoro switched on: the timer")
         equal(Plan.decide(.showCalendarEvents, context: ctx), .open(face: .agenda), "Calendar switched on: the agenda")
-        equal(Plan.decide(.panelBackground, context: ctx), .open(face: nil), "Black/Glass/Smoked: open where it is")
+        equal(Plan.decide(.panelBackground, context: ctx), .open(face: nil), "the background: open where it is")
         equal(Plan.decide(.panelNotchGlow, context: ctx), .open(face: nil), "the glow: open where it is")
         equal(Plan.decide(.claudeAccent, context: ctx), .open(face: nil), "the accent: open where it is")
         equal(Plan.decide(.mode, context: ctx), .open(face: nil), "the mode: open where it is (or Home)")
