@@ -191,7 +191,7 @@ private struct IslandGlassBlend: View, Animatable {
                 // with the lens: glass on glass and the light in it, under
                 // everything the panel draws.
                 if background == .prism {
-                    PrismFrost()
+                    PrismFrost(shape: shape)
                     PrismRibbonStrip(shape: shape, ribbon: ribbon)
                 }
             }

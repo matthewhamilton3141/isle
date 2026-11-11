@@ -101,24 +101,10 @@ struct PrismLens: View {
         .allowsHitTesting(false)
     }
 
-    /// The outline's walls stand its top flare's radius in from the frame.
-    private var wall: CGFloat { shape.topCornerRadius }
-
-    /// Soft-edged black behind the content: from under the band, where it
-    /// can't be seen, down to the horizon, inset from the walls. Flattened
-    /// to one bitmap, so the blur costs nothing at rest.
+    /// Soft-edged black behind the content, over the frost and to the same
+    /// outline (`PrismPane`).
     private var scrim: some View {
-        let inset = wall + IslandPrism.scrimInset
-        let radius: CGFloat = 14
-        return Color.clear.overlay {
-            UnevenRoundedRectangle(bottomLeadingRadius: radius, bottomTrailingRadius: radius, style: .continuous)
-                .fill(.black.opacity(IslandPrism.scrim))
-                .padding(.horizontal, inset)
-                .padding(.bottom, IslandPrism.lip + IslandPrism.scrimFeather / 2)
-                .padding(.top, -2 * IslandPrism.scrimFeather)
-                .blur(radius: IslandPrism.scrimFeather)
-        }
-        .drawingGroup()
+        Color.black.opacity(IslandPrism.scrim).mask { PrismPane(shape: shape) }
     }
 
     /// Before Liquid Glass there's no lens and no edge to it: a thin white
@@ -148,19 +134,38 @@ struct PrismLens: View {
 /// Before Liquid Glass the material is already frosted throughout, and
 /// this draws nothing.
 struct PrismFrost: View {
+    var shape: NotchShape
+
     var body: some View {
         if #available(macOS 26.0, *) {
             Color.clear
                 .glassEffect(.regular, in: Rectangle())
                 .environment(\.colorScheme, .dark)
-                .mask {
-                    VStack(spacing: 0) {
-                        Color.white.opacity(IslandPrism.frost)
-                        LinearGradient(colors: [.white.opacity(IslandPrism.frost), .clear], startPoint: .top, endPoint: .bottom)
-                            .frame(height: IslandPrism.horizonFeather)
-                        Color.clear.frame(height: IslandPrism.lip - IslandPrism.horizonFeather / 2)
-                    }
-                }
+                .mask { PrismPane(shape: shape).opacity(IslandPrism.frost) }
         }
+    }
+}
+
+/// The part of the panel that holds content, as a soft-edged shape: from
+/// under the band, where its top can't be seen, down to the horizon, and
+/// `IslandPrism.rim` inside each wall. The frost is masked to it and the
+/// scrim drawn in it, so both stop short of the walls and the lip and
+/// leave them clear glass. Flattened to one bitmap, so its blur costs
+/// nothing at rest.
+struct PrismPane: View {
+    var shape: NotchShape
+
+    var body: some View {
+        let radius: CGFloat = 18
+        Color.clear.overlay {
+            UnevenRoundedRectangle(bottomLeadingRadius: radius, bottomTrailingRadius: radius, style: .continuous)
+                .fill(.white)
+                // The walls stand the top flare's radius in from the frame.
+                .padding(.horizontal, shape.topCornerRadius + IslandPrism.rim)
+                .padding(.bottom, IslandPrism.lip)
+                .padding(.top, -3 * IslandPrism.rimFeather)
+                .blur(radius: IslandPrism.rimFeather)
+        }
+        .drawingGroup()
     }
 }

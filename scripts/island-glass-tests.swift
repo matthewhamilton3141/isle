@@ -377,11 +377,15 @@ do {
     check(near(h.first!.alpha, IslandPrism.edgeTint) && near(h.last!.alpha, IslandPrism.lipTint), "horizon stops: edge tint to lip tint")
 }
 
+/// Whether the line (or the crystal's sheets) goes below its rest as well as above.
+let ribbonSigned = IslandPrism.ribbonStyle == .crystal || IslandPrism.ribbonShape == .snake
+
 // The ribbon's shape and style are one choice each (`IslandPrism.ribbonShape`,
 // `ribbonStyle`); these are what that choice makes the resting and full
 // half-heights and the full lift.
 let ribbonRest = IslandPrism.ribbonStyle == .crystal ? IslandPrism.crystalRest : IslandPrism.restSpread
 let ribbonFull: Double = {
+    if IslandPrism.ribbonStyle == .crystal { return IslandPrism.mirroredSpread }
     switch IslandPrism.ribbonShape {
     case .up: return IslandPrism.fullSpread
     case .mirrored: return IslandPrism.mirroredSpread
@@ -389,6 +393,8 @@ let ribbonFull: Double = {
     }
 }()
 let ribbonLift: Double = {
+    // The crystal doesn't lift; its sheets sway by this much instead.
+    if IslandPrism.ribbonStyle == .crystal { return IslandPrism.crystalSway }
     switch IslandPrism.ribbonShape {
     case .up: return IslandPrism.fullLift
     case .mirrored: return 0
@@ -400,6 +406,10 @@ print("prism: the lens's shape")
 do {
     check(IslandPrism.lip > 0 && IslandPrism.bottomCornerRadius > IslandMotion.openCorners.bottom, "a lip, and rounder than the other modes")
     check(IslandPrism.bottomCornerRadius <= IslandPrism.lip + 8, "the bottom corners turn inside the lip and the content's bottom inset")
+    check(IslandPrism.sideLip > 0 && IslandPrism.rim > IslandPrism.rimFeather, "a border of clear glass down each wall, wider than its soft edge")
+    // The content starts 22pt inside the frame in every mode, plus the side lip here; the walls stand 12pt in.
+    check(IslandPrism.rim + IslandPrism.rimFeather <= 22 + IslandPrism.sideLip - IslandMotion.openCorners.top + 2,
+          "the frost is full by where the content starts", "\(IslandPrism.rim + IslandPrism.rimFeather)")
     check(IslandPrism.ribbonCentre > 0 && IslandPrism.ribbonCentre < IslandPrism.lip, "the ribbon's resting line is in the lip")
     check(IslandPrism.ribbonCentre - ribbonRest > 0, "the resting ribbon stays above the bottom edge")
     check(IslandPrism.ribbonCentre - ribbonLift - ribbonFull > 0 || IslandPrism.ribbonShape == .up, "a full crest's lower edge is above the bottom edge, whichever way it goes")
@@ -416,8 +426,10 @@ do {
     check(near(IslandPrism.taper(0.5), 1) && IslandPrism.taper(0) == 0 && IslandPrism.taper(1) == 0, "taper: full at the centre, nothing at the tips")
     check(near(IslandPrism.spread(at: 0.5, bands: silent), ribbonRest) && IslandPrism.lift(at: 0.5, bands: silent) == 0,
           "silent: the resting ribbon on the resting line")
-    check(near(IslandPrism.spread(at: 0.5, bands: full), ribbonFull) && near(IslandPrism.lift(at: 0.5, bands: full), ribbonLift),
-          "full: its full half-height, lifted its full lift, at the centre")
+    check(near(IslandPrism.spread(at: 0.5, bands: full), ribbonFull), "full: its full half-height at the centre")
+    let centreLift = IslandPrism.lift(at: 0.5, bands: full)
+    check(ribbonSigned ? (centreLift > ribbonLift * 0.8 && centreLift <= ribbonLift) : near(centreLift, ribbonLift),
+          "full: lifted (or swayed) its full amount at the centre", "\(centreLift)")
     check(near(IslandPrism.spread(at: 0.5, bands: []), ribbonRest), "no bands is silence")
     // The snake's crests go up and down in turn; the others never go below the line.
     check(near(IslandPrism.signedLevel(at: 0.5, bands: [1, 0, 0, 0, 0, 0]), 1), "signed: the centre band counts up")
@@ -447,7 +459,7 @@ do {
         let s = IslandPrism.spread(at: u, bands: mixed), g = IslandPrism.glow(at: u, bands: mixed), l = IslandPrism.lift(at: u, bands: mixed)
         if !near(l, IslandPrism.lift(at: 1 - u, bands: mixed), 1e-9) || !near(s, IslandPrism.spread(at: 1 - u, bands: mixed), 1e-9) { mirrored = false }
         if s < 0 || s > ribbonFull + 1e-9 || g < 0 || g > 1 + 1e-9 || abs(l) > ribbonLift + 1e-9 { bounded = false }
-        if IslandPrism.ribbonShape != .snake, l < 0 { bounded = false }
+        if !ribbonSigned, l < 0 { bounded = false }
         if abs(l - last) > 0.5 || abs(s - lastSpread) > 0.5 { smooth = false }
         last = l
         lastSpread = s

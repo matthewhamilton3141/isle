@@ -33,11 +33,23 @@ enum IslandPrism {
 
     /// How much taller the open panel is in Prism: clear glass below the
     /// content, where the ribbon lies. Tune here.
-    static let lip: CGFloat = 30
+    static let lip: CGFloat = 34
+
+    /// How much wider the open panel is in Prism, each side: with `rim`,
+    /// room for a border of clear glass down both walls, so the frosted
+    /// part that holds the content sits inside a frame of lens rather than
+    /// running wall to wall with glass only under it. The content keeps
+    /// its width. Tune here.
+    static let sideLip: CGFloat = 12
+
+    /// How far inside each wall the frost (and the scrim) begins, and the
+    /// softness of that edge, in points: the walls' border of clear glass.
+    static let rim: CGFloat = 17
+    static let rimFeather: CGFloat = 6
 
     /// The open panel's bottom corners in Prism: rounder than the other
     /// modes' 22, so the lip reads as the thick edge of a lens. Tune here.
-    static let bottomCornerRadius: CGFloat = 34
+    static let bottomCornerRadius: CGFloat = 38
 
     // MARK: - The shade
 
@@ -52,11 +64,6 @@ enum IslandPrism {
     /// lighter glass. The glass under it is frosted there (`PrismFrost`),
     /// so this only has to darken, not hide. Tune here.
     static let scrim: Double = 0.12
-
-    /// How far inside the glass's walls the scrim's edge sits, and its
-    /// feather, in points.
-    static let scrimInset: CGFloat = 5
-    static let scrimFeather: CGFloat = 6
 
     /// How much of the frost is laid over the lens behind the content, 0
     /// (bare lens: what's behind is sharp) to 1 (fully frosted). Anything
@@ -73,10 +80,12 @@ enum IslandPrism {
     enum RibbonStyle {
         /// Light: a streak split into a fan of colours.
         case light
-        /// A body of glass: the waveform as a solid with thickness, lit
-        /// from above — a bright line where it catches the light, dense
-        /// colour at its edges, clearer through its middle, and a glow
-        /// under it where the light comes out.
+        /// Glass: the waveform as three thin sheets of it, overlapping and
+        /// swaying across one another like a twisted ribbon — each clear
+        /// and dark through its middle, its colours gathered along its
+        /// edges the way a film of oil carries them, a hairline of light
+        /// on each edge, and a glow under the whole where the light comes
+        /// out.
         case crystal
     }
 
@@ -150,7 +159,7 @@ enum IslandPrism {
     /// The ribbon's line at rest, in points above the panel's bottom edge:
     /// the lip's middle, where the lens is at its clearest and the rim's
     /// own highlight doesn't crowd it.
-    static let ribbonCentre: CGFloat = 15
+    static let ribbonCentre: CGFloat = 17
 
     /// How far in from the glass's side walls the ribbon's tips sit.
     static let ribbonInset: CGFloat = 26
@@ -250,7 +259,7 @@ enum IslandPrism {
 
     /// The mirrored shape's fan at a full level, and the snake's lift and
     /// fan, in points. Each keeps a full crest inside the lip.
-    static let mirroredSpread: Double = 12.5
+    static let mirroredSpread: Double = 11
     static let snakeLift: Double = 9
     static let snakeSpread: Double = 4.5
 
@@ -269,6 +278,8 @@ enum IslandPrism {
 
     /// How far the line is lifted off its rest at `u`, in points.
     static func lift(at u: Double, bands: [Double]) -> Double {
+        // The crystal doesn't lift: this is its sheets' sway instead.
+        if ribbonStyle == .crystal { return taper(u) * crystalSway * signedLevel(at: u, bands: bands) }
         switch ribbonShape {
         case .up: return taper(u) * fullLift * level(at: u, bands: bands)
         case .mirrored: return 0
@@ -278,19 +289,27 @@ enum IslandPrism {
 
     /// The fan's half-height at `u`, in points.
     static func spread(at u: Double, bands: [Double]) -> Double {
-        let full: Double
+        var full: Double
         switch ribbonShape {
         case .up: full = fullSpread
         case .mirrored: full = mirroredSpread
         case .snake: full = snakeSpread
         }
+        // The crystal is always the mirrored outline: sheets of glass
+        // opening above and below the line.
+        if ribbonStyle == .crystal { full = mirroredSpread }
         let rest = ribbonStyle == .crystal ? crystalRest : restSpread
         return taper(u) * (rest + (full - rest) * level(at: u, bands: bands))
     }
 
     /// The crystal's half-thickness at rest, in points: a slim rod of
-    /// glass with a glint on it, where the light style rests as a hairline.
+    /// glass, where the light style rests as a hairline.
     static let crystalRest: Double = 2.3
+
+    /// How far the crystal's sheets sway apart at a full level, in points:
+    /// one up and one down, by turns from band to band, so their edges
+    /// cross and the ribbon looks twisted rather than stacked.
+    static let crystalSway: Double = 3
 
     /// The streak's brightness at `u`, 0...1.
     static func glow(at u: Double, bands: [Double]) -> Double {

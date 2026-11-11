@@ -224,7 +224,8 @@ struct NotchMetrics {
         // to the window only inside its frame, so a pad outside it is a drag
         // leaving, and the drop face shut the moment a drag overshot the
         // panel's edge. Transparent and click-through like the rest.
-        let pad = expanded.insetBy(dx: -Self.stayOpenSidePad, dy: 0)
+        // (Past Prism's wider panel, which the window holds in every mode.)
+        let pad = expanded.insetBy(dx: -(Self.stayOpenSidePad + IslandPrism.sideLip), dy: 0)
         return expanded.union(collapsed).union(grown).union(pad)
     }
 }

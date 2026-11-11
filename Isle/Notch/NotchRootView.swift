@@ -84,7 +84,13 @@ struct NotchRootView: View {
                 height: metrics.notchSize.height
             )
         }
-        return CGSize(width: metrics.windowSize(for: state).width, height: expandedHeight + lip)
+        return CGSize(width: metrics.windowSize(for: state).width + 2 * sideLip, height: expandedHeight + lip)
+    }
+
+    /// Prism's wider panel: room each side for its walls' border of clear
+    /// glass (`IslandPrism.sideLip`). The content keeps its width.
+    private var sideLip: CGFloat {
+        panelBackground == .prism ? IslandPrism.sideLip : 0
     }
 
     /// Prism's lip: clear glass below the content, which only that mode's
@@ -328,7 +334,7 @@ struct NotchRootView: View {
             Color.clear
 
             content
-                .padding(.horizontal, state.isExpanded ? 22 : 10)
+                .padding(.horizontal, state.isExpanded ? 22 + sideLip : 10)
                 // Reserve the camera housing's band. Nothing may be drawn in
                 // the top `notchHeight` points of the expanded panel — that's
                 // physical hardware, and anything placed there is simply
@@ -355,7 +361,7 @@ struct NotchRootView: View {
                     }
                     .frame(height: notchBandHeight)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                    .padding(.trailing, Self.crumbTrailing)
+                    .padding(.trailing, Self.crumbTrailing + sideLip)
                     .opacity(expandedContentOpacity)
                     .transition(.opacity)
                 } else if state.isExpanded, viewModel.expandedPlace == .home || !viewModel.showsHome, !island.isDropTarget {
@@ -367,7 +373,7 @@ struct NotchRootView: View {
                     NotchSettingsButton()
                         .frame(height: notchBandHeight)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                        .padding(.trailing, Self.crumbTrailing - 5)
+                        .padding(.trailing, Self.crumbTrailing - 5 + sideLip)
                         .opacity(expandedContentOpacity)
                         .transition(.opacity)
                 }
