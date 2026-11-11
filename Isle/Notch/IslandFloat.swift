@@ -28,8 +28,9 @@
 //  The layout inside the window doesn't change with the placement (see
 //  `IslandPlacement`): everything here is drawn at the top centre of a
 //  window as big as `NotchMetrics.maximumFrame`, growing downward, and has
-//  to fit in it. The drawing is in NotchRootView, FloatingPillView and the
-//  fills (IslandMotion+SwiftUI.swift, IslandGlass+SwiftUI.swift,
+//  to fit in it. The drawing is in NotchRootView, NotchShape,
+//  CollapsedNotchView+Floating.swift and the fills
+//  (IslandMotion+SwiftUI.swift, IslandGlass+SwiftUI.swift,
 //  IslandPrism+SwiftUI.swift).
 //
 
@@ -149,7 +150,7 @@ enum IslandFloat {
 
     /// What the closed capsule holds, as the widths that size it. Built
     /// from the view model by `FloatingPillLayout`, which measures the
-    /// text; laid out by `FloatingPillView`.
+    /// text; laid out by `CollapsedNotchView.floatingPill`.
     struct Pill: Equatable {
         /// The music: its label's width, and whether the waveform is on.
         struct Music: Equatable {

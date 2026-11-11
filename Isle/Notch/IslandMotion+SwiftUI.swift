@@ -184,6 +184,11 @@ final class IslandProximityModel: ObservableObject {
 /// render transform over the same path the clip uses, so the top stays
 /// flush with the screen, the taper and corners match the clip exactly, and
 /// a change costs no layout.
+///
+/// Off the notch the swell still grows from the top edge, though nothing
+/// there is flush with a screen: the island's top edge is its window's
+/// (see `IslandPlacement`), so a capsule swelling about its middle would
+/// have its upper half cut off by the window.
 struct IslandFill: View {
     @ObservedObject var proximity: IslandProximityModel
     var shape: NotchShape
