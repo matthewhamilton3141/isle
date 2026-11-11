@@ -117,6 +117,13 @@ struct NotchRootView: View {
         )
     }
 
+    /// The ribbon's colours for the reflection along Prism's edge, which
+    /// the panel's own tree draws (the ribbon itself is the material's).
+    private var prismStops: [IslandPrism.RGB] {
+        guard panelBackground == .prism, glassLayer != .materialOnly else { return [] }
+        return ribbonSubject.stops
+    }
+
     /// The ribbon is about what the panel is about. On the Claude face it
     /// is Claude's status, moving as the status does and in its colour.
     /// Everywhere else it is the music, in the cover's colours, while
@@ -420,7 +427,8 @@ struct NotchRootView: View {
                 housingShift: collapsedShift,
                 bandHeight: notchBandHeight,
                 lightPalette: lightPalette,
-                ribbon: ribbon
+                ribbon: ribbon,
+                prismStops: prismStops
             )
         }
         // The corners lead the collapse: the clip's and the fill's radii.

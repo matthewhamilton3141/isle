@@ -207,6 +207,8 @@ struct IslandFill: View {
     var lightPalette: ArtworkPalette? = nil
     /// What Prism's ribbon follows; nil in every other mode.
     var ribbon: PrismRibbonInput? = nil
+    /// The ribbon's colours, for the reflection along Prism's edge.
+    var prismStops: [IslandPrism.RGB] = []
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.islandGlassLayer) private var glassLayer
@@ -237,7 +239,8 @@ struct IslandFill: View {
                 housingShift: housingShift,
                 bandHeight: bandHeight,
                 lightPalette: lightPalette,
-                ribbon: ribbon
+                ribbon: ribbon,
+                prismStops: prismStops
             )
         } else if glassLayer == .materialOnly {
             // The glass window has no glass to draw in Black.

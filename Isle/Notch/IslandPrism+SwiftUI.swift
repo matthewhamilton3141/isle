@@ -11,7 +11,9 @@
 //    lens only along the lip.
 //  - `PrismRibbonStrip`: the ribbon along the lip, part of the material
 //    like the frost.
-//  - `PrismLens`: the scrim behind the content and — where the system has
+//  - `PrismReflection`: the ribbon's colours reflected along the lens's
+//    lower edge and corners.
+//  - `PrismLens`: the scrim behind the content, that reflection, and — where the system has
 //    no Liquid Glass to draw a lens's edge — a specular rim of Isle's own.
 //
 //  Like Fade's, the shade and the scrim are laid out, not measured: fixed
@@ -90,6 +92,8 @@ struct PrismRibbonStrip: View {
 /// Prism's lens, over its shade and under the content.
 struct PrismLens: View {
     var shape: NotchShape
+    /// The ribbon's colours, for the reflection along the lens's edge.
+    var stops: [IslandPrism.RGB] = IslandPrism.spectrum
 
     var body: some View {
         ZStack {
@@ -97,6 +101,15 @@ struct PrismLens: View {
             if #unavailable(macOS 26.0) {
                 rim
             }
+            // Keyed by its colours, so a new cover's come in as a new view
+            // and the old fade out under them: a transition on the change
+            // alone, nothing running at rest.
+            ZStack {
+                PrismReflection(shape: shape, stops: stops)
+                    .id(stops)
+                    .transition(.opacity)
+            }
+            .animation(.easeInOut(duration: IslandPrism.reflectionCrossfade), value: stops)
         }
         .allowsHitTesting(false)
     }
@@ -167,5 +180,69 @@ struct PrismPane: View {
                 .blur(radius: IslandPrism.rimFeather)
         }
         .drawingGroup()
+    }
+}
+
+/// The reflection along the lens's lower edge and corners, in the ribbon's
+/// colours (see the numbers in IslandPrism.swift): a line on the outline,
+/// a fainter one inside it, and a soft band of colour, all strongest in
+/// the bottom corners. Added light, static, and laid out against the
+/// outline's current frame, so it follows the panel as it opens, collapses
+/// and changes height; the black that covers the closed island hides it.
+struct PrismReflection: View {
+    var shape: NotchShape
+    var stops: [IslandPrism.RGB]
+
+    var body: some View {
+        let colors = LinearGradient(
+            stops: stops.enumerated().map { index, c in
+                Gradient.Stop(
+                    color: Color(.sRGB, red: c.r, green: c.g, blue: c.b),
+                    location: stops.count > 1 ? Double(index) / Double(stops.count - 1) : 0
+                )
+            },
+            startPoint: .leading, endPoint: .trailing
+        )
+        let inner = IslandPrism.reflectionInnerOffset
+        ZStack {
+            // The soft band, under the lines.
+            shape
+                .stroke(colors, lineWidth: IslandPrism.reflectionBevelWidth)
+                .blur(radius: IslandPrism.reflectionBevelBlur)
+                .opacity(IslandPrism.reflectionBevel)
+            // The second line: a stroke that reaches `inner` inside the
+            // outline, with all but its last point cut away.
+            shape
+                .stroke(colors, lineWidth: 2 * inner + 1.5)
+                .mask {
+                    Rectangle()
+                        .fill(.white)
+                        .overlay { shape.stroke(.black, lineWidth: 2 * inner - 0.5).blendMode(.destinationOut) }
+                        .compositingGroup()
+                }
+                .opacity(IslandPrism.reflectionInner)
+            // The line on the outline.
+            shape
+                .stroke(colors, lineWidth: IslandPrism.reflectionEdgeWidth)
+                .opacity(IslandPrism.reflectionEdge)
+        }
+        // The lower outline only, thinning out up the walls...
+        .mask {
+            VStack(spacing: 0) {
+                Color.clear
+                LinearGradient(colors: [.clear, .white], startPoint: .top, endPoint: .bottom)
+                    .frame(height: IslandPrism.reflectionReach)
+            }
+        }
+        // ...and strongest in the corners.
+        .mask(LinearGradient(stops: PrismReflectionStops.across, startPoint: .leading, endPoint: .trailing))
+        .drawingGroup()
+        .blendMode(.plusLighter)
+    }
+}
+
+private enum PrismReflectionStops {
+    static let across: [Gradient.Stop] = IslandPrism.reflectionStops().map {
+        Gradient.Stop(color: .white.opacity($0.alpha), location: $0.location)
     }
 }

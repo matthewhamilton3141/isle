@@ -67,6 +67,8 @@ struct IslandGlassFill: View {
     var lightPalette: ArtworkPalette? = nil
     /// What Prism's ribbon follows; nil in every other mode.
     var ribbon: PrismRibbonInput? = nil
+    /// The ribbon's colours, for the reflection along Prism's edge.
+    var prismStops: [IslandPrism.RGB] = []
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -89,7 +91,8 @@ struct IslandGlassFill: View {
             bandHeight: bandHeight,
             lightPalette: lightPalette,
             sweepAt: sweepAt,
-            ribbon: ribbon
+            ribbon: ribbon,
+            prismStops: prismStops
         )
         // The blend runs on the width's spring during a collapse — the
         // channel `expandProgress`, and so the content's fade, read off —
@@ -128,6 +131,7 @@ private struct IslandGlassBlend: View, Animatable {
     var lightPalette: ArtworkPalette?
     var sweepAt: Date?
     var ribbon: PrismRibbonInput?
+    var prismStops: [IslandPrism.RGB] = []
 
     @Environment(\.islandGlassLayer) private var layer
 
@@ -161,7 +165,7 @@ private struct IslandGlassBlend: View, Animatable {
                         if background == .fade, layer != .materialOnly {
                             FadeLens(shape: shape, bandHeight: bandHeight, light: FadeLight.resolve(lightPalette), sweepAt: sweepAt)
                         } else if background == .prism, layer != .materialOnly {
-                            PrismLens(shape: shape)
+                            PrismLens(shape: shape, stops: prismStops.isEmpty ? IslandPrism.spectrum : prismStops)
                         }
                     }
                     .transition(.identity)

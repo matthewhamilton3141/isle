@@ -90,11 +90,9 @@ enum IslandPrism {
         /// A ribbon of light, twisted along its length and seen from the
         /// side: where it faces you it is a wide bright lobe, where it
         /// turns edge-on it draws to a point, and the lobes cross. One
-        /// edge of each lobe is crisp and the other melts away; a soft
-        /// bloom lies round the whole. The light is split into the fan's
-        /// three colours, a little apart in depth, so where the ribbon is
-        /// wide or turning it comes apart into them and reads as thick.
-        /// The music opens the ribbon along its length and turns it.
+        /// edge of each lobe is crisp, with a thin fringe of colour, and
+        /// the other melts away; a soft bloom lies round the whole. The
+        /// music opens the ribbon along its length and turns it.
         case twist
     }
 
@@ -174,6 +172,64 @@ enum IslandPrism {
             return (t, edgeTint + (lipTint - edgeTint) * IslandGlass.fadeEase(t))
         }
     }
+
+    // MARK: - The reflection
+
+    // The lens's lower edge and corners carry a reflection in the
+    // ribbon's colours — the fan laid left to right round the outline —
+    // which is what gives the glass an edge with some depth to it: a
+    // bright line on the outline itself, a second fainter line a few
+    // points inside it (the far side of the glass's thickness), and a
+    // soft band of colour between and beyond them. Strongest in the two
+    // bottom corners, where a rounded edge gathers light, fainter along
+    // the bottom between them, and gone up the walls before the band.
+
+    /// The line on the outline: its stroke (centred on the outline and
+    /// clipped to it, so half shows) and its strength. Tune here.
+    static let reflectionEdgeWidth: CGFloat = 3
+    static let reflectionEdge: Double = 0.95
+
+    /// The second line: how far inside the outline it runs, and its
+    /// strength.
+    static let reflectionInnerOffset: CGFloat = 6.5
+    static let reflectionInner: Double = 0.42
+
+    /// The soft band: its stroke (again half showing), its blur and its
+    /// strength.
+    static let reflectionBevelWidth: CGFloat = 26
+    static let reflectionBevelBlur: CGFloat = 6
+    static let reflectionBevel: Double = 0.5
+
+    /// How far up from the bottom edge the reflection reaches before it
+    /// has faded out, in points.
+    static let reflectionReach: CGFloat = 84
+
+    /// The reflection's strength across the panel: full in the corners,
+    /// this along the bottom between them, and how far in from each end,
+    /// as a fraction of the width, a corner's share runs.
+    static let reflectionFloor: Double = 0.34
+    static let reflectionCornerSpan: Double = 0.2
+
+    /// The reflection's strength at `x`, 0 the panel's left edge and 1 its
+    /// right.
+    static func reflectionAlpha(x: Double) -> Double {
+        let u = min(max(x, 0), 1)
+        let corner = max(0, 1 - min(u, 1 - u) / reflectionCornerSpan)
+        return reflectionFloor + (1 - reflectionFloor) * IslandGlass.fadeEase(corner)
+    }
+
+    /// That as gradient stops across the panel.
+    static func reflectionStops() -> [(location: Double, alpha: Double)] {
+        let n = IslandGlass.fadeStopCount
+        return (0...n).map {
+            let t = Double($0) / Double(n)
+            return (t, reflectionAlpha(x: t))
+        }
+    }
+
+    /// How long the reflection takes to cross-fade to new colours, in
+    /// seconds.
+    static let reflectionCrossfade: Double = 0.5
 
     // MARK: - The ribbon
 
@@ -478,7 +534,7 @@ enum IslandPrism {
     // MARK: - The ribbon's colours
 
     /// A colour as sRGB, each channel 0...1.
-    struct RGB: Equatable {
+    struct RGB: Hashable {
         var r: Double
         var g: Double
         var b: Double
