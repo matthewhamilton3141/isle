@@ -55,8 +55,14 @@ final class IslandPresentation: ObservableObject {
 
     /// Whether this island hangs from its notch or has been taken off it
     /// (see `IslandPlacement`). The views read it for what to draw; the
-    /// window controller moves the window to match.
+    /// window controller moves the window to match (`IslandCarry`, which is
+    /// also the only thing that sets it).
     @Published var placement: IslandPlacement = .docked
+
+    /// The line that runs round the island while it's held (see
+    /// `DetachTrace`). A model of its own, like `proximity`, so the line
+    /// starting and stopping redraws the line and nothing else.
+    let detachTrace = DetachTraceModel()
 
     /// While true, pointer-driven expansion is refused. Set the instant the
     /// notch starts collapsing and cleared once the close animation has

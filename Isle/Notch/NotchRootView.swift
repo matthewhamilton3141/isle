@@ -423,6 +423,10 @@ struct NotchRootView: View {
                 ribbon: ribbon
             )
         }
+        // The line that runs round the outline while the island is held.
+        .overlay(alignment: .top) {
+            DetachTrace(model: island.detachTrace, outline: outline, size: size)
+        }
         // The corners lead the collapse: the clip's and the fill's radii.
         .islandCollapseChannel(.corners)
         // Hit region is the full bounding rectangle, not the notch outline. The
