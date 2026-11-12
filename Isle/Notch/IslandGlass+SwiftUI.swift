@@ -442,11 +442,25 @@ private struct IslandHasRibbonKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
-    /// Whether the panel has Prism's ribbon along its lip. The ribbon is
-    /// the waveform there, so the Music face leaves its own bars out.
+    /// Whether the panel has Prism's ribbon along its lip
+    /// (`IslandPrism.showsRibbon`). The ribbon is the waveform there, so
+    /// the Music face leaves its own bars out.
     var islandHasRibbon: Bool {
         get { self[IslandHasRibbonKey.self] }
         set { self[IslandHasRibbonKey.self] = newValue }
+    }
+}
+
+private struct IslandWaveformStyleKey: EnvironmentKey {
+    static let defaultValue = EqualizerStyle.flat
+}
+
+extension EnvironmentValues {
+    /// How the waveform's bars are drawn here (`EqualizerStyle`): lit
+    /// glass in Prism, flat otherwise.
+    var islandWaveformStyle: EqualizerStyle {
+        get { self[IslandWaveformStyleKey.self] }
+        set { self[IslandWaveformStyleKey.self] = newValue }
     }
 }
 

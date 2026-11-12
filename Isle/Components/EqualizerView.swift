@@ -15,6 +15,11 @@
 //  device — this falls back to the procedural sine pattern so the notch
 //  still looks alive rather than dead.
 //
+//  In Prism the bars are lit glass (`EqualizerStyle.glass`): the same bars,
+//  the same levels, with a glow of their own colour round them and a pale
+//  edge. The island says which through the environment
+//  (`islandWaveformStyle`).
+//
 //  Both are drawn by Core Animation; see EqualizerLayer.swift. These are the
 //  SwiftUI faces of it: `LiveEqualizer` for the notch, which hands the layer
 //  view the levels source and then stays out of the way, and `EqualizerView`
@@ -42,9 +47,11 @@ struct LiveEqualizer: View {
     /// mid-song gets the pattern at once, not the last frame the tap sent.
     var listens: Bool = true
 
+    @Environment(\.islandWaveformStyle) private var style
+
     var body: some View {
         LiveEqualizerRepresentable(
-            source: source, palette: palette, isPlaying: isPlaying, listens: listens
+            source: source, palette: palette, isPlaying: isPlaying, listens: listens, style: style
         )
         .accessibilityHidden(true)
     }
@@ -55,17 +62,18 @@ private struct LiveEqualizerRepresentable: NSViewRepresentable {
     var palette: ArtworkPalette
     var isPlaying: Bool
     var listens: Bool
+    var style: EqualizerStyle
 
     func makeNSView(context: Context) -> EqualizerLayerView {
         let view = EqualizerLayerView()
         wire(view)
-        view.configure(palette: palette, isPlaying: isPlaying)
+        view.configure(palette: palette, isPlaying: isPlaying, style: style)
         return view
     }
 
     func updateNSView(_ view: EqualizerLayerView, context: Context) {
         wire(view)
-        view.configure(palette: palette, isPlaying: isPlaying)
+        view.configure(palette: palette, isPlaying: isPlaying, style: style)
     }
 
     private func wire(_ view: EqualizerLayerView) {
@@ -83,8 +91,10 @@ struct EqualizerView: View {
     /// the procedural pattern.
     var levels: [Double] = []
 
+    var style: EqualizerStyle = .flat
+
     var body: some View {
-        StaticEqualizerRepresentable(palette: palette, isPlaying: isPlaying, levels: levels)
+        StaticEqualizerRepresentable(palette: palette, isPlaying: isPlaying, levels: levels, style: style)
             .accessibilityHidden(true)
     }
 }
@@ -93,16 +103,17 @@ private struct StaticEqualizerRepresentable: NSViewRepresentable {
     var palette: ArtworkPalette
     var isPlaying: Bool
     var levels: [Double]
+    var style: EqualizerStyle
 
     func makeNSView(context: Context) -> EqualizerLayerView {
         let view = EqualizerLayerView()
-        view.configure(palette: palette, isPlaying: isPlaying)
+        view.configure(palette: palette, isPlaying: isPlaying, style: style)
         view.setStaticLevels(levels)
         return view
     }
 
     func updateNSView(_ view: EqualizerLayerView, context: Context) {
-        view.configure(palette: palette, isPlaying: isPlaying)
+        view.configure(palette: palette, isPlaying: isPlaying, style: style)
         view.setStaticLevels(levels)
     }
 }
@@ -123,6 +134,14 @@ private struct StaticEqualizerRepresentable: NSViewRepresentable {
         // Procedural fallback.
         EqualizerView(isPlaying: true)
             .frame(width: 30, height: 18)
+
+        // Prism's lit glass.
+        EqualizerView(
+            palette: ArtworkPalette(primary: .pink, secondary: .purple, accent: .orange),
+            levels: [0.3, 0.65, 0.45, 0.9, 0.5, 0.25],
+            style: .glass
+        )
+        .frame(width: 30, height: 24)
     }
     .padding(40)
     .background(.black)
