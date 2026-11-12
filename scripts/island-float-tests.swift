@@ -35,14 +35,15 @@ let band = CGSize(width: 185, height: 32)
 let dockedOpen = CGSize(width: 520, height: 146)
 // The least the window is, whatever the notch: the open panel with Prism's
 // side lips and the stay-open pads, the tallest panel with Prism's lip
-// (NotchMetrics.maximumFrame).
-let windowFloor = CGSize(width: 520 + 2 * (16 + IslandPrism.sideLip), height: 230 + IslandPrism.lip)
+// and the roof it has off the notch (NotchMetrics.maximumFrame).
+let windowFloor = CGSize(width: 520 + 2 * (16 + IslandPrism.sideLip), height: 230 + IslandPrism.lip + IslandFloat.roof)
 
 print("the open panel's shape")
 do {
     let flare = IslandMotion.openCorners.top
     let open = F.openSize(docked: dockedOpen, wallInset: flare)
-    check(open.width == dockedOpen.width - 2 * flare && open.height == dockedOpen.height, "the docked panel less its flares, as tall")
+    check(open.width == dockedOpen.width - 2 * flare && open.height == dockedOpen.height + F.roof, "the docked panel less its flares, and its roof taller")
+    check(F.roof > 0 && F.roof <= 12, "a little room over the header, not a second band", "\(F.roof)")
     check((dockedOpen.width - open.width) / 2 == flare, "so the walls are where they were, and the content with them")
     check(F.openSize(docked: CGSize(width: 10, height: 40), wallInset: 12).width == 0, "never a negative width")
     let plain = F.corners(open: true, prism: false, closedHeight: F.pillHeight)

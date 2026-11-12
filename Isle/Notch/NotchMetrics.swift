@@ -209,9 +209,9 @@ struct NotchMetrics {
         // Room for the tallest a face can grow the panel — every face that
         // grows shares the one cap — and for Prism's lip below it, whatever
         // the mode, so a change of mode never resizes the window.
-        // Transparent and click-through like the rest of the window outside
-        // the drawn notch.
-        let tallest = Self.panelMaxHeight + IslandPrism.lip
+        // And for the roof an open panel has off the notch. Transparent and
+        // click-through like the rest of the window outside the drawn notch.
+        let tallest = Self.panelMaxHeight + IslandPrism.lip + IslandFloat.roof
         let grown = NSRect(
             x: expanded.minX,
             y: screen.frame.maxY - tallest,
@@ -261,7 +261,7 @@ struct NotchMetrics {
             screen: screen.frame,
             visible: screen.visibleFrame,
             halfWidth: Self.expandedSize.width / 2 + IslandPrism.sideLip,
-            tallest: Self.panelMaxHeight + IslandPrism.lip
+            tallest: Self.panelMaxHeight + IslandPrism.lip + IslandFloat.roof
         )
     }
 }
