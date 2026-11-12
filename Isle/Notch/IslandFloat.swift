@@ -42,8 +42,9 @@ enum IslandFloat {
     /// The open panel's corners, all four, in Black and Glass. Rounder
     /// than the docked panel's bottom corners (22): open, the island is the
     /// closed capsule grown, a soft card with nothing of the notch panel's
-    /// squareness left — and as round as the header allows, whose first
-    /// mark sits 10pt in from the wall and 8pt down. Tune here.
+    /// squareness left — and as round as the header allowed before it had
+    /// a roof over it (`roof`), when its first mark sat 10pt in from the
+    /// wall and 8pt down. Tune here.
     static let cornerRadius: CGFloat = 28
 
     /// Prism's top corners. Its bottom ones stay the lens's
@@ -52,12 +53,19 @@ enum IslandFloat {
     /// top can be rounder than the other modes'. Tune here.
     static let prismCrownRadius: CGFloat = 32
 
+    /// Clear room above the header, open. The header's marks were laid out
+    /// against a camera housing, flush with the top of the screen; under a
+    /// rounded top edge of its own they sat too close to it (Matthew:
+    /// "raise the roof a bit more"). Off the notch the open panel is this
+    /// much taller, and everything in it this much lower. Tune here.
+    static let roof: CGFloat = 8
+
     /// The open panel's size: the docked panel's (`docked`, flares
-    /// included) less the flares, `wallInset` wide, on each side. The walls
-    /// don't move when the island leaves the notch; the frame comes in to
-    /// meet them.
+    /// included) less the flares, `wallInset` wide, on each side, and the
+    /// roof taller. The walls don't move when the island leaves the notch;
+    /// the frame comes in to meet them.
     static func openSize(docked: CGSize, wallInset: CGFloat) -> CGSize {
-        CGSize(width: max(docked.width - 2 * wallInset, 0), height: docked.height)
+        CGSize(width: max(docked.width - 2 * wallInset, 0), height: docked.height + roof)
     }
 
     // MARK: - The header

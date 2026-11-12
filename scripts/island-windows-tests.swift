@@ -161,8 +161,9 @@ func floatingChecks(_ w: NotchWindow, vm: NotchViewModel, island: IslandPresenta
         island.setHovering(true)
         spin(1.2)
         let lips = background == .prism ? (side: IslandPrism.sideLip, bottom: IslandPrism.lip) : (side: 0, bottom: 0)
-        let open = CGSize(width: NotchMetrics.expandedSize.width - 2 * flare + 2 * lips.side, height: NotchMetrics.expandedSize.height + lips.bottom)
-        check(reported.panel.size == open, "\(name), open: the docked panel less its flares", "\(reported.panel) vs \(open)")
+        let open = CGSize(width: NotchMetrics.expandedSize.width - 2 * flare + 2 * lips.side,
+                          height: NotchMetrics.expandedSize.height + lips.bottom + IslandFloat.roof)
+        check(reported.panel.size == open, "\(name), open: the docked panel less its flares, and its roof taller", "\(reported.panel) vs \(open)")
         checkDrawn("\(name), open", shadow: black)
         checkInStep(w, "\(name), open off the notch")
 
