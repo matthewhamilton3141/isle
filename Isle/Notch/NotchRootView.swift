@@ -541,7 +541,7 @@ struct NotchRootView: View {
             EmptyView()
         } else if state.isExpanded {
             let glass = panelBackground.isGlass
-            ExpandedNotchView(viewModel: viewModel, island: island, palette: glass ? palette.flooredForGlass : palette)
+            ExpandedNotchView(viewModel: viewModel, island: island, palette: glass ? palette.flooredForGlass : palette, waveformPalette: palette)
                 .environment(\.islandOnGlass, glass)
                 .environment(\.islandHasRibbon, panelBackground == .prism && IslandPrism.showsRibbon)
                 .environment(\.islandFloating, floating)
@@ -553,7 +553,7 @@ struct NotchRootView: View {
             // On the notch the pill is black in every mode. Off it, it is
             // the mode's material, so its content gets glass's lifts too.
             let glass = floating && panelBackground.isGlass
-            CollapsedNotchView(viewModel: viewModel, island: island, palette: glass ? palette.flooredForGlass : palette)
+            CollapsedNotchView(viewModel: viewModel, island: island, palette: glass ? palette.flooredForGlass : palette, waveformPalette: palette)
                 .environment(\.islandOnGlass, glass)
                 .transition(.opacity)
         }

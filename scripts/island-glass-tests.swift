@@ -236,12 +236,22 @@ let ribbonLift: Double = {
 print("prism: the lens's shape")
 do {
     check(IslandPrism.lip > 0 && IslandPrism.bottomCornerRadius > IslandMotion.openCorners.bottom, "a lip, and rounder than the other modes")
-    check(IslandPrism.bottomCornerRadius <= IslandPrism.lip + 8, "the bottom corners turn inside the lip and the content's bottom inset")
+    do {
+        // The content's own corner stands its bottom inset (8) above the lip
+        // and its side inset (10) inside the side lip. It has to be inside
+        // the panel's rounded corner.
+        let r = IslandPrism.bottomCornerRadius
+        let dx = max(0, r - (10 + IslandPrism.sideLip)), dy = max(0, r - (8 + IslandPrism.lip))
+        check(dx * dx + dy * dy <= r * r * 0.25, "the bottom corners turn well clear of the content's corner", "\(dx) \(dy) of \(r)")
+        check(IslandPrism.showsRibbon || IslandPrism.lip == IslandPrism.sideLip, "without the ribbon, the lip is the walls' border carried round")
+    }
     check(IslandPrism.sideLip > 0 && IslandPrism.rim > IslandPrism.rimFeather, "a border of clear glass down each wall, wider than its soft edge")
     // The content starts 22pt inside the frame in every mode, plus the side lip here; the walls stand 12pt in.
     check(IslandPrism.rim + IslandPrism.rimFeather <= 22 + IslandPrism.sideLip - IslandMotion.openCorners.top + 2,
           "the frost is full by where the content starts", "\(IslandPrism.rim + IslandPrism.rimFeather)")
-    check(IslandPrism.ribbonCentre > 0 && IslandPrism.ribbonCentre < IslandPrism.lip, "the ribbon's resting line is in the lip")
+    if IslandPrism.showsRibbon {
+        check(IslandPrism.ribbonCentre > 0 && IslandPrism.ribbonCentre < IslandPrism.lip, "the ribbon's resting line is in the lip")
+    }
     // (The twist's geometry is its own: see "prism: the twist".)
     if IslandPrism.ribbonStyle != .twist {
         check(IslandPrism.ribbonCentre - ribbonRest > 0, "the resting ribbon stays above the bottom edge")

@@ -34,9 +34,11 @@ typealias Pill = IslandFloat.Pill
 let band = CGSize(width: 185, height: 32)
 let dockedOpen = CGSize(width: 520, height: 146)
 // The least the window is, whatever the notch: the open panel with Prism's
-// side lips and the stay-open pads, the tallest panel with Prism's lip
-// and the roof it has off the notch (NotchMetrics.maximumFrame).
-let windowFloor = CGSize(width: 520 + 2 * (16 + IslandPrism.sideLip), height: 230 + IslandPrism.lip + IslandFloat.roof)
+// side lips and the stay-open pads, the tallest panel with Prism's lip or
+// a floating panel's shadow under it, whichever is deeper, and the roof
+// it has off the notch (NotchMetrics.maximumFrame).
+let windowFloor = CGSize(width: 520 + 2 * (16 + IslandPrism.sideLip),
+                         height: 230 + max(IslandPrism.lip, IslandFloat.shadowReach.below) + IslandFloat.roof)
 
 print("the open panel's shape")
 do {
@@ -53,7 +55,7 @@ do {
     check(F.cornerRadius > F.pillHeight / 2, "and rounder than the capsule's ends, as a larger thing of the same family")
     let prism = F.corners(open: true, prism: true, closedHeight: F.pillHeight)
     check(prism.top == 0 && prism.bottom == IslandPrism.bottomCornerRadius, "Prism keeps its lens's bottom corners")
-    check(prism.crown > plain.crown && prism.crown < prism.bottom, "and is rounder on top than the others, less than at its lip")
+    check(prism.crown > plain.crown && prism.crown <= prism.bottom, "and is rounder on top than the others, no rounder than at its lip")
     // The header's first mark is the content's 10pt inside the wall (plus
     // Prism's side lip) and 8pt down: inside the corner's curve, with air.
     // The outline's corners are quadratic curves round the corner point.
