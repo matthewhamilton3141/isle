@@ -211,10 +211,31 @@ struct DotMatrixCurves {
     func opacity(row: Int, col: Int, clock: Double, level: Double) -> Double {
         let value = intensity(row: row, col: col, clock: clock, level: level)
         guard value > 0.02 else { return 0 }
-        let alpha = 0.10 + 0.90 * min(1, value)
+        let floor = 0.10 + paletteHold(level: level)
+        let alpha = floor + (1 - floor) * min(1, value)
         // The colour's own alpha multiplies in, exactly as `Color.opacity`
         // multiplied rather than replaced it.
         return alpha * colors.alpha(row: row, col: col, clock: clock)
+    }
+
+    /// How much of a cover's colour a lit dot keeps at the low point of its
+    /// animation, on top of the tenth every dot keeps.
+    ///
+    /// A dot dims by going transparent, and on black a transparent colour
+    /// is a dark, greyed one: beside the waveform in the very same colours
+    /// the marker read as a duller thing (Matthew: "i want the accent
+    /// colour to also transfer to the claude status a bit more rn it looks
+    /// kinda desaturated"). Held this much, the animation still shows in
+    /// each dot's size and in the brightness left over. In proportion to
+    /// the design's own intensity and the dot's level, so a quiet marker
+    /// stays quiet and a ghost dot stays a ghost. A marker in a fixed
+    /// colour is as it was: those are status colours, and a blink has to
+    /// go nearly out.
+    static let paletteHoldAtFull: Double = 0.30
+
+    private func paletteHold(level: Double) -> Double {
+        guard !colors.forceFixed, design.colorMode == .palette else { return 0 }
+        return Self.paletteHoldAtFull * min(1, design.intensity) * min(1, level)
     }
 
     /// Layer scale for a dot, relative to `maxRadius`.
