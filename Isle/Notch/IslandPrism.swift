@@ -55,20 +55,30 @@ enum IslandPrism {
 
     /// Black over the glass across the panel's whole width once the ease
     /// from the band has run: what the glass at the side walls keeps.
-    /// Light: the frost under it is the system's dark glass and does most
-    /// of the darkening on its own. Tune here.
+    /// Light: the lens in the dark scheme does most of the darkening on its
+    /// own. Tune here.
     static let edgeTint: Double = 0.06
 
     /// Black laid behind the content on top of that, inset from the walls
     /// with a soft edge, so text sits on `contentAlpha` while the walls stay
-    /// lighter glass. The glass under it is frosted there (`PrismFrost`),
-    /// so this only has to darken, not hide. Tune here.
-    static let scrim: Double = 0.12
+    /// lighter glass. With no frost under it (`frost`), this is all that
+    /// stands between white text and a white page behind the lens, so it
+    /// is as dark as Glass's own tint and a little more. Tune here.
+    static let scrim: Double = 0.32
 
-    /// How much of the frost is laid over the lens behind the content, 0
-    /// (bare lens: what's behind is sharp) to 1 (fully frosted). Anything
-    /// short of full lets a document's text ghost through the controls.
-    static let frost: Double = 1
+    /// How much frost is laid over the lens behind the content, 0 (bare
+    /// lens: what's behind is sharp) to 1 (fully frosted: the system's
+    /// regular glass, `PrismFrost`).
+    ///
+    /// None. Regular Liquid Glass takes its lightness from what is behind
+    /// it whatever colour scheme it is asked for, so over a bright page the
+    /// frost turned milky: a pale soft-edged block behind the content,
+    /// inside a lens that had stayed dark, with the white text on it harder
+    /// to read than on the bare lens. Matthew, twice: "weird white and
+    /// black background", "random white thing behind the glass thing". The
+    /// price is that a document's text behind the panel is dimmed by the
+    /// scrim but not blurred.
+    static let frost: Double = 0
 
     /// How far below the camera housing the solid black runs before the
     /// ease to glass begins, in points: just past the hardware's edge. The
