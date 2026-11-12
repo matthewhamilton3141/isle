@@ -83,6 +83,25 @@ struct PrismShade: View {
     }
 }
 
+/// Prism's cap: what is seen through the lens is brought most of the way
+/// down to `IslandPrism.cap` wherever it is lighter than that.
+///
+/// A lens is as light as what's behind it, and white text on it needs
+/// something darker than a white page. A flat black shade deep enough for
+/// that dulls everything else as much: a dark, colourful window behind the
+/// glass, which needed no help, loses its colour too (Matthew, of an even
+/// shade: "colours are hard to see now"). This darkens only what is
+/// brighter than the cap, channel by channel, and leaves the rest as the
+/// lens shows it.
+struct PrismCap: View {
+    var body: some View {
+        Color(white: IslandPrism.cap)
+            .opacity(IslandPrism.capStrength)
+            .blendMode(.darken)
+            .allowsHitTesting(false)
+    }
+}
+
 /// The shade's gradients, sampled from their curves once.
 private enum PrismStops {
     static let shade: [Gradient.Stop] = IslandPrism.shadeStops().map {
