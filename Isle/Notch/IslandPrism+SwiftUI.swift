@@ -158,12 +158,14 @@ struct PrismLens: View {
 }
 
 /// Prism's frost: frosted glass over the lens, behind the content only.
+/// Off as Isle ships (`IslandPrism.frost` is 0, and says why); kept so the
+/// amount can be turned back up.
 ///
 /// A lens shows what's behind it nearly sharp, and a line of someone's
 /// document running through the controls can't be tinted away without
-/// tinting the glass to black. So the part of the panel that holds content
-/// is frosted — the system's regular glass laid over the clear lens,
-/// masked to end across the horizon — and the lip below is left a lens.
+/// tinting the glass to black. Frosted, the part of the panel that holds
+/// content is the system's regular glass laid over the clear lens,
+/// masked to end across the horizon, and the lip below is left a lens.
 /// Part of the material: drawn in the glass window, under the shade.
 /// Before Liquid Glass the material is already frosted throughout, and
 /// this draws nothing.
@@ -172,7 +174,9 @@ struct PrismFrost: View {
     var pane: PrismPaneInsets = .docked
 
     var body: some View {
-        if #available(macOS 26.0, *) {
+        // No frost, no glass view: an effect masked to nothing is still
+        // an effect the window server composites.
+        if #available(macOS 26.0, *), IslandPrism.frost > 0 {
             Color.clear
                 .glassEffect(.regular, in: Rectangle())
                 .environment(\.colorScheme, .dark)

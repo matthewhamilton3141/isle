@@ -195,6 +195,9 @@ let ribbonRest: Double = {
     case .light: return IslandPrism.restSpread
     case .crystal: return IslandPrism.crystalRest
     case .twist: return IslandPrism.twistFull
+    // The wave isn't drawn from the profile (PrismWave.swift); what the
+    // profile's own numbers come to is then the light's.
+    case .wave: return IslandPrism.restSpread
     }
 }()
 let ribbonFull: Double = {
@@ -330,9 +333,12 @@ do {
     // One lobe moving doesn't move the others: a kick is the centre's alone.
     check(near(facing(out, [1, 1, 0, 0, 0, 0.4]), facing(out, [0, 0, 0, 0, 0, 0.4]), 0.01), "the bass doesn't reach the treble's lobe")
     // The drawing's inputs.
-    check(near(IslandPrism.spread(at: 0.5, bands: silent), IslandPrism.twistFull) && near(IslandPrism.spread(at: 0.5, bands: full), IslandPrism.twistFull),
-          "spread is the ribbon's own width, whatever the music")
-    check(near(IslandPrism.lift(at: 0.5, bands: full), IslandPrism.twistShown(at: 0.5, bands: full)), "lift is what shows of it")
+    // What the profile hands the shader: the twist's own, while the twist is the style drawn.
+    if IslandPrism.ribbonStyle == .twist {
+        check(near(IslandPrism.spread(at: 0.5, bands: silent), IslandPrism.twistFull) && near(IslandPrism.spread(at: 0.5, bands: full), IslandPrism.twistFull),
+              "spread is the ribbon's own width, whatever the music")
+        check(near(IslandPrism.lift(at: 0.5, bands: full), IslandPrism.twistShown(at: 0.5, bands: full)), "lift is what shows of it")
+    }
     var smooth = true
     var prev = IslandPrism.twistFacing(at: 0, bands: [0.9, 0.2, 0.7, 0.1, 0.6, 0.3])
     for k in 1...800 { let f = IslandPrism.twistFacing(at: Double(k) / 800, bands: [0.9, 0.2, 0.7, 0.1, 0.6, 0.3]); if abs(f - prev) > 0.03 { smooth = false }; prev = f }
@@ -429,6 +435,89 @@ do {
     let windows = IslandPrism.twistWindows
     check(windows.count == 3 && windows[0] > windows[1] && windows[1] > windows[2], "bass slowest, treble quickest")
     check(windows.allSatisfy { $0 > 1.2 && $0 < 4 }, "each takes a couple of seconds to cross")
+}
+
+print("prism: the wave")
+do {
+    typealias W = PrismWave
+    let silence = W.Features()
+    let loud = W.Features(level: 0.8, bands: [0.8, 0.5, 0.3])
+
+    // Reading the bands.
+    check(W.groups([0.2, 0.9, 0.1, 0.3, 0.6, 0.4]) == [0.9, 0.3, 0.6], "bass, mids, treble: each the louder of a pair")
+    check(W.groups([0.5]) == [0.5, 0, 0] && W.groups([]) == [0, 0, 0], "fewer bands fold the same way")
+    var shaper = W.Shaper()
+    let hit = shaper.features(of: [1, 1, 0, 0, 0, 0], dt: 1.0 / 60)
+    var held = hit
+    for _ in 0..<240 { held = shaper.features(of: [1, 1, 0, 0, 0, 0], dt: 1.0 / 60) }
+    check(hit.bands[0] > held.bands[0] + 0.3, "a hit pulls harder than the same note held", "\(hit.bands[0]) vs \(held.bands[0])")
+    check(near(held.bands[0], W.held, 0.02) && held.bands[1] == 0, "held, a band pulls by where it stands; a silent band not at all")
+    check(near(hit.level, 1.0 / 3) && W.Shaper.standing([1, 1, 0, 0, 0, 0]).bands[0] == W.held, "the level is the three's mean; standing levels have no hits")
+
+    // At rest: a still streak, and nothing left to draw.
+    var m = W.Motion()
+    for _ in 0..<120 { m.step(dt: 1.0 / 60, input: silence) }
+    check(!m.isMoving && m.openness == 0 && m.phase == 0 && m.clock == 0, "silent from the start: closed, not travelling, settled")
+    check(m.amps.allSatisfy { near($0.x, W.restAmp, 1e-6) }, "its ribbons at the resting streak's height")
+
+    // Sound opens it, lifts the ribbons, and sets it travelling.
+    for _ in 0..<60 { m.step(dt: 1.0 / 60, input: loud) }
+    check(m.isMoving && m.openness > 0.9 && m.phase > 0, "sound opens it and it travels", "open \(m.openness) phase \(m.phase)")
+    check(m.amps[0].x > m.amps[1].x && m.amps[1].x > m.amps[2].x && m.amps[2].x > W.restAmp + 0.2, "each ribbon as tall as its band")
+    check(near(m.level, 0.8, 0.01), "the level is followed up at once")
+
+    // Loose springs: a hit overshoots where it will settle.
+    var spring = W.Motion()
+    var peak = 0.0
+    for _ in 0..<180 { spring.step(dt: 1.0 / 60, input: loud); peak = max(peak, spring.amps[0].x) }
+    // Past where the hit alone would hold it (the open wave's body is still
+    // on its way in), and back down after.
+    let pulled = W.restAmp + W.levelPull * loud.level + W.bandPull * loud.bands[0]
+    check(peak > pulled + 0.1 && spring.amps[0].x < peak - 0.02, "a hit overshoots and settles", "peak \(peak) pulled \(pulled) settled \(spring.amps[0].x)")
+
+    // Louder travels faster.
+    var quiet = W.Motion(), strong = W.Motion()
+    for _ in 0..<120 {
+        quiet.step(dt: 1.0 / 60, input: W.Features(level: 0.2, bands: [0.2, 0.2, 0.2]))
+        strong.step(dt: 1.0 / 60, input: W.Features(level: 0.9, bands: [0.9, 0.9, 0.9]))
+    }
+    check(strong.phase > quiet.phase * 2, "louder sound travels faster", "\(strong.phase) vs \(quiet.phase)")
+
+    // It stays open through a gap, and closes to stillness after one.
+    for _ in 0..<48 { m.step(dt: 1.0 / 60, input: silence) }      // 0.8s
+    check(m.openness > 0.9 && m.isMoving, "0.8s of silence: still open")
+    for _ in 0..<600 { m.step(dt: 1.0 / 60, input: silence) }
+    let phase = m.phase
+    check(!m.isMoving && m.openness < 0.01 && m.amps.allSatisfy { near($0.x, W.restAmp, 0.01) }, "10s of silence: closed and settled", "open \(m.openness)")
+    m.step(dt: 1.0 / 60, input: silence)
+    check(m.phase == phase, "and a closed wave doesn't travel")
+
+    // Held still: it stands as tall as the sound, travels nowhere, and settles.
+    var stillWave = W.Motion()
+    for _ in 0..<600 { stillWave.step(dt: 1.0 / 60, input: loud, travels: false) }
+    check(stillWave.phase == 0 && stillWave.clock == 0 && !stillWave.isMoving && stillWave.amps[0].x > 0.9, "asked not to travel, it stands and settles")
+
+    // The clocks come round without a jump in anything drawn.
+    for k in [0.8, -0.7, 1.15, 1.3, -0.9] {
+        let turns = k * W.phaseWrap / (2 * Double.pi)
+        check(near(turns, turns.rounded(), 1e-9), "wrapping the phase is a whole number of turns at \(k)")
+    }
+    for k in [0.31, 0.23, 0.41, 0.8] {
+        let turns = k * W.clockWrap / (2 * Double.pi)
+        check(near(turns, turns.rounded(), 1e-9), "wrapping the clock is a whole number of turns at \(k)")
+    }
+    var long = W.Motion()
+    for _ in 0..<(60 * 60) { long.step(dt: 0.1, input: loud) }     // six minutes
+    check(long.phase < W.phaseWrap && long.clock < W.clockWrap && long.time < W.clockWrap && long.openness > 0.9, "a long song: the clocks stay small and the wave open")
+
+    // Standing levels, for the gallery.
+    let standing = W.Motion.standing(W.Shaper.standing([0.8, 0.8, 0.4, 0.4, 0.1, 0.1]))
+    check(standing.openness == 1 && standing.amps[0].x > standing.amps[2].x, "fixed levels stand open, bass tallest")
+    check(W.Motion.standing(silence).openness == 0, "and no levels are the resting streak")
+
+    // The tallest it stands stays inside the strip below the line.
+    let tallest = (0.30 * 1.3 + W.openThick + W.thickPerLevel) * W.unit
+    check(tallest <= Double(IslandPrism.ribbonStrip - IslandPrism.ribbonCentre), "a loud ribbon stays inside its strip above the line", "\(tallest)")
 }
 
 print("prism: the ribbon's motion")
