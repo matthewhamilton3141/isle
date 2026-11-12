@@ -428,6 +428,10 @@ struct NotchRootView: View {
                     .transition(.opacity)
             }
         }
+        // Off the notch and open, the roof: the header and everything under
+        // it this much lower, in a panel that much taller
+        // (`IslandFloat.openSize`).
+        .padding(.top, floating && state.isExpanded ? IslandFloat.roof : 0)
         // A swipe's face swap stays instant for everything inside the
         // outline, though the notch's outermost modifier (in `body`) gives
         // the swipe's transaction an animation for the outline's sake.
