@@ -122,7 +122,9 @@ private struct IslandGlassBlend: View, Animatable {
             } else if showsGlass {
                 material
                     .overlay(alignment: .top) {
-                        if layer != .materialOnly {
+                        // Glass's tint. Prism's shade is drawn with the
+                        // material, under its ribbon (`material`).
+                        if layer != .materialOnly, background != .prism {
                             IslandGlassShade(background: background, bandHeight: bandHeight, lift: lift)
                         }
                     }
@@ -159,11 +161,16 @@ private struct IslandGlassBlend: View, Animatable {
                 clear: background == .prism,
                 lens: background == .prism
             )
-            .overlay {
-                // Prism's frost and ribbon, in the material's own window
-                // with the lens: glass on glass and the light in it, under
-                // everything the panel draws.
+            .overlay(alignment: .top) {
+                // Prism's shade, frost and ribbon, in the material's own
+                // window with the lens: glass on glass and the light in
+                // it, under everything the panel draws. The shade first, so
+                // the ribbon lies on it rather than under it: over the
+                // ribbon, a shade dark enough for a bright window took the
+                // colour out of the light.
                 if background == .prism {
+                    PrismShade(bandHeight: bandHeight, lift: lift)
+                    PrismCap()
                     PrismFrost(shape: shape, pane: pane)
                     PrismRibbonStrip(shape: shape, ribbon: ribbon)
                         // The ribbon is the open lip's. On the notch the
