@@ -33,8 +33,9 @@ struct ExpandedNotchView: View {
     @State private var showsOutputs = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// Prism's ribbon is along the lip: it is the waveform, so the bars in
-    /// the corner would be the same thing said twice.
+    /// With Prism's ribbon along the lip (`IslandPrism.showsRibbon`), it is
+    /// the waveform, and the bars in the corner would be the same thing
+    /// said twice.
     @Environment(\.islandHasRibbon) private var hasRibbon
 
     private static let crossDissolve = Animation.easeInOut(duration: 0.28)

@@ -20,10 +20,25 @@
 //  its own sine, so each gets a keyframe loop on its own exact period and the
 //  render server plays them.
 //
+//  Prism draws the same bars as lit glass (`EqualizerStyle.glass`). Nothing
+//  about the levels or the geometry changes; the bars are a little see-through
+//  in the middle and whole at the edge, each has a pale rim, and each casts a
+//  glow. The glow is the bars' own shadow *inside the mask*: the gradient
+//  shows through the halo as it does through the bar, so a tall bar's glow
+//  runs the colour ramp with it and nothing is redrawn to make it.
+//
 
 import AppKit
 import Combine
 import SwiftUI
+
+/// How the waveform's bars are drawn.
+enum EqualizerStyle: Equatable {
+    /// Solid bars in the gradient: every mode but Prism.
+    case flat
+    /// Lit glass: Prism.
+    case glass
+}
 
 final class EqualizerLayerView: NSView {
 
@@ -38,6 +53,25 @@ final class EqualizerLayerView: NSView {
     private let barThickness: CGFloat
     /// Height of a bar at complete silence — the "dot" resting state.
     private let dotHeight: CGFloat
+
+    // MARK: - Lit glass (tune here)
+
+    /// How much of the gradient shows through the middle of a glass bar; its
+    /// edge, `glassEdge` wide, is whole. The bars are the size and in the
+    /// places they are flat: thicker, a narrow strip's bars ran together
+    /// into one ribbed block.
+    private static let glassBody: Float = 0.78
+    private static let glassEdge: CGFloat = 0.5
+    /// The pale rim over that edge.
+    private static let rimWhite: Float = 0.55
+    /// The glow: how far it spreads, in points, and how strong it is next to
+    /// the bar.
+    private static let glowRadius: CGFloat = 3
+    private static let glowOpacity: Float = 1
+    /// How far outside the strip the layers reach, so the glow isn't cut
+    /// off at the strip's edge.
+    private static let glowReach: CGFloat = 10
+    private var reach: CGFloat { style == .glass ? Self.glowReach : 0 }
 
     /// Floor on the gap between bars. Below this the strip stops reading as
     /// separate bars, so past it the thickness gives way instead — better a
@@ -59,6 +93,14 @@ final class EqualizerLayerView: NSView {
     private let gradient = CAGradientLayer()
     private let barMask = CALayer()
     private var bars: [CALayer] = []
+    /// Glass only: the rims, white through a mask of bar outlines that
+    /// move with the bars.
+    private let rim = CALayer()
+    private let rimMask = CALayer()
+    private var rims: [CALayer] = []
+
+    private var style: EqualizerStyle = .flat
+    private var builtStyle: EqualizerStyle = .flat
 
     private var palette: ArtworkPalette = .fallback
     private var isPlaying: Bool = true
@@ -91,6 +133,11 @@ final class EqualizerLayerView: NSView {
         layer?.masksToBounds = false
         gradient.mask = barMask
         layer?.addSublayer(gradient)
+        rim.backgroundColor = NSColor.white.cgColor
+        rim.opacity = Self.rimWhite
+        rim.mask = rimMask
+        rim.isHidden = true
+        layer?.addSublayer(rim)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -118,12 +165,13 @@ final class EqualizerLayerView: NSView {
         setLevels([])
     }
 
-    func configure(palette: ArtworkPalette, isPlaying: Bool) {
+    func configure(palette: ArtworkPalette, isPlaying: Bool, style: EqualizerStyle = .flat) {
         let modeWas = mode
         self.palette = palette
         self.isPlaying = isPlaying
+        self.style = style
         if palette != builtPalette { applyGradient() }
-        if mode != modeWas { rebuild() }
+        if mode != modeWas || style != builtStyle { rebuild() }
     }
 
     /// Static levels, for the previews and the gallery.
@@ -150,6 +198,7 @@ final class EqualizerLayerView: NSView {
         let size = bounds.size
         builtSize = size
         builtMode = mode
+        builtStyle = style
         guard size.width > 0, size.height > 0 else { return }
 
         makeBars()
@@ -158,18 +207,26 @@ final class EqualizerLayerView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
 
-        gradient.frame = CGRect(origin: .zero, size: size)
-        barMask.frame = CGRect(origin: .zero, size: size)
+        // The layers reach past the strip by the glow's reach (nothing, flat);
+        // the bars stand where they always did.
+        let reach = reach
+        let frame = CGRect(origin: .zero, size: size).insetBy(dx: -reach, dy: -reach)
+        gradient.frame = frame
+        barMask.frame = CGRect(origin: .zero, size: frame.size)
+        rim.frame = frame
+        rimMask.frame = barMask.frame
+        rim.isHidden = style != .glass
 
         let (barWidth, spacing) = geometry(for: size)
         for index in 0..<barCount {
-            let bar = bars[index]
-            bar.removeAllAnimations()
-            bar.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-            bar.position = CGPoint(
-                x: CGFloat(index) * (barWidth + spacing) + barWidth / 2,
-                y: size.height / 2
-            )
+            for piece in pieces(index) {
+                piece.removeAllAnimations()
+                piece.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+                piece.position = CGPoint(
+                    x: reach + CGFloat(index) * (barWidth + spacing) + barWidth / 2,
+                    y: reach + size.height / 2
+                )
+            }
         }
 
         switch mode {
@@ -185,16 +242,44 @@ final class EqualizerLayerView: NSView {
     }
 
     private func makeBars() {
-        guard bars.count != barCount else { return }
-        bars.forEach { $0.removeFromSuperlayer() }
-        bars = (0..<barCount).map { _ in
-            let bar = CALayer()
-            // Opaque: this layer is a mask, so its alpha is what shows the
-            // gradient through. The colour itself is never seen.
-            bar.backgroundColor = NSColor.black.cgColor
-            barMask.addSublayer(bar)
-            return bar
+        if bars.count != barCount {
+            bars.forEach { $0.removeFromSuperlayer() }
+            bars = (0..<barCount).map { _ in
+                let bar = CALayer()
+                barMask.addSublayer(bar)
+                return bar
+            }
         }
+        let glass = style == .glass
+        if glass, rims.count != barCount {
+            rims.forEach { $0.removeFromSuperlayer() }
+            rims = (0..<barCount).map { _ in
+                let outline = CALayer()
+                outline.borderColor = NSColor.black.cgColor
+                outline.borderWidth = Self.glassEdge
+                rimMask.addSublayer(outline)
+                return outline
+            }
+        }
+        for bar in bars {
+            // These layers are a mask, so their alpha is what shows the
+            // gradient through. The colour itself is never seen. Flat, a
+            // bar is opaque. Glass, its middle lets a little less through
+            // than its edge, and its shadow lets the gradient through
+            // round it: the glow.
+            bar.backgroundColor = NSColor.black.withAlphaComponent(glass ? CGFloat(Self.glassBody) : 1).cgColor
+            bar.borderColor = NSColor.black.cgColor
+            bar.borderWidth = glass ? Self.glassEdge : 0
+            bar.shadowColor = NSColor.black.cgColor
+            bar.shadowOffset = .zero
+            bar.shadowRadius = glass ? Self.glowRadius : 0
+            bar.shadowOpacity = glass ? Self.glowOpacity : 0
+        }
+    }
+
+    /// The layers that are bar `index`: the bar, and in glass its rim.
+    private func pieces(_ index: Int) -> [CALayer] {
+        style == .glass && rims.count == barCount ? [bars[index], rims[index]] : [bars[index]]
     }
 
     private func applyGradient() {
@@ -204,8 +289,11 @@ final class EqualizerLayerView: NSView {
         // Bottom to top, primary to accent. The view is unflipped, so the
         // layer's unit space puts (0.5, 0) at the bottom — matching the Canvas
         // version, which ran its gradient from y = height up to y = 0.
-        gradient.startPoint = CGPoint(x: 0.5, y: 0)
-        gradient.endPoint = CGPoint(x: 0.5, y: 1)
+        // The ramp spans the strip, not the glow's reach round it.
+        let tall = builtSize.height + 2 * reach
+        let inset = tall > 0 ? reach / tall : 0
+        gradient.startPoint = CGPoint(x: 0.5, y: inset)
+        gradient.endPoint = CGPoint(x: 0.5, y: 1 - inset)
         gradient.colors = [
             NSColor(palette.primary).cgColor,
             NSColor(palette.accent).cgColor
@@ -239,12 +327,13 @@ final class EqualizerLayerView: NSView {
 
     private func setBar(_ index: Int, level: Double, size: CGSize, barWidth: CGFloat) {
         let full = barHeight(level: level, size: size)
-        let bar = bars[index]
-        bar.bounds = CGRect(x: 0, y: 0, width: barWidth, height: full)
-        // CoreGraphics clamps a rounded rect's corner to half the smaller side,
-        // so a bar shorter than it is wide reads as a pill. Match that, or a
-        // resting dot would render as a square.
-        bar.cornerRadius = min(barWidth, full) / 2
+        for bar in pieces(index) {
+            bar.bounds = CGRect(x: 0, y: 0, width: barWidth, height: full)
+            // CoreGraphics clamps a rounded rect's corner to half the smaller side,
+            // so a bar shorter than it is wide reads as a pill. Match that, or a
+            // resting dot would render as a square.
+            bar.cornerRadius = min(barWidth, full) / 2
+        }
     }
 
     private func applyLiveLevels() {
@@ -286,13 +375,14 @@ final class EqualizerLayerView: NSView {
                 radii.append(min(barWidth, full) / 2)
             }
 
-            let bar = bars[index]
-            bar.bounds = CGRect(x: 0, y: 0, width: barWidth, height: heights[0] as! CGFloat)
-            bar.cornerRadius = radii[0] as! CGFloat
-            bar.add(loop(heights, keyPath: "bounds.size.height", duration: period, beginTime: now),
-                    forKey: "height")
-            bar.add(loop(radii, keyPath: "cornerRadius", duration: period, beginTime: now),
-                    forKey: "radius")
+            for bar in pieces(index) {
+                bar.bounds = CGRect(x: 0, y: 0, width: barWidth, height: heights[0] as! CGFloat)
+                bar.cornerRadius = radii[0] as! CGFloat
+                bar.add(loop(heights, keyPath: "bounds.size.height", duration: period, beginTime: now),
+                        forKey: "height")
+                bar.add(loop(radii, keyPath: "cornerRadius", duration: period, beginTime: now),
+                        forKey: "radius")
+            }
         }
     }
 
