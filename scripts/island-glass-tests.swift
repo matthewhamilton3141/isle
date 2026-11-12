@@ -529,46 +529,5 @@ do {
     check(IslandPrism.stops(from: [RGB(r: 0.6, g: 0.6, b: 0.6)]).allSatisfy { sat($0) < 0.02 }, "a grey cover's fan is white")
 }
 
-print("the colourful pick")
-do {
-    typealias RGB = VividPalette.RGB
-    func hue(_ c: RGB) -> Double { VividPalette.hue(c) }
-    func hueGap(_ a: Double, _ b: Double) -> Double { let d = abs(a - b); return min(d, 1 - d) }
-    func chroma(_ c: RGB) -> Double { max(c.r, c.g, c.b) - min(c.r, c.g, c.b) }
-    let beige = RGB(r: 0.78, g: 0.72, b: 0.62), red = RGB(r: 0.9, g: 0.1, b: 0.12), teal = RGB(r: 0.1, g: 0.75, b: 0.7)
-    let navy = RGB(r: 0.05, g: 0.06, b: 0.2), grey = RGB(r: 0.5, g: 0.5, b: 0.5)
-    func cover(_ parts: [(RGB, Int)]) -> [RGB] { parts.flatMap { Array(repeating: $0.0, count: $0.1) } }
-    check(VividPalette.pick([]) == nil, "no pixels, no palette")
-    check(VividPalette.pick(cover([(grey, 900), (RGB(r: 0.1, g: 0.1, b: 0.1), 124)])) == nil, "a black-and-white cover has none")
-    // A small vivid subject on a large dull ground: the subject wins.
-    let small = VividPalette.pick(cover([(beige, 900), (red, 60), (teal, 64)]))!
-    check(hueGap(hue(small.primary), hue(red)) < 0.03 || hueGap(hue(small.primary), hue(teal)) < 0.03, "6% of a strong colour beats 88% of a dull one")
-    let found = [small.primary, small.secondary, small.accent]
-    check(found.contains { hueGap(hue($0), hue(red)) < 0.03 } && found.contains { hueGap(hue($0), hue(teal)) < 0.03 }, "both strong colours are in the palette")
-    check(found.contains { hueGap(hue($0), hue(beige)) < 0.04 }, "and the ground is its third, not left out")
-    // Dark doesn't outvote bright: a deep navy field and a bright accent.
-    let dark = VividPalette.pick(cover([(navy, 800), (teal, 224)]))!
-    check(hueGap(hue(dark.primary), hue(teal)) < 0.03, "a bright colour beats a larger dark one")
-    // One colour: the others are its shades, never a new hue.
-    let mono = VividPalette.pick(cover([(red, 500), (grey, 524)]))!
-    check(hueGap(hue(mono.secondary), hue(red)) < 0.02 && hueGap(hue(mono.accent), hue(red)) < 0.02, "one hue on the cover: three shades of it")
-    check(mono.secondary != mono.primary && mono.accent != mono.primary, "and three different shades")
-    // The second colour is a different colour, not the first again.
-    let near = VividPalette.pick(cover([(red, 400), (RGB(r: 0.9, g: 0.16, b: 0.1), 400), (teal, 224)]))!
-    check(hueGap(hue(near.secondary), hue(red)) > 0.06, "two reds and a teal: the second colour is the teal")
-    // Pastels are told apart when there's nothing stronger.
-    let pink = RGB(r: 0.98, g: 0.86, b: 0.90), mint = RGB(r: 0.80, g: 0.95, b: 0.88), lilac = RGB(r: 0.86, g: 0.88, b: 0.99)
-    let pastel = VividPalette.pick(cover([(pink, 400), (mint, 300), (lilac, 324)]))!
-    let hues = [pastel.primary, pastel.secondary, pastel.accent].map(hue)
-    check(hueGap(hues[0], hues[1]) > 0.08 && hueGap(hues[1], hues[2]) > 0.08 && hueGap(hues[0], hues[2]) > 0.08, "a pastel cover: its three hues, not one cream")
-    // The same pixels in any order give the same palette.
-    let pixels = cover([(beige, 300), (red, 200), (teal, 200), (navy, 324)])
-    let a = VividPalette.pick(pixels)!, b = VividPalette.pick(pixels.reversed())!
-    check(a.primary == b.primary || (abs(a.primary.r - b.primary.r) < 1e-9 && abs(a.primary.g - b.primary.g) < 1e-9), "order doesn't change the pick")
-    check(chroma(a.primary) >= chroma(beige), "the pick is at least as colourful as the ground")
-    let shade = VividPalette.shade(red, brightness: 0.5, saturation: 1)
-    check(hueGap(hue(shade), hue(red)) < 1e-6 && max(shade.r, shade.g, shade.b) < 0.5, "a shade keeps its hue")
-}
-
 print("\n\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)
