@@ -492,11 +492,21 @@ final class PrismRibbonRenderer {
         col = 1.0 - exp(-col * 1.5);
         col = pow(col, float3(1.0 / 2.2));
 
+        // Out to nothing toward the strip's two ends and its top. The
+        // ribbon's own taper is in light, and brought back to the screen's
+        // curve a thin line a twentieth as bright is still half as bright
+        // to the eye: left to that, the streak and its glow ran to the
+        // edge of the strip and stopped there.
+        float ends = smoothstep(0.0, 0.3, 1.0 - abs(p.x));
+        float top = 1.0 - smoothstep(0.6, 1.0, rest / max(u.size.y - u.centre, 1.0));
+        float fade = ends * ends * top;
+        col *= fade;
+
         // Light that covers what it lights, on a soft bed of shade, so it
         // is still seen over a white window.
         float peak = max(col.r, max(col.g, col.b));
         float near = max(waveNear(p, a0, k0), waveNear(p, a1, k1) * 0.8);
-        float shade = u.bed * 0.8 * near * mix(0.45, 1.0, e);
+        float shade = u.bed * 0.8 * near * mix(0.45, 1.0, e) * fade;
         float cover = clamp(max(peak * u.cover, shade), 0.0, 1.0);
         float n = (hash(pixel) - 0.5) / 255.0;
         return float4(max(col + n, 0.0), cover);
