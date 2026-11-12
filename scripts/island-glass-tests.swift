@@ -160,6 +160,11 @@ do {
     let l = IslandGlass.luma(r: deep.r, g: deep.g, b: deep.b)
     check(near(l, IslandGlass.paletteLumaFloor, 1e-9), "deep purple raised to the floor", "\(l)")
     check(deep.b > deep.r && deep.r > deep.g, "hue order kept")
+    // Brightened before it is paled: the strongest channel is full, and
+    // the weakest is still well under it.
+    check(near(deep.b, 1) && deep.g < 0.5, "and its colour with it: brightened first, white only for the rest", "\(deep)")
+    let mid = IslandGlass.floored(r: 0.45, g: 0.30, b: 0.05)
+    check(near(mid.g / mid.r, 0.30 / 0.45, 1e-9) && near(mid.b / mid.r, 0.05 / 0.45, 1e-9), "a colour that brightening alone brings up is not paled at all", "\(mid)")
     let bright = IslandGlass.floored(r: 0.9, g: 0.7, b: 0.2)
     check(bright.r == 0.9 && bright.g == 0.7 && bright.b == 0.2, "already-light colours untouched")
     let black = IslandGlass.floored(r: 0, g: 0, b: 0)

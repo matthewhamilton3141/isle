@@ -231,17 +231,35 @@ enum IslandGlass {
     /// by whatever is behind it, so a deep accent of a similar hue can all
     /// but vanish into it; held at least this light, it can't. Black mode
     /// never applies it, and the extraction itself is untouched.
-    static let paletteLumaFloor: Double = 0.62
+    ///
+    /// Down from 0.62, with `floored` changed to match: lifted that far by
+    /// white alone, a cover's purple or blue reached the Claude status as
+    /// a pastel (Matthew: "i want the accent colour to also transfer to
+    /// the claude status a bit more rn it looks kinda desaturated").
+    static let paletteLumaFloor: Double = 0.55
 
     static func luma(r: Double, g: Double, b: Double) -> Double {
         0.2126 * r + 0.7152 * g + 0.0722 * b
     }
 
-    /// The colour mixed toward white just enough to reach the floor — hue
-    /// kept, nothing changed if it's already there. Channels 0...1, sRGB.
+    /// The colour brought up to the floor — nothing changed if it's
+    /// already there. Channels 0...1, sRGB.
+    ///
+    /// Brightened first: every channel scaled by the same amount, which
+    /// keeps the hue and all of the colour's saturation, as far as the
+    /// strongest channel can go. Only what is still missing after that is
+    /// made up by mixing toward white, which is what pales a colour.
     static func floored(r: Double, g: Double, b: Double) -> (r: Double, g: Double, b: Double) {
-        let l = luma(r: r, g: g, b: b)
+        var (r, g, b) = (r, g, b)
+        var l = luma(r: r, g: g, b: b)
         guard l < paletteLumaFloor else { return (r, g, b) }
+        let top = max(r, g, b)
+        if top > 0, l > 0 {
+            let k = min(1 / top, paletteLumaFloor / l)
+            (r, g, b) = (r * k, g * k, b * k)
+            l *= k
+        }
+        guard l < paletteLumaFloor - 1e-12 else { return (r, g, b) }
         // Mixing by t toward white moves luma by (1 - l)t.
         let t = (paletteLumaFloor - l) / max(1 - l, 1e-9)
         return (r + (1 - r) * t, g + (1 - g) * t, b + (1 - b) * t)
