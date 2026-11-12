@@ -451,19 +451,6 @@ extension EnvironmentValues {
     }
 }
 
-private struct IslandWaveformStyleKey: EnvironmentKey {
-    static let defaultValue = EqualizerStyle.flat
-}
-
-extension EnvironmentValues {
-    /// How the waveform's bars are drawn here (`EqualizerStyle`): lit
-    /// glass in Prism, flat otherwise.
-    var islandWaveformStyle: EqualizerStyle {
-        get { self[IslandWaveformStyleKey.self] }
-        set { self[IslandWaveformStyleKey.self] = newValue }
-    }
-}
-
 /// Secondary text: white at `opacity` on black; on glass brighter
 /// (`IslandGlass.liftedOpacity`) and with a soft dark edge
 /// (`IslandGlass.textShade`), so it holds over a light window. On black it

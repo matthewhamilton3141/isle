@@ -210,6 +210,17 @@ enum IslandGlass {
     static let textShade: Double = 0.34
     static let textShadeRadius: Double = 1.6
 
+    /// The same for the waveform's bars on glass: their colours are the
+    /// cover's, and what is behind the glass can be those colours too
+    /// (Matthew: "sometimes its hard to tell the gradient colours apart
+    /// from the background"). Two of them, because a bar is a few points
+    /// wide and one soft shadow thins out to nothing with it: a tight one
+    /// that draws the bar's outline, and a soft one round that.
+    static let barEdge: Double = 1
+    static let barEdgeRadius: Double = 0.7
+    static let barShade: Double = 0.7
+    static let barShadeRadius: Double = 2.5
+
     static func liftedOpacity(_ opacity: Double) -> Double {
         let o = min(max(opacity, 0), 1)
         return o + (1 - o) * secondaryLift

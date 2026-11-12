@@ -155,9 +155,9 @@ enum IslandPrism {
     /// Whether the lip has the ribbon in it at all. Off: Matthew asked for
     /// the waveform back in its place ("instead of the ribbon, bring back
     /// the waveform, but make it like liquid glass or glow as well"), so
-    /// the lip is bare glass, the bars are back in the Music face's corner,
-    /// and in Prism they are drawn as lit glass (`EqualizerStyle.glass`).
-    /// The ribbon is all still here, one word away.
+    /// the lip is bare glass and the bars are back in the Music face's
+    /// corner. (The lit-glass bars he tried and didn't like: "just do
+    /// normal colours".) The ribbon is all still here, one word away.
     static let showsRibbon = false
 
     /// The twist's half-width where it is full face-on, in points. Edge-on
