@@ -15,10 +15,9 @@
 //  device — this falls back to the procedural sine pattern so the notch
 //  still looks alive rather than dead.
 //
-//  In Prism the bars are lit glass (`EqualizerStyle.glass`): the same bars,
-//  the same levels, with a glow of their own colour round them and a pale
-//  edge. The island says which through the environment
-//  (`islandWaveformStyle`).
+//  On glass the bars have a soft dark edge (`EqualizerStyle.onGlass`), as
+//  the secondary text does, so they hold against whatever is behind the
+//  glass. The colours are the same.
 //
 //  Both are drawn by Core Animation; see EqualizerLayer.swift. These are the
 //  SwiftUI faces of it: `LiveEqualizer` for the notch, which hands the layer
@@ -47,11 +46,12 @@ struct LiveEqualizer: View {
     /// mid-song gets the pattern at once, not the last frame the tap sent.
     var listens: Bool = true
 
-    @Environment(\.islandWaveformStyle) private var style
+    @Environment(\.islandOnGlass) private var onGlass
 
     var body: some View {
         LiveEqualizerRepresentable(
-            source: source, palette: palette, isPlaying: isPlaying, listens: listens, style: style
+            source: source, palette: palette, isPlaying: isPlaying, listens: listens,
+            style: onGlass ? .onGlass : .flat
         )
         .accessibilityHidden(true)
     }
@@ -135,13 +135,15 @@ private struct StaticEqualizerRepresentable: NSViewRepresentable {
         EqualizerView(isPlaying: true)
             .frame(width: 30, height: 18)
 
-        // Prism's lit glass.
+        // On glass: the dark edge, over something its own colour.
         EqualizerView(
             palette: ArtworkPalette(primary: .pink, secondary: .purple, accent: .orange),
             levels: [0.3, 0.65, 0.45, 0.9, 0.5, 0.25],
-            style: .glass
+            style: .onGlass
         )
         .frame(width: 30, height: 24)
+        .padding(8)
+        .background(.pink)
     }
     .padding(40)
     .background(.black)

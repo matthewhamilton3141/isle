@@ -544,7 +544,6 @@ struct NotchRootView: View {
             ExpandedNotchView(viewModel: viewModel, island: island, palette: glass ? palette.flooredForGlass : palette)
                 .environment(\.islandOnGlass, glass)
                 .environment(\.islandHasRibbon, panelBackground == .prism && IslandPrism.showsRibbon)
-                .environment(\.islandWaveformStyle, waveformStyle)
                 .environment(\.islandFloating, floating)
                 // Opacity gated on how far the notch has actually opened; the
                 // transition still handles the fade-out on collapse.
@@ -556,16 +555,8 @@ struct NotchRootView: View {
             let glass = floating && panelBackground.isGlass
             CollapsedNotchView(viewModel: viewModel, island: island, palette: glass ? palette.flooredForGlass : palette)
                 .environment(\.islandOnGlass, glass)
-                .environment(\.islandWaveformStyle, waveformStyle)
                 .transition(.opacity)
         }
-    }
-
-    /// How the waveform's bars are drawn: lit glass in Prism, open and
-    /// closed alike (the same object on the pill and in the panel), flat
-    /// everywhere else.
-    private var waveformStyle: EqualizerStyle {
-        panelBackground == .prism ? .glass : .flat
     }
 
     // MARK: - Crumb
