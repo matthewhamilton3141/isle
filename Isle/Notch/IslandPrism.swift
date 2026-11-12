@@ -55,16 +55,19 @@ enum IslandPrism {
 
     /// Black over the glass across the panel's whole width once the ease
     /// from the band has run: what the glass at the side walls keeps.
-    /// Light: the lens in the dark scheme does most of the darkening on its
-    /// own. Tune here.
-    static let edgeTint: Double = 0.06
+    ///
+    /// Most of the shade, and the same from wall to wall. A lens is as
+    /// light as what is behind it, and over a bright window a light shade
+    /// here with a dark one behind the content (as it was: 0.06 and 0.32)
+    /// drew a grey soft-edged block inside white glass. One even shade
+    /// over the whole lens is dark glass over anything. Tune here.
+    static let edgeTint: Double = 0.42
 
     /// Black laid behind the content on top of that, inset from the walls
-    /// with a soft edge, so text sits on `contentAlpha` while the walls stay
-    /// lighter glass. With no frost under it (`frost`), this is all that
-    /// stands between white text and a white page behind the lens, so it
-    /// is as dark as Glass's own tint and a little more. Tune here.
-    static let scrim: Double = 0.32
+    /// with a soft edge, so text sits on `contentAlpha`. Slight: enough to
+    /// settle the text, too little to be seen as a shape of its own inside
+    /// the glass (see `edgeTint`). Tune here.
+    static let scrim: Double = 0.06
 
     /// How much frost is laid over the lens behind the content, 0 (bare
     /// lens: what's behind is sharp) to 1 (fully frosted: the system's
@@ -283,11 +286,12 @@ enum IslandPrism {
         twistFacing(at: u, bands: bands) * twistWidth(at: u)
     }
 
-    /// Black left over the lip: all but bare glass. It lies over the ribbon
-    /// too, which is in the glass under it, so what the ribbon needs to
-    /// shine against over a white window is its own bed of shade
-    /// (`ribbonBed`), not this. Tune here.
-    static let lipTint: Double = 0.05
+    /// Black left over the lip: a little clearer than the walls, so the
+    /// glass lightens toward its bottom edge, and not so much clearer that
+    /// over a bright window the lip is a white band under a grey panel. It
+    /// lies over the ribbon too, which is in the glass under it and has its
+    /// own bed of shade (`ribbonBed`) besides. Tune here.
+    static let lipTint: Double = 0.34
 
     /// The horizon: how many points the shade takes to clear from the
     /// content's tint to the lip's, centred on the line where the content's

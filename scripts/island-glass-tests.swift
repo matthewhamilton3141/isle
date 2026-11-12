@@ -56,7 +56,11 @@ do {
     check(IslandGlass.tint(for: .black) == 0, "Black has no tint")
     check(IslandGlass.tint(for: .glass) == IslandGlass.glassTint, "Glass uses glassTint")
     check(IslandGlass.tint(for: .prism) == IslandPrism.lipTint, "Prism's tint is its lip's")
-    check(IslandGlass.glassTint > IslandPrism.lipTint, "Glass is darker than Prism's bare lip")
+    // Prism's lens is shaded all over, the lip a little less than the walls:
+    // never so much less that the lip is a pale band under a dark panel.
+    check(IslandPrism.edgeTint - IslandPrism.lipTint <= 0.1 && IslandPrism.scrim <= 0.1, "Prism's shade is all but even from wall to wall and down to the lip",
+          "walls \(IslandPrism.edgeTint) lip \(IslandPrism.lipTint) scrim \(IslandPrism.scrim)")
+    check(IslandPrism.contentAlpha >= IslandGlass.glassTint, "and at least as dark behind the content as Glass's tint")
 }
 
 print("shared arithmetic")
