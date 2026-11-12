@@ -443,14 +443,19 @@ extension EnvironmentValues {
     }
 }
 
-/// Secondary text: white at `opacity` on black, a little brighter on glass
-/// (`IslandGlass.liftedOpacity`). On black it resolves to exactly
-/// `.white.opacity(opacity)`.
+/// Secondary text: white at `opacity` on black; on glass brighter
+/// (`IslandGlass.liftedOpacity`) and with a soft dark edge
+/// (`IslandGlass.textShade`), so it holds over a light window. On black it
+/// resolves to exactly `.white.opacity(opacity)`.
 struct IslandSecondaryStyle: ShapeStyle {
     var opacity: Double
 
-    func resolve(in environment: EnvironmentValues) -> Color {
-        .white.opacity(environment.islandOnGlass ? IslandGlass.liftedOpacity(opacity) : opacity)
+    func resolve(in environment: EnvironmentValues) -> AnyShapeStyle {
+        guard environment.islandOnGlass else { return AnyShapeStyle(Color.white.opacity(opacity)) }
+        return AnyShapeStyle(
+            Color.white.opacity(IslandGlass.liftedOpacity(opacity))
+                .shadow(.drop(color: .black.opacity(IslandGlass.textShade), radius: IslandGlass.textShadeRadius))
+        )
     }
 }
 

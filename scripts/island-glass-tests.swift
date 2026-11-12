@@ -140,8 +140,10 @@ do {
 
 print("legibility")
 do {
-    check(near(IslandGlass.liftedOpacity(0.5), 0.625), "0.5 → 0.625")
-    check(near(IslandGlass.liftedOpacity(0.72), 0.79), "0.72 → 0.79")
+    check(near(IslandGlass.liftedOpacity(0.5), 0.71), "0.5 → 0.71")
+    check(near(IslandGlass.liftedOpacity(0.7), 0.826), "0.7 → 0.826")
+    check(IslandGlass.liftedOpacity(0.7) > IslandGlass.liftedOpacity(0.5) && IslandGlass.liftedOpacity(0.5) > IslandGlass.liftedOpacity(0.4) && IslandGlass.liftedOpacity(0.7) < 0.9,
+          "the tones still step down in order, short of primary")
     check(IslandGlass.liftedOpacity(1) == 1, "opaque stays opaque")
     check(IslandGlass.liftedOpacity(0.45) > 0.45, "always brighter")
     // The floor: a deep accent comes up to it, keeping its hue order.
