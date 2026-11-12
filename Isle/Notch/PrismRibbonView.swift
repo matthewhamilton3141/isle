@@ -61,6 +61,18 @@ final class PrismRibbonRenderer {
         /// twist, `lift`, `spread` and `glow` carry how far its bass, mids
         /// and treble layers are turned instead.
         var width: [Float] = []
+        /// The wave's state (`IslandPrism.RibbonStyle.wave`): where its
+        /// curves have travelled to, its sway clock, the overall level,
+        /// how open it is, and how tall its three ribbons stand.
+        var wave: Wave?
+
+        struct Wave {
+            var phase: Float
+            var clock: Float
+            var level: Float
+            var open: Float
+            var amps: [Float]
+        }
     }
 
     private init?() {
@@ -128,9 +140,21 @@ final class PrismRibbonRenderer {
         case .light: u[h + 7] = 0
         case .crystal: u[h + 7] = 1
         case .twist: u[h + 7] = 2
+        case .wave: u[h + 7] = 3
+        }
+        if let wave = frame.wave {
+            u[h + 8] = wave.phase
+            u[h + 9] = wave.clock
+            u[h + 10] = wave.level
+            u[h + 11] = wave.open
         }
         for k in 0..<n {
-            u[h + 12 + k] = k < frame.lift.count ? frame.lift[k] : 0
+            // The wave's three heights ride in the first of `lift`.
+            if let wave = frame.wave {
+                u[h + 12 + k] = k < wave.amps.count ? wave.amps[k] : 0
+            } else {
+                u[h + 12 + k] = k < frame.lift.count ? frame.lift[k] : 0
+            }
             u[h + 12 + n + k] = k < frame.spread.count ? frame.spread[k] : 0
             u[h + 12 + 2 * n + k] = k < frame.glow.count ? frame.glow[k] : 0
             u[h + 12 + 3 * n + k] = k < frame.width.count ? frame.width[k] : 0
@@ -166,10 +190,10 @@ final class PrismRibbonRenderer {
         float cover;
         float bed;
         float style;
-        float pad0;
-        float pad1;
-        float pad2;
-        float pad3;
+        float wavePhase;
+        float waveClock;
+        float waveLevel;
+        float waveOpen;
         float lift[\(IslandPrism.ribbonColumns)];
         float spread[\(IslandPrism.ribbonColumns)];
         float glow[\(IslandPrism.ribbonColumns)];
@@ -356,8 +380,134 @@ final class PrismRibbonRenderer {
         return float4(max(color + n, 0.0), cover);
     }
 
+    // The wave (PrismWave.swift): Glasswave's three ribbons, without its
+    // orb. Its own measure: `p.x` runs -1 to 1 from tip to tip, `p.y` is
+    // the height above the resting line in units of \(Float(PrismWave.unit)) points.
+
+    // The colours the light is split into: t = 0 the blue end, 1 the red.
+    static float3 waveSpectrum(float t) {
+        return float3(smoothstep(0.40, 0.85, t),
+                      saturate(1.0 - abs(t - 0.5) * 2.4),
+                      1.0 - smoothstep(0.15, 0.60, t));
+    }
+
+    // Pointed at both ends, full in the middle.
+    static float waveTaper(float xn) {
+        float t = saturate(1.0 - xn * xn);
+        return t * t;
+    }
+
+    // One ribbon: the space between two travelling sine curves, a and b.
+    // Curve a is the bright edge and the light falls off toward b; where
+    // the curves cross the ribbon twists. `k` is the two curves' turns
+    // along the ribbon and where each has travelled to.
+    static float waveRibbon(float2 p, float amp, float thick, float4 k, float px) {
+        float env = waveTaper(p.x);
+        float a = env * amp * sin(k.x * p.x + k.z);
+        float b = env * (amp * sin(k.y * p.x + k.w) + thick);
+        float d = b - a;
+        float sd = d < 0.0 ? -1.0 : 1.0;
+        float w = abs(d);
+
+        float ea = (p.y - a) * sd;          // distance past the bright edge
+        float eb = (b - p.y) * sd;          // distance left before the far edge
+        float s = saturate(ea / max(w, 1e-5));
+
+        float inside = smoothstep(-px, px, ea) * smoothstep(-px, px + 0.45 * w, eb);
+        float body = inside * (0.30 + 1.9 * exp(-2.4 * s));
+
+        // Bloom hugging the bright edge, stronger where the ribbon is wide.
+        float da = abs(p.y - a);
+        float fat = 0.70 + 0.30 * smoothstep(0.0, 0.08, w);
+        float lit = pow(env, 0.4) * (0.55 + 0.45 * env);
+        float tight = fat * 0.40 * exp(-da / 0.022);
+        float wide = fat * 0.07 * exp(-da / 0.085) * smoothstep(0.0, 0.45, env);   // fades out before the tips
+        return lit * (body + tight) + wide;
+    }
+
+    // How near a ribbon's bright edge this is, for the shade it lies on.
+    static float waveNear(float2 p, float amp, float4 k) {
+        float env = waveTaper(p.x);
+        float a = env * amp * sin(k.x * p.x + k.z);
+        return pow(env, 0.4) * exp(-abs(p.y - a) / 0.2);
+    }
+
+    static float4 wave(constant Uniforms &u, float x, float rest, float2 pixel) {
+        float phase = u.wavePhase;
+        float clock = u.waveClock;
+        float level = saturate(u.waveLevel);
+        float open = saturate(u.waveOpen);
+        float e = open * open * (3.0 - 2.0 * open);
+
+        const float unit = \(Float(PrismWave.unit));
+        float2 p = float2(x * 2.0 - 1.0, rest / unit);
+        // One pixel, in units.
+        float px = max(fwidth(rest), 0.2) / unit;
+
+        float gain = mix(0.55, 1.0, e);
+        float thick = mix(\(Float(PrismWave.restThick)), \(Float(PrismWave.openThick)), e) + \(Float(PrismWave.thickPerLevel)) * level * e;
+        const float turns = \(Float(PrismWave.turns));
+        float4 k0 = float4(1.7 * turns, 2.6 * turns,  phase,              0.8 * phase + 1.3 + 0.7 * sin(clock * 0.31));
+        float4 k1 = float4(3.1 * turns, 2.0 * turns, -0.7 * phase + 2.1,  1.15 * phase + 4.0 + 0.6 * sin(clock * 0.23 + 1.0));
+        float4 k2 = float4(3.4 * turns, 2.7 * turns,  1.3 * phase + 5.0, -0.9 * phase + 0.7 + 0.5 * sin(clock * 0.41 + 2.0));
+        float a0 = 0.30 * gain * u.lift[0];
+        float a1 = 0.25 * gain * u.lift[1];
+        float a2 = 0.19 * gain * u.lift[2];
+
+        // Each ribbon in its layer's part of the fan: the bass its first
+        // colours, the treble its last. As light, so it is still that
+        // colour once the whole is brought back to the screen's curve.
+        const float tint = \(Float(PrismWave.tint));
+        float3 c0 = pow(mix(float3(1.0), fan(u, 0.16), tint), float3(2.2));
+        float3 c1 = pow(mix(float3(1.0), fan(u, 0.5), tint), float3(2.2));
+        float3 c2 = pow(mix(float3(1.0), fan(u, 0.84), tint), float3(2.2));
+
+        // The scene once for each of eight colours of light, each a hair
+        // from the last: what puts the fringe on every edge.
+        float disp = (\(Float(PrismWave.fringe)) + \(Float(PrismWave.fringePerLevel)) * level) * mix(0.8, 1.0, e);
+        const int N = 8;
+        float3 col = float3(0.0);
+        float3 wsum = float3(0.0);
+        for (int j = 0; j < N; j++) {
+            float t = (float(j) + 0.5) / float(N);
+            float s = t - 0.5;
+            float2 q = p + float2(0.7 * p.x * s * disp, s * disp);
+            float3 v = c0 * 1.00 * waveRibbon(q, a0, thick,       k0, px)
+                     + c1 * 0.80 * waveRibbon(q, a1, thick * 0.6, k1, px)
+                     + c2 * 0.45 * waveRibbon(q, a2, thick * 0.4, k2, px);
+            float3 c3 = waveSpectrum(t);
+            col += c3 * v;
+            wsum += c3;
+        }
+        col /= wsum;
+
+        // Light spilling off the ribbon.
+        float spillX = exp(-(p.x / 0.5) * (p.x / 0.5));
+        float spill = spillX / (1.0 + (p.y / 0.24) * (p.y / 0.24));
+        col += (0.0012 + 0.016 * level) * spill * (0.4 + 0.6 * e);
+
+        // The resting streak is a lens catching a little light, not a lamp.
+        col *= mix(\(Float(PrismWave.restGlow)), 1.0, e);
+
+        col = 1.0 - exp(-col * 1.5);
+        col = pow(col, float3(1.0 / 2.2));
+
+        // Light that covers what it lights, on a soft bed of shade, so it
+        // is still seen over a white window.
+        float peak = max(col.r, max(col.g, col.b));
+        float near = max(waveNear(p, a0, k0), waveNear(p, a1, k1) * 0.8);
+        float shade = u.bed * 0.8 * near * mix(0.45, 1.0, e);
+        float cover = clamp(max(peak * u.cover, shade), 0.0, 1.0);
+        float n = (hash(pixel) - 0.5) / 255.0;
+        return float4(max(col + n, 0.0), cover);
+    }
+
     fragment float4 prismFragment(Varyings in [[stage_in]], constant Uniforms &u [[buffer(0)]]) {
         float x = in.uv.x;
+        if (u.style > 2.5) {
+            float rest = (1.0 - in.uv.y) * u.size.y - u.centre;
+            return wave(u, x, rest, in.position.xy);
+        }
         float s = column(u.spread, x);
         float g = column(u.glow, x);
         float dx = 1.5 / u.size.x;
@@ -450,6 +600,11 @@ final class PrismRibbonView: NSView {
         var sinceStep: Double = 0
     }
     private var layers = [Layer](repeating: Layer(), count: 3)
+
+    /// The wave (`IslandPrism.RibbonStyle.wave`): what reads the bands for
+    /// it, and where it is.
+    private var shaper = PrismWave.Shaper()
+    private var wave = PrismWave.Motion()
     /// Levels were fixed by `setStatic`: draw them as they stand.
     private var isStatic = false
 
@@ -529,6 +684,7 @@ final class PrismRibbonView: NSView {
         isStatic = true
         motion = .rest
         bands = Self.padded(levels)
+        wave = .standing(PrismWave.Shaper.standing(bands))
         self.stops = Self.vectors(stops)
         stopGoal = self.stops
         hasColors = true
@@ -647,6 +803,13 @@ final class PrismRibbonView: NSView {
                 if layers[g].history.contains(where: { abs($0) > 0.002 }) { moving = true }
             }
         }
+        if IslandPrism.ribbonStyle == .wave {
+            // The bands move the wave rather than being drawn themselves.
+            // It travels unless it's asked not to: Reduce Motion, and a
+            // status that is meant to hold still.
+            wave.step(dt: dt, input: shaper.features(of: bands, dt: dt), travels: !reduceMotion && motion != .steady)
+            if wave.isMoving { moving = true }
+        }
         draw()
         // Settled: nothing more to draw until a level or a setting changes.
         if !moving { link.isPaused = true }
@@ -683,7 +846,13 @@ final class PrismRibbonView: NSView {
               let drawable = metalLayer.nextDrawable() else { return }
         drawnSize = bounds.size
         let frame: PrismRibbonRenderer.Frame
-        if IslandPrism.ribbonStyle == .twist {
+        if IslandPrism.ribbonStyle == .wave {
+            frame = .init(size: bounds.size, centre: IslandPrism.ribbonCentre,
+                          lift: [], spread: [], glow: [], stops: stops,
+                          wave: .init(phase: Float(wave.phase), clock: Float(wave.clock),
+                                      level: Float(wave.level), open: Float(wave.openness),
+                                      amps: wave.amps.map { Float($0.x) }))
+        } else if IslandPrism.ribbonStyle == .twist {
             let twist = IslandPrism.profile(layers: travels ? (0..<3).map(travelling) : standing(), travelling: travels)
             frame = .init(size: bounds.size, centre: IslandPrism.ribbonCentre,
                           lift: twist.layers[0], spread: twist.layers[1], glow: twist.layers[2],

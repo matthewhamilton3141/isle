@@ -119,9 +119,21 @@ enum IslandPrism {
         /// Motion nothing travels: each layer stands still as its own
         /// lobe, bass at the centre, mids either side, treble beyond.
         case twist
+        /// Glasswave's wave, without its orb (PrismWave.swift): three
+        /// ribbons of light, bass, mids and treble, each the space between
+        /// two travelling sine curves, bright along one edge and falling
+        /// off toward the other, twisting where the curves cross, pointed
+        /// at both ends. The light is drawn once for each of eight
+        /// colours, a hair apart, which puts a fringe of colour on every
+        /// edge. Each ribbon stands as tall as its part of the music, on a
+        /// loose spring, so a hit overshoots and settles; louder sound
+        /// travels faster. Each takes its layer's part of the fan's
+        /// colours, as the twist's layers do. Silent, it closes to a thin
+        /// still streak.
+        case wave
     }
 
-    static let ribbonStyle: RibbonStyle = .twist
+    static let ribbonStyle: RibbonStyle = .wave
 
     /// The twist's half-width where it is full face-on, in points. Edge-on
     /// it still shows a sliver (a tenth of its width, in the shader), which

@@ -4,7 +4,8 @@
 # Prism (its shade, its lens's shape, the ribbon's profile, motion, status
 # patterns and colours, and the colourful pick of a cover's colours), the
 # blend, the glow and the lifts, against Isle/Notch/IslandGlass.swift,
-# Isle/Notch/IslandPrism.swift, Isle/Components/VividPalette.swift,
+# Isle/Notch/IslandPrism.swift, Isle/Notch/PrismWave.swift (the wave's
+# motion), Isle/Components/VividPalette.swift,
 # Isle/Notch/IslandMotion.swift (the settled corner radii) and
 # Isle/Core/PanelBackground.swift alone. No app, no window.
 set -e
@@ -17,6 +18,7 @@ export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer
 xcrun swiftc -swift-version 5 -O \
   $ROOT/Isle/Notch/IslandGlass.swift \
   $ROOT/Isle/Notch/IslandPrism.swift \
+  $ROOT/Isle/Notch/PrismWave.swift \
   $ROOT/Isle/Components/VividPalette.swift \
   $ROOT/Isle/Notch/IslandMotion.swift \
   $ROOT/Isle/Core/PanelBackground.swift \
