@@ -200,6 +200,13 @@ struct NotchMetrics {
         )
     }
 
+    /// What the window keeps under the tallest panel: Prism's lip, or the
+    /// shadow an island off the notch casts below itself (Black's, which
+    /// has no lip to fall in), whichever is deeper.
+    static var roomBelow: CGFloat {
+        max(IslandPrism.lip, IslandFloat.shadowReach.below)
+    }
+
     /// The largest frame Isle ever occupies. The window is sized to this once
     /// and the *content* animates inside it — resizing an NSWindow every frame
     /// fights the compositor and produces visible tearing on the notch edge.
@@ -207,11 +214,12 @@ struct NotchMetrics {
         let expanded = windowFrame(for: .hoverExpanded)
         let collapsed = windowFrame(for: .collapsed)
         // Room for the tallest a face can grow the panel — every face that
-        // grows shares the one cap — and for Prism's lip below it, whatever
+        // grows shares the one cap — and under it for Prism's lip or the
+        // shadow a panel casts off the notch, whichever is deeper, whatever
         // the mode, so a change of mode never resizes the window.
         // And for the roof an open panel has off the notch. Transparent and
         // click-through like the rest of the window outside the drawn notch.
-        let tallest = Self.panelMaxHeight + IslandPrism.lip + IslandFloat.roof
+        let tallest = Self.panelMaxHeight + Self.roomBelow + IslandFloat.roof
         let grown = NSRect(
             x: expanded.minX,
             y: screen.frame.maxY - tallest,

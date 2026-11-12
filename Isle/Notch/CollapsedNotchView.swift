@@ -21,6 +21,13 @@ struct CollapsedNotchView: View {
     @ObservedObject var viewModel: NotchViewModel
     @ObservedObject var island: IslandPresentation
     var palette: ArtworkPalette
+    /// The waveform's colours: the cover's as the pill on the notch draws
+    /// them, wherever the bars are. `palette` is lifted for glass
+    /// (`flooredForGlass`), which made the open panel's bars and a
+    /// detached island's a paler thing than the notch's (Matthew: "i want
+    /// compacted notch colours"). The bars have a dark edge on glass
+    /// instead (`EqualizerStyle.onGlass`). Nil: `palette`.
+    var waveformPalette: ArtworkPalette? = nil
 
     /// Whether the pill is drawn on glass: only off the notch, in a glass
     /// mode (see NotchRootView). On the notch the pill is always black.
@@ -299,7 +306,7 @@ struct CollapsedNotchView: View {
     func equalizer(width: CGFloat) -> some View {
         LiveEqualizer(
             source: viewModel.audioLevelSource,
-            palette: palette,
+            palette: waveformPalette ?? palette,
             isPlaying: viewModel.media.isPlaying,
             listens: viewModel.waveformSource.capturesAudio
         )

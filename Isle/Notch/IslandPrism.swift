@@ -32,8 +32,12 @@ enum IslandPrism {
     // MARK: - The lens's shape
 
     /// How much taller the open panel is in Prism: clear glass below the
-    /// content, where the ribbon lies. Tune here.
-    static let lip: CGFloat = 34
+    /// content. With the ribbon, room for it to lie in. Without
+    /// (`showsRibbon`), that much bare glass was a hole under the controls
+    /// (Matthew: "huge space at the bottom left from the ribbon addition"),
+    /// and the lip is the walls' border carried round the bottom
+    /// (`sideLip`), so the content sits in an even frame of lens. Tune here.
+    static let lip: CGFloat = showsRibbon ? 34 : sideLip
 
     /// How much wider the open panel is in Prism, each side: with `rim`,
     /// room for a border of clear glass down both walls, so the frosted
@@ -48,8 +52,12 @@ enum IslandPrism {
     static let rimFeather: CGFloat = 6
 
     /// The open panel's bottom corners in Prism: rounder than the other
-    /// modes' 22, so the lip reads as the thick edge of a lens. Tune here.
-    static let bottomCornerRadius: CGFloat = 38
+    /// modes' 22, so the lip reads as the thick edge of a lens. Less round
+    /// round the shallower lip, or the corners would turn in toward the
+    /// content: the radius the panel's top corners have off the notch
+    /// (`IslandFloat.prismCrownRadius`), so that card is one corner all
+    /// four ways round. Tune here.
+    static let bottomCornerRadius: CGFloat = showsRibbon ? 38 : 32
 
     // MARK: - The shade
 
