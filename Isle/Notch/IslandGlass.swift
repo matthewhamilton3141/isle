@@ -195,9 +195,20 @@ enum IslandGlass {
 
     // MARK: - Legibility on glass
 
-    /// How far toward opaque secondary text moves on glass: 0.5 → 0.625,
-    /// 0.72 → 0.79. Black mode never calls this.
-    static let secondaryLift: Double = 0.25
+    /// How far toward opaque secondary text moves on glass: 0.5 → 0.71,
+    /// 0.7 → 0.826. Black mode never calls this.
+    ///
+    /// Well up from the quarter it was: glass is as light as what's behind
+    /// it, and over a white window grey text on it had little left to
+    /// stand on (Matthew: "the more greyed out texts are less visible on
+    /// lighter (whiter) backgrounds"). The tones still step down in order.
+    static let secondaryLift: Double = 0.42
+
+    /// The soft dark edge secondary text carries on glass: black's alpha
+    /// and its blur, in points. Over a dark window it can't be seen; over
+    /// a light one it is what the text's own lightness is read against.
+    static let textShade: Double = 0.34
+    static let textShadeRadius: Double = 1.6
 
     static func liftedOpacity(_ opacity: Double) -> Double {
         let o = min(max(opacity, 0), 1)
