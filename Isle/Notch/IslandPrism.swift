@@ -56,18 +56,32 @@ enum IslandPrism {
     /// Black over the glass across the panel's whole width once the ease
     /// from the band has run: what the glass at the side walls keeps.
     ///
-    /// Most of the shade, and the same from wall to wall. A lens is as
-    /// light as what is behind it, and over a bright window a light shade
-    /// here with a dark one behind the content (as it was: 0.06 and 0.32)
-    /// drew a grey soft-edged block inside white glass. One even shade
-    /// over the whole lens is dark glass over anything. Tune here.
-    static let edgeTint: Double = 0.42
+    /// Light, and nearly the same from wall to wall: what keeps white text
+    /// readable over a bright window is the cap (`cap`), not this. With a
+    /// light shade here and a dark one behind the content (0.06 and 0.32,
+    /// for a while) a bright window showed a grey soft-edged block inside
+    /// white glass; with one deep shade everywhere (0.42) the colour went
+    /// out of everything behind the glass. Tune here.
+    static let edgeTint: Double = 0.12
+
+    /// The lightest anything seen through the lens is brought down
+    /// toward, as a grey level 0 to 1, and how much of the way
+    /// (`PrismCap`). Anything darker than the cap behind the glass is left
+    /// as the lens shows it. Short of all the way, so a bright window
+    /// still shows through as a window, its shapes bent by the lens, and
+    /// not as a flat grey card: white comes out at `capLightest`, on which
+    /// white text still reads at 4.5 to 1. Tune here.
+    static let cap: Double = 0.34
+    static let capStrength: Double = 0.82
+
+    /// What pure white behind the lens comes out as, under the cap.
+    static var capLightest: Double { capStrength * cap + (1 - capStrength) }
 
     /// Black laid behind the content on top of that, inset from the walls
     /// with a soft edge, so text sits on `contentAlpha`. Slight: enough to
     /// settle the text, too little to be seen as a shape of its own inside
     /// the glass (see `edgeTint`). Tune here.
-    static let scrim: Double = 0.06
+    static let scrim: Double = 0.10
 
     /// How much frost is laid over the lens behind the content, 0 (bare
     /// lens: what's behind is sharp) to 1 (fully frosted: the system's
@@ -275,11 +289,10 @@ enum IslandPrism {
     }
 
     /// Black left over the lip: a little clearer than the walls, so the
-    /// glass lightens toward its bottom edge, and not so much clearer that
-    /// over a bright window the lip is a white band under a grey panel. It
-    /// lies over the ribbon too, which is in the glass under it and has its
-    /// own bed of shade (`ribbonBed`) besides. Tune here.
-    static let lipTint: Double = 0.34
+    /// glass lightens toward its bottom edge. Under the ribbon, not over
+    /// it; the ribbon has its own bed of shade (`ribbonBed`) besides.
+    /// Tune here.
+    static let lipTint: Double = 0.08
 
     /// The horizon: how many points the shade takes to clear from the
     /// content's tint to the lip's, centred on the line where the content's

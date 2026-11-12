@@ -60,7 +60,12 @@ do {
     // never so much less that the lip is a pale band under a dark panel.
     check(IslandPrism.edgeTint - IslandPrism.lipTint <= 0.1 && IslandPrism.scrim <= 0.1, "Prism's shade is all but even from wall to wall and down to the lip",
           "walls \(IslandPrism.edgeTint) lip \(IslandPrism.lipTint) scrim \(IslandPrism.scrim)")
-    check(IslandPrism.contentAlpha >= IslandGlass.glassTint, "and at least as dark behind the content as Glass's tint")
+    // What holds over a bright window is the cap: white text on the lightest
+    // the lens is let be reads at better than 4.5 to 1.
+    let capLinear = pow((IslandPrism.capLightest + 0.055) / 1.055, 2.4)
+    check(1.05 / (capLinear + 0.05) >= 4.5, "white text over a white window, under the cap, reads at 4.5 to 1 or better", "\(1.05 / (capLinear + 0.05))")
+    check(IslandPrism.cap >= 0.3 && IslandPrism.capStrength < 1 && IslandPrism.capStrength >= 0.7, "the cap is no darker than it needs to be, and lets a bright window show as one")
+    check(IslandPrism.contentAlpha <= 0.25, "the shade itself is light: colour behind the glass comes through")
 }
 
 print("shared arithmetic")
