@@ -325,7 +325,8 @@ final class NotchWindowController {
         let describe = { [weak self, weak presentation] () -> String in
             guard let self, let presentation else { return "gone" }
             return "display \(id) \(presentation.state) hover \(presentation.isHovering) held \(presentation.isHeldOpen)"
-                + " placement \(presentation.placement) face \(self.viewModel.expandedPlace)"
+                + " placement \(presentation.placement) opening \(presentation.opening.upward ? "up" : "down")"
+                + " face \(self.viewModel.expandedPlace)"
                 + " composing \(self.viewModel.composing.map { "\($0)" } ?? "no") background \(self.viewModel.panelBackground.rawValue)"
         }
         ConstraintPassLog.watch(window, as: "notch panel", describe: describe)

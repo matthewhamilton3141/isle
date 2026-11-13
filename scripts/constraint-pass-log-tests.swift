@@ -101,7 +101,7 @@ func run() {
         panel.alphaValue = 0
         panel.ignoresMouseEvents = true
         panel.level = NSWindow.Level(rawValue: desktop + 2)
-        let describe = { "\(island.state) placement \(island.placement) face \(vm.expandedPlace) background \(vm.panelBackground.rawValue)" }
+        let describe = { "\(island.state) placement \(island.placement) opening \(island.opening.upward ? "up" : "down") face \(vm.expandedPlace) background \(vm.panelBackground.rawValue)" }
         ConstraintPassLog.watch(panel, as: "notch panel", describe: describe)
         ConstraintPassLog.watch(panel.glassWindow, as: "island glass", describe: describe)
         panel.contentView = hosting
