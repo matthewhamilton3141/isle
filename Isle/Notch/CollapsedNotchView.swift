@@ -20,14 +20,11 @@ import SwiftUI
 struct CollapsedNotchView: View {
     @ObservedObject var viewModel: NotchViewModel
     @ObservedObject var island: IslandPresentation
+    /// The cover's colours (or the accent's), the same on glass as on
+    /// black: the bars, the dots and the words in them are one palette
+    /// wherever the island is. On glass they carry a dark edge instead of
+    /// a lighter colour (`EqualizerStyle.onGlass`, `IslandTintStyle`).
     var palette: ArtworkPalette
-    /// The waveform's colours: the cover's as the pill on the notch draws
-    /// them, wherever the bars are. `palette` is lifted for glass
-    /// (`flooredForGlass`), which made the open panel's bars and a
-    /// detached island's a paler thing than the notch's (Matthew: "i want
-    /// compacted notch colours"). The bars have a dark edge on glass
-    /// instead (`EqualizerStyle.onGlass`). Nil: `palette`.
-    var waveformPalette: ArtworkPalette? = nil
 
     /// Whether the pill is drawn on glass: only off the notch, in a glass
     /// mode (see NotchRootView). On the notch the pill is always black.
@@ -232,7 +229,7 @@ struct CollapsedNotchView: View {
         // fits its slot exactly.
         Text(viewModel.collapsedStatusText)
             .font(.system(size: fontSize, weight: .semibold))
-            .foregroundStyle(markerColor)
+            .foregroundStyle(.islandTint(markerColor))
             .lineLimit(1)
             .fixedSize()
             // Crossfade the word as it rotates ("Coalescing" → "Percolating"),
@@ -273,7 +270,7 @@ struct CollapsedNotchView: View {
         TimelineView(.animation(minimumInterval: 1, paused: !viewModel.pomodoro.isRunning)) { context in
             Text(PomodoroTimer.clock(viewModel.pomodoro.remaining(at: context.date)))
                 .font(.system(size: fontSize, weight: .semibold).monospacedDigit())
-                .foregroundStyle(pomodoroTint)
+                .foregroundStyle(.islandTint(pomodoroTint))
                 .lineLimit(1)
                 .fixedSize()
                 // Pinned to the slot the view model reserved for it (measured
@@ -306,7 +303,7 @@ struct CollapsedNotchView: View {
     func equalizer(width: CGFloat) -> some View {
         LiveEqualizer(
             source: viewModel.audioLevelSource,
-            palette: waveformPalette ?? palette,
+            palette: palette,
             isPlaying: viewModel.media.isPlaying,
             listens: viewModel.waveformSource.capturesAudio
         )

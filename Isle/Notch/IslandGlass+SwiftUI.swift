@@ -18,8 +18,9 @@
 //    window, or, as Isle runs, in a window of its own under it that never
 //    becomes key, because Liquid Glass changes its look with its window's
 //    key status (see `IslandGlassWindow`).
-//  - The content's legibility lifts on glass, read from the environment so
-//    Black mode resolves to exactly the colours it always drew.
+//  - The content's legibility lifts on glass — brighter secondary text, a
+//    dark edge on coloured words — read from the environment so Black mode
+//    resolves to exactly the colours it always drew.
 //
 //  Nothing here runs on a clock. The blend is `Animatable`, interpolated by
 //  the same spring that moves the outline and only for as long as it runs;
@@ -512,21 +513,25 @@ extension ShapeStyle where Self == IslandSecondaryStyle {
     }
 }
 
-extension ArtworkPalette {
-    /// The palette with each colour held above the glass lightness floor
-    /// (`IslandGlass.floored`), for content on glass only. The extraction,
-    /// and the palette Black mode draws, are untouched.
-    var flooredForGlass: ArtworkPalette {
-        ArtworkPalette(
-            primary: Self.floored(primary),
-            secondary: Self.floored(secondary),
-            accent: Self.floored(accent)
+/// A cover's colour or a status's, for words and small marks: on black,
+/// the colour; on glass the same colour with a dark edge
+/// (`IslandGlass.tintEdge`, `tintShade`), where it used to be a paler
+/// colour. On black it resolves to exactly `color`.
+struct IslandTintStyle: ShapeStyle {
+    var color: Color
+
+    func resolve(in environment: EnvironmentValues) -> AnyShapeStyle {
+        guard environment.islandOnGlass else { return AnyShapeStyle(color) }
+        return AnyShapeStyle(
+            color
+                .shadow(.drop(color: .black.opacity(IslandGlass.tintEdge), radius: IslandGlass.tintEdgeRadius))
+                .shadow(.drop(color: .black.opacity(IslandGlass.tintShade), radius: IslandGlass.tintShadeRadius))
         )
     }
+}
 
-    private static func floored(_ color: Color) -> Color {
-        guard let c = NSColor(color).usingColorSpace(.sRGB) else { return color }
-        let f = IslandGlass.floored(r: Double(c.redComponent), g: Double(c.greenComponent), b: Double(c.blueComponent))
-        return Color(.sRGB, red: f.r, green: f.g, blue: f.b, opacity: Double(c.alphaComponent))
+extension ShapeStyle where Self == IslandTintStyle {
+    static func islandTint(_ color: Color) -> IslandTintStyle {
+        IslandTintStyle(color: color)
     }
 }

@@ -15,7 +15,8 @@
 //  - The tints laid over the system material, one per mode.
 //  - The arithmetic the shades share: the ease, compositing, HSB.
 //  - The legibility lifts for content on glass: secondary text a little
-//    brighter, artwork colours held above a lightness floor.
+//    brighter, and a dark edge on what is drawn in a cover's or a status's
+//    colour, which keeps the colour it has on black.
 //
 //  Prism's own numbers are in IslandPrism.swift. The drawing is in
 //  IslandGlass+SwiftUI.swift.
@@ -210,57 +211,45 @@ enum IslandGlass {
     static let textShade: Double = 0.34
     static let textShadeRadius: Double = 1.6
 
-    /// The same for the waveform's bars on glass: their colours are the
-    /// cover's, and what is behind the glass can be those colours too
-    /// (Matthew: "sometimes its hard to tell the gradient colours apart
-    /// from the background"). Not a shadow but a dark bar behind each bar,
-    /// this much larger all round, in points, and this black: a shadow
-    /// soft enough to look like one had thinned to nothing on a bar a few
-    /// points wide, and cost a blur on every level update.
+    /// The same for the waveform's bars on glass, and the dots of Claude's
+    /// marker: their colours are the cover's, and what is behind the glass
+    /// can be those colours too (Matthew: "sometimes its hard to tell the
+    /// gradient colours apart from the background"). Not a shadow but a
+    /// dark bar behind each bar, a dark dot behind each dot, this much
+    /// larger all round, in points, and this black: a shadow soft enough
+    /// to look like one had thinned to nothing on a bar a few points wide,
+    /// and cost a blur on every level update.
     static let barEdge: Double = 0.42
     static let barEdgeWidth: Double = 0.75
+
+    /// The dark edge words carry on glass when they are drawn in a cover's
+    /// colour or a status's (`IslandTintStyle`): two shadows, a tight one
+    /// that outlines the letters and a soft one that settles them, each
+    /// black's alpha and its blur in points.
+    ///
+    /// In place of a lighter colour. Everything of the cover's on glass
+    /// used to be held above a lightness floor, mixed toward white as far
+    /// as that took — everything but the waveform, which he had asked to
+    /// keep the notch's own colours — and the status beside the bars was a
+    /// paler thing than they were (Matthew, of a blue cover's deep blue
+    /// bars beside a periwinkle word: "these are like two different
+    /// colours"). Now the colours on glass are the colours on black, all
+    /// of them, and it is the edge that holds them off what is behind:
+    /// over a bright page the glass is a mid grey, and a cover's deep blue
+    /// is exactly as light as that.
+    ///
+    /// Measured on Prism over a white page with a deep blue cover
+    /// (56, 95, 242): the word against the glass was 2.1 to 1 at the paler
+    /// colour; at its own colour it is 1.3 to 1 against the open glass and
+    /// 2.1 to 1 against the edge round it at these numbers (1.7 at a
+    /// lighter 0.55/0.6 and 0.45/2.2). Tune here.
+    static let tintEdge: Double = 1.0
+    static let tintEdgeRadius: Double = 1.0
+    static let tintShade: Double = 0.6
+    static let tintShadeRadius: Double = 3.0
 
     static func liftedOpacity(_ opacity: Double) -> Double {
         let o = min(max(opacity, 0), 1)
         return o + (1 - o) * secondaryLift
-    }
-
-    /// The lightness floor for artwork colours on glass, as gamma-space
-    /// luma (Rec. 709 weights over sRGB-encoded channels). Glass is tinted
-    /// by whatever is behind it, so a deep accent of a similar hue can all
-    /// but vanish into it; held at least this light, it can't. Black mode
-    /// never applies it, and the extraction itself is untouched.
-    ///
-    /// Down from 0.62, with `floored` changed to match: lifted that far by
-    /// white alone, a cover's purple or blue reached the Claude status as
-    /// a pastel (Matthew: "i want the accent colour to also transfer to
-    /// the claude status a bit more rn it looks kinda desaturated").
-    static let paletteLumaFloor: Double = 0.55
-
-    static func luma(r: Double, g: Double, b: Double) -> Double {
-        0.2126 * r + 0.7152 * g + 0.0722 * b
-    }
-
-    /// The colour brought up to the floor — nothing changed if it's
-    /// already there. Channels 0...1, sRGB.
-    ///
-    /// Brightened first: every channel scaled by the same amount, which
-    /// keeps the hue and all of the colour's saturation, as far as the
-    /// strongest channel can go. Only what is still missing after that is
-    /// made up by mixing toward white, which is what pales a colour.
-    static func floored(r: Double, g: Double, b: Double) -> (r: Double, g: Double, b: Double) {
-        var (r, g, b) = (r, g, b)
-        var l = luma(r: r, g: g, b: b)
-        guard l < paletteLumaFloor else { return (r, g, b) }
-        let top = max(r, g, b)
-        if top > 0, l > 0 {
-            let k = min(1 / top, paletteLumaFloor / l)
-            (r, g, b) = (r * k, g * k, b * k)
-            l *= k
-        }
-        guard l < paletteLumaFloor - 1e-12 else { return (r, g, b) }
-        // Mixing by t toward white moves luma by (1 - l)t.
-        let t = (paletteLumaFloor - l) / max(1 - l, 1e-9)
-        return (r + (1 - r) * t, g + (1 - g) * t, b + (1 - b) * t)
     }
 }
