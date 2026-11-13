@@ -122,7 +122,9 @@ do {
         }
     }
     check(worst < 0.01, "point for point the docked spread below and beside the housing", "\(worst)")
-    check(worstDiagonal < 0.2, "and within a 3pt shift of it off the housing's corners", "\(worstDiagonal)")
+    // (0.25: with the shorter spread of 2026-11-13, 90 by 30, the same 3pt
+    // shift is a little more alpha, 0.21, for the one frame of the handover.)
+    check(worstDiagonal < 0.25, "and within a 3pt shift of it off the housing's corners", "\(worstDiagonal)")
     check(B.falloff(0) == 1 && B.falloff(1) == 0 && B.falloff(0.5) > 0 && B.falloff(0.5) < 1, "lets go from solid to nothing")
 }
 

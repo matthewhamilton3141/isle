@@ -360,8 +360,10 @@ enum IslandPrism {
     /// from the housing's sides, and down from its foot; round its corners,
     /// the ellipse between the two. Further along than down, so it spreads
     /// along the top edge more than it hangs into the content. Tune here.
-    static let spreadAcross: CGFloat = 120
-    static let spreadDown: CGFloat = 40
+    /// Was 120 and 40; Matthew, 2026-11-13: "make the gradient from the
+    /// notch a little shorter".
+    static let spreadAcross: CGFloat = 90
+    static let spreadDown: CGFloat = 30
 
     /// The let-go's shape: the lightness rises from the housing's edge as
     /// `1 − (1 − t)^spreadEase`, steepest at the edge and flat where it
