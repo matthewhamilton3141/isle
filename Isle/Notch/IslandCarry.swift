@@ -14,9 +14,10 @@
 //  knows (whether a reply is being typed, where the island is drawn), and
 //  hears back when the island has been put down, to remember where.
 //
-//  The window is moved, never resized: the island is drawn at the top
-//  centre of its window whatever the placement (see `IslandPlacement`), so
-//  following the pointer is a window move per drag event. `placement`
+//  The window is moved, never resized: where the island is drawn inside it
+//  depends only on which way it opens (`IslandOpening`), which is decided
+//  when the island is put down closed and doesn't change while it's
+//  carried, so following the pointer is a window move per drag event. `placement`
 //  itself is published only when the island is lifted, when the notch
 //  takes it or lets it go, and when it's put down — not per event — so a
 //  drag doesn't re-evaluate the island's views.
@@ -246,15 +247,27 @@ final class IslandCarry {
     private func lift(grabbedAt point: CGPoint) {
         guard let bounds = presentation.metrics?.placementBounds else { return }
         cancelGlide()
-        let anchor = NotchMetrics.anchor(of: window.frame)
+        let anchor = NotchMetrics.anchor(of: window.frame, opening: presentation.placement.isFloating ? presentation.opening : .down)
         grabOffset = CGPoint(x: anchor.x - point.x, y: anchor.y - point.y)
         snapped = false
         snapArmed = !bounds.captures(anchor)
         presentation.detachTrace.complete()
         haptic(.lifted)
         if !presentation.placement.isFloating {
+            // Off the notch open, hanging from where it was.
+            presentation.opening = .down
             setPlacement(.floating(anchor: anchor))
         }
+    }
+
+    /// Whether the island is open: an open panel carried is kept on the
+    /// screen whole, opening the way it does; a closed capsule only has to
+    /// be on it itself.
+    private var isOpen: Bool { presentation.state.isExpanded }
+
+    /// Where the island is carried to for `wanted`, kept on the screen.
+    private func carried(_ wanted: CGPoint, in bounds: IslandPlacementBounds) -> CGPoint {
+        isOpen ? bounds.carrying(wanted, open: presentation.opening) : bounds.carrying(wanted)
     }
 
     private func carry(to point: CGPoint) {
@@ -267,9 +280,9 @@ final class IslandCarry {
             guard !bounds.holds(wanted) else { return }
             snapped = false
             cancelGlide()
-            let anchor = bounds.carrying(wanted)
+            let anchor = carried(wanted, in: bounds)
             setPlacement(.floating(anchor: anchor))
-            window.slide(to: metrics.frame(for: .floating(anchor: anchor)))
+            window.slide(to: metrics.frame(for: .floating(anchor: anchor), opening: presentation.opening))
             return
         }
 
@@ -280,11 +293,12 @@ final class IslandCarry {
             // as it will be if it's let go here.
             snapped = true
             haptic(.snapped)
+            turn(to: .down)
             setPlacement(.docked)
             move(to: metrics.frame(for: .docked))
             return
         }
-        window.slide(to: metrics.frame(for: .floating(anchor: bounds.carrying(wanted))))
+        window.slide(to: metrics.frame(for: .floating(anchor: carried(wanted, in: bounds)), opening: presentation.opening))
     }
 
     private func drop(at point: CGPoint) {
@@ -298,6 +312,8 @@ final class IslandCarry {
         // reach of it, or if it was never carried clear in the first place.
         if snapped || !snapArmed || bounds.captures(wanted) {
             settle(.docked)
+        } else if isOpen {
+            settle(.floating(anchor: bounds.resting(wanted, open: presentation.opening)))
         } else {
             settle(.floating(anchor: bounds.resting(wanted)))
         }
@@ -314,11 +330,43 @@ final class IslandCarry {
     /// the window brought the rest of the way there.
     private func settle(_ placement: IslandPlacement) {
         guard let metrics = presentation.metrics else { return }
+        let opening = opening(for: placement, in: metrics.placementBounds)
+        turn(to: opening)
         setPlacement(placement)
         onPlaced(placement)
-        move(to: metrics.frame(for: placement)) { [weak self] in
+        move(to: metrics.frame(for: placement, opening: opening)) { [weak self] in
             self?.onArrived()
         }
+    }
+
+    /// Which way the island will open at `placement`: down on the notch;
+    /// off it, kept while it's open, else the way its place calls for.
+    private func opening(for placement: IslandPlacement, in bounds: IslandPlacementBounds) -> IslandOpening {
+        guard let anchor = placement.anchor else { return .down }
+        return isOpen ? presentation.opening : bounds.opening(at: anchor)
+    }
+
+    /// Changes which way the island opens without anything on the screen
+    /// moving: the window is put where the new opening wants it for the
+    /// island's anchor as it is now, and the island drawn inside it where
+    /// that opening puts it, in the same screen update. Only ever called
+    /// with the island closed (or on its way to the notch, where it opens
+    /// down), so it's the capsule that is redrawn in place.
+    private func turn(to opening: IslandOpening) {
+        guard presentation.opening != opening, let metrics = presentation.metrics else { return }
+        let anchor = NotchMetrics.anchor(of: window.frame, opening: presentation.opening)
+        window.disableScreenUpdatesUntilFlush()
+        window.glassWindow.disableScreenUpdatesUntilFlush()
+        var instant = Transaction()
+        instant.disablesAnimations = true
+        withTransaction(instant) {
+            presentation.opening = opening
+        }
+        // The views in step now, not on the next pass, so the window and
+        // what's in it change together.
+        window.contentView?.layoutSubtreeIfNeeded()
+        window.glassWindow.contentView?.layoutSubtreeIfNeeded()
+        window.slide(to: metrics.frame(for: .floating(anchor: anchor), opening: opening))
     }
 
     /// Publishes the placement. On or off the notch is a change of look,
@@ -374,8 +422,10 @@ final class IslandCarry {
         snapped = false
         presentation.detachTrace.clear()
         cancelGlide()
+        let opening = opening(for: placement, in: metrics.placementBounds)
+        if presentation.opening != opening { presentation.opening = opening }
         if presentation.placement != placement { presentation.placement = placement }
-        window.place(metrics.frame(for: placement))
+        window.place(metrics.frame(for: placement, opening: opening))
     }
 
     /// Ends a press under way, the island put down where it is (the

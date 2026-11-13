@@ -215,6 +215,11 @@ enum IslandFloat {
         }
     }
 
+    /// A generous width for the timer's clock counting hours ("1:59:59"
+    /// at the capsule's title size), for keeping the widest capsule on the
+    /// screen without measuring text.
+    static let widestClock: CGFloat = 56
+
     /// The widest the capsule gets: all three clusters, their labels at
     /// their caps, a clock that counts hours (`clock` wide), the waveform
     /// on. What the window has to hold (see the tests).

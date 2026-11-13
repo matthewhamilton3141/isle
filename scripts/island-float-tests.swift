@@ -34,11 +34,12 @@ typealias Pill = IslandFloat.Pill
 let band = CGSize(width: 185, height: 32)
 let dockedOpen = CGSize(width: 520, height: 146)
 // The least the window is, whatever the notch: the open panel with Prism's
-// side lips and the stay-open pads, the tallest panel with Prism's lip or
-// a floating panel's shadow under it, whichever is deeper, and the roof
+// side lips and the stay-open pads, the tallest panel with Prism's lip and
+// a floating island's shadow under it both (an island that opens upward
+// stands on its capsule with the shadow's room under that), and the roof
 // it has off the notch (NotchMetrics.maximumFrame).
 let windowFloor = CGSize(width: 520 + 2 * (16 + IslandPrism.sideLip),
-                         height: 230 + max(IslandPrism.lip, IslandFloat.shadowReach.below) + IslandFloat.roof)
+                         height: 230 + IslandPrism.lip + IslandFloat.shadowReach.below + IslandFloat.roof)
 
 print("the open panel's shape")
 do {
@@ -173,6 +174,12 @@ do {
     let open = F.openSize(docked: CGSize(width: dockedOpen.width, height: 230), wallInset: IslandMotion.openCorners.top)
     check(open.width + 2 * F.shadowReach.side <= windowFloor.width, "the open panel's shadow fits across the window")
     check(open.height + F.shadowReach.below <= windowFloor.height, "and under the tallest panel", "\(open.height) + \(F.shadowReach.below) in \(windowFloor.height)")
+    // Opening upward the island stands the shadow's room above the window's
+    // bottom: Prism's tallest panel, lip and roof and all, still fits above.
+    let prismTallest = 230 + IslandPrism.lip + F.roof
+    check(prismTallest + F.shadowReach.below <= windowFloor.height, "standing on its capsule, the tallest panel fits above the shadow's room",
+          "\(prismTallest) + \(F.shadowReach.below) in \(windowFloor.height)")
+    check(F.widestClock >= 50, "a clock counting hours is allowed for when keeping the widest capsule on the screen")
 }
 
 print("glass with no black over it")

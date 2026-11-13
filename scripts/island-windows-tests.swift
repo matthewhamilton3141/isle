@@ -402,6 +402,15 @@ func offTheNotch(_ screen: NSScreen) {
     check(floating.size == docked.size, "floating is the same size: the window is never resized", "\(floating.size)")
     check(NotchMetrics.anchor(of: floating) == anchor, "with its top centre on the anchor", "\(floating) \(anchor)")
     check(NotchMetrics.anchor(of: docked) == bounds.dock, "and docked, on the screen's top centre")
+    // Opening upward and moved sideways: the window is placed for the open
+    // panel, and the capsule's anchor is where it was.
+    let lowLeft = bounds.resting(CGPoint(x: bounds.screen.minX, y: bounds.screen.minY))
+    let turned = bounds.opening(at: lowLeft)
+    let turnedFrame = metrics.frame(for: .floating(anchor: lowLeft), opening: turned)
+    check(turned.upward && turned.shift > 0, "a capsule in the bottom left corner opens up and to the right", "\(turned)")
+    check(NotchMetrics.anchor(of: turnedFrame, opening: turned) == lowLeft, "the window placed for that keeps the capsule's anchor", "\(turnedFrame)")
+    check(turnedFrame.minY == lowLeft.y - IslandFloat.pillHeight - NotchMetrics.floatingBelow, "standing the shadow's room above the window's bottom")
+    check(turnedFrame.midX == lowLeft.x + turned.shift, "and centred on the open panel")
 
     print("off the notch: the windows follow the placement")
     carry.place(.docked)
