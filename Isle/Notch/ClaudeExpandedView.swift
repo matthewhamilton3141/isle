@@ -37,6 +37,10 @@ struct ClaudeExpandedView: View {
     @State private var sessionRowsRoom: CGFloat = 0
 
     @Environment(\.islandOnGlass) private var onGlass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Ties the reply bar at rest to the field it opens into, so a click
+    /// grows the one into the other (see `composeAnimation`).
+    @Namespace private var replyBar
     /// Off the notch the band is a header with a grabber in its middle,
     /// not a camera: the wings are wider (see `L.wings`).
     @Environment(\.islandFloating) private var floating
@@ -54,6 +58,19 @@ struct ClaudeExpandedView: View {
         guard let request = viewModel.pendingRequest, request.kind == .question,
               let question = viewModel.currentQuestion else { return nil }
         return (request, question)
+    }
+
+    /// The spring a field opens and closes on: the panel's own, by
+    /// direction — the open spring as a field takes the row, the close
+    /// spring as it gives it back — and Reduce Motion's plain ease for both.
+    ///
+    /// Without it the change was untimed, and everything it moves jumped in
+    /// one frame: the reply bar to the row's full width, the session's app
+    /// gone from beside it, the meta line saying "Replying", and all of it
+    /// back again on Esc.
+    private var composeAnimation: Animation {
+        if reduceMotion { return .notchCloseReduced }
+        return viewModel.composing != nil ? .notchOpen : .notchClose
     }
 
     var body: some View {
@@ -76,6 +93,10 @@ struct ClaudeExpandedView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .animation(.easeInOut(duration: 0.22), value: listing)
+        // A field opening or closing — the reply bar clicked, Esc, a click
+        // in another app, a send — and whatever the face held while it was
+        // open landing as it lets go: one change, on one spring.
+        .animation(composeAnimation, value: viewModel.composing)
         .foregroundStyle(.white)
         // Click the alert panel to retract it (no-op unless an alert is live and
         // dismissing is enabled). contentShape so taps land on the whole card,
@@ -350,6 +371,8 @@ struct ClaudeExpandedView: View {
                 jumpChip
             }
             .frame(height: L.chipHeight)
+            // The field grows over all of it: gone before it's covered.
+            .transition(ReplyBar.swap)
         }
     }
 
@@ -639,13 +662,19 @@ struct ClaudeExpandedView: View {
                 projectLabel
                 // A dot between items, never ahead of the first.
                 if viewModel.composing == .reply {
-                    if showsProject { separator }
-                    Text("Replying").foregroundStyle(.white.opacity(0.8))
-                    separator
-                    Text("esc to cancel")
+                    Group {
+                        if showsProject { separator }
+                        Text("Replying").foregroundStyle(.white.opacity(0.8))
+                        separator
+                        Text("esc to cancel")
+                    }
+                    .transition(ReplyBar.swap)
                 } else if viewModel.claudeUpdatedAt != nil, showsAge {
-                    if showsProject { separator }
-                    elapsed
+                    Group {
+                        if showsProject { separator }
+                        elapsed
+                    }
+                    .transition(ReplyBar.swap)
                 }
                 if viewModel.isKeepingAwake {
                     keepAwakeCup
@@ -1428,11 +1457,13 @@ struct ClaudeExpandedView: View {
                     viewModel.jumpToSession()
                 }
                 .help("Open this background session in \(ClaudeLauncher.attachApp) (claude attach)")
+                .transition(ReplyBar.swap)
             } else if let target = viewModel.jumpTarget {
                 pill(target, systemImage: "arrow.up.forward.app", fill: .white.opacity(0.14)) {
                     viewModel.jumpToSession()
                 }
                 .help(viewModel.jumpAttaches ? "Attach in \(target)" : "Show this session in \(target)")
+                .transition(ReplyBar.swap)
             }
             switch viewModel.replyDelivery {
             case .sending:
@@ -1466,6 +1497,8 @@ struct ClaudeExpandedView: View {
             onSend: { viewModel.sendCompose() },
             onCancel: { viewModel.endCompose() }
         )
+        .matchedGeometryEffect(id: ReplyBar.id, in: replyBar)
+        .transition(ReplyBar.swap)
     }
 
     /// The reply while a prompt is up in the terminal, where typing would
@@ -1516,6 +1549,8 @@ struct ClaudeExpandedView: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .matchedGeometryEffect(id: ReplyBar.id, in: replyBar)
+        .transition(ReplyBar.swap)
         .accessibilityLabel(draft.isEmpty ? "Reply to Claude" : "Reply to Claude: \(draft)")
     }
 
@@ -2173,6 +2208,25 @@ private struct ComposeField: View {
             onCancel()
         }
     }
+}
+
+/// The reply bar's identity for `matchedGeometryEffect`: the bar at rest
+/// and the field it opens into are one thing that changes size, so the
+/// field grows out of the bar's frame and shrinks back into it.
+///
+/// What's drawn in it changes as it grows — the prompt for the field and
+/// its Send, the draft for itself — and so does the meta line's "Replying"
+/// for the time, and the session's app it grows over goes. Each comes in
+/// on the spring, but what's going goes at once, on a short fade of its
+/// own: crossfaded on the same spring, the two were legible on top of
+/// each other for most of it.
+private enum ReplyBar {
+    static let id = "replyBar"
+
+    static let swap: AnyTransition = .asymmetric(
+        insertion: .opacity,
+        removal: .opacity.animation(.easeOut(duration: 0.1))
+    )
 }
 
 /// Holds the window a view is in, weakly, without SwiftUI watching it.
