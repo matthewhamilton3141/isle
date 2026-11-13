@@ -88,7 +88,12 @@ final class NotchWindow: NSPanel {
     func place(_ frame: NSRect) {
         placedFrame = frame
         setFrame(frame, display: false)
+        didSlide?()
     }
+
+    /// Told after every `place` and `slide`: the island's window moved.
+    /// The notch's bleed follows it (`IslandBleedDriver`).
+    var didSlide: (() -> Void)?
 
     /// Moves the window to `frame` while the island is carried or glides
     /// home: `place`, without the window server round trips of bringing the
@@ -103,6 +108,7 @@ final class NotchWindow: NSPanel {
         if hasGlass, glassWindow.frame != frame {
             glassWindow.setFrame(frame, display: false)
         }
+        didSlide?()
     }
 
     override func setFrame(_ frameRect: NSRect, display flag: Bool) {
