@@ -154,6 +154,270 @@ enum IslandPrism {
     /// solid black round it.
     static let notchCornerRadius: CGFloat = 8
 
+    // MARK: - The band
+
+    /// What is black across the top of the open panel on the notch.
+    ///
+    /// The band of the panel beside the camera has the menu bar behind it.
+    /// In 1.2.0 it was a black bar from wall to wall as deep as the camera
+    /// housing, its foot a fade straight across the glass. Then it was the
+    /// camera's black alone (`camera`), and the menu bar showed through
+    /// either side of it, faint, behind the crumb. Matthew: "i think u can
+    /// bring back the black bar but like u gotta make it look better than
+    /// before". Each other case is a bar from wall to wall that lets go
+    /// differently (`BandLook`); all of them are drawn over the cap, as the
+    /// camera's black is, and fade out with the lift: off the notch there is
+    /// no menu bar to hide. Tune here.
+    enum BandStyle: Int, CaseIterable {
+        /// No bar: the camera's black only (`notchAlpha`), glass either side.
+        case camera
+        /// A straight bar as deep as the camera's black, whose foot lets go
+        /// on an ease in lightness rather than in alpha, so its end isn't a
+        /// line.
+        case eased
+        /// A shallower bar that the camera's black runs into: the foot
+        /// drops round the housing in a fillet, as a drop hangs from a
+        /// ledge, and lets go along that outline.
+        case notched
+        /// Smoked glass going to black at the top: solid only under the
+        /// bezel, then a long fade with the lens showing through its lower
+        /// half, its foot lifting into the walls rather than meeting them
+        /// at a corner.
+        case tinted
+        /// `notched` with `tinted`'s ends: deepest round the camera, lifting
+        /// toward each wall.
+        case meniscus
+        /// No bar: the camera's black spread out (`spreadAlpha`), letting go
+        /// from the housing's own edge over a long, gentle ease, further
+        /// along the top than down. Matthew, of `camera`: "just make the
+        /// gradient spread out more, it looks basically like a solid,
+        /// thicker notch at the moment".
+        case spread
+    }
+
+    static let bandStyle: BandStyle = .notched
+
+    /// How a bar lets go, in points from the top of the screen.
+    struct BandLook: Equatable {
+        /// Solid from the top edge to here, beside the camera.
+        var depth: CGFloat
+        /// How far the foot takes to let go.
+        var reach: CGFloat
+        /// The let-go's curve: the light let through is `smootherstep`
+        /// raised to this. 1 is that ease in alpha; about 3 is the same
+        /// ease in lightness, which is how the eye sees a fade to black (a
+        /// linear fade in alpha reads as a dark band with an edge at its
+        /// end).
+        var gamma: Double
+        /// The radius of the fillet where the bar's foot meets the camera's
+        /// black, in points; 0 is a plain union, a corner.
+        var fillet: CGFloat
+        /// The radius the foot turns up through at each wall, in points; 0
+        /// meets the wall square.
+        var wallRadius: CGFloat
+    }
+
+    static let easedLook = BandLook(depth: 34, reach: 11, gamma: 3, fillet: 8, wallRadius: 0)
+    static let notchedLook = BandLook(depth: 23, reach: 14, gamma: 3, fillet: 22, wallRadius: 0)
+    static let tintedLook = BandLook(depth: 20, reach: 22, gamma: 1.5, fillet: 16, wallRadius: 20)
+    static let meniscusLook = BandLook(depth: 23, reach: 14, gamma: 3, fillet: 22, wallRadius: 14)
+
+    /// The bar `bandStyle` asks for; nil for none.
+    static var bandLook: BandLook? {
+        switch bandStyle {
+        case .camera, .spread: return nil
+        case .eased: return easedLook
+        case .notched: return notchedLook
+        case .tinted: return tintedLook
+        case .meniscus: return meniscusLook
+        }
+    }
+
+    /// 6t⁵ − 15t⁴ + 10t³, clamped: an ease with no slope and no bend at
+    /// either end, so neither end of a fade is a line.
+    static func smootherstep(_ t: Double) -> Double {
+        let u = min(max(t, 0), 1)
+        return u * u * u * (u * (u * 6 - 15) + 10)
+    }
+
+    /// The bar's black `d` points outside its solid (0 or less inside).
+    static func bandAlpha(distance d: CGFloat, look: BandLook) -> Double {
+        if d <= 0 { return 1 }
+        guard look.reach > 0, d < look.reach else { return 0 }
+        return 1 - pow(smootherstep(Double(d / look.reach)), look.gamma)
+    }
+
+    /// The polynomial smooth minimum of two distances: their minimum, less
+    /// a fillet of radius `k` where they are within `k` of each other.
+    /// Never more than either.
+    static func smoothMin(_ a: CGFloat, _ b: CGFloat, _ k: CGFloat) -> CGFloat {
+        guard k > 0 else { return min(a, b) }
+        let h = max(k - abs(a - b), 0) / k
+        return min(a, b) - h * h * k / 4
+    }
+
+    /// How far a point is outside the bar away from the camera: its depth
+    /// below the solid, turned up into the wall over `wallRadius`. `u` is
+    /// in from the nearer wall (the flare beside the wall counts as the
+    /// wall), `y` down from the top of the screen.
+    static func bandWallDistance(u: CGFloat, y: CGFloat, look: BandLook) -> CGFloat {
+        let r = min(max(look.wallRadius, 0), max(look.depth, 0))
+        let u = max(u, 0)
+        guard r > 0, u < r else { return y - look.depth }
+        let cx = r - u, cy = y - (look.depth - r)
+        if cy <= 0 { return -u }
+        return (cx * cx + cy * cy).squareRoot() - r
+    }
+
+    /// How far a point is outside the bar and the camera's black together,
+    /// near the camera: `x` from the housing's centre line, `y` from the
+    /// top of the screen. Away from the walls.
+    static func bandDistance(x: CGFloat, y: CGFloat, housing: CGSize, look: BandLook) -> CGFloat {
+        smoothMin(y - look.depth, notchDistance(x: x, y: y, housing: housing), look.fillet)
+    }
+
+    /// How deep the bar is drawn, from the top of the screen: past this it
+    /// is clear, beside the camera.
+    static func bandHeight(_ look: BandLook) -> CGFloat {
+        max(look.depth, 0) + look.reach
+    }
+
+    /// The bar away from the camera and the walls: alpha by row, top down,
+    /// over `bandHeight` at `scale` pixels per point, sampled at pixel
+    /// centres. One pixel wide; drawn stretched across the panel.
+    static func bandColumn(look: BandLook, scale: CGFloat) -> (width: Int, height: Int, alpha: [UInt8]) {
+        let h = max(Int((bandHeight(look) * scale).rounded(.up)), 1)
+        let alpha = (0..<h).map { row -> UInt8 in
+            let y = (CGFloat(row) + 0.5) / scale
+            return UInt8((bandAlpha(distance: y - look.depth, look: look) * 255).rounded())
+        }
+        return (1, h, alpha)
+    }
+
+    /// The bar's left end, `wallInset` (the flare) plus `wallRadius` wide,
+    /// `bandHeight` deep, at `scale`; the right end is its mirror image.
+    static func bandEnd(look: BandLook, wallInset: CGFloat, scale: CGFloat) -> (width: Int, height: Int, alpha: [UInt8]) {
+        let w = max(Int(((wallInset + max(look.wallRadius, 0)) * scale).rounded(.up)), 1)
+        let h = max(Int((bandHeight(look) * scale).rounded(.up)), 1)
+        var alpha = [UInt8](repeating: 0, count: w * h)
+        for row in 0..<h {
+            let y = (CGFloat(row) + 0.5) / scale
+            for col in 0..<w {
+                let u = (CGFloat(col) + 0.5) / scale - wallInset
+                alpha[row * w + col] = UInt8((bandAlpha(distance: bandWallDistance(u: u, y: y, look: look), look: look) * 255).rounded())
+            }
+        }
+        return (w, h, alpha)
+    }
+
+    /// The box round the camera where the bar and the camera's black differ
+    /// from the bar alone, anchored top-centre on the housing.
+    static func bandNotchExtent(housing: CGSize, look: BandLook) -> CGSize {
+        let out = bandExtra + look.reach + max(look.fillet, 0)
+        return CGSize(
+            width: housing.width + 2 * out,
+            height: max(housing.height + bandExtra + look.reach, bandHeight(look)) + max(look.fillet, 0)
+        )
+    }
+
+    /// The black to lay over the bar round the camera, so that together
+    /// they are `bandDistance`'s black: what the bar alone leaves to make
+    /// up, `1 − (1 − together) / (1 − bar)`, at `scale` over
+    /// `bandNotchExtent`. 0 wherever the bar is already solid or the camera
+    /// adds nothing, so its edges meet the bar with no seam.
+    static func bandNotchMask(housing: CGSize, look: BandLook, scale: CGFloat) -> (width: Int, height: Int, alpha: [UInt8]) {
+        let extent = bandNotchExtent(housing: housing, look: look)
+        let w = max(Int((extent.width * scale).rounded(.up)), 1)
+        let h = max(Int((extent.height * scale).rounded(.up)), 1)
+        var alpha = [UInt8](repeating: 0, count: w * h)
+        for row in 0..<h {
+            let y = (CGFloat(row) + 0.5) / scale
+            let bar = bandAlpha(distance: y - look.depth, look: look)
+            guard bar < 1 - 1e-6 else { continue }
+            for col in 0..<w {
+                let x = (CGFloat(col) + 0.5) / scale - extent.width / 2
+                let together = bandAlpha(distance: bandDistance(x: x, y: y, housing: housing, look: look), look: look)
+                let extra = max(0, 1 - (1 - together) / (1 - bar))
+                alpha[row * w + col] = UInt8((extra * 255).rounded())
+            }
+        }
+        return (w, h, alpha)
+    }
+
+    // MARK: - The camera's black, spread (`BandStyle.spread`)
+
+    /// How far past the housing the black is solid, in points: none to the
+    /// sides, where the cutout's edge is where the safe area says, and a
+    /// point below it, where the cutout reaches about a point past the
+    /// band. The fade's own start is all but black for its first points
+    /// besides. Tune here.
+    static let spreadSide: CGFloat = 0
+    static let spreadFoot: CGFloat = 1
+
+    /// How far the black takes to let go, in points: along the top, out
+    /// from the housing's sides, and down from its foot; round its corners,
+    /// the ellipse between the two. Further along than down, so it spreads
+    /// along the top edge more than it hangs into the content. Tune here.
+    static let spreadAcross: CGFloat = 120
+    static let spreadDown: CGFloat = 40
+
+    /// The let-go's shape: the lightness rises from the housing's edge as
+    /// `1 − (1 − t)^spreadEase`, steepest at the edge and flat where it
+    /// ends, so it reads as a gradient coming off the camera rather than a
+    /// black shape with a soft rim, and has no line where it ends. The
+    /// light let through is that lightness cubed (`spreadLightness`), how
+    /// lightness is seen. Tune here.
+    static let spreadEase: Double = 2.5
+    static let spreadLightness: Double = 2.5
+
+    /// The spread black at a point: `x` from the housing's centre line, `y`
+    /// from the top of the screen.
+    static func spreadAlpha(x: CGFloat, y: CGFloat, housing: CGSize) -> Double {
+        let half = housing.width / 2 + spreadSide
+        let foot = housing.height + spreadFoot
+        let r = max(min(notchCornerRadius, half, foot), 0)
+        let qx = abs(x) - (half - r), qy = y - (foot - r)
+        let d: CGFloat, reach: CGFloat
+        if qx <= 0 {
+            d = qy - r; reach = spreadDown
+        } else if qy <= 0 {
+            d = qx - r; reach = spreadAcross
+        } else {
+            let len = (qx * qx + qy * qy).squareRoot()
+            d = len - r
+            let c = qx / len / max(spreadAcross, 0.001), s = qy / len / max(spreadDown, 0.001)
+            reach = 1 / (c * c + s * s).squareRoot()
+        }
+        if d <= 0 { return 1 }
+        guard reach > 0, d < reach else { return 0 }
+        let t = Double(d / reach)
+        let lightness = 1 - pow(1 - t, spreadEase)
+        return 1 - pow(lightness, spreadLightness)
+    }
+
+    /// The box the spread black occupies, anchored top-centre on the
+    /// housing.
+    static func spreadExtent(housing: CGSize) -> CGSize {
+        CGSize(width: housing.width + 2 * (spreadSide + spreadAcross),
+               height: housing.height + spreadFoot + spreadDown)
+    }
+
+    /// `spreadAlpha` over its extent at `scale`, as `notchMask` is.
+    static func spreadMask(housing: CGSize, scale: CGFloat) -> (width: Int, height: Int, alpha: [UInt8]) {
+        let extent = spreadExtent(housing: housing)
+        let w = max(Int((extent.width * scale).rounded(.up)), 1)
+        let h = max(Int((extent.height * scale).rounded(.up)), 1)
+        var alpha = [UInt8](repeating: 0, count: w * h)
+        for row in 0..<h {
+            let y = (CGFloat(row) + 0.5) / scale
+            for col in 0..<w {
+                let x = (CGFloat(col) + 0.5) / scale - extent.width / 2
+                alpha[row * w + col] = UInt8((spreadAlpha(x: x, y: y, housing: housing) * 255).rounded())
+            }
+        }
+        return (w, h, alpha)
+    }
+
     /// Which way the ribbon is drawn.
     enum RibbonStyle {
         /// Light: a streak split into a fan of colours.

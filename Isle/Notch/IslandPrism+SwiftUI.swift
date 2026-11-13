@@ -11,6 +11,9 @@
 //    lets go a short way out from it, laid over the cap so the fade has no
 //    colour of its own. Off the notch, and on a display without one,
 //    there's no camera to be black over.
+//  - `PrismBand`: in its place when `IslandPrism.bandStyle` asks for a
+//    bar, black from wall to wall across the band on the notch, with the
+//    camera's black run into it.
 //  - `PrismFrost`: frosted glass behind the content, so the lens is a
 //    lens only along the lip — and, off the notch, in a rim all the way
 //    round, closed as well as open (`PrismPaneInsets`).
@@ -84,11 +87,13 @@ struct PrismNotchShade: View {
     /// 0 on the notch, 1 off it; between while the island morphs from one
     /// to the other, when this fades with it.
     var lift: Double = 0
+    /// Spread out (`IslandPrism.BandStyle.spread`) rather than close in.
+    var spread = false
 
     var body: some View {
         Color.clear.overlay(alignment: .top) {
-            if let housing, lift < 1, let image = PrismNotchImage.image(housing: housing) {
-                let extent = IslandPrism.notchExtent(housing: housing)
+            if let housing, lift < 1, let image = PrismNotchImage.image(housing: housing, spread: spread) {
+                let extent = spread ? IslandPrism.spreadExtent(housing: housing) : IslandPrism.notchExtent(housing: housing)
                 Image(decorative: image, scale: PrismNotchImage.scale)
                     .resizable()
                     .frame(width: extent.width, height: extent.height)
@@ -108,13 +113,103 @@ private enum PrismNotchImage {
     static let scale: CGFloat = 2
     private static var cache: [String: CGImage] = [:]
 
-    static func image(housing: CGSize) -> CGImage? {
-        let key = "\(housing.width)x\(housing.height)"
+    static func image(housing: CGSize, spread: Bool) -> CGImage? {
+        let key = spread
+            ? "\(housing.width)x\(housing.height) spread \(IslandPrism.spreadAcross) \(IslandPrism.spreadDown) \(IslandPrism.spreadEase)"
+            : "\(housing.width)x\(housing.height)"
         if let cached = cache[key] { return cached }
-        let mask = IslandPrism.notchMask(housing: housing, scale: scale)
+        let mask = spread
+            ? IslandPrism.spreadMask(housing: housing, scale: scale)
+            : IslandPrism.notchMask(housing: housing, scale: scale)
         guard let image = IslandBlackImage.image(width: mask.width, height: mask.height, alpha: mask.alpha) else { return nil }
         cache[key] = image
         return image
+    }
+}
+
+/// The black bar across the top of the panel on the notch
+/// (`IslandPrism.bandStyle`), with the camera's black run into it: in
+/// place of `PrismNotchShade` when there is a bar. Over the cap, for the
+/// same reason that is.
+///
+/// Three static bitmaps, built once: one column stretched across the
+/// panel between its ends, the two ends, which turn the foot up into the
+/// walls and go where the walls go, and round the camera what the camera
+/// adds to the bar, held on the camera as `PrismNotchShade` is. The column
+/// and the ends take the fill's width, so the bar is always wall to wall.
+/// Faded out with the lift: off the notch there's no menu bar to hide.
+struct PrismBand: View {
+    var look: IslandPrism.BandLook
+    /// The physical camera housing; nil on a display without one, where
+    /// the bar is drawn alone.
+    var housing: CGSize?
+    var shift: CGFloat = 0
+    var lift: Double = 0
+
+    var body: some View {
+        Color.clear.overlay(alignment: .top) {
+            if lift < 1, let images = PrismBandImages.images(look: look) {
+                let height = IslandPrism.bandHeight(look)
+                let end = IslandMotion.openCorners.top + max(look.wallRadius, 0)
+                ZStack(alignment: .top) {
+                    HStack(spacing: 0) {
+                        Image(decorative: images.end, scale: PrismBandImages.scale)
+                            .resizable()
+                            .frame(width: end)
+                        Image(decorative: images.column, scale: PrismBandImages.scale)
+                            .resizable()
+                        Image(decorative: images.end, scale: PrismBandImages.scale)
+                            .resizable()
+                            .frame(width: end)
+                            .scaleEffect(x: -1)
+                    }
+                    .frame(height: height)
+                    if let housing, let image = PrismBandImages.notch(housing: housing, look: look) {
+                        let extent = IslandPrism.bandNotchExtent(housing: housing, look: look)
+                        Image(decorative: image, scale: PrismBandImages.scale)
+                            .resizable()
+                            .frame(width: extent.width, height: extent.height)
+                            .offset(x: -shift)
+                            .islandCollapseChannel(.width)
+                    }
+                }
+                .opacity(1 - lift)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// The bar's bitmaps, built once per look (and housing).
+@MainActor
+private enum PrismBandImages {
+    static let scale: CGFloat = 2
+    private static var cache: [String: CGImage] = [:]
+
+    private static func key(_ look: IslandPrism.BandLook) -> String {
+        "\(look.depth),\(look.reach),\(look.gamma),\(look.fillet),\(look.wallRadius)"
+    }
+
+    private static func cached(_ key: String, _ make: () -> (width: Int, height: Int, alpha: [UInt8])) -> CGImage? {
+        if let image = cache[key] { return image }
+        let mask = make()
+        guard let image = IslandBlackImage.image(width: mask.width, height: mask.height, alpha: mask.alpha) else { return nil }
+        cache[key] = image
+        return image
+    }
+
+    static func images(look: IslandPrism.BandLook) -> (column: CGImage, end: CGImage)? {
+        let k = key(look)
+        guard let column = cached("column " + k, { IslandPrism.bandColumn(look: look, scale: scale) }),
+              let end = cached("end " + k, { IslandPrism.bandEnd(look: look, wallInset: IslandMotion.openCorners.top, scale: scale) })
+        else { return nil }
+        return (column, end)
+    }
+
+    static func notch(housing: CGSize, look: IslandPrism.BandLook) -> CGImage? {
+        cached("notch \(housing.width)x\(housing.height) " + key(look)) {
+            IslandPrism.bandNotchMask(housing: housing, look: look, scale: scale)
+        }
     }
 }
 
