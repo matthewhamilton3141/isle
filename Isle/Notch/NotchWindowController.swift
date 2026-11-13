@@ -319,6 +319,19 @@ final class NotchWindowController {
             screen: screen
         )
 
+        #if DEBUG
+        // What this island is showing, for the constraint pass log's records
+        // of its two windows (see `ConstraintPassLog`).
+        let describe = { [weak self, weak presentation] () -> String in
+            guard let self, let presentation else { return "gone" }
+            return "display \(id) \(presentation.state) hover \(presentation.isHovering) held \(presentation.isHeldOpen)"
+                + " placement \(presentation.placement) face \(self.viewModel.expandedPlace)"
+                + " composing \(self.viewModel.composing.map { "\($0)" } ?? "no") background \(self.viewModel.panelBackground.rawValue)"
+        }
+        ConstraintPassLog.watch(window, as: "notch panel", describe: describe)
+        ConstraintPassLog.watch(window.glassWindow, as: "island glass", describe: describe)
+        #endif
+
         window.contentView = hosting
         carry.place(rememberedPlacement(for: id, on: metrics))
         window.orderFrontRegardless()
