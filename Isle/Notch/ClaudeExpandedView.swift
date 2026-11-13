@@ -103,9 +103,12 @@ struct ClaudeExpandedView: View {
         // not just the glyph and text.
         .contentShape(Rectangle())
         // Not while a field is taking keys: a click meant for the field must
-        // never retract the panel it's typing in. Esc is the way out.
+        // never retract the panel it's typing in. A click outside the field
+        // lets the field go instead (`ComposeClickOut`) — and only that,
+        // however this tap and the letting go are ordered: it went down
+        // while the field was open.
         .onTapGesture {
-            guard viewModel.composing == nil else { return }
+            guard viewModel.composing == nil, !viewModel.pressBeganComposing else { return }
             island.dismissAlert()
         }
         // While a reply or an answer is being written the face holds
@@ -2105,7 +2108,8 @@ private struct MetaLabelStyle: LabelStyle {
 
 /// The face's text field, in the action row it replaces: the text, and the
 /// button that sends it. Return sends and Esc cancels, both handled here so
-/// every field behaves the same. Takes focus as it appears — the panel has
+/// every field behaves the same; a click on the island outside it cancels
+/// too (`ComposeFieldRegion` marks where it is). Takes focus as it appears — the panel has
 /// just become key for it (see `NotchViewModel.composing`).
 ///
 /// One line: Claude Code submits a prompt on Return, so a reply can't carry
@@ -2188,6 +2192,9 @@ private struct ComposeField: View {
         .overlay(RoundedRectangle(cornerRadius: ClaudePanelLayout.actionHeight / 2, style: .continuous)
             .inset(by: 0.5).stroke(.white.opacity(0.4), lineWidth: 1))
         .background(WindowReader(reference: window))
+        // A click in here is the field's; anywhere else on the island lets
+        // it go (see `ComposeClickOut`).
+        .background(ComposeFieldRegion())
         .background {
             GeometryReader { proxy in
                 Color.clear

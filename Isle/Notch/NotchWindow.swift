@@ -318,7 +318,20 @@ final class NotchWindow: NSPanel {
     /// window coordinates: the press itself, or the last drag passed on.
     private var lastPressLocation: NSPoint?
 
+    /// Told of each press the views are about to get, with where it went
+    /// down in window coordinates. What it returns runs once the views have
+    /// had that press's release — only if they had all of it, so a press
+    /// the island took for a hold or a carry runs nothing. This is how a
+    /// click outside a field that has the keys lets the field go
+    /// (`watchClicksOutsideComposeFields`), after whatever the click was
+    /// on has done its job.
+    var pressObserver: (@MainActor (NSPoint) -> (@MainActor () -> Void)?)?
+
+    /// What `pressObserver` asked to run when the press under way is let go.
+    private var afterRelease: (@MainActor () -> Void)?
+
     override func sendEvent(_ event: NSEvent) {
+        var released: (@MainActor () -> Void)?
         switch event.type {
         case .scrollWheel:
             if let scrollInterceptor, scrollInterceptor(event) { return }
@@ -326,11 +339,19 @@ final class NotchWindow: NSPanel {
             switch pressInterceptor?(event) ?? .pass {
             case .pass:
                 lastPressLocation = event.type == .leftMouseUp ? nil : event.locationInWindow
+                if event.type == .leftMouseDown {
+                    afterRelease = pressObserver?(event.locationInWindow)
+                } else if event.type == .leftMouseUp {
+                    released = afterRelease
+                    afterRelease = nil
+                }
             case .swallow:
+                afterRelease = nil
                 return
             case .cancelPress:
                 let release = cancellingRelease(for: event)
                 lastPressLocation = nil
+                afterRelease = nil
                 if let release { super.sendEvent(release) }
                 return
             }
@@ -338,6 +359,21 @@ final class NotchWindow: NSPanel {
             break
         }
         super.sendEvent(event)
+        released?()
+    }
+
+    /// The views a click may land in without letting a field go: each
+    /// `ComposeFieldRegion` on the island adds itself while it's in this
+    /// window. Weak, so a field that's gone is gone from here too.
+    let composeFields = NSHashTable<NSView>.weakObjects()
+
+    /// Whether `point`, in window coordinates, is in a field drawn in this
+    /// window — its text, its Send, or the capsule round them.
+    func composeFieldContains(_ point: NSPoint) -> Bool {
+        composeFields.allObjects.contains { view in
+            view.window === self && !view.isHiddenOrHasHiddenAncestor
+                && view.convert(view.bounds, to: nil).contains(point)
+        }
     }
 
     /// The button-up the views get in place of `event` when the press under
