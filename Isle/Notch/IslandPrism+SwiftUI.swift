@@ -6,9 +6,11 @@
 //  material by `IslandGlassFill`:
 //
 //  - `PrismShade`: a tint from the top edge, clearing across the horizon
-//    to the lip's all but bare glass, and on the notch black over the
-//    camera housing that lets go a short way out from it. Off the notch,
-//    and on a display without one, there's no camera to be black over.
+//    to the lip's all but bare glass.
+//  - `PrismNotchShade`: on the notch, black over the camera housing that
+//    lets go a short way out from it, laid over the cap so the fade has no
+//    colour of its own. Off the notch, and on a display without one,
+//    there's no camera to be black over.
 //  - `PrismFrost`: frosted glass behind the content, so the lens is a
 //    lens only along the lip — and, off the notch, in a rim all the way
 //    round, closed as well as open (`PrismPaneInsets`).
@@ -28,51 +30,27 @@
 import SwiftUI
 
 /// Prism's shade: `IslandPrism.edgeTint` from the top edge, held to the
-/// horizon and cleared across it to `IslandPrism.lipTint`; and on the
-/// notch, black over the camera housing (`PrismNotchShade`).
+/// horizon and cleared across it to `IslandPrism.lipTint`, the same on the
+/// notch and off it. (The black over the camera is `PrismNotchShade`.)
 ///
 /// In an overlay on a flexible clear view, so it never sets the fill's
 /// size: while the outline is shallower than the fixed parts (the first
-/// frames of an open, the last of a collapse) they run past the clip, and
-/// that whole while the cover is solid black anyway.
+/// frames of an open, the last of a collapse; a closed capsule off the
+/// notch) they run past the clip. On the notch the cover is solid black
+/// that whole while; on a capsule what shows is one or other of two tints
+/// a hundredth apart.
 struct PrismShade: View {
-    /// The physical camera housing the island hangs from; nil on a display
-    /// without one, where there is nothing to be black over.
-    var housing: CGSize?
-    /// How far the outline sits right of the housing's centre
-    /// (NotchRootView's `collapsedShift`), so the black can stay on the
-    /// camera.
-    var housingShift: CGFloat = 0
-    /// 0 on the notch, 1 off it; between while the island morphs from one
-    /// to the other, when the black over the camera fades with it.
-    var lift: Double = 0
-
     var body: some View {
         Color.clear.overlay(alignment: .top) {
-            ZStack(alignment: .top) {
-                tint
-                if let housing, lift < 1 {
-                    PrismNotchShade(housing: housing, shift: housingShift)
-                        .opacity(1 - lift)
-                }
+            VStack(spacing: 0) {
+                Rectangle()
+                    .fill(.black.opacity(IslandPrism.edgeTint))
+                LinearGradient(stops: PrismStops.horizon, startPoint: .top, endPoint: .bottom)
+                    .frame(height: IslandPrism.horizonFeather)
+                Rectangle()
+                    .fill(.black.opacity(IslandPrism.lipTint))
+                    .frame(height: IslandPrism.lip - IslandPrism.horizonFeather / 2)
             }
-        }
-    }
-
-    /// The walls' tint from the top edge down, the horizon and the lip:
-    /// the whole shade off the notch, and all of it but the camera's black
-    /// on it. On a closed capsule, shallower than the horizon and the lip
-    /// together, the fixed parts run past the clip; what shows is one or
-    /// other of two tints a hundredth apart.
-    private var tint: some View {
-        VStack(spacing: 0) {
-            Rectangle()
-                .fill(.black.opacity(IslandPrism.edgeTint))
-            LinearGradient(stops: PrismStops.horizon, startPoint: .top, endPoint: .bottom)
-                .frame(height: IslandPrism.horizonFeather)
-            Rectangle()
-                .fill(.black.opacity(IslandPrism.lipTint))
-                .frame(height: IslandPrism.lip - IslandPrism.horizonFeather / 2)
         }
     }
 }
@@ -82,27 +60,44 @@ struct PrismShade: View {
 /// round the corners (`IslandPrism.notchAlpha`), so what is black in the
 /// glass is the camera and not a bar across the panel.
 ///
+/// Over the cap, not under it. The cap darkens channel by channel, and
+/// only what is brighter than it: under it, the fade from a coloured
+/// window went through that window's colour on the way to black — once
+/// the black had taken a channel below the cap the cap let go of it, the
+/// strongest channel last — and the camera had a blue rim over a blue
+/// toolbar. Over it, the fade is from what the cap shows straight to
+/// black, whatever is behind.
+///
 /// Anchored on the camera, not the panel, as the notch glow is: while the
 /// outline is a lopsided pill it is drawn `shift` right of the housing,
 /// and gets there on the width's spring, so this is moved back by the same
 /// amount on the same spring. Wider and deeper than a pill, so in an
-/// overlay of its own: it takes the fill's size and never sets it, and
-/// what of it is outside the outline is clipped with everything else.
-private struct PrismNotchShade: View {
-    var housing: CGSize
-    var shift: CGFloat
+/// overlay: it takes the fill's size and never sets it, and what of it is
+/// outside the outline is clipped with everything else.
+struct PrismNotchShade: View {
+    /// The physical camera housing the island hangs from; nil on a display
+    /// without one, where there is nothing to be black over.
+    var housing: CGSize?
+    /// How far the outline sits right of the housing's centre
+    /// (NotchRootView's `collapsedShift`).
+    var shift: CGFloat = 0
+    /// 0 on the notch, 1 off it; between while the island morphs from one
+    /// to the other, when this fades with it.
+    var lift: Double = 0
 
     var body: some View {
-        let extent = IslandPrism.notchExtent(housing: housing)
         Color.clear.overlay(alignment: .top) {
-            if let image = PrismNotchImage.image(housing: housing) {
+            if let housing, lift < 1, let image = PrismNotchImage.image(housing: housing) {
+                let extent = IslandPrism.notchExtent(housing: housing)
                 Image(decorative: image, scale: PrismNotchImage.scale)
                     .resizable()
                     .frame(width: extent.width, height: extent.height)
                     .offset(x: -shift)
                     .islandCollapseChannel(.width)
+                    .opacity(1 - lift)
             }
         }
+        .allowsHitTesting(false)
     }
 }
 

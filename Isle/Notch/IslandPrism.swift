@@ -119,13 +119,18 @@ enum IslandPrism {
     /// It used to be a bar from wall to wall as deep as the housing
     /// (Matthew: "this black line that gradients to both ends, i want it
     /// to gradient a little bit from the notch shape"). Tune here.
-    static let notchReach: CGFloat = 32
+    ///
+    /// 24, not the 32 it was first: that was judged with the black under
+    /// the cap, which hid the fade's outer third over anything bright.
+    /// Over the cap (`PrismNotchShade`) all of it shows, and 24 is the
+    /// same fade to the eye, gone before the Claude face's wings begin.
+    static let notchReach: CGFloat = 24
 
     /// How soon the fade lets go: its ease, raised to this. 1 is the plain
     /// ease, half gone half way out; higher keeps the dark close in to the
     /// housing and leaves only a trace toward the reach's end. At 2 over
-    /// a 32pt reach the black is half gone 11pt out and all but gone by
-    /// 22: a soft edge to the camera with a faint tail, where the plain
+    /// a 24pt reach the black is half gone 8.5pt out and all but gone by
+    /// 17: a soft edge to the camera with a faint tail, where the plain
     /// ease over a shorter reach read as the housing drawn out of focus.
     /// Tune here.
     static let notchFalloff: Double = 2

@@ -227,7 +227,7 @@ do {
         }
         check(covered && extra >= 3, "and solid \(extra)pt past its sides, its foot and round its corners: no glass against the hardware")
         // A sharper corner than the guess is still inside the solid, or all but.
-        check(a(housing.width / 2, housing.height) > 0.999, "even a square corner of the housing is under all but solid black", "\(a(housing.width / 2, housing.height))")
+        check(a(housing.width / 2, housing.height) > 0.995, "even a square corner of the housing is under black within half a percent of solid", "\(a(housing.width / 2, housing.height))")
         check(a(half + 1, 10) < 1 && a(0, foot + 1) < 1 && a(corner(1).x, corner(1).y) < 1, "past that it begins to let go")
         check(a(0, foot + reach) == 0 && a(half + reach, 10) == 0 && a(corner(reach).x, corner(reach).y) == 0 && a(0, 400) == 0 && a(400, 0) == 0,
               "and has let go \(reach)pt out: below, beside, round the corner")

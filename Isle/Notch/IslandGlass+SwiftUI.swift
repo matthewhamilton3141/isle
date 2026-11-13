@@ -52,7 +52,7 @@ struct IslandGlassFill: View {
     /// `collapsedShift`), so the glow can stay on the camera.
     var housingShift: CGFloat
     /// The physical camera housing, which Prism keeps black
-    /// (`PrismShade`), whatever the glow's setting; nil on a display
+    /// (`PrismNotchShade`), whatever the glow's setting; nil on a display
     /// without one.
     var notch: CGSize?
     /// What Prism's ribbon follows; nil in every other mode.
@@ -167,10 +167,12 @@ private struct IslandGlassBlend: View, Animatable {
                 // it, under everything the panel draws. The shade first, so
                 // the ribbon lies on it rather than under it: over the
                 // ribbon, a shade dark enough for a bright window took the
-                // colour out of the light.
+                // colour out of the light. The camera's black over the cap
+                // (`PrismNotchShade` says why).
                 if background == .prism {
-                    PrismShade(housing: notch, housingShift: housingShift, lift: lift)
+                    PrismShade()
                     PrismCap()
+                    PrismNotchShade(housing: notch, shift: housingShift, lift: lift)
                     PrismFrost(shape: shape, pane: pane)
                     PrismRibbonStrip(shape: shape, ribbon: ribbon)
                         // The ribbon is the open lip's. On the notch the
