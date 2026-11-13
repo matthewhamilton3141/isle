@@ -292,7 +292,9 @@ struct NotchRootView: View {
                 .transaction { t in
                     guard t.isPanelResize else { return }
                     t.disablesAnimations = false
-                    t.animation = panelResizeAnimation
+                    // A swipe's landing brings its own (the faces' spring);
+                    // Reduce Motion keeps the plain curve.
+                    t.animation = reduceMotion ? panelResizeAnimation : t.panelResizeAnimation ?? panelResizeAnimation
                 }
             Spacer(minLength: 0)
         }

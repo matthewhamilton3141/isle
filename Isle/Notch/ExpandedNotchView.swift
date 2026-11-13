@@ -536,22 +536,11 @@ private struct FaceCarousel<Face: View>: View {
         GeometryReader { proxy in
             ZStack(alignment: .topLeading) {
                 ForEach(slots) { slot in
-                    let progress = min(1, abs(slot.x) / pager.page)
                     content(slot.tab)
                         .frame(width: proxy.size.width,
                                height: slot.tab == face ? proxy.size.height : height(slot.tab))
                         .frame(height: proxy.size.height, alignment: .top)
-                        // A short drift and a cross-fade, not a full page of
-                        // travel: a face sliding the panel's width would run
-                        // its raised artwork under the camera housing and its
-                        // text under the waveform. Drifting a tenth of the
-                        // distance keeps everything clear of both while the
-                        // fingers still visibly carry it.
-                        .offset(x: slot.x * faceSwipeDrift)
-                        // Sequential, not overlapping: the leaving face is
-                        // gone by half-way and the arriving one builds from
-                        // there, so the two never show through each other.
-                        .opacity(max(0, 1 - 2 * progress))
+                        .modifier(FaceSlotPlacement(x: slot.x, page: pager.page))
                         .transition(.opacity)
                 }
             }
@@ -560,6 +549,39 @@ private struct FaceCarousel<Face: View>: View {
         // can't arrive for a panel that isn't there, and the next open
         // mustn't find a face parked half-way.
         .onDisappear { pager.reset() }
+    }
+}
+
+/// Where a face in the carousel is drawn for how far it sits from home, and
+/// how much of it shows.
+///
+/// A short drift and a cross-fade, not a full page of travel: a face
+/// sliding the panel's width would run its raised artwork under the camera
+/// housing and its text under the waveform. Drifting a tenth of the
+/// distance keeps everything clear of both while the fingers still visibly
+/// carry it. Sequential, not overlapping: the leaving face is gone by
+/// half-way and the arriving one builds from there, so the two never show
+/// through each other.
+///
+/// Both read off `x` as it animates, not each animated on its own. Animated
+/// apart — the opacity from its old value to its new on the settle's
+/// spring, as SwiftUI animates any modifier — the leaving face was still
+/// half there when the arriving one had begun, and a slower settle showed
+/// the two faces' text through each other for most of it.
+private struct FaceSlotPlacement: ViewModifier, Animatable {
+    var x: CGFloat
+    var page: CGFloat
+
+    var animatableData: CGFloat {
+        get { x }
+        set { x = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        let progress = page > 0 ? min(1, abs(x) / page) : 0
+        content
+            .offset(x: x * faceSwipeDrift)
+            .opacity(max(0, 1 - 2 * progress))
     }
 }
 
