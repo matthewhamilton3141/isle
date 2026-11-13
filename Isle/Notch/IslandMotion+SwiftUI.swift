@@ -63,10 +63,22 @@ private struct PanelResizeKey: TransactionKey {
     static let defaultValue = false
 }
 
+/// The curve a flagged resize runs on, when it isn't NotchRootView's own
+/// resize spring: a swipe landing gives the height the faces' spring
+/// (`IslandMotion.faceSettle`), so the face and the height arrive together.
+private struct PanelResizeAnimationKey: TransactionKey {
+    static let defaultValue: Animation? = nil
+}
+
 extension Transaction {
     var isPanelResize: Bool {
         get { self[PanelResizeKey.self] }
         set { self[PanelResizeKey.self] = newValue }
+    }
+
+    var panelResizeAnimation: Animation? {
+        get { self[PanelResizeAnimationKey.self] }
+        set { self[PanelResizeAnimationKey.self] = newValue }
     }
 }
 
