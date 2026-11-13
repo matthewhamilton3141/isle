@@ -548,6 +548,72 @@ do {
     check(true, "either side of where pinning starts, a capsule is drawn where it was let go")
 }
 
+print("Placement: closed again, it opens the way its place calls for now")
+
+do {
+    // Matthew: "once u make the pill open in a different way, it just
+    // defaults to that method until u make it open another way". An open
+    // card keeps its way while it's carried and put down (so it stays on
+    // the screen), but closed, the next open is decided afresh.
+    let up = bounds.opening(at: CGPoint(x: 756, y: 38))
+    check(up.upward, "at the bottom it opens up")
+    // Carried open up to the top middle and put down: it keeps opening up there.
+    let carriedUp = bounds.putDown(CGPoint(x: 900, y: 700), open: up, pillWidth: 132, carried: up)
+    check(carriedUp.opening == up, "put down open, it keeps its way while it's open")
+    // Closed there and opened again: down, and the capsule doesn't move.
+    let again = bounds.forPlace(carriedUp.anchor, pillWidth: 132, was: up)
+    check(!again.opening.upward && again.opening.pin == .centre, "closed at the top and opened again: it opens down", "\(again)")
+    check(again.anchor == carriedUp.anchor, "anchored where it was")
+
+    // Pinned right, carried open to the middle, closed: it grows from its middle,
+    // re-anchored in place (the anchor was its right end, now its middle).
+    let right = bounds.opening(at: CGPoint(x: 1512, y: 500))
+    check(right.pin == .trailing, "against the right wall: pinned right")
+    let middle = bounds.putDown(CGPoint(x: 800, y: 600), open: right, pillWidth: 132, carried: right)
+    check(middle.opening.pin == .trailing, "carried open to the middle it's still pinned right while open")
+    let centred = bounds.forPlace(middle.anchor, pillWidth: 132, was: middle.opening)
+    check(centred.opening.pin == .centre && centred.opening.shift == 0, "closed in the middle and opened: it grows from the centre", "\(centred)")
+    check(near(capsule(centred.anchor, 132, centred.opening, in: bounds).minX, capsule(middle.anchor, 132, middle.opening, in: bounds).minX),
+          "and the capsule is drawn where it was")
+    // Already right for its place: nothing changes.
+    let settled = bounds.forPlace(CGPoint(x: 1512, y: 500), pillWidth: 132, was: right)
+    check(settled.anchor == CGPoint(x: 1512, y: 500) && settled.opening == right, "a capsule already anchored for its place is left alone")
+}
+
+print("Placement: back to the notch from any opening and pin")
+
+do {
+    // Matthew: "it also makes it impossible to redock it". The notch takes
+    // back the island whose drawn top centre reaches it; the anchor is that
+    // only centred and opening down.
+    let card = CGSize(width: 496, height: 154)
+    let pillSize = CGSize(width: 132, height: 38)
+    let openings: [(String, IslandOpening)] = [
+        ("down", .down),
+        ("up", IslandOpening(upward: true, shift: 0)),
+        ("pinned left", IslandOpening(upward: false, shift: 260, pin: .leading)),
+        ("pinned right", IslandOpening(upward: false, shift: -260, pin: .trailing)),
+        ("up, pinned left", IslandOpening(upward: true, shift: 260, pin: .leading)),
+        ("up, pinned right", IslandOpening(upward: true, shift: -260, pin: .trailing)),
+    ]
+    for (name, o) in openings {
+        for (what, size, open) in [("open card", card, true), ("capsule", pillSize, false)] {
+            let t = o.topCentre(of: size, open: open, pillHeight: bounds.pill.height)
+            // The anchor that puts the drawn top centre on the notch.
+            let anchor = CGPoint(x: bounds.dock.x - t.x, y: bounds.dock.y - t.y)
+            let top = CGPoint(x: anchor.x + t.x, y: anchor.y + t.y)
+            check(bounds.captures(top), "\(name), \(what): its top centre on the notch is taken back")
+            // The drawn top centre, worked out from the outline as NotchRootView draws it.
+            let mid = anchor.x + o.shift + o.offset(width: size.width, open: open)
+            let drawnTop = o.upward ? anchor.y - bounds.pill.height + size.height : anchor.y
+            check(near(top.x, mid) && near(top.y, drawnTop), "\(name), \(what): the top centre is where it's drawn")
+            if o != .down && open {
+                check(!bounds.captures(anchor), "\(name), \(what): its anchor there is no test (the bug)", "\(anchor)")
+            }
+        }
+    }
+}
+
 print("Placement: the way back to the notch")
 
 do {

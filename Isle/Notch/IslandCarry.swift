@@ -70,6 +70,12 @@ final class IslandCarry {
     /// kept on the screen and put down against its edges.
     private var pillWidth: CGFloat?
 
+    /// While carrying: the drawn island's top centre less its anchor. The
+    /// notch takes back the island whose *top centre* reaches it — the
+    /// anchor is that only for an island centred and opening down; opening
+    /// up it's the capsule under the panel, pinned it's one end.
+    private var topOffset: CGPoint = .zero
+
     /// The notch may take the island back mid-carry. False for an island
     /// only just taken off the notch, until it has been carried clear: it
     /// starts on the notch, and would be pulled straight back.
@@ -119,6 +125,7 @@ final class IslandCarry {
         self.window = window
         bleed = IslandBleedDriver(presentation: presentation)
         bleed.drawnRect = { [weak self] in self?.drawnRect() }
+        presentation.willOpen = { [weak self] in self?.openForPlace() }
         bleed.reduceMotion = { [weak self] in self?.reduceMotion() ?? false }
         window.didSlide = { [weak self] in self?.bleed.follow() }
     }
@@ -304,8 +311,12 @@ final class IslandCarry {
         let anchor = NotchMetrics.anchor(of: window.frame, opening: presentation.placement.isFloating ? presentation.opening : .down)
         grabOffset = CGPoint(x: anchor.x - point.x, y: anchor.y - point.y)
         pillWidth = drawnRect()?.width
+        topOffset = .zero
+        if presentation.placement.isFloating, let drawn = drawnRect() {
+            topOffset = presentation.opening.topCentre(of: drawn.size, open: isOpen, pillHeight: IslandFloat.pillHeight)
+        }
         snapped = false
-        snapArmed = !bounds.captures(anchor)
+        snapArmed = !bounds.captures(top(of: anchor))
         presentation.detachTrace.complete()
         haptic(.lifted)
         // Before the placement changes, so the black on the island comes in
@@ -316,6 +327,11 @@ final class IslandCarry {
             presentation.opening = .down
             setPlacement(.floating(anchor: anchor))
         }
+    }
+
+    /// The drawn island's top centre for an anchor carried to `anchor`.
+    private func top(of anchor: CGPoint) -> CGPoint {
+        CGPoint(x: anchor.x + topOffset.x, y: anchor.y + topOffset.y)
     }
 
     /// Whether the island is open: an open panel carried is kept on the
@@ -337,7 +353,7 @@ final class IslandCarry {
 
         if snapped {
             // On the notch until it's carried clear of it.
-            guard !bounds.holds(wanted) else { return }
+            guard !bounds.holds(top(of: wanted)) else { return }
             snapped = false
             cancelGlide()
             let anchor = carried(wanted, in: bounds)
@@ -347,12 +363,16 @@ final class IslandCarry {
         }
 
         if !snapArmed {
-            if !bounds.holds(wanted) { snapArmed = true }
-        } else if bounds.captures(wanted) {
+            if !bounds.holds(top(of: wanted)) { snapArmed = true }
+        } else if bounds.captures(top(of: wanted)) {
             // Near enough: the notch takes it, and that's where it's drawn,
             // as it will be if it's let go here.
             snapped = true
             haptic(.snapped)
+            // From here it opens down, centred: its anchor is its top
+            // centre, and the grab is kept by that.
+            self.grabOffset = CGPoint(x: grabOffset.x + topOffset.x, y: grabOffset.y + topOffset.y)
+            topOffset = .zero
             turn(to: .down)
             setPlacement(.docked)
             move(to: metrics.frame(for: .docked))
@@ -365,13 +385,14 @@ final class IslandCarry {
         defer {
             grabOffset = nil
             pillWidth = nil
+            topOffset = .zero
             snapped = false
         }
         guard let grabOffset, let bounds = presentation.metrics?.placementBounds else { return }
         let wanted = Self.anchor(for: point, grabbedBy: grabOffset)
         // Back on the notch if the notch has it, if it's let go within
         // reach of it, or if it was never carried clear in the first place.
-        if snapped || !snapArmed || bounds.captures(wanted) {
+        if snapped || !snapArmed || bounds.captures(top(of: wanted)) {
             settle(.docked)
         } else {
             // Put down away from the notch: the black lets go.
@@ -431,9 +452,16 @@ final class IslandCarry {
         guard presentation.opening != opening, let metrics = presentation.metrics else { return }
         let old = presentation.opening
         var anchor = NotchMetrics.anchor(of: window.frame, opening: old)
-        if presentation.placement.isFloating, let width = drawnRect()?.width {
-            let mid = window.frame.midX + old.offset(width: width, open: isOpen)
-            anchor.x = mid - opening.offset(width: width, open: isOpen) - opening.shift
+        if presentation.placement.isFloating, let drawn = drawnRect() {
+            let mid = window.frame.midX + old.offset(width: drawn.width, open: isOpen)
+            anchor.x = mid - opening.offset(width: drawn.width, open: isOpen) - opening.shift
+            // An open panel turned (going home to the notch) keeps its top
+            // edge, or its bottom edge, where it is: it's the capsule's
+            // anchor that differs between opening up and down, not the
+            // panel's top.
+            if isOpen {
+                anchor.y = opening.upward ? drawn.minY + IslandFloat.pillHeight : drawn.maxY
+            }
         }
         window.disableScreenUpdatesUntilFlush()
         window.glassWindow.disableScreenUpdatesUntilFlush()
@@ -485,6 +513,28 @@ final class IslandCarry {
     private func cancelGlide() {
         glide?.cancel()
         glide = nil
+    }
+
+    // MARK: - Before it opens
+
+    /// The island is about to open (`IslandPresentation.willOpen`): closed
+    /// off its notch, it opens the way its place calls for *now*. The way
+    /// it opened is kept only while it's open — so an open panel carried
+    /// and put down stays whole on the screen — and once it's closed again
+    /// it's the capsule's place that decides, wherever it got there.
+    /// Anchored again for that in place, so nothing on the screen moves
+    /// (`turn`) before the open spring starts.
+    private func openForPlace() {
+        guard presentation.placement.isFloating, !isOpen, hold.phase != .carrying, glide == nil,
+              let metrics = presentation.metrics, let anchor = presentation.placement.anchor,
+              let width = drawnRect()?.width
+        else { return }
+        let (rest, opening) = metrics.placementBounds.forPlace(anchor, pillWidth: width, was: presentation.opening)
+        guard opening != presentation.opening || rest != anchor else { return }
+        turn(to: opening)
+        setPlacement(.floating(anchor: rest))
+        onPlaced(.floating(anchor: rest))
+        window.slide(to: metrics.frame(for: .floating(anchor: rest), opening: opening))
     }
 
     // MARK: - From the controller

@@ -58,6 +58,12 @@ final class IslandPresentation: ObservableObject {
 
     var isHeldCompact: Bool { compactPanel != nil }
 
+    /// Called just before a closed island opens on a hover, a click, a
+    /// shortcut or a drop — not mid-close, where it's still drawn as it was
+    /// — so it can be turned to open the way its place calls for now
+    /// (`IslandCarry`). Not for an alert, which opens every island at once.
+    var willOpen: () -> Void = {}
+
     /// Geometry of the camera housing (or the fallback pill) on the screen this
     /// island is drawn on. Published because the views size themselves from it:
     /// moving between a notched and a non-notched display changes the shape,
@@ -136,7 +142,7 @@ final class IslandPresentation: ObservableObject {
         compactPanel = nil
         relaxProximity()
         isDropTarget = true
-        if !isHovering { isHovering = true }
+        if !isHovering { beginOpen() }
     }
 
     /// Lights the target under `point` (hosting view, top-left space), if
@@ -163,7 +169,7 @@ final class IslandPresentation: ObservableObject {
     func openFromShortcut() {
         compactPanel = nil
         relaxProximity()
-        if !isHovering { isHovering = true }
+        if !isHovering { beginOpen() }
         isHeldOpen = true
     }
 
@@ -211,7 +217,7 @@ final class IslandPresentation: ObservableObject {
             content.noteAlertVisited()
             guard !collapseLocked, !isHovering else { return }
             relaxProximity()
-            isHovering = true
+            beginOpen()
         } else {
             guard isHovering else { return }
             isHovering = false
@@ -221,6 +227,12 @@ final class IslandPresentation: ObservableObject {
                 self?.collapseLocked = false
             }
         }
+    }
+
+    /// Opens on the hover: `willOpen` first, while it's closed and settled.
+    private func beginOpen() {
+        if !collapseLocked, state == .collapsed { willOpen() }
+        isHovering = true
     }
 
     /// The grabber was clicked: close to the capsule, on the close spring,

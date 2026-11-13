@@ -94,6 +94,15 @@ struct IslandOpening: Equatable {
         }
     }
 
+    /// The drawn island's top centre less its anchor, `size` big (closed
+    /// or `open`), the capsule `pillHeight` tall: what the notch takes
+    /// back when it reaches it. Only centred and opening down is that the
+    /// anchor itself; opening up the anchor is the capsule's top under the
+    /// panel, and pinned it's one end.
+    func topCentre(of size: CGSize, open: Bool, pillHeight: CGFloat) -> CGPoint {
+        CGPoint(x: shift + offset(width: size.width, open: open), y: upward ? size.height - pillHeight : 0)
+    }
+
     /// The left end of a capsule `width` wide anchored at `x`.
     func pillMinX(anchor x: CGFloat, width: CGFloat) -> CGFloat {
         switch pin {
@@ -213,7 +222,15 @@ struct IslandPlacementBounds: Equatable {
     /// taken to an edge or a corner grows away from it.
     func putDown(_ anchor: CGPoint, open: IslandOpening?, pillWidth: CGFloat, carried: IslandOpening) -> (anchor: CGPoint, opening: IslandOpening) {
         if let open { return (resting(anchor, open: open), open) }
-        let rest = restingPill(anchor, width: pillWidth, carried: carried)
+        return forPlace(anchor, pillWidth: pillWidth, was: carried)
+    }
+
+    /// A closed capsule `pillWidth` wide, anchored at `anchor` as `was`
+    /// says, anchored again and opening the way its place calls for now —
+    /// whichever way it opened before, wherever it was put down open.
+    /// Where it's wholly on the visible frame it doesn't move for this.
+    func forPlace(_ anchor: CGPoint, pillWidth: CGFloat, was: IslandOpening) -> (anchor: CGPoint, opening: IslandOpening) {
+        let rest = restingPill(anchor, width: pillWidth, carried: was)
         return (rest, opening(at: rest))
     }
 
