@@ -184,7 +184,7 @@ do {
         let horizon = height - IslandPrism.lip
         let top = horizon - IslandPrism.horizonFeather / 2, bottom = horizon + IslandPrism.horizonFeather / 2
         check(near(a(0), IslandPrism.edgeTint) && near(a(32), IslandPrism.edgeTint) && near(a(top), IslandPrism.edgeTint),
-              "the edge tint from the top edge to the top of the horizon: no bar across the band (\(Int(height)))")
+              "the edge tint from the top edge to the top of the horizon; any bar is PrismBand's, not the shade's (\(Int(height)))")
         check(near(a(horizon), (IslandPrism.edgeTint + IslandPrism.lipTint) / 2), "half cleared on the horizon")
         check(near(a(bottom), IslandPrism.lipTint) && near(a(height), IslandPrism.lipTint), "the lip's tint from the horizon's foot to the bottom edge")
         var falling = true
@@ -267,7 +267,7 @@ do {
         let e = IslandPrism.notchExtent(housing: housing)
         check(near(Double(e.width), Double(housing.width + 2 * (extra + reach))) && near(Double(e.height), Double(housing.height + extra + reach)),
               "extent: the housing, the solid past it and the reach, each side and below")
-        check((520 - e.width) / 2 >= 100, "at least 100pt of the band either side of the camera has none of it", "\((520 - e.width) / 2)")
+        check((520 - e.width) / 2 >= 100, "camera alone: at least 100pt of the band either side of it has none of it", "\((520 - e.width) / 2)")
         check(e.height - housing.height <= 40, "and it ends within 40pt of the housing's foot", "\(e.height - housing.height)")
         let m = IslandPrism.notchMask(housing: housing, scale: 2)
         check(m.width == Int((e.width * 2).rounded(.up)) && m.height == Int((e.height * 2).rounded(.up)) && m.alpha.count == m.width * m.height, "mask sized at 2x")
@@ -279,6 +279,133 @@ do {
     // No housing worth the name: nothing to divide by, nothing negative.
     let none = IslandPrism.notchAlpha(x: 0, y: 0, housing: .zero)
     check(none == 1 && IslandPrism.notchAlpha(x: 200, y: 200, housing: .zero) == 0, "a zero housing is a dot of black at the top centre, not a fault")
+}
+
+print("prism: the bar across the band")
+do {
+    let housing = CGSize(width: 185, height: 32)
+    // Where the faces' first rows are on this Mac (measured in captures):
+    // the crumb and the Claude status between 11.5 and 19.5pt down, the
+    // first line under them from 37pt.
+    let crumbFoot: CGFloat = 19.5, firstLine: CGFloat = 37
+    check(IslandPrism.BandStyle.allCases.count == 6, "camera, eased, notched, tinted, meniscus, spread")
+    check(IslandPrism.bandLook == nil || IslandPrism.bandStyle != .camera && IslandPrism.bandStyle != .spread, "a look only for a bar")
+    let looks: [(String, IslandPrism.BandLook)] = [("eased", IslandPrism.easedLook), ("notched", IslandPrism.notchedLook),
+                                                   ("tinted", IslandPrism.tintedLook), ("meniscus", IslandPrism.meniscusLook)]
+    check(near(IslandPrism.smootherstep(0), 0) && near(IslandPrism.smootherstep(1), 1) && near(IslandPrism.smootherstep(0.5), 0.5) && near(IslandPrism.smootherstep(-1), 0) && near(IslandPrism.smootherstep(2), 1),
+          "smootherstep: 0 to 1, half way at half, clamped")
+    for (name, look) in looks {
+        func a(_ x: CGFloat, _ y: CGFloat) -> Double {
+            IslandPrism.bandAlpha(distance: IslandPrism.bandDistance(x: x, y: y, housing: housing, look: look), look: look)
+        }
+        func bar(_ y: CGFloat) -> Double { IslandPrism.bandAlpha(distance: y - look.depth, look: look) }
+        // The crumb row, wall to wall beside the camera, on solid black.
+        var crumb = true
+        for x in stride(from: CGFloat(-240), through: 240, by: 4) { for y in stride(from: CGFloat(0), through: crumbFoot, by: 0.5) where a(x, y) < 0.999 { crumb = false } }
+        check(crumb, "\(name): solid from wall to wall through the crumb row")
+        // The camera: solid over the housing and bandExtra round it.
+        // Wherever the camera's own black is solid (the housing grown by
+        // bandExtra, its corners rounded), so is this.
+        var camera = true
+        for x in stride(from: CGFloat(-110), through: 110, by: 0.5) { for y in stride(from: CGFloat(0), through: 40, by: 0.5)
+            where IslandPrism.notchDistance(x: x, y: y, housing: housing) <= 0 && a(x, y) != 1 { camera = false } }
+        check(camera, "\(name): the camera housing and \(IslandPrism.bandExtra)pt round it solid")
+        // Together never lighter than either alone.
+        var union = true
+        for x in stride(from: CGFloat(-200), through: 200, by: 5) { for y in stride(from: CGFloat(0), through: 80, by: 2.5) {
+            if a(x, y) + 1e-12 < max(bar(y), IslandPrism.notchAlpha(x: x, y: y, housing: housing) > 0.999 ? 1 : 0) { union = false }
+        } }
+        check(union, "\(name): the bar and the camera together are at least as black as either")
+        // The fade: monotone, no jump, no edge where it starts or ends.
+        var mono = true, maxStep = 0.0, prev = 1.0
+        for i in 0...Int((look.reach + 4) * 4) {
+            let v = bar(look.depth + CGFloat(i) / 4)
+            if v > prev + 1e-12 { mono = false }
+            maxStep = max(maxStep, prev - v); prev = v
+        }
+        check(mono && maxStep < 0.1, "\(name): the foot only falls, by under a tenth a quarter point", "max step \(maxStep)")
+        check(bar(look.depth + 0.5) > 0.99 && bar(look.depth + look.reach - 0.5) < 0.01 && bar(IslandPrism.bandHeight(look)) == 0,
+              "\(name): no edge where the fade leaves the solid or where it ends")
+        // Far from the camera the bar alone; the camera's piece adds nothing at its edges.
+        let far = housing.width / 2 + IslandPrism.bandExtra + look.reach + look.fillet + 1
+        check(IslandPrism.bandDistance(x: far, y: look.depth + 3, housing: housing, look: look) == look.depth + 3 - look.depth,
+              "\(name): past the fillet the bar is its own")
+        let m = IslandPrism.bandNotchMask(housing: housing, look: look, scale: 2)
+        var edges = true
+        for row in 0..<m.height { if m.alpha[row * m.width] > 1 || m.alpha[row * m.width + m.width - 1] > 1 { edges = false } }
+        for col in 0..<m.width where m.alpha[(m.height - 1) * m.width + col] > 1 { edges = false }
+        check(edges, "\(name): the camera's piece is clear at its sides and foot, so it meets the bar with no seam")
+        // Bar column and camera piece composited make the union, to the byte.
+        let c = IslandPrism.bandColumn(look: look, scale: 2)
+        var exact = true
+        let ext = IslandPrism.bandNotchExtent(housing: housing, look: look)
+        for row in stride(from: 0, to: m.height, by: 3) { for col in stride(from: 0, to: m.width, by: 7) {
+            let y = (CGFloat(row) + 0.5) / 2, x = (CGFloat(col) + 0.5) / 2 - ext.width / 2
+            let b = row < c.height ? Double(c.alpha[row]) / 255 : 0
+            let together = IslandGlass.over(b, Double(m.alpha[row * m.width + col]) / 255)
+            if abs(together - a(x, y)) > 2.5 / 255 { exact = false }
+        } }
+        check(exact, "\(name): bar and camera piece composite to the shape, within a byte or two")
+        // The ends: the same as the bar where they join it, the flare as the wall.
+        let end = IslandPrism.bandEnd(look: look, wallInset: IslandMotion.openCorners.top, scale: 2)
+        var join = true, flare = true
+        for row in 0..<min(end.height, c.height) {
+            if abs(Int(end.alpha[row * end.width + end.width - 1]) - Int(c.alpha[row])) > 3 { join = false }
+            let y = (CGFloat(row) + 0.5) / 2
+            let wallTop = IslandPrism.bandAlpha(distance: IslandPrism.bandWallDistance(u: 0, y: y, look: look), look: look)
+            if abs(Double(end.alpha[row * end.width]) / 255 - wallTop) > 1 / 255 { flare = false }
+        }
+        check(join && end.height == c.height, "\(name): the ends meet the stretched column with no seam")
+        check(flare, "\(name): the flare beside each wall is as black as the wall's top")
+        if look.wallRadius > 0 {
+            check(IslandPrism.bandWallDistance(u: 0, y: look.depth, look: look) > 0, "\(name): the foot turns up into the wall")
+        }
+        check(IslandPrism.bandWallDistance(u: look.wallRadius, y: 30, look: look) == 30 - look.depth, "\(name): a wall radius in, the bar is its own")
+    }
+    if let look = IslandPrism.bandLook {
+        check(IslandPrism.bandHeight(look) <= firstLine, "the bar chosen has let go beside the camera by where the faces' first line begins",
+              "\(IslandPrism.bandHeight(look)) > \(firstLine)")
+    }
+}
+
+print("prism: the camera's black, spread")
+do {
+    let housing = CGSize(width: 185, height: 32)
+    func a(_ x: CGFloat, _ y: CGFloat) -> Double { IslandPrism.spreadAlpha(x: x, y: y, housing: housing) }
+    // The hardware's outline: its sides, its foot a point down, and round
+    // a corner of notchCornerRadius.
+    var solid = true, corner = 1.0
+    let r = IslandPrism.notchCornerRadius
+    for i in 0...40 {
+        let t = CGFloat(i) / 40
+        if a((2 * t - 1) * housing.width / 2, t * (housing.height - r)) != 1 { solid = false }
+        if a((2 * t - 1) * (housing.width / 2 - r), housing.height + IslandPrism.spreadFoot - 0.01) != 1 { solid = false }
+        let angle = Double(t) * Double.pi / 2
+        corner = min(corner, a(housing.width / 2 - r + r * CGFloat(cos(angle)), housing.height - r + r * CGFloat(sin(angle))))
+    }
+    check(solid, "solid over the housing's sides and a point below its foot")
+    check(corner > 0.9999, "and round its corners, to a ten-thousandth", "\(corner)")
+    check(a(housing.width / 2 + 1, 10) > 0.995 && a(0, housing.height + IslandPrism.spreadFoot + 1) > 0.99, "and all but solid a point past it", "\(a(housing.width / 2 + 1, 10)) \(a(0, housing.height + IslandPrism.spreadFoot + 1))")
+    check(IslandPrism.spreadAcross > IslandPrism.spreadDown, "spreads further along the top than down")
+    check(a(housing.width / 2 + IslandPrism.spreadSide + IslandPrism.spreadAcross, 10) == 0 && a(0, housing.height + IslandPrism.spreadFoot + IslandPrism.spreadDown) == 0,
+          "let go at its reach: beside and below")
+    var mono = true, prevB = 1.0, prevS = 1.0
+    for i in 0...400 {
+        let d = CGFloat(i) / 4
+        let b = a(0, housing.height + IslandPrism.spreadFoot + d), s = a(housing.width / 2 + d, 8)
+        if b > prevB + 1e-12 || s > prevS + 1e-12 { mono = false }
+        prevB = b; prevS = s
+    }
+    check(mono, "falls monotonically, below and beside")
+    check(a(housing.width / 2 + IslandPrism.spreadAcross / 2, 8) < 0.5, "half way out it is under half black: a gradient, not a bigger shape", "\(a(housing.width / 2 + IslandPrism.spreadAcross / 2, 8))")
+    check(a(-150, 20) == a(150, 20), "symmetric about the camera")
+    let m = IslandPrism.spreadMask(housing: housing, scale: 2)
+    var edges = true
+    for row in 0..<m.height where m.alpha[row * m.width] > 0 || m.alpha[row * m.width + m.width - 1] > 0 { edges = false }
+    for col in 0..<m.width where m.alpha[(m.height - 1) * m.width + col] > 0 { edges = false }
+    check(edges, "mask clear at its sides and foot")
+    let e = IslandPrism.spreadExtent(housing: housing)
+    check(e.width <= 520 - 2 * IslandMotion.openCorners.top, "inside the open panel's walls", "\(e.width)")
 }
 
 /// Whether the line (or the crystal's sheets) goes below its rest as well as above.

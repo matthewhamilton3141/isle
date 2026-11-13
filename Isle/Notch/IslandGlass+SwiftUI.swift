@@ -176,7 +176,11 @@ private struct IslandGlassBlend: View, Animatable {
                 if background == .prism {
                     PrismShade()
                     PrismCap()
-                    PrismNotchShade(housing: notch, shift: housingShift, lift: lift)
+                    if let look = IslandPrism.bandLook {
+                        PrismBand(look: look, housing: notch, shift: housingShift, lift: lift)
+                    } else {
+                        PrismNotchShade(housing: notch, shift: housingShift, lift: lift, spread: IslandPrism.bandStyle == .spread)
+                    }
                     PrismFrost(shape: shape, pane: pane)
                     PrismRibbonStrip(shape: shape, ribbon: ribbon)
                         // The ribbon is the open lip's. On the notch the
