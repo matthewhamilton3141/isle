@@ -3,10 +3,9 @@
 //
 //  The notch's black on the island itself (`IslandBleed.Stain`): drawn in
 //  the island's fill, over its material and its rim and under its content,
-//  clipped to its outline. In Black it hides the rim where the neck lands,
-//  so the neck and the island are one shape; on glass it is the black
-//  spreading onto the glass from the neck's foot, and at contact it is the
-//  docked spread, so the panel takes over from it unchanged.
+//  clipped to its outline: a haze under the camera that comes up as the
+//  island nears the notch, and at contact is the docked spread, so the
+//  panel takes over from it unchanged.
 //
 //  Six pieces, each placed and sized, none redrawn: a solid block, and the
 //  spread's let-go as three bitmaps built once (down, along, and round a

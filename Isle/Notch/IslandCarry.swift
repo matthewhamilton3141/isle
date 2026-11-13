@@ -95,7 +95,7 @@ final class IslandCarry {
     init(presentation: IslandPresentation, window: NotchWindow) {
         self.presentation = presentation
         self.window = window
-        bleed = IslandBleedDriver(presentation: presentation, island: window)
+        bleed = IslandBleedDriver(presentation: presentation)
         bleed.drawnRect = { [weak self] in self?.drawnRect() }
         bleed.reduceMotion = { [weak self] in self?.reduceMotion() ?? false }
         window.didSlide = { [weak self] in self?.bleed.follow() }
