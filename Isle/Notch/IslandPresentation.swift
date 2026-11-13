@@ -103,6 +103,11 @@ final class IslandPresentation: ObservableObject {
     let proximity = IslandProximityModel()
     private var proximityGate = ProximityGate()
 
+    /// The notch's black on the island while it's carried near the notch
+    /// (`IslandBleed`). A model of its own, like `proximity`: it changes on
+    /// drag events, and only the fill's stain watches it.
+    let bleed = IslandBleedModel()
+
     /// Where the drop face drew each target, in the hosting view's top-left
     /// space, as the face reports it. Not published: only the drag reads it.
     var dropTargetFrames: [DropTarget: CGRect] = [:]

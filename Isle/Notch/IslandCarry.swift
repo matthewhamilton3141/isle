@@ -63,6 +63,10 @@ final class IslandCarry {
 
     private var glide: IslandGlide?
 
+    /// The notch's black reaching for the island near it (`IslandBleed`),
+    /// which follows the window wherever this moves it.
+    let bleed: IslandBleedDriver
+
     // MARK: The controller's side
 
     var pointer: () -> Pointer = {
@@ -91,6 +95,10 @@ final class IslandCarry {
     init(presentation: IslandPresentation, window: NotchWindow) {
         self.presentation = presentation
         self.window = window
+        bleed = IslandBleedDriver(presentation: presentation, island: window)
+        bleed.drawnRect = { [weak self] in self?.drawnRect() }
+        bleed.reduceMotion = { [weak self] in self?.reduceMotion() ?? false }
+        window.didSlide = { [weak self] in self?.bleed.follow() }
     }
 
     /// The island is being carried, or is still gliding to where it was
@@ -253,6 +261,9 @@ final class IslandCarry {
         snapArmed = !bounds.captures(anchor)
         presentation.detachTrace.complete()
         haptic(.lifted)
+        // Before the placement changes, so the black on the island comes in
+        // with the floating look, on its spring.
+        bleed.engage(fromNotch: !presentation.placement.isFloating)
         if !presentation.placement.isFloating {
             // Off the notch open, hanging from where it was.
             presentation.opening = .down
@@ -313,8 +324,11 @@ final class IslandCarry {
         if snapped || !snapArmed || bounds.captures(wanted) {
             settle(.docked)
         } else if isOpen {
+            // Put down away from the notch: the black lets go.
+            bleed.release(drain: true)
             settle(.floating(anchor: bounds.resting(wanted, open: presentation.opening)))
         } else {
+            bleed.release(drain: true)
             settle(.floating(anchor: bounds.resting(wanted)))
         }
     }
@@ -335,6 +349,8 @@ final class IslandCarry {
         setPlacement(placement)
         onPlaced(placement)
         move(to: metrics.frame(for: placement, opening: opening)) { [weak self] in
+            // Home: the bleed has merged into the notch, and is done.
+            if !placement.isFloating { self?.bleed.release(drain: false) }
             self?.onArrived()
         }
     }
@@ -422,6 +438,7 @@ final class IslandCarry {
         snapped = false
         presentation.detachTrace.clear()
         cancelGlide()
+        bleed.release(drain: false)
         let opening = opening(for: placement, in: metrics.placementBounds)
         if presentation.opening != opening { presentation.opening = opening }
         if presentation.placement != placement { presentation.placement = placement }
@@ -434,12 +451,15 @@ final class IslandCarry {
         deadline?.cancel()
         deadline = nil
         perform(hold.abandon().actions)
+        bleed.release(drain: false)
     }
 
     /// Back onto the notch, from wherever it is. Nothing to do on the
     /// notch, or while it's in the user's hand.
     func returnToNotch() {
         guard presentation.placement.isFloating, hold.phase != .carrying else { return }
+        // Home along the glide, the notch reaching for it on the way.
+        bleed.engage(fromNotch: false)
         settle(.docked)
     }
 }

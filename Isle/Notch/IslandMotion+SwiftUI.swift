@@ -229,6 +229,9 @@ struct IslandFill: View {
     /// Whether the island is off its notch (`IslandPlacement`): glass all
     /// over, closed as well as open, or black with an edge of its own.
     var floating: Bool = false
+    /// The notch's black on the island as it's carried near the notch
+    /// (`IslandBleedStain`); nil draws none.
+    var bleed: IslandBleedModel? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.islandGlassLayer) private var glassLayer
@@ -237,6 +240,13 @@ struct IslandFill: View {
         let reading = active && !reduceMotion ? proximity.reading : .rest
         let swell = reading.swell
         surface
+            // Over the rim and the glass, under the content: the panel's
+            // tree only (the glass window's is the material).
+            .overlay {
+                if let bleed, glassLayer != .materialOnly {
+                    IslandBleedStain(model: bleed, shape: shape, floating: floating)
+                }
+            }
             .animation(.islandSwell) { fill in
                 fill
                     .scaleEffect(

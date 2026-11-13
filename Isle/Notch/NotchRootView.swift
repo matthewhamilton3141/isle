@@ -501,7 +501,8 @@ struct NotchRootView: View {
                 growsUp: direction.upward,
                 notch: physicalNotch,
                 ribbon: ribbon,
-                floating: floating
+                floating: floating,
+                bleed: island.bleed
             )
         }
         // The line that runs round the outline while the island is held.
