@@ -405,43 +405,122 @@ extension NotchWindow: NSDraggingDestination {
 ///
 /// That look is the frosted one, except in Prism, which wants the lens
 /// Liquid Glass keeps for key windows (`lensed`).
-final class IslandGlassWindow: NSPanel {
+///
+/// A plain window, and it must stay one. For a window whose style mask has
+/// `.nonactivatingPanel`, `NSWindow.becomeKey()` itself asks the window
+/// server for the key focus (AppKit's `_stealKeyFocusWithOptions:`), which
+/// is how such a panel is typed into while another app stays frontmost.
+/// The lens is got by calling `becomeKey()` directly, so with that style
+/// this window took the keyboard from whatever the user was typing in —
+/// nothing in Isle got the keys either, so every press was an alert beep —
+/// though it can't become key, takes no events and is never ordered key.
+/// That was 1.2.0. Without the style, `becomeKey()` changes the window's
+/// own state and appearance and asks the window server for nothing.
+final class IslandGlassWindow: NSWindow {
     /// Whether this window's glass is drawn as a lens: what's behind it
-    /// nearly sharp, bent at the edges. Liquid Glass does that for a key
-    /// window's glass and switches in `becomeKey()`/`resignKey()`, so this
-    /// tells the window it is key without it ever being so: it still can't
-    /// become key, takes no events, and the window server's key window is
-    /// whichever it was. AppKit's own `resignKey()` — sent when the app
-    /// deactivates, or another of Isle's windows takes the keys — is
-    /// ignored while lensed, and the lens re-asserted after it.
+    /// nearly sharp, bent at the edges. Liquid Glass does that for a
+    /// window with the key appearance, which a window takes on in
+    /// `becomeKey()`, so this tells the window it is key without it ever
+    /// being so: it still can't become key, takes no events, and the
+    /// keyboard stays where it was (see above for what that depends on).
+    ///
+    /// Three things take the appearance away again, and each is answered:
+    /// - AppKit's own `resignKey()`, sent when the app deactivates or
+    ///   another of Isle's windows takes the keys: ignored while lensed.
+    /// - The window server, which notices a window dressed as key in an
+    ///   app that hasn't the keyboard and asks for the appearance back —
+    ///   a few tens of milliseconds after it's taken, and again whenever
+    ///   the keyboard moves between apps. AppKit gives it up without a
+    ///   word to the window (`_handleResignKeyAppearanceEvent`), so that
+    ///   is refused while lensed (`handleResignKeyAppearanceEvent`).
+    /// - Ordering the window out. It's asked for again once it is back
+    ///   (`assertLens`, from `NotchWindow.syncGlass`).
     var lensed = false {
         didSet {
             guard lensed != oldValue else { return }
-            if lensed { super.becomeKey() } else { super.resignKey() }
+            if lensed {
+                assertLens()
+            } else {
+                lensAsk &+= 1
+                super.resignKey()
+            }
         }
     }
 
-    /// Puts the lens back after something that may have dropped it. Called
-    /// whenever the two windows are brought into step, so it does nothing
-    /// while the window still believes it is key.
+    /// Puts the lens up, or back after something that may have dropped it:
+    /// called whenever the two windows are brought into step.
+    ///
+    /// Never at once. The key appearance doesn't hold in a window that is
+    /// off screen, nor when taken in the turn of the run loop that orders
+    /// the window in. So it's taken on the next turn, with the window on
+    /// screen — a window still off screen then is left for the `syncGlass`
+    /// that follows its ordering in — and taken again a little later, in
+    /// case the first was too soon after all. However often this is called
+    /// in a turn, that happens once.
     func assertLens() {
-        if lensed, !isKeyWindow { super.becomeKey() }
+        guard lensed else { return }
+        lensAsk &+= 1
+        let ask = lensAsk
+        DispatchQueue.main.async { [weak self] in self?.raiseLens(ask) }
+        for delay in Self.lensRetries {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.raiseLens(ask) }
+        }
+    }
+
+    /// When the lens is asked for again after `assertLens`, in seconds.
+    private static let lensRetries: [TimeInterval] = [0.1, 0.5]
+
+    /// Counts the calls to `assertLens`, so only the latest one's work runs.
+    private var lensAsk = 0
+
+    /// Given up and taken, not just taken: a window that believes it has
+    /// the key appearance doesn't ask the window server for it, and what
+    /// it believes can be out of date (the window server drops it without
+    /// a word when the window goes off screen). The two in one turn change
+    /// nothing on screen when the lens is already up.
+    private func raiseLens(_ ask: Int) {
+        guard ask == lensAsk, lensed, isVisible else { return }
+        super.resignKey()
+        super.becomeKey()
+    }
+
+    override func orderOut(_ sender: Any?) {
+        // Off screen there is no lens, and AppKit is told so.
+        if lensed { super.resignKey() }
+        super.orderOut(sender)
     }
 
     override func resignKey() {
         guard !lensed else {
-            // Next turn of the run loop, once AppKit has finished handing
-            // the keys around.
-            DispatchQueue.main.async { [weak self] in self?.assertLens() }
+            // Nothing was given up; asked for again all the same, in case
+            // AppKit took the appearance on its way here.
+            assertLens()
             return
         }
         super.resignKey()
     }
 
+    /// The window server asking for the key appearance back (see `lensed`).
+    /// This is AppKit's own handler for that, under its own name: private,
+    /// so if a later macOS calls it something else this is never reached,
+    /// and Prism's glass goes back to frosted the first time the keyboard
+    /// changes hands. Nothing else depends on it.
+    @objc(_handleResignKeyAppearanceEvent)
+    func handleResignKeyAppearanceEvent() {
+        guard !lensed else { return }
+        // Not lensed: AppKit's own handling, whatever it is.
+        let selector = #selector(handleResignKeyAppearanceEvent)
+        guard NSWindow.instancesRespond(to: selector),
+              let original = class_getMethodImplementation(NSWindow.self, selector) else { return }
+        typealias Handler = @convention(c) (AnyObject, Selector) -> Void
+        unsafeBitCast(original, to: Handler.self)(self, selector)
+    }
+
     init() {
         super.init(
             contentRect: .zero,
-            styleMask: [.borderless, .nonactivatingPanel],
+            // Never `.nonactivatingPanel`: see the type's comment.
+            styleMask: Self.style,
             backing: .buffered,
             defer: false
         )
@@ -450,10 +529,21 @@ final class IslandGlassWindow: NSPanel {
         hasShadow = false
         ignoresMouseEvents = true
         isMovable = false
+        // Never closed, only ordered out; and never let go of if it were.
+        isReleasedWhenClosed = false
         hidesOnDeactivate = false
         isExcludedFromWindowsMenu = true
         // Ordered with the panel, instantly, as the panel is (see there).
         animationBehavior = .none
+    }
+
+    /// Borderless and nothing else.
+    static let style: NSWindow.StyleMask = [.borderless]
+
+    override var styleMask: NSWindow.StyleMask {
+        get { super.styleMask }
+        // Whatever else is asked for, never the style that takes the keys.
+        set { super.styleMask = newValue.subtracting(.nonactivatingPanel) }
     }
 
     override var canBecomeKey: Bool { false }

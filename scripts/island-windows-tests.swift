@@ -28,14 +28,95 @@
 //    included; the panel's tree and the glass window's report the same
 //    outline; and docking puts back exactly what was there.
 //
+//  - The keyboard is never taken: not by Prism's lens (the glass window is
+//    told it is key, and in 1.2.0 that took the window server's key focus
+//    from whatever app was being typed in), nor by anything else here. The
+//    process the window server sends key presses to is sampled every few
+//    milliseconds for the whole run and checked at each step of the lens.
+//
 //  The windows are at alpha 0 and ignore the mouse: nothing is shown, nothing
-//  is clickable, and they never activate or take keys (key status is driven
-//  through `becomeKey`/`resignKey`, as AppKit calls them, without the window
-//  server). Run with scripts/test-island-windows.sh.
+//  is clickable, and they never activate or take keys. Key status is driven
+//  through `becomeKey`/`resignKey`, as AppKit calls them — which, for a
+//  `.nonactivatingPanel`, is itself what takes the keyboard, so the panel is
+//  told through `tellKey`, with that style off for the call. Run with
+//  scripts/test-island-windows.sh.
 //
 
 import SwiftUI
 import AppKit
+import Darwin
+
+// MARK: - Who has the keyboard
+
+private typealias KeyFocusFn = @convention(c) (UnsafeMutableRawPointer, UnsafeMutablePointer<UInt8>) -> Int32
+@_silgen_name("GetProcessPID")
+private func GetProcessPID(_ psn: UnsafeRawPointer, _ pid: UnsafeMutablePointer<pid_t>) -> Int32
+
+/// The window server's own answer to "which process gets the key presses":
+/// SkyLight's `SLPSGetKeyFocusProcess`. Not the frontmost app — a
+/// non-activating panel takes the keys while another app stays frontmost,
+/// which is the whole bug this watches for. Nil where the call is missing.
+private let keyFocusFn: KeyFocusFn? = {
+    guard let lib = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_NOW),
+          let sym = dlsym(lib, "SLPSGetKeyFocusProcess") else { return nil }
+    return unsafeBitCast(sym, to: KeyFocusFn.self)
+}()
+
+func keyFocusPID() -> pid_t? {
+    guard let keyFocusFn else { return nil }
+    var psn = [UInt32](repeating: 0, count: 2)
+    var flag: UInt8 = 0
+    var pid: pid_t = -1
+    guard psn.withUnsafeMutableBytes({ keyFocusFn($0.baseAddress!, &flag) }) == 0 else { return nil }
+    _ = psn.withUnsafeBytes { GetProcessPID($0.baseAddress!, &pid) }
+    return pid
+}
+
+/// Samples of the key focus that found it with this process.
+nonisolated(unsafe) var keyFocusTaken = 0
+nonisolated(unsafe) var keyFocusSamples = 0
+
+/// Watches the key focus for the rest of the run, every 4ms.
+@MainActor
+func watchKeyFocus() {
+    _ = keyFocusPID()   // the first call only opens the connection
+    let me = getpid()
+    let timer = Timer(timeInterval: 0.004, repeats: true) { _ in
+        guard let pid = keyFocusPID() else { return }
+        keyFocusSamples += 1
+        if pid == me { keyFocusTaken += 1 }
+    }
+    RunLoop.main.add(timer, forMode: .common)
+}
+
+@MainActor
+func checkKeysLeftAlone(_ step: String) {
+    guard let pid = keyFocusPID() else {
+        print("  skip  \(step): the keyboard is where it was (no way to ask on this system)")
+        return
+    }
+    check(pid != getpid(), "\(step): the keyboard is still with the app that had it", "key focus is with this process")
+    check(keyFocusTaken == 0, "\(step): and has been all along", "\(keyFocusTaken) of \(keyFocusSamples) samples found it here")
+}
+
+/// The panel told it is key, as AppKit tells it when a reply begins, without
+/// the keyboard. The style is off for the call: with it, `becomeKey()` takes
+/// the key focus (right for a reply, wrong for a test on a Mac in use).
+@MainActor
+func tellKey(_ w: NotchWindow) {
+    let style = w.styleMask
+    w.styleMask = style.subtracting(.nonactivatingPanel)
+    w.becomeKey()
+    w.styleMask = style
+}
+
+/// Whether AppKit has the window drawn as a key window — for the glass
+/// window, the lens. Nil where AppKit no longer says.
+@MainActor
+func hasKeyAppearance(_ w: NSWindow) -> Bool? {
+    guard w.responds(to: NSSelectorFromString("hasKeyAppearance")) else { return nil }
+    return w.value(forKey: "hasKeyAppearance") as? Bool
+}
 
 var failures = 0
 var passes = 0
@@ -655,6 +736,7 @@ func offTheNotch(_ screen: NSScreen) {
 @MainActor
 func run() {
     NSApplication.shared.setActivationPolicy(.prohibited)
+    watchKeyFocus()
     guard let screen = NotchMetrics.preferredScreen() else {
         print("no screen: skipped")
         exit(0)
@@ -739,7 +821,7 @@ func run() {
     spin(0.8)
     // takeKeys
     w.allowsKey = true
-    w.becomeKey()
+    tellKey(w)
     spin(0.2)
     checkInStep(w, "takeKeys")
     checkPlaced(w, target, "takeKeys")
@@ -763,7 +845,7 @@ func run() {
     checkInStep(w, "out and back in one turn")
     // Several handoffs in a row, as a reply after a reply.
     for i in 1...3 {
-        w.allowsKey = true; w.becomeKey(); spin(0.05)
+        w.allowsKey = true; tellKey(w); spin(0.05)
         w.allowsKey = false; w.resignKey(); w.orderOut(nil); w.orderFrontRegardless(); spin(0.1)
         checkInStep(w, "handoff \(i)")
     }
@@ -786,6 +868,7 @@ func run() {
     spin(0.1)
     checkInStep(w, "screen changed")
     checkPlaced(w, target, "at the end")
+    checkKeysLeftAlone("the key handoff and every ordering")
 
     print("prism: the lens")
     check(target.height >= NotchMetrics.panelMaxHeight + IslandPrism.lip,
@@ -793,8 +876,24 @@ func run() {
     check(!w.glassWindow.lensed, "Glass's glass is the frosted one: the glass window isn't lensed")
     settings.panelBackground = .prism
     spin(0.4)
+    // Whatever the mode: the glass window is not the kind whose `becomeKey()`
+    // takes the keyboard, and can't be made one.
+    check(!w.glassWindow.styleMask.contains(.nonactivatingPanel),
+          "the glass window isn't a non-activating panel", "\(w.glassWindow.styleMask)")
+    w.glassWindow.styleMask.insert(.nonactivatingPanel)
+    check(!w.glassWindow.styleMask.contains(.nonactivatingPanel), "and can't be made one")
     if #available(macOS 26.0, *) {
+        /// The lens is up: AppKit draws the glass window as a key window.
+        func checkLens(_ up: Bool, _ step: String) {
+            guard let has = hasKeyAppearance(w.glassWindow) else {
+                print("  skip  \(step) (AppKit doesn't say)")
+                return
+            }
+            check(has == up, step, "key appearance \(has)")
+        }
         check(w.glassWindow.lensed, "Prism asks the glass window for the lens")
+        checkLens(true, "and the lens is up: the glass window has the key appearance")
+        checkKeysLeftAlone("prism, lensed")
         check(!w.glassWindow.canBecomeKey && !w.glassWindow.canBecomeMain && w.glassWindow.ignoresMouseEvents,
               "which still can't become key or main, or take a click")
         check(NSApp.keyWindow !== w.glassWindow && NSApp.mainWindow !== w.glassWindow,
@@ -803,17 +902,55 @@ func run() {
         // windows becomes key or the app deactivates.
         w.glassWindow.resignKey(); spin(0.2)
         check(w.glassWindow.lensed, "a resignKey leaves it lensed")
+        checkLens(true, "and the lens up")
+        // The window server asking for the key appearance back, as it does
+        // of a window dressed as key in an app without the keyboard — a
+        // moment after the lens goes up, and whenever the keyboard changes
+        // apps. AppKit's handler for it, by its own (private) name.
+        let takeBack = NSSelectorFromString("_handleResignKeyAppearanceEvent")
+        if NSWindow.instancesRespond(to: takeBack) {
+            w.glassWindow.perform(takeBack); spin(0.05)
+            checkLens(true, "the window server asking for the key appearance back is refused while lensed")
+            w.glassWindow.perform(takeBack); w.glassWindow.perform(takeBack); spin(0.7)
+            checkLens(true, "and again, and the lens is still up later")
+        } else {
+            print("  skip  the window server asking for the key appearance back (AppKit has no such handler here)")
+        }
         island.setHovering(true); spin(1.0)
         checkPlaced(w, target, "prism, open")
         checkInStep(w, "prism, open")
-        w.orderOut(nil); spin(0.1); w.orderFrontRegardless(); spin(0.2)
+        checkLens(true, "prism, open: the lens is up")
+        checkKeysLeftAlone("prism, open")
+        w.orderOut(nil); spin(0.1)
+        checkLens(false, "off screen, the lens is down")
+        w.orderFrontRegardless(); spin(0.2)
         check(w.glassWindow.lensed, "off screen and back, still lensed")
+        checkLens(true, "and the lens is back up")
         checkInStep(w, "prism, off screen and back")
+        // Off and straight back in one turn, as handing the keys back after
+        // a reply does (`giveKeysBack`).
+        w.orderOut(nil); w.orderFrontRegardless(); spin(0.2)
+        checkLens(true, "off screen and back in one turn, the lens is back up")
+        // Ordered again and re-placed while it's up, as a display change does.
+        w.orderFrontRegardless(); w.place(target); spin(0.2)
+        checkLens(true, "ordered and placed again, the lens stays up")
+        // The panel itself taking and giving back the keys, as for a reply.
+        w.allowsKey = true; tellKey(w); spin(0.2)
+        checkLens(true, "the panel key, the lens stays up")
+        w.allowsKey = false; w.makeFirstResponder(nil); w.resignKey(); w.orderOut(nil); w.orderFrontRegardless(); spin(0.2)
+        checkLens(true, "the keys given back, the lens is up")
+        checkInStep(w, "prism, after a reply")
+        checkKeysLeftAlone("prism, through a reply's handoff")
         island.setHovering(false); spin(1.0)
         checkInStep(w, "prism, closed")
+        checkLens(true, "prism, closed: the lens is up")
         settings.panelBackground = .glass
         spin(0.4)
         check(!w.glassWindow.lensed, "leaving Prism puts the frosted glass back")
+        checkLens(false, "and takes the lens down")
+        spin(0.7)
+        checkLens(false, "and nothing puts it back up")
+        checkKeysLeftAlone("prism, left")
     } else {
         check(!w.glassWindow.lensed, "before Liquid Glass there's no lens to ask for")
         settings.panelBackground = .glass
@@ -827,6 +964,9 @@ func run() {
     checkInStep(w, "hidden")
 
     offTheNotch(screen)
+
+    print("the keyboard")
+    checkKeysLeftAlone("the whole run")
 
     print("\n\(passes) passed, \(failures) failed")
     exit(failures == 0 ? 0 : 1)
