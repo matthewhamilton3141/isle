@@ -87,9 +87,10 @@ struct ClaudeExpandedView: View {
             guard viewModel.composing == nil else { return }
             island.dismissAlert()
         }
-        // While a reply is being written the face holds still; what Claude
-        // needs meanwhile is said here, over the face's top-right corner,
-        // without moving anything.
+        // While a reply or an answer is being written the face holds
+        // still; what Claude needs meanwhile, or that the question being
+        // answered has gone, is said here, over the face's top-right
+        // corner, without moving anything.
         .overlay(alignment: .topTrailing) {
             composeNotice
         }
@@ -109,11 +110,13 @@ struct ClaudeExpandedView: View {
         }
     }
 
-    // MARK: - While a reply is written
+    // MARK: - While a reply or an answer is written
 
     @ViewBuilder
     private var composeNotice: some View {
-        if let refusal = viewModel.replyRefusal {
+        if let gone = viewModel.requestGoneWhileComposing {
+            notice(gone, tint: Self.lifted(stateColor(.warning)))
+        } else if let refusal = viewModel.replyRefusal {
             notice(refusal, tint: Self.lifted(stateColor(.warning)))
         } else if viewModel.claudeNeedsYouWhileComposing {
             notice("Claude needs you — finish, or esc", tint: Self.lifted(stateColor(.warning)))
