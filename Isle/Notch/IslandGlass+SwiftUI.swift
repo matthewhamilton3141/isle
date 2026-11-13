@@ -51,10 +51,10 @@ struct IslandGlassFill: View {
     /// How far the outline sits right of the housing's centre (NotchRootView's
     /// `collapsedShift`), so the glow can stay on the camera.
     var housingShift: CGFloat
-    /// The band the open panel's content starts under — the camera
-    /// housing's height, or the fallback band without one — which Prism
-    /// keeps solid black (`PrismShade`).
-    var bandHeight: CGFloat
+    /// The physical camera housing, which Prism keeps black
+    /// (`PrismShade`), whatever the glow's setting; nil on a display
+    /// without one.
+    var notch: CGSize?
     /// What Prism's ribbon follows; nil in every other mode.
     var ribbon: PrismRibbonInput? = nil
     /// Whether the island is off its notch — the lift's target, 1 or 0.
@@ -68,7 +68,7 @@ struct IslandGlassFill: View {
             shape: shape,
             housing: housing,
             housingShift: housingShift,
-            bandHeight: bandHeight,
+            notch: notch,
             ribbon: ribbon
         )
         // The blend runs on the width's spring during a collapse — the
@@ -91,7 +91,7 @@ private struct IslandGlassBlend: View, Animatable {
     var shape: NotchShape
     var housing: CGSize?
     var housingShift: CGFloat
-    var bandHeight: CGFloat
+    var notch: CGSize?
     var ribbon: PrismRibbonInput?
 
     @Environment(\.islandGlassLayer) private var layer
@@ -125,7 +125,7 @@ private struct IslandGlassBlend: View, Animatable {
                         // Glass's tint. Prism's shade is drawn with the
                         // material, under its ribbon (`material`).
                         if layer != .materialOnly, background != .prism {
-                            IslandGlassShade(background: background, bandHeight: bandHeight, lift: lift)
+                            Color.black.opacity(IslandGlass.tint(for: background))
                         }
                     }
                     .overlay(alignment: .top) {
@@ -169,7 +169,7 @@ private struct IslandGlassBlend: View, Animatable {
                 // ribbon, a shade dark enough for a bright window took the
                 // colour out of the light.
                 if background == .prism {
-                    PrismShade(bandHeight: bandHeight, lift: lift)
+                    PrismShade(housing: notch, housingShift: housingShift, lift: lift)
                     PrismCap()
                     PrismFrost(shape: shape, pane: pane)
                     PrismRibbonStrip(shape: shape, ribbon: ribbon)
@@ -250,23 +250,6 @@ extension EnvironmentValues {
     }
 }
 
-/// The black laid over the material: a flat tint in Glass, Prism's shade
-/// (`PrismShade`) in Prism.
-private struct IslandGlassShade: View {
-    var background: PanelBackground
-    var bandHeight: CGFloat
-    /// 0 on the notch, 1 off it, where Prism has no black over a camera.
-    var lift: Double
-
-    var body: some View {
-        if background == .prism {
-            PrismShade(bandHeight: bandHeight, lift: lift)
-        } else {
-            Color.black.opacity(IslandGlass.tint(for: background))
-        }
-    }
-}
-
 /// The notch glow: black growing out of the camera housing, solid over it
 /// and fading outward, wider to the sides than down (`IslandGlass.glowAlpha`).
 /// Anchored on the camera, not the panel: while the outline is a lopsided
@@ -306,20 +289,30 @@ private enum NotchGlowImage {
         let key = "\(housing.width)x\(housing.height)"
         if let cached = cache[key] { return cached }
         let mask = IslandGlass.glowMask(housing: housing, scale: scale)
-        // Black, premultiplied: every channel but alpha is zero.
-        var pixels = [UInt8](repeating: 0, count: mask.width * mask.height * 4)
-        for i in 0..<mask.alpha.count { pixels[i * 4 + 3] = mask.alpha[i] }
-        guard let provider = CGDataProvider(data: Data(pixels) as CFData),
-              let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let image = CGImage(
-                width: mask.width, height: mask.height,
-                bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: mask.width * 4,
-                space: space,
-                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-                provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent
-              ) else { return nil }
+        guard let image = IslandBlackImage.image(width: mask.width, height: mask.height, alpha: mask.alpha) else { return nil }
         cache[key] = image
         return image
+    }
+}
+
+/// Black at the given alphas (row major from the top, one 0...255 value
+/// per pixel) as an image: what the notch glow and Prism's black over the
+/// camera are drawn from.
+enum IslandBlackImage {
+    static func image(width: Int, height: Int, alpha: [UInt8]) -> CGImage? {
+        guard width > 0, height > 0, alpha.count == width * height else { return nil }
+        // Black, premultiplied: every channel but alpha is zero.
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        for i in 0..<alpha.count { pixels[i * 4 + 3] = alpha[i] }
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData),
+              let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        return CGImage(
+            width: width, height: height,
+            bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+            space: space,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent
+        )
     }
 }
 

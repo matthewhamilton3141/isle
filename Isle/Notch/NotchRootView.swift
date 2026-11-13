@@ -77,6 +77,14 @@ struct NotchRootView: View {
         return metrics.notchSize
     }
 
+    /// The physical camera housing, for Prism's black over it; nil on a
+    /// display without one, where the island hangs from a bare top edge.
+    /// (Off the notch too: the fill fades that black out with the lift.)
+    private var physicalNotch: CGSize? {
+        guard let metrics = island.metrics, metrics.hasPhysicalNotch else { return nil }
+        return metrics.notchSize
+    }
+
     /// Horizontal padding inside the collapsed shape: 10 (root) + 4 (collapsed
     /// view), each side. Used to turn content widths into a shape width.
     private static let collapsedHPadding: CGFloat = 28
@@ -470,7 +478,7 @@ struct NotchRootView: View {
                 opened: state.isExpanded,
                 housing: glowHousing,
                 housingShift: collapsedShift,
-                bandHeight: notchBandHeight,
+                notch: physicalNotch,
                 ribbon: ribbon,
                 floating: floating
             )

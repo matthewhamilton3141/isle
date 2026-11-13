@@ -5,9 +5,10 @@
 //  ribbon's own drawing in PrismRibbonView.swift), laid over the glass
 //  material by `IslandGlassFill`:
 //
-//  - `PrismShade`: solid black over the camera housing, easing to a tint,
-//    and clearing across the horizon to the lip's all but bare glass. Off
-//    the notch there's no camera to be black over: the tint from the top.
+//  - `PrismShade`: a tint from the top edge, clearing across the horizon
+//    to the lip's all but bare glass, and on the notch black over the
+//    camera housing that lets go a short way out from it. Off the notch,
+//    and on a display without one, there's no camera to be black over.
 //  - `PrismFrost`: frosted glass behind the content, so the lens is a
 //    lens only along the lip — and, off the notch, in a rim all the way
 //    round, closed as well as open (`PrismPaneInsets`).
@@ -16,61 +17,54 @@
 //  - `PrismLens`: the scrim behind the content and — where the system has
 //    no Liquid Glass to draw a lens's edge — a specular rim of Isle's own.
 //
-//  The shade and the scrim are laid out, not measured: fixed
-//  lengths at the top (the band) and the bottom (the horizon and the lip)
-//  with a gradient taking whatever is between, so they follow the outline
-//  as it opens, collapses and changes height. Nothing here runs on a
-//  clock; the ribbon moves only while the music does.
+//  The shade and the scrim are laid out, not measured: fixed lengths at
+//  the bottom (the horizon and the lip) with the tint taking whatever is
+//  above, so they follow the outline as it opens, collapses and changes
+//  height; the black over the camera is one bitmap, built once and held
+//  on the camera. Nothing here runs on a clock; the ribbon moves only
+//  while the music does.
 //
 
 import SwiftUI
 
-/// Prism's shade: black over the band, eased to `IslandPrism.edgeTint`,
-/// held to the horizon and cleared across it to `IslandPrism.lipTint`.
+/// Prism's shade: `IslandPrism.edgeTint` from the top edge, held to the
+/// horizon and cleared across it to `IslandPrism.lipTint`; and on the
+/// notch, black over the camera housing (`PrismNotchShade`).
 ///
 /// In an overlay on a flexible clear view, so it never sets the fill's
 /// size: while the outline is shallower than the fixed parts (the first
 /// frames of an open, the last of a collapse) they run past the clip, and
 /// that whole while the cover is solid black anyway.
 struct PrismShade: View {
-    var bandHeight: CGFloat
+    /// The physical camera housing the island hangs from; nil on a display
+    /// without one, where there is nothing to be black over.
+    var housing: CGSize?
+    /// How far the outline sits right of the housing's centre
+    /// (NotchRootView's `collapsedShift`), so the black can stay on the
+    /// camera.
+    var housingShift: CGFloat = 0
     /// 0 on the notch, 1 off it; between while the island morphs from one
-    /// to the other, when the two shades cross-fade.
+    /// to the other, when the black over the camera fades with it.
     var lift: Double = 0
 
     var body: some View {
         Color.clear.overlay(alignment: .top) {
             ZStack(alignment: .top) {
-                if lift < 1 {
-                    docked.opacity(1 - lift)
-                }
-                if lift > 0 {
-                    floating.opacity(lift)
+                tint
+                if let housing, lift < 1 {
+                    PrismNotchShade(housing: housing, shift: housingShift)
+                        .opacity(1 - lift)
                 }
             }
         }
     }
 
-    private var docked: some View {
-        VStack(spacing: 0) {
-            Rectangle()
-                .fill(.black)
-                .frame(height: max(bandHeight, 0) + IslandPrism.bandExtra)
-            LinearGradient(stops: PrismStops.shade, startPoint: .top, endPoint: .bottom)
-            LinearGradient(stops: PrismStops.horizon, startPoint: .top, endPoint: .bottom)
-                .frame(height: IslandPrism.horizonFeather)
-            Rectangle()
-                .fill(.black.opacity(IslandPrism.lipTint))
-                .frame(height: IslandPrism.lip - IslandPrism.horizonFeather / 2)
-        }
-    }
-
-    /// Off the notch: the walls' tint from the top edge down, with no
-    /// black band, and the same horizon and lip. On a closed capsule,
-    /// shallower than the horizon and the lip together, the fixed parts
-    /// run past the clip; what shows is one or other of two tints a
-    /// hundredth apart.
-    private var floating: some View {
+    /// The walls' tint from the top edge down, the horizon and the lip:
+    /// the whole shade off the notch, and all of it but the camera's black
+    /// on it. On a closed capsule, shallower than the horizon and the lip
+    /// together, the fixed parts run past the clip; what shows is one or
+    /// other of two tints a hundredth apart.
+    private var tint: some View {
         VStack(spacing: 0) {
             Rectangle()
                 .fill(.black.opacity(IslandPrism.edgeTint))
@@ -80,6 +74,52 @@ struct PrismShade: View {
                 .fill(.black.opacity(IslandPrism.lipTint))
                 .frame(height: IslandPrism.lip - IslandPrism.horizonFeather / 2)
         }
+    }
+}
+
+/// The black over the camera housing: solid over it and a few points
+/// round it, then let go a short way out, the same to the sides, below and
+/// round the corners (`IslandPrism.notchAlpha`), so what is black in the
+/// glass is the camera and not a bar across the panel.
+///
+/// Anchored on the camera, not the panel, as the notch glow is: while the
+/// outline is a lopsided pill it is drawn `shift` right of the housing,
+/// and gets there on the width's spring, so this is moved back by the same
+/// amount on the same spring. Wider and deeper than a pill, so in an
+/// overlay of its own: it takes the fill's size and never sets it, and
+/// what of it is outside the outline is clipped with everything else.
+private struct PrismNotchShade: View {
+    var housing: CGSize
+    var shift: CGFloat
+
+    var body: some View {
+        let extent = IslandPrism.notchExtent(housing: housing)
+        Color.clear.overlay(alignment: .top) {
+            if let image = PrismNotchImage.image(housing: housing) {
+                Image(decorative: image, scale: PrismNotchImage.scale)
+                    .resizable()
+                    .frame(width: extent.width, height: extent.height)
+                    .offset(x: -shift)
+                    .islandCollapseChannel(.width)
+            }
+        }
+    }
+}
+
+/// The camera's black as an image, built once per housing size: a static
+/// bitmap the compositor only has to place.
+@MainActor
+private enum PrismNotchImage {
+    static let scale: CGFloat = 2
+    private static var cache: [String: CGImage] = [:]
+
+    static func image(housing: CGSize) -> CGImage? {
+        let key = "\(housing.width)x\(housing.height)"
+        if let cached = cache[key] { return cached }
+        let mask = IslandPrism.notchMask(housing: housing, scale: scale)
+        guard let image = IslandBlackImage.image(width: mask.width, height: mask.height, alpha: mask.alpha) else { return nil }
+        cache[key] = image
+        return image
     }
 }
 
@@ -102,11 +142,8 @@ struct PrismCap: View {
     }
 }
 
-/// The shade's gradients, sampled from their curves once.
+/// The shade's gradient, sampled from its curve once.
 private enum PrismStops {
-    static let shade: [Gradient.Stop] = IslandPrism.shadeStops().map {
-        Gradient.Stop(color: .black.opacity($0.alpha), location: $0.location)
-    }
     static let horizon: [Gradient.Stop] = IslandPrism.horizonStops().map {
         Gradient.Stop(color: .black.opacity($0.alpha), location: $0.location)
     }
@@ -205,7 +242,7 @@ struct PrismFrost: View {
 }
 
 /// The part of the panel that holds content, as a soft-edged shape: from
-/// under the band, where its top can't be seen, down to the horizon, and
+/// above the top edge, so it has no top to be seen, down to the horizon, and
 /// `IslandPrism.rim` inside each wall. The frost is masked to it and the
 /// scrim drawn in it, so both stop short of the walls and the lip and
 /// leave them clear glass. Flattened to one bitmap, so its blur costs
@@ -248,8 +285,8 @@ struct PrismPaneInsets: Equatable {
     var bottomRadius: CGFloat
     var feather: CGFloat
 
-    /// On the notch: square at the top and run up under the black band,
-    /// where its edge can't be seen.
+    /// On the notch: square at the top and run up past the panel's top
+    /// edge, so there is no edge of it across the band.
     static let docked = PrismPaneInsets(
         top: -3 * IslandPrism.rimFeather,
         side: IslandPrism.rim,

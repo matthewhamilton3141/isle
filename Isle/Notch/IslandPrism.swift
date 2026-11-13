@@ -8,9 +8,10 @@
 //  - The lens's shape: the open panel is a lip taller than in every other
 //    mode, and rounder at the bottom. The content keeps the room it has
 //    everywhere else; the lip is glass with nothing on it but light.
-//  - The shade: solid black over the camera housing, easing to a tint the
-//    content can be read on, and clearing through the horizon — where the
-//    content ends and the lip begins — to all but bare glass.
+//  - The shade: a tint the content can be read on, clearing through the
+//    horizon — where the content ends and the lip begins — to all but bare
+//    glass; and, on the notch, black over the camera housing that lets go
+//    a short way out, following the housing's outline.
 //  - The ribbon: a streak of light lying along the lip, split into a
 //    fan of colours. At each point across the panel the line is lifted,
 //    and the fan spread, by the music's level in one band — a crest for
@@ -61,8 +62,8 @@ enum IslandPrism {
 
     // MARK: - The shade
 
-    /// Black over the glass across the panel's whole width once the ease
-    /// from the band has run: what the glass at the side walls keeps.
+    /// Black over the glass across the panel's whole width, from its top
+    /// edge to the horizon: what the glass at the side walls keeps.
     ///
     /// Light, and nearly the same from wall to wall: what keeps white text
     /// readable over a bright window is the cap (`cap`), not this. With a
@@ -105,11 +106,35 @@ enum IslandPrism {
     /// scrim but not blurred.
     static let frost: Double = 0
 
-    /// How far below the camera housing the solid black runs before the
-    /// ease to glass begins, in points: just past the hardware's edge. The
-    /// panel is meant to read as glass from there down, not as a black
-    /// panel with a glass lip.
+    /// How far past the camera housing the solid black runs before the
+    /// ease to glass begins, in points, below it and to each side: just
+    /// past the hardware's edge. The panel is meant to read as glass from
+    /// there on, not as a black panel with a glass lip.
     static let bandExtra: CGFloat = 3
+
+    /// How far out from that the black takes to let go, in points, the
+    /// same below the housing as beside it and round its corners, so the
+    /// fade is the housing's own outline grown. Short: the black is the
+    /// camera's, and the panel either side of it and under it is glass.
+    /// It used to be a bar from wall to wall as deep as the housing
+    /// (Matthew: "this black line that gradients to both ends, i want it
+    /// to gradient a little bit from the notch shape"). Tune here.
+    static let notchReach: CGFloat = 32
+
+    /// How soon the fade lets go: its ease, raised to this. 1 is the plain
+    /// ease, half gone half way out; higher keeps the dark close in to the
+    /// housing and leaves only a trace toward the reach's end. At 2 over
+    /// a 32pt reach the black is half gone 11pt out and all but gone by
+    /// 22: a soft edge to the camera with a faint tail, where the plain
+    /// ease over a shorter reach read as the housing drawn out of focus.
+    /// Tune here.
+    static let notchFalloff: Double = 2
+
+    /// The radius of the housing's bottom corners, in points, as near as
+    /// the hardware's can be told (nothing reports it). On the small side
+    /// of the guess: a tighter corner than the real one only puts more
+    /// solid black round it.
+    static let notchCornerRadius: CGFloat = 8
 
     /// Which way the ribbon is drawn.
     enum RibbonStyle {
@@ -327,42 +352,77 @@ enum IslandPrism {
     /// bottom inset ends and the lip begins.
     static let horizonFeather: CGFloat = 18
 
-    /// How much of the way from the band's foot to the horizon the ease
-    /// from solid black takes; past it the shade is `edgeTint` down to the
-    /// horizon.
-    static let reach: Double = 0.3
-
     /// Black over the glass where the content sits: the shade and the
     /// scrim composited.
     static var contentAlpha: Double { IslandGlass.over(edgeTint, scrim) }
 
     /// The shade's black at `y` points from the top of a panel `height`
-    /// tall (lip included) whose solid band is `band` deep, without the
-    /// scrim: 1 down to the band's foot, eased to `edgeTint`, held to the
-    /// horizon, and cleared to `lipTint` across it.
-    static func shadeAlpha(y: CGFloat, height: CGFloat, band: CGFloat) -> Double {
-        guard y > band else { return 1 }
+    /// tall (lip included), away from the camera and without the scrim:
+    /// `edgeTint` from the top edge, held to the horizon, and cleared to
+    /// `lipTint` across it.
+    static func shadeAlpha(y: CGFloat, height: CGFloat) -> Double {
         let horizonTop = height - lip - horizonFeather / 2
         let horizonBottom = height - lip + horizonFeather / 2
         if y >= horizonBottom { return lipTint }
-        if y > horizonTop {
-            let t = Double((y - horizonTop) / horizonFeather)
-            return edgeTint + (lipTint - edgeTint) * IslandGlass.ease(t)
-        }
-        let span = horizonTop - band
-        guard span > 0 else { return 1 }
-        return 1 - (1 - edgeTint) * IslandGlass.ease(Double((y - band) / span) / reach)
+        guard y > horizonTop else { return edgeTint }
+        let t = Double((y - horizonTop) / horizonFeather)
+        return edgeTint + (lipTint - edgeTint) * IslandGlass.ease(t)
     }
 
-    /// The ease below the band as (location, alpha) stops, location 0 at
-    /// the band's foot and 1 at the top of the horizon.
-    static func shadeStops() -> [(location: Double, alpha: Double)] {
-        let n = IslandGlass.easeStopCount
-        let ease = (0...n).map {
-            let t = Double($0) / Double(n)
-            return (t * reach, 1 - (1 - edgeTint) * IslandGlass.ease(t))
+    /// How far a point is outside the black that is solid over the camera
+    /// housing, in points; 0 or less inside it. The solid is the housing
+    /// grown by `bandExtra` to each side and below, its bottom corners
+    /// rounded to match, and has no top: the housing hangs from the top of
+    /// the screen. `x` is from the housing's centre line, `y` from the top
+    /// of the screen.
+    static func notchDistance(x: CGFloat, y: CGFloat, housing: CGSize) -> CGFloat {
+        let half = housing.width / 2 + bandExtra
+        let foot = housing.height + bandExtra
+        let r = min(notchCornerRadius + bandExtra, half, foot)
+        // From the centre of the corner's arc: beside it, under it, or
+        // round it.
+        let qx = abs(x) - (half - r), qy = y - (foot - r)
+        if qx <= 0 { return qy - r }
+        if qy <= 0 { return qx - r }
+        return (qx * qx + qy * qy).squareRoot() - r
+    }
+
+    /// The black over the camera housing at a point (`notchDistance`'s):
+    /// 1 over the housing and `bandExtra` round it, then eased away over
+    /// `notchReach`, with no slope where it leaves the solid or where it
+    /// ends, so neither is an edge.
+    static func notchAlpha(x: CGFloat, y: CGFloat, housing: CGSize) -> Double {
+        let d = notchDistance(x: x, y: y, housing: housing)
+        if d <= 0 { return 1 }
+        guard notchReach > 0, d < notchReach else { return 0 }
+        return pow(1 - IslandGlass.ease(Double(d / notchReach)), notchFalloff)
+    }
+
+    /// The box the black over the housing occupies, anchored top-centre on
+    /// the housing: past it there is none.
+    static func notchExtent(housing: CGSize) -> CGSize {
+        CGSize(
+            width: housing.width + 2 * (bandExtra + notchReach),
+            height: housing.height + bandExtra + notchReach
+        )
+    }
+
+    /// `notchAlpha` sampled over its extent at `scale` pixels per point:
+    /// row major from the top, one 0...255 alpha per pixel, sampled at
+    /// pixel centres.
+    static func notchMask(housing: CGSize, scale: CGFloat) -> (width: Int, height: Int, alpha: [UInt8]) {
+        let extent = notchExtent(housing: housing)
+        let w = max(Int((extent.width * scale).rounded(.up)), 1)
+        let h = max(Int((extent.height * scale).rounded(.up)), 1)
+        var alpha = [UInt8](repeating: 0, count: w * h)
+        for row in 0..<h {
+            let y = (CGFloat(row) + 0.5) / scale
+            for col in 0..<w {
+                let x = (CGFloat(col) + 0.5) / scale - extent.width / 2
+                alpha[row * w + col] = UInt8((notchAlpha(x: x, y: y, housing: housing) * 255).rounded())
+            }
         }
-        return reach < 1 ? ease + [(1, edgeTint)] : ease
+        return (w, h, alpha)
     }
 
     /// The horizon as (location, alpha) stops, top to bottom.

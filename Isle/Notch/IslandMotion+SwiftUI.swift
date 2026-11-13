@@ -206,9 +206,9 @@ struct IslandFill: View {
     /// glow), and how far right of it the outline is drawn.
     var housing: CGSize? = nil
     var housingShift: CGFloat = 0
-    /// The band the open panel's content starts under, which Prism keeps
-    /// solid black.
-    var bandHeight: CGFloat = NotchMetrics.fallbackNotchSize.height
+    /// The physical camera housing, which Prism keeps black whatever the
+    /// glow's setting; nil on a display without one.
+    var notch: CGSize? = nil
     /// What Prism's ribbon follows; nil in every other mode.
     var ribbon: PrismRibbonInput? = nil
     /// Whether the island is off its notch (`IslandPlacement`): glass all
@@ -242,7 +242,7 @@ struct IslandFill: View {
                 opened: opened,
                 housing: housing,
                 housingShift: housingShift,
-                bandHeight: bandHeight,
+                notch: notch,
                 ribbon: ribbon,
                 floating: floating
             )
