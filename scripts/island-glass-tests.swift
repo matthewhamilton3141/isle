@@ -155,20 +155,25 @@ do {
           "the tones still step down in order, short of primary")
     check(IslandGlass.liftedOpacity(1) == 1, "opaque stays opaque")
     check(IslandGlass.liftedOpacity(0.45) > 0.45, "always brighter")
-    // The floor: a deep accent comes up to it, keeping its hue order.
-    let deep = IslandGlass.floored(r: 0.30, g: 0.05, b: 0.45)
-    let l = IslandGlass.luma(r: deep.r, g: deep.g, b: deep.b)
-    check(near(l, IslandGlass.paletteLumaFloor, 1e-9), "deep purple raised to the floor", "\(l)")
-    check(deep.b > deep.r && deep.r > deep.g, "hue order kept")
-    // Brightened before it is paled: the strongest channel is full, and
-    // the weakest is still well under it.
-    check(near(deep.b, 1) && deep.g < 0.5, "and its colour with it: brightened first, white only for the rest", "\(deep)")
-    let mid = IslandGlass.floored(r: 0.45, g: 0.30, b: 0.05)
-    check(near(mid.g / mid.r, 0.30 / 0.45, 1e-9) && near(mid.b / mid.r, 0.05 / 0.45, 1e-9), "a colour that brightening alone brings up is not paled at all", "\(mid)")
-    let bright = IslandGlass.floored(r: 0.9, g: 0.7, b: 0.2)
-    check(bright.r == 0.9 && bright.g == 0.7 && bright.b == 0.2, "already-light colours untouched")
-    let black = IslandGlass.floored(r: 0, g: 0, b: 0)
-    check(near(black.r, IslandGlass.paletteLumaFloor) && near(black.g, black.r) && near(black.b, black.r), "black lifts to a grey at the floor")
+    // No lightness floor on glass any more: a cover's colours there are the
+    // ones on black, and what holds them off the glass is a dark edge. The
+    // sum below is the reason. Glass over a white page is a mid grey
+    // (about 93/255 in Prism), and a cover's deep blue is as light as that.
+    func lin(_ c: Double) -> Double { c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4) }
+    func luminance(_ r: Double, _ g: Double, _ b: Double) -> Double { 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b) }
+    func ratio(_ a: Double, _ b: Double) -> Double { (max(a, b) + 0.05) / (min(a, b) + 0.05) }
+    let blue = luminance(56.0 / 255, 95.0 / 255, 242.0 / 255), glass = luminance(93.0 / 255, 93.0 / 255, 93.0 / 255)
+    check(ratio(blue, glass) < 1.5, "a deep blue is all but as light as glass over a white page: its colour alone can't carry a word", "\(ratio(blue, glass))")
+    // The edge is two blacks composited, the tight one over the soft one.
+    let edge = IslandGlass.over(IslandGlass.tintEdge, IslandGlass.tintShade)
+    check(IslandGlass.tintEdge > 0 && IslandGlass.tintEdge <= 1 && IslandGlass.tintShade > 0 && IslandGlass.tintShade <= 1, "the word's edge: two blacks, each an alpha")
+    check(IslandGlass.tintEdgeRadius > 0 && IslandGlass.tintEdgeRadius < IslandGlass.tintShadeRadius, "a tight one that outlines the letters inside a soft one that settles them")
+    check(IslandGlass.tintShadeRadius <= 4, "and neither a glow: within 4pt of the letters", "\(IslandGlass.tintShadeRadius)")
+    // At full strength, right against a letter, the ground would be this dark.
+    let ringed = luminance(93.0 / 255 * (1 - edge), 93.0 / 255 * (1 - edge), 93.0 / 255 * (1 - edge))
+    check(ratio(blue, ringed) >= 2.1, "against its edge at full strength the deep blue has what the paler colour had against bare glass (2.1 to 1)", "\(ratio(blue, ringed))")
+    check(IslandGlass.barEdge > 0 && IslandGlass.barEdge < 1 && IslandGlass.barEdgeWidth > 0 && IslandGlass.barEdgeWidth <= 1,
+          "the bars' and the dots' edge: a dark shape under each, under a point larger all round")
 }
 
 print("prism: the shade")

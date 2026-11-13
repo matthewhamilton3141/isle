@@ -15,14 +15,11 @@ struct ExpandedNotchView: View {
     @ObservedObject var viewModel: NotchViewModel
     /// Observed for the drop face, which is this island's alone.
     @ObservedObject var island: IslandPresentation
+    /// The cover's colours (or the accent's), the same on glass as on
+    /// black: the bars, the dots and the words in them are one palette
+    /// wherever the island is. On glass they carry a dark edge instead of
+    /// a lighter colour (`EqualizerStyle.onGlass`, `IslandTintStyle`).
     var palette: ArtworkPalette
-    /// The waveform's colours: the cover's as the pill on the notch draws
-    /// them, wherever the bars are. `palette` is lifted for glass
-    /// (`flooredForGlass`), which made the open panel's bars and a
-    /// detached island's a paler thing than the notch's (Matthew: "i want
-    /// compacted notch colours"). The bars have a dark edge on glass
-    /// instead (`EqualizerStyle.onGlass`). Nil: `palette`.
-    var waveformPalette: ArtworkPalette? = nil
 
     private var media: MediaPlaybackModel { viewModel.media }
 
@@ -73,7 +70,7 @@ struct ExpandedNotchView: View {
                     if showsCornerWaveform {
                         LiveEqualizer(
                             source: viewModel.audioLevelSource,
-                            palette: waveformPalette ?? palette,
+                            palette: palette,
                             isPlaying: media.isPlaying,
                             listens: viewModel.waveformSource.capturesAudio
                         )

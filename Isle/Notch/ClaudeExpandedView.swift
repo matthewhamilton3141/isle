@@ -183,7 +183,7 @@ struct ClaudeExpandedView: View {
                 glyph
                 Text(wingWord)
                     .font(L.statusFont)
-                    .foregroundStyle(statusTint)
+                    .foregroundStyle(.islandTint(statusTint))
                     .minimumScaleFactor(0.85)
                     .truncationMode(.tail)
                     .contentTransition(.opacity)
@@ -227,8 +227,9 @@ struct ClaudeExpandedView: View {
 
     /// The state's colour, for its words: the marker's own hue — working in
     /// the palette's, done green, an approval amber, an error red — lifted a
-    /// little so it reads as text on black. Ready and No session are plain:
-    /// they're not news.
+    /// little so it reads as text on black, and the same on glass, where the
+    /// words carry a dark edge besides (`IslandTintStyle`). Ready and No
+    /// session are plain: they're not news.
     private var statusTint: Color {
         if agentState == nil, state == .idle || state == .disconnected { return .white.opacity(0.85) }
         return Self.lifted(stateColor(viewModel.claudeMarkerKind))
@@ -424,7 +425,7 @@ struct ClaudeExpandedView: View {
         case .agents(let type, let count, let more):
             HStack(spacing: 6) {
                 rowSymbol("arrow.triangle.branch")
-                    .foregroundStyle(statusTint)
+                    .foregroundStyle(.islandTint(statusTint))
                 Text(agentName(type, count: count))
                     .foregroundStyle(.white.opacity(0.85))
                 if count > 1, !type.isEmpty {
@@ -1124,7 +1125,7 @@ struct ClaudeExpandedView: View {
                         .fixedSize(horizontal: true, vertical: false)
                     Text(row.stateTitle)
                         .font(L.sessionStateFont)
-                        .foregroundStyle(quiet ? Color.white.opacity(0.45) : stateColor(row.markerKind))
+                        .foregroundStyle(quiet ? AnyShapeStyle(Color.white.opacity(0.45)) : AnyShapeStyle(.islandTint(stateColor(row.markerKind))))
                         .lineLimit(1)
                         .fixedSize()
                     Text(row.detail)
@@ -1671,7 +1672,7 @@ struct ClaudeExpandedView: View {
             glyph
             Text(question.header ?? "Question")
                 .font(L.statusFont)
-                .foregroundStyle(statusTint)
+                .foregroundStyle(.islandTint(statusTint))
                 .truncationMode(.tail)
                 .layoutPriority(-1)
             if request.questions.count > 1 {

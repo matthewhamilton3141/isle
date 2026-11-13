@@ -21,7 +21,8 @@ struct PomodoroRing: View {
                 .stroke(tint.opacity(0.22), lineWidth: lineWidth)
             Circle()
                 .trim(from: 0, to: min(1, max(0, progress)))
-                .stroke(tint, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                // On glass, with the dark edge coloured words have there.
+                .stroke(.islandTint(tint), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 // Start at twelve o'clock and run clockwise.
                 .rotationEffect(.degrees(-90))
         }

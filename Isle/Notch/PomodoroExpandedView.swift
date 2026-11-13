@@ -119,7 +119,7 @@ struct PomodoroExpandedView: View {
         return HStack(spacing: 4) {
             ForEach(0..<total, id: \.self) { index in
                 Circle()
-                    .fill(index < timer.completedInCycle ? tint : .white.opacity(0.22))
+                    .fill(index < timer.completedInCycle ? AnyShapeStyle(.islandTint(tint)) : AnyShapeStyle(.white.opacity(0.22)))
                     .frame(width: 6, height: 6)
             }
         }

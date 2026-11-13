@@ -184,7 +184,7 @@ struct AgendaExpandedView: View {
             Text(date.formatted(.dateTime.weekday(.abbreviated)).uppercased())
                 .font(IsleType.metaStrong)
                 .tracking(IsleType.capsTracking)
-                .foregroundStyle(isToday ? palette.accent : .white.opacity(0.6))
+                .foregroundStyle(isToday ? AnyShapeStyle(.islandTint(palette.accent)) : AnyShapeStyle(.white.opacity(0.6)))
             Text(date.formatted(.dateTime.day()))
                 .font(IsleType.numeral(52))
                 .foregroundStyle(.white)
