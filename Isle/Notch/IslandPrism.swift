@@ -60,6 +60,19 @@ enum IslandPrism {
     /// four ways round. Tune here.
     static let bottomCornerRadius: CGFloat = showsRibbon ? 38 : 32
 
+    /// How far above the panel's top edge the lens's own top edge is put
+    /// while the island is on the notch, in points, so the rim of light a
+    /// lens has inside its edge is off the top of the screen and not a
+    /// pale line under the bezel (`IslandGlassOutline`). Off the notch it
+    /// is 0: there the panel's top edge is a lens's edge like the others.
+    ///
+    /// Well clear of the edge's own depth: at 6 the rim was still in view
+    /// and bent; at 16 and at 40 it was gone, the two alike to the pixel.
+    /// What is behind the band (the menu bar) also stops being turned
+    /// upside down by the edge, and shows through faint and upright. The
+    /// glass above the screen costs nothing: it is clipped. Tune here.
+    static let topRise: CGFloat = 40
+
     // MARK: - The shade
 
     /// Black over the glass across the panel's whole width, from its top

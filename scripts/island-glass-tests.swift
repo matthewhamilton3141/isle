@@ -326,6 +326,7 @@ do {
         check(dx * dx + dy * dy <= r * r * 0.25, "the bottom corners turn well clear of the content's corner", "\(dx) \(dy) of \(r)")
         check(IslandPrism.showsRibbon || IslandPrism.lip == IslandPrism.sideLip, "without the ribbon, the lip is the walls' border carried round")
     }
+    check(IslandPrism.topRise >= 16, "on the notch the lens's top edge is put well above the screen's: its rim was still in view at 6pt, gone at 16", "\(IslandPrism.topRise)")
     check(IslandPrism.sideLip > 0 && IslandPrism.rim > IslandPrism.rimFeather, "a border of clear glass down each wall, wider than its soft edge")
     // The content starts 22pt inside the frame in every mode, plus the side lip here; the walls stand 12pt in.
     check(IslandPrism.rim + IslandPrism.rimFeather <= 22 + IslandPrism.sideLip - IslandMotion.openCorners.top + 2,

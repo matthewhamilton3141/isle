@@ -159,7 +159,10 @@ private struct IslandGlassBlend: View, Animatable {
             IslandGlassMaterial(
                 shape: shape,
                 clear: background == .prism,
-                lens: background == .prism
+                lens: background == .prism,
+                // On the notch the lens has no top edge to show: it hangs
+                // from the screen's. Off it, it has one like any other.
+                rise: background == .prism ? IslandPrism.topRise * CGFloat(1 - min(max(lift, 0), 1)) : 0
             )
             .overlay(alignment: .top) {
                 // Prism's shade, frost and ribbon, in the material's own
@@ -348,16 +351,57 @@ private struct IslandGlassMaterial: View {
     /// window answers, so in a preview or a render, where the material is
     /// in the panel's own window, this is the frosted clear glass.
     var lens: Bool = false
+    /// How far above the outline's top edge the glass's own top edge is
+    /// put (`IslandPrism.topRise`); 0 leaves the glass the outline's shape.
+    var rise: CGFloat = 0
 
     var body: some View {
         if #available(macOS 26.0, *) {
             Color.clear
-                .glassEffect(clear ? .clear : .regular, in: shape)
+                .glassEffect(clear ? .clear : .regular, in: IslandGlassOutline(shape: shape, rise: rise))
+                // The glass view is that much taller, upward, so the whole
+                // of its shape is inside it; the fill's clip and the
+                // window's top edge cut it back to the outline.
+                .padding(.top, -rise)
                 .environment(\.colorScheme, .dark)
                 .background(IslandGlassLensSwitch(lens: lens))
         } else {
             IslandVisualEffect()
         }
+    }
+}
+
+/// The outline as Liquid Glass is given it: the outline itself, or, with a
+/// `rise`, the outline carried up past its own top edge by that much, in
+/// a rect that much taller.
+///
+/// A lens has a rim: a line of light just inside its edge, all the way
+/// round. Down the walls and round the lip that is the look. Along the
+/// top of a panel that hangs from the screen's top edge it is a pale line
+/// against the bezel, which the black bar across the band used to cover
+/// (Matthew, once the bar had gone: "theres this weird seem at the top").
+/// With the glass's top edge above the screen there is no rim to see: the
+/// fill is clipped to the real outline, and the window ends there too.
+private struct IslandGlassOutline: Shape {
+    var shape: NotchShape
+    var rise: CGFloat
+
+    /// The outline's own, so the corners move as they do in the clip.
+    var animatableData: NotchShape.AnimatableData {
+        get { shape.animatableData }
+        set { shape.animatableData = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        guard rise > 0 else { return shape.path(in: rect) }
+        let body = CGRect(x: rect.minX, y: rect.minY + rise, width: rect.width, height: max(rect.height - rise, 0))
+        let outline = shape.path(in: body)
+        // A strip from the top of the taller rect down into the outline,
+        // as wide as the outline is at its widest (its top edge, on the
+        // notch).
+        let box = outline.boundingRect
+        guard !box.isNull, !box.isEmpty else { return outline }
+        return outline.union(Path(CGRect(x: box.minX, y: rect.minY, width: box.width, height: rise + 1)))
     }
 }
 
