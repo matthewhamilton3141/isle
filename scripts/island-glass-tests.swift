@@ -385,7 +385,7 @@ do {
     }
     check(solid, "solid over the housing's sides and a point below its foot")
     check(corner > 0.9999, "and round its corners, to a ten-thousandth", "\(corner)")
-    check(a(housing.width / 2 + 1, 10) > 0.995 && a(0, housing.height + IslandPrism.spreadFoot + 1) > 0.99, "and all but solid a point past it", "\(a(housing.width / 2 + 1, 10)) \(a(0, housing.height + IslandPrism.spreadFoot + 1))")
+    check(a(housing.width / 2 + 1, 10) > 0.995 && a(0, housing.height + IslandPrism.spreadFoot + 1) > 0.97, "and all but solid a point past it (0.97 down: the quicker let-go of 2026-11-13 over the 30pt reach)", "\(a(housing.width / 2 + 1, 10)) \(a(0, housing.height + IslandPrism.spreadFoot + 1))")
     check(IslandPrism.spreadAcross > IslandPrism.spreadDown, "spreads further along the top than down")
     check(a(housing.width / 2 + IslandPrism.spreadSide + IslandPrism.spreadAcross, 10) == 0 && a(0, housing.height + IslandPrism.spreadFoot + IslandPrism.spreadDown) == 0,
           "let go at its reach: beside and below")

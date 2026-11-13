@@ -370,9 +370,12 @@ enum IslandPrism {
     /// ends, so it reads as a gradient coming off the camera rather than a
     /// black shape with a soft rim, and has no line where it ends. The
     /// light let through is that lightness cubed (`spreadLightness`), how
-    /// lightness is seen. Tune here.
+    /// lightness is seen. Tune here. `spreadLightness` was 2.5, which held
+    /// the black near solid for the first fifth of the reach; Matthew,
+    /// 2026-11-13: "make the gradient like go through faster", so it lets
+    /// go sooner (72% black a fifth of the way out, was 88%).
     static let spreadEase: Double = 2.5
-    static let spreadLightness: Double = 2.5
+    static let spreadLightness: Double = 1.5
 
     /// The spread black at a point: `x` from the housing's centre line, `y`
     /// from the top of the screen.
