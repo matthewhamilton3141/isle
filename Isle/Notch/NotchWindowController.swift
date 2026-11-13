@@ -337,7 +337,7 @@ final class NotchWindowController {
         ConstraintPassLog.watch(window.glassWindow, as: "island glass", describe: describe)
         #endif
 
-        window.contentView = hosting
+        window.attachContent(hosting)
         carry.place(rememberedPlacement(for: id, on: metrics))
         window.orderFrontRegardless()
     }
@@ -429,8 +429,9 @@ final class NotchWindowController {
 
     /// One screen's panel and its glass window, with their view trees, built
     /// the one way Isle builds them — here, so scripts/test-island-windows.sh
-    /// checks exactly what runs. The panel's content view is left for the
-    /// caller to set (the controller registers the island first), and it
+    /// checks exactly what runs. The panel's hosting view is left for the
+    /// caller to attach (`NotchWindow.attachContent`, never as the content
+    /// view itself; the controller registers the island first), and it
     /// isn't placed or shown.
     static func makePanel(
         viewModel: NotchViewModel,

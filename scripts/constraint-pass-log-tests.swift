@@ -104,7 +104,7 @@ func run() {
         let describe = { "\(island.state) placement \(island.placement) opening \(island.opening.upward ? "up" : "down") face \(vm.expandedPlace) background \(vm.panelBackground.rawValue)" }
         ConstraintPassLog.watch(panel, as: "notch panel", describe: describe)
         ConstraintPassLog.watch(panel.glassWindow, as: "island glass", describe: describe)
-        panel.contentView = hosting
+        panel.attachContent(hosting)
         let target = metrics.maximumFrame
         panel.place(target)
         panel.orderFrontRegardless()

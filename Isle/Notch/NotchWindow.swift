@@ -187,6 +187,34 @@ final class NotchWindow: NSPanel {
     /// Whether `attachGlass` has given the glass window anything to draw.
     private(set) var hasGlass = false
 
+    /// Gives this window its content: the island's tree, in a plain view
+    /// that fills the window, never as the window's content view itself —
+    /// for the reasons in `attachGlass`, which the panel shares.
+    ///
+    /// Caught at last (13 Nov, in the glass window): two routes, taken in
+    /// turn inside one display cycle, until AppKit threw. The hosting view
+    /// keeping the window's size limits from inside `updateConstraints()`
+    /// (`updateWindowContentSizeExtremaIfNecessary`), which found its
+    /// transform changed and asked for another pass; and the hosting view
+    /// sizing the window from `windowDidLayout` (`updateAnimatedWindowSize`),
+    /// whose new frame invalidated its safe area and asked again. Both are
+    /// work a hosting view does only as its window's content view, and
+    /// `sizingOptions = []` stops neither. This window has more views, so
+    /// AppKit lets it have more passes, but the routes were the same.
+    ///
+    /// Clicks reach the island's views as before: this view takes none
+    /// itself (see `IslandPanelContentView`).
+    func attachContent(_ view: NSView) {
+        let content = IslandPanelContentView(frame: NSRect(origin: .zero, size: frame.size))
+        content.fill(with: view)
+        contentView = content
+    }
+
+    /// The view `attachContent` was given.
+    var contentHost: NSView? {
+        (contentView as? IslandPanelContentView)?.subviews.first
+    }
+
     /// Brings the glass window into step with this one: the same frame,
     /// level and alpha, on screen just below it when this window is on
     /// screen, and off screen when it isn't.
@@ -345,11 +373,12 @@ final class NotchWindow: NSPanel {
 
     /// Told of each press the views are about to get, with where it went
     /// down in window coordinates. What it returns runs once the views have
-    /// had that press's release — only if they had all of it, so a press
-    /// the island took for a hold or a carry runs nothing. This is how a
-    /// click outside a field that has the keys lets the field go
-    /// (`watchClicksOutsideComposeFields`), after whatever the click was
-    /// on has done its job.
+    /// had that press's release — through here, or inside a control that
+    /// tracks the mouse itself (`trackedItsOwnRelease`) — and only if they
+    /// had all of it, so a press the island took for a hold or a carry
+    /// runs nothing. This is how a click outside a field that has the keys
+    /// lets the field go (`watchClicksOutsideComposeFields`), after
+    /// whatever the click was on has done its job.
     var pressObserver: (@MainActor (NSPoint) -> (@MainActor () -> Void)?)?
 
     /// What `pressObserver` asked to run when the press under way is let go.
@@ -384,7 +413,25 @@ final class NotchWindow: NSPanel {
             break
         }
         super.sendEvent(event)
+        if event.type == .leftMouseDown, afterRelease != nil, trackedItsOwnRelease(event) {
+            // A control that tracks the mouse itself — a scroller, an
+            // AppKit control — took the whole press, release and all, from
+            // inside its mouse-down, so the release will never come this
+            // way: the press is over now.
+            released = afterRelease
+            afterRelease = nil
+        }
         released?()
+    }
+
+    /// Whether the views, handling the button-down `down`, have already
+    /// had its release: a control that tracks the mouse runs a loop of its
+    /// own, pulling the drags and the release off the queue, and the last
+    /// event that loop took is then the app's current event.
+    private func trackedItsOwnRelease(_ down: NSEvent) -> Bool {
+        guard let current = NSApp.currentEvent, current !== down, current.type == .leftMouseUp,
+              current.windowNumber == windowNumber else { return false }
+        return current.timestamp >= down.timestamp
     }
 
     /// The views a click may land in without letting a field go: each
@@ -466,9 +513,10 @@ extension NotchWindow: NSDraggingDestination {
     }
 }
 
-/// The glass window's content view: nothing of its own, one subview kept
-/// at its bounds (see `NotchWindow.attachGlass`).
-final class IslandGlassContentView: NSView {
+/// A content view that is only a frame for one view, kept at its bounds, so
+/// the hosting view in it is never the window's content view (see
+/// `NotchWindow.attachGlass` and `attachContent`).
+class IslandContentView: NSView {
     func fill(with view: NSView) {
         subviews.forEach { $0.removeFromSuperview() }
         view.autoresizingMask = []
@@ -479,9 +527,24 @@ final class IslandGlassContentView: NSView {
     override func resizeSubviews(withOldSize oldSize: NSSize) {
         subviews.forEach { $0.frame = bounds }
     }
+}
 
+/// The glass window's content view (see `NotchWindow.attachGlass`).
+final class IslandGlassContentView: IslandContentView {
     // The window takes no events; nor does this.
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// The panel's content view (see `NotchWindow.attachContent`). A click goes
+/// to whatever in the island is under it, exactly as when the hosting view
+/// was the content view — which answers nil outside the drawn island
+/// (`NotchHostingView`). Where nothing is, this is nothing too, rather than
+/// a view of its own taking the click.
+final class IslandPanelContentView: IslandContentView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit === self ? nil : hit
+    }
 }
 
 /// The window the island's glass is drawn in (see `NotchWindow.glassWindow`):
