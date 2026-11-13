@@ -889,14 +889,17 @@ private final class AudioAnalyzer: @unchecked Sendable {
     /// measured band medians went 0.54 0.63 0.64 0.59 0.47 0.36 before and
     /// 0.49 0.59 0.59 0.55 0.42 0.30 after. At 1 every band would centre on
     /// the same height and the arc would be gone.
-    private static let shapeRelief = 0.5
+    ///
+    /// Off for now: it went with the steep scale, and Matthew found that
+    /// "this sensitive" and asked for the 1.1.0 feel back. At the 1.1.0 span
+    /// the treble doesn't sit on the floor, so there's nothing for it to do.
+    private static let shapeRelief = 0.0
 
     /// Above this fraction of the strip a bar is eased toward the top rather
-    /// than run into it. The scale below is steep enough that a loud passage
-    /// would otherwise sit clipped at full height; the knee spends the last
-    /// 40% of the strip on everything from about 4dB over the reference upward, so
-    /// the loudest peaks land around 0.9 and none are pinned.
-    private static let knee = 0.6
+    /// than run into it, so the loudest passages land short of the top
+    /// instead of sitting clipped there. At the scale below only the rare
+    /// peak reaches it.
+    private static let knee = 0.85
 
     /// How fast the reference chases the signal, per callback (~94/sec).
     ///
@@ -1216,22 +1219,21 @@ private final class AudioAnalyzer: @unchecked Sendable {
             let over = bandDb[band] - reference
                 - Self.shapeRelief * (bandReference[band] - bandReferenceMean)
 
-            // +13 over a 28dB span puts a band sitting exactly at the
-            // reference just under half the strip's height.
+            // +31 over a 60dB span puts a band sitting exactly at the
+            // reference just over half the strip's height.
             //
             // The span is what decides how much the bars move. This started
-            // at +30/50 and went to +28/53 to buy headroom: bands run +15dB
-            // over the reference at p99, and the loudest passages were
-            // reading as pinned. 53dB kept them clear, but it also meant a
-            // 10dB swing — a whole beat — moved a bar under a fifth of the
-            // strip. Measured over real playback the bars spent half their
-            // time inside a band 0.15 of the strip tall, and looked
-            // unresponsive however quickly they followed.
-            //
-            // 28dB is about twice as steep, and that same band is 0.28 tall.
-            // The headroom the wide span bought comes from the knee instead,
-            // so the loudest peaks still land around 0.9.
-            var normalised = (over + 13) / 28
+            // at +30/50, went to +28/53 to buy headroom (1.1.0), then to a
+            // twice-as-steep +13/28 in 1.2.0 because the bars looked
+            // unresponsive. Matthew, of 1.2.0: "was the waveform always this
+            // sensitive?", and he chose the 1.1.0 feel. The full-window
+            // transform above makes each band swing a little more than the
+            // half-window one 1.1.0 had, so the span is wider than 1.1.0's to
+            // give the same travel. Offline over four tracks (p5–p95 of bar
+            // height): 1.1.0 0.33–0.37, 1.2.0 0.56–0.63, this 0.33–0.41, with
+            // the same band medians as 1.1.0 and nothing pinned. The bars
+            // still move independently, which was the good half of 1.2.0.
+            var normalised = (over + 31) / 60
             if normalised > Self.knee {
                 let room = 1 - Self.knee
                 normalised = Self.knee + room * (1 - exp(-(normalised - Self.knee) / room))
