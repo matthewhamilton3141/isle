@@ -44,6 +44,10 @@ struct ExpandedNotchView: View {
 
     private static let crossDissolve = Animation.easeInOut(duration: 0.28)
 
+    /// Slack round the corner waveform's bars that still counts as a click
+    /// on them.
+    static let waveformSlack: CGFloat = 3
+
     var body: some View {
         // The way home lives in NotchRootView, in the housing band to the
         // right of the physical cutout — see the crumb in NotchRootView.notch.
@@ -63,8 +67,15 @@ struct ExpandedNotchView: View {
             // something else, and a row of paused dots in their corner was
             // one more thing to read. Pinned to the panel's top-right outside
             // the face switch, so it fades out as a swipe carries the Music
-            // face away and in once it lands back. Gated on a live track;
-            // non-interactive so it never swallows a seek or dismiss tap.
+            // face away and in once it lands back. Gated on a live track.
+            //
+            // A click on it starts the meter over (`restartWaveform`), for
+            // when the bars have stopped answering the music, and the bars
+            // answer with a ping. Its own corner holds nothing else — the
+            // title and the output list keep `waveformInset` clear of it, and
+            // the scrubber and keys are well below — so it takes no click
+            // that meant something already. Only with Live: the animated
+            // pattern has no meter to restart, and stays out of the way.
             .overlay(alignment: .topTrailing) {
                 ZStack {
                     if showsCornerWaveform {
@@ -75,9 +86,14 @@ struct ExpandedNotchView: View {
                             listens: viewModel.waveformSource.capturesAudio
                         )
                         .frame(width: 30, height: 24)
-                        .padding(.top, 10)
-                        .padding(.trailing, 4)
-                        .allowsHitTesting(false)
+                        // A few points of slack round the bars for the click,
+                        // taken back out of the placement so nothing moves.
+                        .padding(Self.waveformSlack)
+                        .contentShape(Rectangle())
+                        .onTapGesture { viewModel.restartWaveform() }
+                        .allowsHitTesting(viewModel.waveformSource.capturesAudio)
+                        .padding(.top, 10 - Self.waveformSlack)
+                        .padding(.trailing, 4 - Self.waveformSlack)
                         .modifier(SwipeFade(pager: island.pager))
                         .transition(.opacity)
                     }

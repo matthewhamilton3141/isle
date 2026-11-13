@@ -25,6 +25,13 @@
 //  bars themselves. (It was a pair of live shadows first, which the render
 //  server had to blur again on every level update, 30 times a second.)
 //
+//  The ping (`ping()`): the answer to a click that restarts the meter. A
+//  ripple out from the middle, each pair of bars lifting and settling a
+//  beat after the pair inside it, like a sonar ping. Additive animations on
+//  the bars' height, so it rides on top of whatever the bars are doing —
+//  live levels, the procedural loops or the resting dots — and needs no
+//  update of its own once it's handed to the render server.
+//
 
 import AppKit
 import Combine
@@ -87,6 +94,7 @@ final class EqualizerLayerView: NSView {
 
     private var source: SystemAudioLevels?
     private var subscription: AnyCancellable?
+    private var pingSubscription: AnyCancellable?
 
     private var builtSize: CGSize = .zero
     private var builtMode: Mode = .resting
@@ -116,6 +124,11 @@ final class EqualizerLayerView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// Never the target of a click itself: where the waveform takes one (the
+    /// Music face), the SwiftUI view around it does, and everywhere else a
+    /// click goes to whatever is under it.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
     // MARK: - Input
 
     /// The live path. The view subscribes to the levels itself rather than being
@@ -128,6 +141,10 @@ final class EqualizerLayerView: NSView {
             .sink { [weak self] levels in
                 MainActor.assumeIsolated { self?.setLevels(levels) }
             }
+        pingSubscription = source.pings
+            .sink { [weak self] in
+                MainActor.assumeIsolated { self?.ping() }
+            }
     }
 
     /// Stop following the capture and rest on the procedural pattern. A no-op
@@ -135,6 +152,7 @@ final class EqualizerLayerView: NSView {
     func detach() {
         guard source != nil else { return }
         subscription = nil
+        pingSubscription = nil
         source = nil
         setLevels([])
     }
@@ -304,6 +322,64 @@ final class EqualizerLayerView: NSView {
             setBar(index, level: levels[index], size: size, barWidth: barWidth)
         }
         CATransaction.commit()
+    }
+
+    // MARK: - Ping
+
+    /// How far the middle pair lifts, as a share of the strip's height; each
+    /// pair further out lifts less.
+    private static let pingLift: CGFloat = 0.5
+    private static let pingFalloff: [CGFloat] = [1, 0.72, 0.48]
+    /// One bar's lift and settle, and the beat between one pair and the next.
+    private static let pingDuration: CFTimeInterval = 0.38
+    private static let pingStagger: CFTimeInterval = 0.05
+
+    /// Plays the ping: a ripple out from the middle of the bars.
+    func ping() {
+        let size = builtSize
+        guard size.width > 0, size.height > 0, bars.count == barCount else { return }
+        let now = CACurrentMediaTime()
+
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            // Nothing moves: the bars dim for a moment and come back.
+            let dim = CAKeyframeAnimation(keyPath: "opacity")
+            dim.values = [1, 0.45, 1]
+            dim.keyTimes = [0, 0.4, 1]
+            dim.duration = Self.pingDuration
+            dim.timingFunctions = [CAMediaTimingFunction(name: .easeOut), CAMediaTimingFunction(name: .easeIn)]
+            gradient.add(dim, forKey: "ping")
+            return
+        }
+
+        let middle = Double(barCount - 1) / 2
+        for index in 0..<barCount {
+            // Rings out from the middle: 0 for the middle pair, then 1, 2.
+            let ring = Int((abs(Double(index) - middle) - 0.5).rounded(.up))
+            let falloff = Self.pingFalloff[min(max(ring, 0), Self.pingFalloff.count - 1)]
+            // No higher than the strip: past it the gradient ends and the
+            // bar's top would show cut square.
+            let headroom = max(0, size.height - bars[index].bounds.height)
+            let lift = min(size.height * Self.pingLift * falloff, headroom)
+            let begin = now + Self.pingStagger * Double(max(ring, 0))
+            bars[index].add(pingAnimation(lift: lift, begin: begin), forKey: "ping")
+            if !edges.isEmpty {
+                edges[index].add(pingAnimation(lift: lift, begin: begin), forKey: "ping")
+            }
+        }
+    }
+
+    /// Added to the height the bar has, whatever sets it: up by `lift` and
+    /// back. The corners need nothing — a bar taller than it is wide is
+    /// already rounded to half its width, and a lifted dot is such a bar.
+    private func pingAnimation(lift: CGFloat, begin: CFTimeInterval) -> CAKeyframeAnimation {
+        let animation = CAKeyframeAnimation(keyPath: "bounds.size.height")
+        animation.isAdditive = true
+        animation.values = [0, lift, 0]
+        animation.keyTimes = [0, 0.32, 1]
+        animation.timingFunctions = [CAMediaTimingFunction(name: .easeOut), CAMediaTimingFunction(name: .easeInEaseOut)]
+        animation.duration = Self.pingDuration
+        animation.beginTime = begin
+        return animation
     }
 
     // MARK: - Procedural fallback

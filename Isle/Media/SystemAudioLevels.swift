@@ -98,6 +98,19 @@ final class SystemAudioLevels: ObservableObject {
 
     private var displayTimer: Timer?
 
+    /// Notices a meter that has stopped while the player plays, and asks for
+    /// a rebuild. Read once a second off the display timer — the publish
+    /// path already running — so it costs nothing while the meter is idle.
+    /// See MeterWatchdog.swift for the rule and the stall it answers.
+    private var watchdog = MeterWatchdog()
+    private var displayTicks = 0
+    private static let ticksPerWatchdogCheck = 30
+
+    /// Fires when the user asks the meter to start over (`restartFromUser`),
+    /// for the waveform to answer the click. Not for the watchdog's own
+    /// rebuilds: those happen behind the user's back and say nothing.
+    let pings = PassthroughSubject<Void, Never>()
+
     #if DEBUG
     private var diagnosticTimer: Timer?
     #endif
@@ -148,6 +161,7 @@ final class SystemAudioLevels: ObservableObject {
     func setTarget(_ bundleID: String) {
         guard bundleID != targetBundleID else { return }
         targetBundleID = bundleID
+        watchdog.reset()
         guard wantsCapture else { return }
         endCapture()
         levels = []
@@ -160,6 +174,8 @@ final class SystemAudioLevels: ObservableObject {
     func setPlaybackPaused(_ paused: Bool) {
         guard paused != playbackPaused else { return }
         playbackPaused = paused
+        // A new stretch of playback gets the watchdog's full set of tries.
+        watchdog.reset()
         pauseTask?.cancel()
         pauseTask = nil
 
@@ -266,9 +282,12 @@ final class SystemAudioLevels: ObservableObject {
         let analyzer = self.analyzer
         let session = self.session
         let generation = self.generation
+        // Built while paused, the tap's IO is not started at all, rather than
+        // started and stopped again a moment later; see `CaptureSession.start`.
+        let startsIO = !playbackPaused
 
         Self.captureQueue.async { [weak self] in
-            let outcome = Result { try session.start(tapping: pid, analyzer: analyzer) }
+            let outcome = Result { try session.start(tapping: pid, analyzer: analyzer, startsIO: startsIO) }
             Task { @MainActor in
                 self?.captureDidFinish(outcome, generation: generation)
             }
@@ -283,16 +302,23 @@ final class SystemAudioLevels: ObservableObject {
     ) {
         guard generation == self.generation, isCapturing else { return }
         switch outcome {
-        case .success(.started):
+        case .success(.started), .success(.builtIdle):
             failureReason = nil
             if playbackPaused {
                 // Built while paused (launch, or a Spotify relaunch): keep it
-                // idle until something plays.
+                // idle until something plays. A no-op for the session when it
+                // was built idle.
                 suspendCapture()
-            } else if !isSuspended {
+            } else if isSuspended {
                 // A pause can have expired while the setup was in flight, in
                 // which case the suspend is already queued behind it: leave
                 // the meter idle and let the resume start publishing.
+            } else if case .success(.builtIdle) = outcome {
+                // Built idle for a pause that has since ended: start it the
+                // way a resume would.
+                isSuspended = true
+                resumeCapture()
+            } else {
                 startPublishing()
             }
         case .success(.processUnavailable):
@@ -359,6 +385,48 @@ final class SystemAudioLevels: ObservableObject {
     private func restart() {
         endCapture()
         beginCaptureIfNeeded()
+    }
+
+    /// The user clicked the waveform: start the meter over, in case it has
+    /// stopped answering. A new tap and aggregate device, built the way a
+    /// player relaunch builds them; playback is never touched — the tap only
+    /// listens. The waveform answers with a ping (`pings`) whatever the
+    /// meter's state, so the click always visibly lands.
+    func restartFromUser() {
+        pings.send()
+        guard wantsCapture else { return }
+        watchdog.reset()
+        Self.debugLog("restart: asked for by a click")
+        restart()
+    }
+
+    /// One reading for the watchdog, from the display timer.
+    private func checkWatchdog() {
+        let verdict = watchdog.observe(
+            callbacks: analyzer.callbackCount(),
+            at: ProcessInfo.processInfo.systemUptime,
+            playing: !playbackPaused
+        )
+        guard verdict == .rebuild else { return }
+        NSLog("Isle: level meter silent while playing; rebuilding (try \(watchdog.attempts))")
+        Self.debugLog("watchdog: no callbacks while playing; rebuilding (try \(watchdog.attempts) of \(MeterWatchdog.waits.count))")
+        restart()
+    }
+
+    /// A line in the Debug build's `/tmp/isle-audio.log`, beside the meter's
+    /// readings. Nothing in a release build.
+    private nonisolated static func debugLog(_ line: String) {
+        #if DEBUG
+        guard let data = "\(Date()) \(line)\n".data(using: .utf8) else { return }
+        let url = URL(fileURLWithPath: "/tmp/isle-audio.log")
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            try? handle.write(contentsOf: data)
+            try? handle.close()
+        } else {
+            try? data.write(to: url)
+        }
+        #endif
     }
 
     // MARK: - Output device
@@ -516,6 +584,8 @@ final class SystemAudioLevels: ObservableObject {
         // `captureDidFinish`); one timer is the most it should ever get.
         guard displayTimer == nil else { return }
         let analyzer = self.analyzer
+        watchdog.begin(callbacks: analyzer.callbackCount(), at: ProcessInfo.processInfo.systemUptime)
+        displayTicks = 0
 
         #if DEBUG
         let diagnostic = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
@@ -571,6 +641,10 @@ final class SystemAudioLevels: ObservableObject {
                 if next != self.levels {
                     self.levels = next
                 }
+                self.displayTicks &+= 1
+                if self.displayTicks % Self.ticksPerWatchdogCheck == 0 {
+                    self.checkWatchdog()
+                }
             }
         }
         // A few milliseconds of slack on a 33ms period: enough for the kernel
@@ -602,6 +676,9 @@ final class SystemAudioLevels: ObservableObject {
 private final class CaptureSession: @unchecked Sendable {
     enum Outcome {
         case started
+        /// Built, with its IO not started: asked for while playback was
+        /// paused. `resume` starts it.
+        case builtIdle
         /// Spotify vanished between the pid lookup and the tap.
         case processUnavailable
     }
@@ -613,12 +690,25 @@ private final class CaptureSession: @unchecked Sendable {
     /// The IOProc has been stopped by `suspend` and not yet restarted.
     private var isSuspended = false
 
-    func start(tapping pid: pid_t, analyzer: AudioAnalyzer) throws -> Outcome {
+    /// Builds the tap, the aggregate device and the IOProc, and starts the
+    /// IO unless `startsIO` is false.
+    ///
+    /// Not starting it while paused is deliberate. The aggregate is built
+    /// with `TapAutoStart`, so a start made while the player is silent waits
+    /// for its first audio, and the pause that follows at once stopped that
+    /// waiting start again. The one aggregate seen to die for good (13 Nov
+    /// 2026) had been through exactly that — built and stopped at 13:40:43
+    /// with Spotify paused, the AirPods becoming the output five seconds
+    /// later — and when Spotify played at 13:45:57, coreaudiod ran its IO
+    /// for 0.63s, ended it, and never ran it again. A standalone repro of
+    /// the sequence recovered every time, so this is a precaution, not a
+    /// proven fix; `MeterWatchdog` is what recovers if it happens anyway.
+    func start(tapping pid: pid_t, analyzer: AudioAnalyzer, startsIO: Bool = true) throws -> Outcome {
         guard #available(macOS 14.4, *) else { return .processUnavailable }
-        guard aggregateID == kAudioObjectUnknown else { return .started }
+        guard aggregateID == kAudioObjectUnknown else { return isSuspended ? .builtIdle : .started }
         guard let processObject = processObject(for: pid) else { return .processUnavailable }
-        try startCapture(tapping: processObject, analyzer: analyzer)
-        return .started
+        try startCapture(tapping: processObject, analyzer: analyzer, startsIO: startsIO)
+        return startsIO ? .started : .builtIdle
     }
 
     /// Stops the IO cycle, keeping the tap, the aggregate device and the
@@ -685,7 +775,7 @@ private final class CaptureSession: @unchecked Sendable {
     }
 
     @available(macOS 14.4, *)
-    private func startCapture(tapping processObject: AudioObjectID, analyzer: AudioAnalyzer) throws {
+    private func startCapture(tapping processObject: AudioObjectID, analyzer: AudioAnalyzer, startsIO: Bool) throws {
         // Scoped to Spotify's process alone, so the meter follows Spotify and
         // ignores every other sound on the system.
         let tapDescription = CATapDescription(monoMixdownOfProcesses: [processObject])
@@ -769,6 +859,10 @@ private final class CaptureSession: @unchecked Sendable {
         }
         ioProcID = procID
 
+        guard startsIO else {
+            isSuspended = true
+            return
+        }
         let startStatus = AudioDeviceStart(aggregate, procID)
         guard startStatus == noErr else {
             throw AudioLevelError.startFailed(startStatus)

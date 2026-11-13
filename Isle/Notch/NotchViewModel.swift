@@ -1655,6 +1655,12 @@ final class NotchViewModel: ObservableObject {
     /// isn't running, which EqualizerView reads as "use the procedural fallback".
     var audioLevelSource: SystemAudioLevels { audio }
 
+    /// A click on the Music face's waveform: start the meter over, in case
+    /// it has stopped answering. Listens only; playback is never touched.
+    func restartWaveform() {
+        audio.restartFromUser()
+    }
+
     /// What the open panel is drawn on, as chosen in Settings — read here so
     /// a change re-renders the island through this model.
     var panelBackground: PanelBackground { settings.panelBackground }
@@ -4497,6 +4503,12 @@ extension NotchViewModel {
         answerDraft = fixture.answerDraft
         denialDraft = fixture.denialDraft
         activeTab = .claude
+    }
+
+    /// A track for previews and tests, put straight on the island the way a
+    /// player's report would land, without a player.
+    func applyPreviewMedia(_ model: MediaPlaybackModel) {
+        media = model
     }
 }
 #endif
