@@ -50,7 +50,7 @@ final class Island {
         hosting = NotchHostingView(rootView: NotchRootView(viewModel: vm, island: presentation) { ref?.activeRect = $0 })
         ref = hosting
         hosting.sizingOptions = []
-        window.contentView = hosting
+        window.attachContent(hosting)
         // As NotchWindowController wires it.
         window.watchClicksOutsideComposeFields(vm)
         window.setFrame(NSRect(x: -20000, y: -20000, width: frame.width, height: frame.height), display: false)
@@ -83,19 +83,27 @@ final class Island {
     /// the release off the app's queue — so they're queued first, as the
     /// window server would have them, and whatever no tracking took is
     /// then sent through the window in order.
-    func press(_ steps: [(NSEvent.EventType, NSPoint)]) {
+    /// Returns how many of the events after the down were left for the
+    /// window — none when a control tracked the whole press itself.
+    @discardableResult
+    func press(_ steps: [(NSEvent.EventType, NSPoint)]) -> Int {
         let (downType, downAt) = steps[0]
+        let down = event(downType, at: downAt)   // first, so the times run in order
         for (type, p) in steps.dropFirst() { NSApp.postEvent(event(type, at: p), atStart: false) }
-        window.sendEvent(event(downType, at: downAt))
+        window.sendEvent(down)
+        var left = 0
         while let e = NSApp.nextEvent(matching: [.leftMouseDragged, .leftMouseUp], until: Date(),
                                       inMode: .default, dequeue: true) {
+            left += 1
             settle(0.05)
             window.sendEvent(e)
         }
         settle(0.5)
+        return left
     }
 
-    func click(at p: NSPoint) {
+    @discardableResult
+    func click(at p: NSPoint) -> Int {
         press([(.leftMouseDown, p), (.leftMouseUp, p)])
     }
 
@@ -259,6 +267,33 @@ enum ClickOutProbe {
                 report(island.vm.questionIndex == 1, "control: still on the same question")
             } else {
                 report(false, "control: the field is up")
+            }
+            island.close()
+        }
+
+        // A control that tracks the press itself — an AppKit control, as a
+        // long option list's scroller is — takes the release from inside
+        // its mouse-down, so it never comes through the window. The field
+        // lets go all the same, once the control is done.
+        for (fixture, kind) in [("jr_reply_composing", ComposeKind.reply), ("jr_question_typing", .answer)] {
+            let island = Island(fixture)
+            final class Target: NSObject { var fired = 0; @objc func fire(_ sender: Any?) { fired += 1 } }
+            let target = Target()
+            let button = NSButton(title: "", target: target, action: #selector(Target.fire(_:)))
+            if let fieldRect = island.fieldRect, let content = island.window.contentView {
+                // On the island, below the field, over the hosting view.
+                let isle = island.islandRect
+                button.frame = NSRect(x: fieldRect.minX, y: isle.minY + 1, width: 40, height: max(4, fieldRect.minY - isle.minY - 2))
+                content.addSubview(button)
+                let left = island.click(at: NSPoint(x: button.frame.midX, y: button.frame.midY))
+                report(target.fired == 1, "\(kind): a control that tracks its own press did its job", "fired \(target.fired)")
+                report(left == 0, "\(kind): and took the release itself", "\(left) left for the window")
+                report(island.vm.composing == nil, "\(kind): then the field let go",
+                       "composing \(String(describing: island.vm.composing))")
+                report(!(kind == .reply ? island.vm.replyDraft : island.vm.answerDraft).isEmpty, "\(kind): the draft is kept")
+                button.removeFromSuperview()
+            } else {
+                report(false, "\(kind): the field is up")
             }
             island.close()
         }

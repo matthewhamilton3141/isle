@@ -35,11 +35,11 @@
 //    milliseconds for the whole run and checked at each step of the lens.
 //
 //  The windows are at alpha 0 and ignore the mouse: nothing is shown, nothing
-//  is clickable, and they never activate or take keys. Key status is driven
-//  through `becomeKey`/`resignKey`, as AppKit calls them — which, for a
-//  `.nonactivatingPanel`, is itself what takes the keyboard, so the panel is
-//  told through `tellKey`, with that style off for the call. Run with
-//  scripts/test-island-windows.sh.
+//  is clickable, and they never activate or take keys. The panel's key
+//  status is simulated (`tellKey`, `tellResigned`): nothing here calls
+//  `becomeKey`, `makeKey` or `resignKey` on it, since for a
+//  `.nonactivatingPanel` `becomeKey()` is itself what takes the keyboard.
+//  Run with scripts/test-island-windows.sh.
 //
 
 import SwiftUI
@@ -99,15 +99,25 @@ func checkKeysLeftAlone(_ step: String) {
     check(keyFocusTaken == 0, "\(step): and has been all along", "\(keyFocusTaken) of \(keyFocusSamples) samples found it here")
 }
 
-/// The panel told it is key, as AppKit tells it when a reply begins, without
-/// the keyboard. The style is off for the call: with it, `becomeKey()` takes
-/// the key focus (right for a reply, wrong for a test on a Mac in use).
+/// The panel's side of becoming key when a reply begins, or of giving the
+/// keys back — simulated, never AppKit's. `becomeKey()` on a
+/// `.nonactivatingPanel` asks the window server for the key focus itself,
+/// hidden or not, and this runs on a Mac someone is typing on; with the
+/// style off for the call it was still AppKit's key machinery, on a window
+/// the window server knows. So nothing here calls `becomeKey`, `makeKey`
+/// or `resignKey` on the panel. What the panel's own overrides add to
+/// AppKit's — and what these checks are about — is bringing the glass back
+/// into step (`syncGlass`), which is what this does. The orderings around
+/// it (out, back, both in one turn) are the real ones.
 @MainActor
 func tellKey(_ w: NotchWindow) {
-    let style = w.styleMask
-    w.styleMask = style.subtracting(.nonactivatingPanel)
-    w.becomeKey()
-    w.styleMask = style
+    w.syncGlass()
+}
+
+/// The panel giving up the keys, simulated the same way (see `tellKey`).
+@MainActor
+func tellResigned(_ w: NotchWindow) {
+    w.syncGlass()
 }
 
 /// Whether AppKit has the window drawn as a key window — for the glass
@@ -188,13 +198,13 @@ func floatingChecks(_ w: NotchWindow, vm: NotchViewModel, island: IslandPresenta
     let glassHost = NSHostingView(rootView: NotchRootView(viewModel: vm, island: island, glassLayer: .materialOnly) { reported.glass = $0 })
     glassHost.sizingOptions = []
     // The window's own two views go back when this is done.
-    let ownPanel = w.contentView, ownGlass = w.glassView
+    let ownPanel = w.contentHost, ownGlass = w.glassView
     defer {
-        w.contentView = ownPanel
+        if let ownPanel { w.attachContent(ownPanel) }
         if let ownGlass { w.attachGlass(ownGlass) }
         spin(0.3)
     }
-    w.contentView = panelHost
+    w.attachContent(panelHost)
     w.attachGlass(glassHost)
     func fixture(_ name: String) -> ClaudePanelFixture { ClaudePanelFixture.all.first { $0.name == name }! }
     let bounds = CGRect(origin: .zero, size: target.size)
@@ -360,7 +370,7 @@ func offTheNotch(_ screen: NSScreen) {
     hostingRef = hosting
     w.alphaValue = 0
     w.ignoresMouseEvents = true
-    w.contentView = hosting
+    w.attachContent(hosting)
 
     // The carry, wired as the controller wires it, but with a pointer of
     // the test's own: where it says, with the button as it says.
@@ -767,7 +777,7 @@ func run() {
     // Invisible and click-through, whatever the controller would make of it.
     w.alphaValue = 0
     w.ignoresMouseEvents = true
-    w.contentView = hosting
+    w.attachContent(hosting)
     w.place(target)
     w.orderFrontRegardless()
     spin(0.5)
@@ -780,6 +790,15 @@ func run() {
     check(!(w.glassWindow.contentView is NSHostingView<NotchRootView>) && w.glassView?.superview === w.glassWindow.contentView,
           "the glass window's hosting view is inside its content view, not the content view itself")
     check(w.glassView?.frame == w.glassWindow.contentView?.bounds, "and fills it", "\(String(describing: w.glassView?.frame))")
+    // Nor the panel's, for the same reasons (see `attachContent`).
+    check(w.contentView !== hosting && w.contentHost === hosting && hosting.superview === w.contentView,
+          "the panel's hosting view is inside its content view, not the content view itself")
+    check(hosting.frame == w.contentView?.bounds && w.contentView?.frame.size == w.frame.size,
+          "and fills it, as it fills the window", "\(hosting.frame) in \(String(describing: w.contentView?.frame))")
+    // A click outside the drawn island lands on nothing, as before: the
+    // content view takes none of its own.
+    let corner = NSPoint(x: 2, y: 2)
+    check(w.contentView?.hitTest(corner) == nil, "a click outside the drawn island hits nothing")
     check(target.width > NotchMetrics.expandedSize.width, "maximumFrame is wider than the open panel (the side pads)")
     checkPlaced(w, target, "after setup")
     checkInStep(w, "after setup")
@@ -828,7 +847,7 @@ func run() {
     island.setHovering(false)
     spin(1.0)
     checkPlaced(w, target, "a hosting view left on its default sizing, closed")
-    w.contentView = hosting
+    w.attachContent(hosting)
     spin(0.2)
 
     print("key handoff")
@@ -843,7 +862,7 @@ func run() {
     // giveKeysBack
     w.allowsKey = false
     w.makeFirstResponder(nil)
-    w.resignKey()
+    tellResigned(w)
     spin(0.2)
     checkInStep(w, "keys given back")
     w.orderOut(nil)
@@ -861,7 +880,7 @@ func run() {
     // Several handoffs in a row, as a reply after a reply.
     for i in 1...3 {
         w.allowsKey = true; tellKey(w); spin(0.05)
-        w.allowsKey = false; w.resignKey(); w.orderOut(nil); w.orderFrontRegardless(); spin(0.1)
+        w.allowsKey = false; tellResigned(w); w.orderOut(nil); w.orderFrontRegardless(); spin(0.1)
         checkInStep(w, "handoff \(i)")
     }
 
@@ -952,7 +971,7 @@ func run() {
         // The panel itself taking and giving back the keys, as for a reply.
         w.allowsKey = true; tellKey(w); spin(0.2)
         checkLens(true, "the panel key, the lens stays up")
-        w.allowsKey = false; w.makeFirstResponder(nil); w.resignKey(); w.orderOut(nil); w.orderFrontRegardless(); spin(0.2)
+        w.allowsKey = false; w.makeFirstResponder(nil); tellResigned(w); w.orderOut(nil); w.orderFrontRegardless(); spin(0.2)
         checkLens(true, "the keys given back, the lens is up")
         checkInStep(w, "prism, after a reply")
         checkKeysLeftAlone("prism, through a reply's handoff")

@@ -29,7 +29,7 @@ func island(_ fixtureName: String) -> (NotchViewModel, NotchWindow) {
     let hosting = NotchHostingView(rootView: NotchRootView(viewModel: vm, island: presentation) { ref?.activeRect = $0 })
     ref = hosting
     hosting.sizingOptions = []
-    window.contentView = hosting
+    window.attachContent(hosting)
     window.setFrame(NSRect(x: -20000, y: -20000, width: metrics.maximumFrame.width, height: metrics.maximumFrame.height), display: false)
     window.alphaValue = 0
     window.allowsKey = true
