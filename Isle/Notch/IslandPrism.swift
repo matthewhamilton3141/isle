@@ -195,7 +195,9 @@ enum IslandPrism {
         case spread
     }
 
-    static let bandStyle: BandStyle = .notched
+    /// `spread`. Matthew tried `notched` live: "the bar looks horrible"; he
+    /// had said that if a bar wasn't good, the gradient should spread out.
+    static let bandStyle: BandStyle = .spread
 
     /// How a bar lets go, in points from the top of the screen.
     struct BandLook: Equatable {
