@@ -119,6 +119,25 @@ struct IslandPlacementBounds: Equatable {
         return IslandOpening(upward: upward, shift: centre - anchor.x)
     }
 
+    /// Where an open panel `size` big lies for an island resting at
+    /// `anchor` and opening as `opening`: hanging from the capsule's top,
+    /// or standing on its bottom edge, centred the opening's shift from it.
+    func panel(_ size: CGSize, at anchor: CGPoint, opening: IslandOpening) -> CGRect {
+        let bottom = opening.upward ? anchor.y - pill.height : anchor.y - size.height
+        return CGRect(x: anchor.x + opening.shift - size.width / 2, y: bottom, width: size.width, height: size.height)
+    }
+
+    /// Where an island let go at `anchor` comes to rest and which way it
+    /// then opens. Open (`open`, the way it opens), it's kept whole on the
+    /// screen and keeps its way. Closed — however it got that way, the
+    /// grabber clicked included — its place decides (`opening(at:)`), so a
+    /// capsule taken to an edge or a corner opens away from it.
+    func putDown(_ anchor: CGPoint, open: IslandOpening?) -> (anchor: CGPoint, opening: IslandOpening) {
+        if let open { return (resting(anchor, open: open), open) }
+        let rest = resting(anchor)
+        return (rest, opening(at: rest))
+    }
+
     // MARK: Clamping
 
     /// Where a closed island let go at `anchor` comes to rest: the nearest

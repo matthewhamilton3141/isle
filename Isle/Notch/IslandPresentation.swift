@@ -47,6 +47,17 @@ final class IslandPresentation: ObservableObject {
     /// Nothing here is timed.
     @Published private(set) var isHeldOpen = false
 
+    /// The grabber was clicked: the panel closed to its capsule, and a
+    /// hover doesn't open it again — the pointer is still on it, and the
+    /// point was to have the capsule to move. The size of the panel it
+    /// closed from, for the room it's held compact in
+    /// (`NotchWindowController.compactZone`). Ends when the pointer leaves
+    /// that room, so coming back opens it as ever; or with a click on the
+    /// capsule, a shortcut or a file drag. Nothing here is timed.
+    private(set) var compactPanel: CGSize?
+
+    var isHeldCompact: Bool { compactPanel != nil }
+
     /// Geometry of the camera housing (or the fallback pill) on the screen this
     /// island is drawn on. Published because the views size themselves from it:
     /// moving between a notched and a non-notched display changes the shape,
@@ -122,6 +133,7 @@ final class IslandPresentation: ObservableObject {
     /// simply move again.
     func beginDrop() {
         guard !isDropTarget else { return }
+        compactPanel = nil
         relaxProximity()
         isDropTarget = true
         if !isHovering { isHovering = true }
@@ -149,6 +161,7 @@ final class IslandPresentation: ObservableObject {
     /// `isHeldOpen`). Past the collapse lock, like a drop — the lock is
     /// there for a pointer still on its way out, and this isn't one.
     func openFromShortcut() {
+        compactPanel = nil
         relaxProximity()
         if !isHovering { isHovering = true }
         isHeldOpen = true
@@ -191,6 +204,8 @@ final class IslandPresentation: ObservableObject {
     /// interrupt is unaffected: it opens through `hasLiveActivity`, not hover.
     func setHovering(_ hovering: Bool) {
         if hovering {
+            // Held compact, the pointer on the capsule is no visit.
+            guard compactPanel == nil else { return }
             // Remember that this alert's panel was actually visited, so hovering
             // back off it can count as a dismiss.
             content.noteAlertVisited()
@@ -208,6 +223,30 @@ final class IslandPresentation: ObservableObject {
         }
     }
 
+    /// The grabber was clicked: close to the capsule, on the close spring,
+    /// and stay closed under the pointer (`compactPanel`). `panel` is the
+    /// open panel's size as it was.
+    func holdCompact(panel: CGSize) {
+        compactPanel = panel
+        relaxProximity()
+        setHovering(false)
+    }
+
+    /// The pointer left the room the capsule was held compact in (or the
+    /// island went back on its notch): hovers open it again.
+    func releaseCompact() {
+        compactPanel = nil
+    }
+
+    /// The closed capsule was clicked: open it, held compact or not. Not
+    /// while it's still closing, as a hover can't — a double click on the
+    /// grabber would otherwise close it and open it again.
+    func openFromClick() {
+        guard !collapseLocked, !isHovering else { return }
+        compactPanel = nil
+        setHovering(true)
+    }
+
     /// A pointer move on this island's screen: update the swell. `drawn` is
     /// the island's drawn rect in the same (screen) coordinates as `pointer`.
     ///
@@ -218,7 +257,8 @@ final class IslandPresentation: ObservableObject {
     /// flight) and not taking a drag.
     func trackProximity(pointer: CGPoint, drawn: CGRect?) {
         let allowed = { [unowned self] in
-            !self.collapseLocked && !self.isDropTarget && self.state == .collapsed
+            // Held compact it won't open, so it doesn't swell as if it would.
+            !self.collapseLocked && !self.isDropTarget && self.state == .collapsed && self.compactPanel == nil
         }
         if let next = proximityGate.update(pointer: pointer, island: drawn, allowed: allowed()) {
             proximity.reading = next

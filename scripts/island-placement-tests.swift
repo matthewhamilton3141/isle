@@ -7,7 +7,8 @@
 //
 //  - IslandHold.swift: one press, from button down to button up — a click
 //    left alone, a hold that runs the line and lifts the island, the ways a
-//    hold is called off, and a plain drag of a closed island.
+//    hold is called off, a plain drag of a closed island or of an open one
+//    by its header, and the click a plain drag can turn out to be.
 //  - IslandPlacement.swift: where an island off its notch may rest and be
 //    carried, how near the notch takes it back, and what's remembered.
 //  - DetachTraceGeometry.swift: the line's two halves, from the bottom
@@ -208,7 +209,53 @@ do {
     check(up == Outcome(verdict: .cancelPress, actions: [.dropped(at: CGPoint(x: 750, y: 880))]), "and put down on release")
 
     _ = hold.down(kind: .drag, at: press, time: 20)
-    check(hold.up(at: press, time: 20.1) == Outcome(), "a click without a drag is a click")
+    let click = hold.up(at: CGPoint(x: 702, y: 899), time: 20.1)
+    check(click == Outcome(verdict: .pass, actions: [.clicked(at: press)]),
+          "a click without a drag is a click: passed on, and said so, at the press", "\(click)")
+    check(hold.phase == .idle, "and the press is over")
+
+    _ = hold.down(kind: .drag, at: press, time: 30)
+    _ = hold.tick(time: 35, pointer: press, buttonDown: true)
+    check(hold.up(at: press, time: 35.1).actions == [.clicked(at: press)], "however long it was held still: nothing is timed, so it's still a click")
+
+    _ = hold.down(kind: .drag, at: press, time: 40)
+    _ = hold.moved(to: CGPoint(x: 760, y: 900), time: 40.1)
+    check(hold.up(at: press, time: 40.2).actions == [.dropped(at: press)], "dragged and brought back: a move, not a click")
+
+    _ = hold.down(kind: .drag, at: press, time: 50)
+    _ = hold.tick(time: 50.5, pointer: press, buttonDown: false)
+    check(hold.phase == .idle && hold.up(at: press, time: 50.6) == Outcome(),
+          "a release seen only as the button up (it went elsewhere): no click")
+}
+
+print("Hold: an open island off the notch, by its header or its edge, is dragged at once")
+
+do {
+    // IslandCarry gives a press on the grabber, the band round it or the
+    // panel's bare edge `.drag`, and one on its content `.pickUp`.
+    var hold = IslandHold()
+    _ = hold.down(kind: .drag, at: press, time: 10)
+    check(hold.deadline == nil, "no grace, no line: nothing to wait for")
+    let lifted = hold.moved(to: CGPoint(x: 690, y: 896), time: 10.03)
+    check(lifted == Outcome(verdict: .swallow, actions: [.lifted(at: press), .carried(to: CGPoint(x: 690, y: 896))]),
+          "the first drag past the slop, 30ms in, picks it up", "\(lifted)")
+    check(hold.moved(to: CGPoint(x: 600, y: 850), time: 10.1) == Outcome(verdict: .swallow, actions: [.carried(to: CGPoint(x: 600, y: 850))]),
+          "and it follows the pointer")
+    check(hold.up(at: CGPoint(x: 600, y: 850), time: 10.2) == Outcome(verdict: .cancelPress, actions: [.dropped(at: CGPoint(x: 600, y: 850))]),
+          "and is put down on release, which the views don't take for a click")
+
+    // On its content the hold stays: a scrub there is the scrubber's.
+    var content = IslandHold()
+    _ = content.down(kind: .pickUp, at: press, time: 10)
+    check(content.moved(to: CGPoint(x: 760, y: 900), time: 10.05) == Outcome() && content.phase == .spent,
+          "on the content a drag straight away is still the control's")
+    check(content.up(at: CGPoint(x: 760, y: 900), time: 10.3) == Outcome(), "and so is its release")
+    _ = content.down(kind: .pickUp, at: press, time: 20)
+    check(content.up(at: press, time: 20.1) == Outcome(), "a click on the content is the content's, and nothing of the island's")
+
+    // The on-notch hold is untouched.
+    check(IslandHold.Kind.detach.timing.map { $0.grace == 0.25 && $0.run == 1.1 } == true, "taking it off the notch still takes the 0.25 + 1.1s hold")
+    check(IslandHold.Kind.drag.timing == nil, "a plain drag is never timed")
 }
 
 print("Hold: never left carrying")
@@ -360,6 +407,66 @@ do {
     check(inside(panel(held, up, in: bounds), bounds.screen), "an open panel carried up and left stays on the screen", "\(held)")
     let put = bounds.resting(CGPoint(x: 3000, y: -500), open: .down)
     check(inside(panel(put, .down, in: bounds), bounds.visible), "and put down, rests where it fits the way it opens", "\(put)")
+}
+
+print("Placement: closed by the grabber, carried to an edge, opened")
+
+do {
+    // An open card in the middle of the screen, opening down. The grabber
+    // is clicked: it closes to its capsule where it is, and keeps the way
+    // it opened until it's put down (IslandCarry's `keptOpening` is nil
+    // from the moment it's closed).
+    let card = CGSize(width: 520, height: 154)
+    let start = CGPoint(x: 756, y: 700)
+    let before = bounds.putDown(start, open: .down)
+    check(before.anchor == start && before.opening == .down, "put down open, it keeps its way")
+    check(bounds.panel(card, at: start, opening: .down).contains(CGPoint(x: 756, y: 700 - 24)),
+          "the grabber it was closed by is over the capsule that's left: the pointer is still on it")
+
+    // Then carried, closed, past each edge and corner, and let go.
+    let targets: [(String, CGPoint, Bool, Int)] = [
+        ("right edge", CGPoint(x: 5000, y: 600), false, -1),
+        ("left edge", CGPoint(x: -5000, y: 600), false, 1),
+        ("top edge", CGPoint(x: 400, y: 5000), false, 0),
+        ("bottom edge", CGPoint(x: 900, y: -5000), true, 0),
+        ("top right", CGPoint(x: 5000, y: 5000), false, -1),
+        ("top left", CGPoint(x: -5000, y: 5000), false, 1),
+        ("bottom right", CGPoint(x: 5000, y: -5000), true, -1),
+        ("bottom left", CGPoint(x: -5000, y: -5000), true, 1),
+    ]
+    for (name, wanted, upward, side) in targets {
+        let carried = bounds.carrying(wanted)
+        check(inside(capsule(carried, in: bounds), bounds.screen), "\(name): carried closed, the capsule goes all the way there")
+        let down = bounds.putDown(wanted, open: nil)
+        check(inside(capsule(down.anchor, in: bounds), bounds.visible), "\(name): it rests there, whole")
+        let o = down.opening
+        let sideways = o.shift == 0 ? 0 : o.shift < 0 ? -1 : 1
+        check(o.upward == upward && sideways == side,
+              "\(name): opens \(upward ? "up" : "down")\(side == 0 ? "" : side < 0 ? ", moved left" : ", moved right"): away from the edge", "\(o)")
+        for size in [card, CGSize(width: 520, height: bounds.tallest)] {
+            let p = bounds.panel(size, at: down.anchor, opening: o)
+            check(inside(p, bounds.visible), "\(name): the \(Int(size.height))pt panel opens on the screen", "\(p)")
+            let c = capsule(down.anchor, in: bounds)
+            check(p.minX <= c.minX && p.maxX >= c.maxX && (o.upward ? near(p.minY, c.minY) : near(p.maxY, c.maxY)),
+                  "\(name): out of the capsule, which doesn't move")
+        }
+    }
+
+    // Had it been carried open instead, it would have kept its way down,
+    // and so been kept out of the bottom of the screen: why it's closed first.
+    let openToCorner = bounds.putDown(CGPoint(x: 5000, y: -5000), open: .down)
+    check(openToCorner.opening == .down && openToCorner.anchor.y == bounds.tallest,
+          "carried open into the bottom right it stays opening down, a panel's height up", "\(openToCorner)")
+    check(bounds.putDown(CGPoint(x: 5000, y: -5000), open: nil).anchor.y == bounds.pill.height,
+          "closed, it goes right into the corner")
+
+    // The room it's held compact in is the panel it would open into, so the
+    // capsule — wherever the opening has put it — is inside it.
+    for anchor in [CGPoint(x: 1347, y: 38), CGPoint(x: 165, y: 944), CGPoint(x: 756, y: 500)] {
+        let o = bounds.opening(at: anchor)
+        check(bounds.panel(card, at: anchor, opening: o).insetBy(dx: -0.01, dy: -0.01).contains(capsule(anchor, in: bounds).insetBy(dx: 1, dy: 1)),
+              "held compact at \(Int(anchor.x)),\(Int(anchor.y)): the capsule is in the room it's held in")
+    }
 }
 
 print("Placement: the way back to the notch")

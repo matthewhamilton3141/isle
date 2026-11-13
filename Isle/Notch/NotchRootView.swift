@@ -444,8 +444,10 @@ struct NotchRootView: View {
 
             // Off the notch, where the camera was: the grabber. The band's
             // middle is clear on every face — it was hardware — so nothing
-            // has to move for it. Drawn, not pressed: taking hold of the
-            // island is the window controller's.
+            // has to move for it. Drawn, not pressed: a click on it (closing
+            // the panel to its capsule) and a drag of it (moving the panel)
+            // are `IslandCarry`'s, over a target a good deal bigger than the
+            // bar (`IslandFloat.grabberTarget`).
             if glassLayer != .materialOnly, floating, state.isExpanded {
                 IslandGrabber(size: IslandFloat.grabber)
                     .frame(height: notchBandHeight)

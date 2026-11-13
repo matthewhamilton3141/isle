@@ -7,7 +7,8 @@
 //  takes the island off the notch when the line has gone all the way
 //  round, moves the window with the pointer while the button stays down,
 //  and puts it down where it's let go, or back on the notch if that's near
-//  the notch.
+//  the notch. A click that a plain drag could have been is handed back
+//  too (`onClick`): on the open panel's grabber, or on the closed capsule.
 //
 //  One per island, like `FacePager`: a press happens on one screen.
 //  `NotchWindowController` makes it, tells it what only the controller
@@ -42,11 +43,23 @@ final class IslandCarry {
         case snapped
     }
 
+    /// A click on an island off its notch that means something here.
+    enum Click {
+        /// The open panel's grabber (`IslandFloat.PanelSpot.grabber`):
+        /// close it to its capsule.
+        case grabber
+        /// The closed capsule: open it.
+        case capsule
+    }
+
     private let presentation: IslandPresentation
     private unowned let window: NotchWindow
 
     private var hold = IslandHold()
     private var deadline: DispatchWorkItem?
+
+    /// What a click would be for the press under way, if it comes to one.
+    private var pressClick: Click?
 
     /// While carrying: the island's anchor less the pointer, as it was
     /// picked up, so the island keeps the place it was grabbed by.
@@ -92,6 +105,10 @@ final class IslandCarry {
     /// The window has stopped moving after being put down.
     var onArrived: () -> Void = {}
 
+    /// A press that could have been a drag was let go where it went down,
+    /// on the grabber or the capsule. Passed on to the views as well.
+    var onClick: (Click) -> Void = { _ in }
+
     init(presentation: IslandPresentation, window: NotchWindow) {
         self.presentation = presentation
         self.window = window
@@ -114,7 +131,9 @@ final class IslandCarry {
         switch event.type {
         case .leftMouseDown:
             let point = window.convertPoint(toScreen: event.locationInWindow)
-            outcome = hold.down(kind: kind(ofPressAt: point, event), at: point, time: event.timestamp)
+            let press = press(at: point, event)
+            pressClick = press?.click
+            outcome = hold.down(kind: press?.kind, at: point, time: event.timestamp)
         case .leftMouseDragged:
             outcome = hold.moved(to: location(of: event), time: event.timestamp)
         case .leftMouseUp:
@@ -141,12 +160,18 @@ final class IslandCarry {
         hold.phase == .carrying ? pointer().location : window.convertPoint(toScreen: event.locationInWindow)
     }
 
-    /// What a press at `point` could become, or nil when it's not the
-    /// island's to take: outside the drawn island, a control-click, a
-    /// reply being typed (the panel is key), a file drag or the drop face,
-    /// a swipe between faces still moving, a press on one of AppKit's own
-    /// controls, or a closed island on its notch.
-    private func kind(ofPressAt point: CGPoint, _ event: NSEvent) -> IslandHold.Kind? {
+    /// What a press at `point` could become, and what it would be if it
+    /// turned out a click; or nil when it's not the island's to take:
+    /// outside the drawn island, a control-click, a reply being typed (the
+    /// panel is key), a file drag or the drop face, a swipe between faces
+    /// still moving, a press on one of AppKit's own controls, or a closed
+    /// island on its notch.
+    ///
+    /// Open off the notch, it's where on the panel that decides: its header
+    /// and its bare edge hold nothing a drag could mean instead, so a drag
+    /// there moves it at once; on its content a drag can be a slider's, a
+    /// scrub or an item off the shelf, so there it takes the short hold.
+    private func press(at point: CGPoint, _ event: NSEvent) -> (kind: IslandHold.Kind, click: Click?)? {
         guard !event.modifierFlags.contains(.control),
               glide == nil,
               presentation.metrics != nil,
@@ -155,11 +180,25 @@ final class IslandCarry {
               !landsOnControl(event)
         else { return nil }
         switch (presentation.placement.isFloating, presentation.state.isExpanded) {
-        case (false, true): return .detach
-        case (true, true): return .pickUp
-        case (true, false): return .drag
+        case (false, true): return (.detach, nil)
+        case (true, true):
+            switch spot(at: point) {
+            case .grabber: return (.drag, .grabber)
+            case .edge: return (.drag, nil)
+            case .content: return (.pickUp, nil)
+            }
+        case (true, false): return (.drag, .capsule)
         case (false, false): return nil
         }
+    }
+
+    /// Where on the open panel `point` is (`IslandFloat.spot`): the drawn
+    /// island is the panel, and its header band is the camera band's
+    /// height, as it's drawn (NotchRootView).
+    private func spot(at point: CGPoint) -> IslandFloat.PanelSpot {
+        guard let drawn = drawnRect(), let band = presentation.metrics?.notchSize.height else { return .content }
+        let local = CGPoint(x: point.x - drawn.minX, y: drawn.maxY - point.y)
+        return IslandFloat.spot(at: local, panel: drawn.size, band: band)
     }
 
     /// The press is on an AppKit control inside the SwiftUI content — the
@@ -236,6 +275,8 @@ final class IslandCarry {
                 carry(to: point)
             case .dropped(let point):
                 drop(at: point)
+            case .clicked:
+                if let click = pressClick { onClick(click) }
             }
         }
     }
@@ -323,13 +364,10 @@ final class IslandCarry {
         // reach of it, or if it was never carried clear in the first place.
         if snapped || !snapArmed || bounds.captures(wanted) {
             settle(.docked)
-        } else if isOpen {
+        } else {
             // Put down away from the notch: the black lets go.
             bleed.release(drain: true)
-            settle(.floating(anchor: bounds.resting(wanted, open: presentation.opening)))
-        } else {
-            bleed.release(drain: true)
-            settle(.floating(anchor: bounds.resting(wanted)))
+            settle(.floating(anchor: bounds.putDown(wanted, open: keptOpening).anchor))
         }
     }
 
@@ -359,7 +397,14 @@ final class IslandCarry {
     /// off it, kept while it's open, else the way its place calls for.
     private func opening(for placement: IslandPlacement, in bounds: IslandPlacementBounds) -> IslandOpening {
         guard let anchor = placement.anchor else { return .down }
-        return isOpen ? presentation.opening : bounds.opening(at: anchor)
+        return bounds.putDown(anchor, open: keptOpening).opening
+    }
+
+    /// The way an open island opens, which it keeps wherever it's put;
+    /// nil while it's closed — a capsule closed by its grabber too — whose
+    /// place decides when it's put down.
+    private var keptOpening: IslandOpening? {
+        isOpen ? presentation.opening : nil
     }
 
     /// Changes which way the island opens without anything on the screen

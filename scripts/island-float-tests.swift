@@ -160,6 +160,45 @@ do {
     check(F.beadGrabber.width < F.grabber.width, "the bead's is the same mark, smaller")
 }
 
+print("taking hold of the open panel")
+do {
+    // The standard open panel off the notch, from its top-left corner, y down.
+    let panel = F.openSize(docked: dockedOpen, wallInset: IslandMotion.openCorners.top)
+    let mid = panel.width / 2
+    let barY = F.roof + band.height / 2
+    func spot(_ x: CGFloat, _ y: CGFloat) -> F.PanelSpot { F.spot(at: CGPoint(x: x, y: y), panel: panel, band: band.height) }
+
+    check(spot(mid, barY) == .grabber, "the bar itself is the grabber")
+    check(F.grabberTarget >= 44 && F.grabberTarget > 1.5 * F.grabber.width, "and its target is far bigger than the 36×5 bar", "\(F.grabberTarget)")
+    check(F.roof + band.height >= 36, "as tall as the roof and the band: easy to hit", "\(F.roof + band.height)")
+    check(spot(mid - F.grabberTarget / 2 + 1, 1) == .grabber && spot(mid + F.grabberTarget / 2 - 1, F.roof + band.height - 1) == .grabber,
+          "corner to corner")
+    // The faces leave the grabber `grabberGap` in the band's middle; the
+    // Claude face's wings (the sessions chip, the way back) end there.
+    check(F.grabberTarget <= F.grabberGap - 6, "a few points short of the wings either side", "\(F.grabberTarget) in \(F.grabberGap)")
+    check(spot(mid - F.grabberGap / 2 - 1, barY) == .content && spot(mid + F.grabberGap / 2 + 1, barY) == .content,
+          "a wing beside it is content: held, not dragged at once")
+    check(spot(mid, F.roof + band.height + 3) == .content, "and so is what's under the band")
+
+    // The bare edge: inside everything drawn. The content stands 10pt in
+    // from the walls (Prism's 10 + its side lip) and 8 + lip above the
+    // bottom; the gear's target ends 9pt from the right wall; the header's
+    // marks start below the roof.
+    check(F.edgeGrip < 9 && F.edgeGrip >= 4, "the edge stops short of the gear's target and the content", "\(F.edgeGrip)")
+    check(spot(2, 80) == .edge && spot(panel.width - 2, 80) == .edge && spot(200, panel.height - 2) == .edge, "the walls and the bottom are edge")
+    check(spot(120, F.roof - 1) == .edge && spot(panel.width - 20, 2) == .edge, "and the roof all along the top, over the crumb too")
+    check(spot(10, 80) == .content && spot(panel.width - 10, 80) == .content && spot(200, panel.height - 8) == .content,
+          "where the content starts is content")
+    check(spot(panel.width - 20, F.roof + 4) == .content, "the crumb and the gear are content")
+    check(spot(-1, 80) == .edge && spot(mid, -1) == .grabber, "just outside the outline counts with it (the press rect is a point wider)")
+
+    // Taller panels (a question, the agenda) keep the header where it is.
+    let tall = CGSize(width: panel.width, height: 238)
+    check(F.spot(at: CGPoint(x: mid, y: barY), panel: tall, band: band.height) == .grabber
+          && F.spot(at: CGPoint(x: 200, y: 236), panel: tall, band: band.height) == .edge
+          && F.spot(at: CGPoint(x: 200, y: 200), panel: tall, band: band.height) == .content, "a taller panel: the same header, its own bottom edge")
+}
+
 print("the edge")
 do {
     check(F.rimOpacity > 0.1 && F.rimOpacity <= 0.3, "black's hairline: visible over a dark window, not a border", "\(F.rimOpacity)")
