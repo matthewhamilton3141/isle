@@ -288,6 +288,9 @@ final class NotchWindowController {
         // Files dragged onto the island open the drop face.
         window.registerForDraggedTypes([.fileURL])
         window.dropHandler = self
+        // A click on the island outside the field that has the keys lets it
+        // go, as Esc does.
+        window.watchClicksOutsideComposeFields(viewModel)
 
         // A press held on the open panel takes the island off the notch.
         let carry = IslandCarry(presentation: presentation, window: window)

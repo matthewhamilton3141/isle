@@ -3108,11 +3108,35 @@ final class NotchViewModel: ObservableObject {
         composing = kind
     }
 
-    /// Esc, or focus going elsewhere: stop taking keys. What was typed is
-    /// kept, and is there when the field is opened again.
+    /// Esc, a click on the island outside the field, or focus going
+    /// elsewhere: stop taking keys. What was typed is kept, and is there
+    /// when the field is opened again.
     func endCompose() {
         guard composing != nil else { return }
         composing = nil
+    }
+
+    /// Whether a click on the island outside the field lets this one go:
+    /// the Claude face's three. The agenda's quick add keeps to Esc, a
+    /// click in another app, or its add landing — its preview and its Add
+    /// sit above the field, and are clicked while it's open.
+    static func clickOutLetsGo(_ kind: ComposeKind) -> Bool {
+        holdsClaudeFace(kind)
+    }
+
+    /// Whether the latest press on an island went down while a field had
+    /// the keys. The face's own click (retracting a panel an alert opened)
+    /// reads it: a click that lets a field go must do only that, whether
+    /// SwiftUI runs the face's tap before the field lets go or after.
+    var pressBeganComposing = false
+
+    /// A click on the island outside the field, pressed while `kind` had
+    /// the keys: Esc's way out, draft kept. Once the click is done, so a
+    /// control it was on has had it — and only if the same field is still
+    /// open: one the click opened, or a send it made, is left alone.
+    func clickedOutsideField(_ kind: ComposeKind) {
+        guard composing == kind, Self.clickOutLetsGo(kind) else { return }
+        endCompose()
     }
 
     /// Return, or the Send button.
