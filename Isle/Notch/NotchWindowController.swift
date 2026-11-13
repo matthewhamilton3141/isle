@@ -331,11 +331,6 @@ final class NotchWindowController {
         }
         ConstraintPassLog.watch(window, as: "notch panel", describe: describe)
         ConstraintPassLog.watch(window.glassWindow, as: "island glass", describe: describe)
-        // And the notch bleed's window, made the first time there's a neck
-        // to draw (`IslandBleedDriver`).
-        carry.bleed.onWindowMade = { bleedWindow in
-            ConstraintPassLog.watch(bleedWindow, as: "notch bleed", describe: describe)
-        }
         #endif
 
         window.contentView = hosting
