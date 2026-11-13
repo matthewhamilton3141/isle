@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Builds and runs the notch-bleed tests (scripts/island-bleed-tests.swift):
 # the black reaching from the camera housing for an island carried near it
-# — the drips, the neck, its feet and the black on the island, as functions
+# — the haze on the island, as a function
 # of distance — against Isle/Notch/IslandBleed.swift and the SwiftUI-free
 # sources it reads its numbers from. No app, no window.
 set -e
