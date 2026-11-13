@@ -243,14 +243,32 @@ do {
 // MARK: - Placement
 
 // This Mac's built-in display: 1512×982 with a 38pt menu bar, and the
-// island's widest and tallest (the 520pt panel with Prism's side lips; the
-// 230pt cap with its lip).
+// island's widest and tallest off the notch (the 520pt card: the docked
+// panel with Prism's side lips, less its flares; the 230pt cap with its lip
+// and the roof), and about the widest closed capsule.
+let pill = CGSize(width: 330, height: 38)
 let bounds = IslandPlacementBounds(
     screen: CGRect(x: 0, y: 0, width: 1512, height: 982),
     visible: CGRect(x: 0, y: 0, width: 1512, height: 944),
-    halfWidth: 272,
-    tallest: 264
+    halfWidth: 260,
+    tallest: 250,
+    pill: pill
 )
+
+/// Where the open panel lies for an island at `anchor` opening as `opening`.
+func panel(_ anchor: CGPoint, _ opening: IslandOpening, in b: IslandPlacementBounds) -> CGRect {
+    let bottom = opening.upward ? anchor.y - b.pill.height : anchor.y - b.tallest
+    return CGRect(x: anchor.x + opening.shift - b.halfWidth, y: bottom, width: 2 * b.halfWidth, height: b.tallest)
+}
+
+/// Where the closed capsule lies, at its widest.
+func capsule(_ anchor: CGPoint, in b: IslandPlacementBounds) -> CGRect {
+    CGRect(x: anchor.x - b.pill.width / 2, y: anchor.y - b.pill.height, width: b.pill.width, height: b.pill.height)
+}
+
+func inside(_ r: CGRect, _ outer: CGRect) -> Bool {
+    r.minX >= outer.minX - 0.01 && r.maxX <= outer.maxX + 0.01 && r.minY >= outer.minY - 0.01 && r.maxY <= outer.maxY + 0.01
+}
 
 print("Placement: where an island may be")
 
@@ -261,20 +279,87 @@ do {
     check(bounds.resting(CGPoint(x: 756, y: 982)) == CGPoint(x: 756, y: 944), "at rest the island sits below the menu bar")
     check(bounds.carrying(CGPoint(x: 756, y: 982)) == CGPoint(x: 756, y: 982), "carried, it may be at the very top — where it starts")
     check(bounds.carrying(CGPoint(x: 756, y: 1100)) == CGPoint(x: 756, y: 982), "but not above it")
-    check(bounds.resting(CGPoint(x: -400, y: 3000)) == CGPoint(x: 272, y: 944), "off the top left: brought in to where the panel fits")
-    check(bounds.resting(CGPoint(x: 9000, y: -50)) == CGPoint(x: 1240, y: 264),
-          "off the bottom right: up far enough for the tallest panel to fit")
+    check(bounds.resting(CGPoint(x: -400, y: 3000)) == CGPoint(x: 165, y: 944), "off the top left: brought in until the capsule is on the screen")
+    check(bounds.resting(CGPoint(x: 9000, y: -50)) == CGPoint(x: 1347, y: 38),
+          "off the bottom right: into the corner, the capsule's bottom on the screen's")
     let low = bounds.resting(CGPoint(x: 600, y: 10))
-    check(low.y - bounds.tallest >= bounds.visible.minY, "the tallest panel never hangs below the visible frame", "\(low)")
+    check(low == CGPoint(x: 600, y: 38), "the bottom of the screen is somewhere to rest, not out of bounds", "\(low)")
+    check(bounds.carrying(CGPoint(x: -50, y: -50)) == CGPoint(x: 165, y: 38), "carried closed, it may go into a corner")
 
     // With the Dock on the left and an auto-hidden menu bar.
     let docked = IslandPlacementBounds(screen: bounds.screen, visible: CGRect(x: 70, y: 0, width: 1442, height: 982),
-                                       halfWidth: 272, tallest: 264)
-    check(docked.resting(CGPoint(x: 0, y: 500)).x == 342, "the Dock's side is kept clear")
+                                       halfWidth: 260, tallest: 250, pill: pill)
+    check(docked.resting(CGPoint(x: 0, y: 500)).x == 235, "the Dock's side is kept clear")
 
     let tiny = IslandPlacementBounds(screen: CGRect(x: 0, y: 0, width: 400, height: 200),
-                                     visible: CGRect(x: 0, y: 0, width: 400, height: 180), halfWidth: 272, tallest: 264)
-    check(tiny.resting(CGPoint(x: 10, y: 10)) == CGPoint(x: 200, y: 180), "a screen too small for the panel: centred, from the top")
+                                     visible: CGRect(x: 0, y: 0, width: 400, height: 180), halfWidth: 260, tallest: 250, pill: pill)
+    check(tiny.resting(CGPoint(x: 10, y: 10)) == CGPoint(x: 165, y: 38), "a screen too small for the panel still has room for the capsule")
+    let sliver = IslandPlacementBounds(screen: CGRect(x: 0, y: 0, width: 200, height: 30),
+                                       visible: CGRect(x: 0, y: 0, width: 200, height: 30), halfWidth: 260, tallest: 250, pill: pill)
+    check(sliver.resting(CGPoint(x: 10, y: 10)) == CGPoint(x: 100, y: 30), "one too small even for that: centred, from the top")
+}
+
+print("Placement: which way it opens")
+
+do {
+    let mid = CGPoint(x: 756, y: 600)
+    check(bounds.opening(at: mid) == .down, "with room below: down, centred on the capsule")
+    check(bounds.opening(at: CGPoint(x: 756, y: 250)) == .down, "down for as long as the tallest panel fits below")
+    let justUnder = bounds.opening(at: CGPoint(x: 756, y: 249))
+    check(justUnder.upward && justUnder.shift == 0, "a point lower and it opens up, from the capsule's bottom edge")
+
+    // The four corners and the four edges, each with the capsule as far in as it can go.
+    let left: CGFloat = 165, right: CGFloat = 1347, top: CGFloat = 944, bottom: CGFloat = 38
+    let corners: [(String, CGPoint, Bool, CGFloat)] = [
+        ("top left", CGPoint(x: left, y: top), false, 95),
+        ("top right", CGPoint(x: right, y: top), false, -95),
+        ("bottom left", CGPoint(x: left, y: bottom), true, 95),
+        ("bottom right", CGPoint(x: right, y: bottom), true, -95),
+        ("left edge", CGPoint(x: left, y: 500), false, 95),
+        ("right edge", CGPoint(x: right, y: 500), false, -95),
+        ("top edge", CGPoint(x: 400, y: top), false, 0),
+        ("bottom edge", CGPoint(x: 900, y: bottom), true, 0),
+    ]
+    for (name, anchor, upward, shift) in corners {
+        check(bounds.resting(anchor) == anchor, "\(name): the capsule may rest there")
+        let o = bounds.opening(at: anchor)
+        check(o.upward == upward && near(o.shift, shift), "\(name): opens \(upward ? "up" : "down"), moved \(Int(shift))pt", "\(o)")
+        check(inside(panel(anchor, o, in: bounds), bounds.visible), "\(name): the open panel is on the screen", "\(panel(anchor, o, in: bounds))")
+    }
+
+    // Anywhere the capsule can rest, the panel it opens to is on the screen,
+    // and is over the capsule: it grows out of it, it doesn't jump off it.
+    var everywhere = true, overCapsule = true
+    for x in stride(from: CGFloat(-100), through: 1700, by: 37) {
+        for y in stride(from: CGFloat(-50), through: 1050, by: 29) {
+            let anchor = bounds.resting(CGPoint(x: x, y: y))
+            let o = bounds.opening(at: anchor)
+            let p = panel(anchor, o, in: bounds), c = capsule(anchor, in: bounds)
+            if !inside(p, bounds.visible) { everywhere = false }
+            if !(p.minX <= c.minX + 0.01 && p.maxX >= c.maxX - 0.01 && (o.upward ? near(p.minY, c.minY) : near(p.maxY, c.maxY))) { overCapsule = false }
+        }
+    }
+    check(everywhere, "wherever the capsule rests, the open panel fits on the screen")
+    check(overCapsule, "and stands on the capsule's bottom or hangs from its top, over the whole of it")
+
+    // A display shorter than the open panel: it opens the way with more room.
+    let short = IslandPlacementBounds(screen: CGRect(x: 0, y: 0, width: 800, height: 220),
+                                      visible: CGRect(x: 0, y: 0, width: 800, height: 200), halfWidth: 260, tallest: 250, pill: pill)
+    let nearTop = short.resting(CGPoint(x: 400, y: 190)), nearBottom = short.resting(CGPoint(x: 400, y: 50))
+    check(!short.opening(at: nearTop).upward && short.opening(at: nearBottom).upward,
+          "a display shorter than the panel: down from near the top, up from near the bottom")
+    check(inside(capsule(nearBottom, in: short), short.visible), "and the capsule itself still rests wholly on it")
+    // Narrower than the panel: the panel is centred on the screen.
+    let narrow = IslandPlacementBounds(screen: CGRect(x: 0, y: 0, width: 500, height: 900),
+                                       visible: CGRect(x: 0, y: 0, width: 500, height: 900), halfWidth: 260, tallest: 250, pill: pill)
+    check(near(narrow.opening(at: CGPoint(x: 180, y: 600)).shift, 70), "a screen narrower than the panel: it opens over the screen's middle")
+
+    // Carried open, the panel stays on the screen opening the way it does.
+    let up = IslandOpening(upward: true, shift: 95)
+    let held = bounds.carrying(CGPoint(x: 0, y: 2000), open: up)
+    check(inside(panel(held, up, in: bounds), bounds.screen), "an open panel carried up and left stays on the screen", "\(held)")
+    let put = bounds.resting(CGPoint(x: 3000, y: -500), open: .down)
+    check(inside(panel(put, .down, in: bounds), bounds.visible), "and put down, rests where it fits the way it opens", "\(put)")
 }
 
 print("Placement: the way back to the notch")
@@ -317,12 +402,17 @@ do {
     check(bounds.placement(restoring: CGPoint(x: 0, y: 40)) == .docked, "above it: docked")
     check(bounds.placement(restoring: CGPoint(x: 30, y: -20)) == .docked, "on the notch: docked")
 
+    // Left near the bottom of the screen: back where it was, opening up.
+    let lowLeft = bounds.placement(restoring: CGPoint(x: -500, y: -930))
+    check(lowLeft == .floating(anchor: CGPoint(x: 256, y: 52)), "left near the bottom, it comes back there", "\(lowLeft)")
+    check(lowLeft.anchor.map { bounds.opening(at: $0).upward } == true, "and opens upward")
+
     // A smaller display under the same name (a changed resolution).
     let small = IslandPlacementBounds(screen: CGRect(x: 0, y: 0, width: 1147, height: 745),
-                                      visible: CGRect(x: 0, y: 0, width: 1147, height: 707), halfWidth: 272, tallest: 264)
+                                      visible: CGRect(x: 0, y: 0, width: 1147, height: 707), halfWidth: 260, tallest: 250, pill: pill)
     check(small.placement(restoring: CGPoint(x: -700, y: -382)) == .docked, "a place that's no longer on the screen: docked")
-    check(small.placement(restoring: CGPoint(x: -356, y: -700)) == .floating(anchor: CGPoint(x: 272, y: 264)),
-          "one that is, with too little room: brought in to where the panel fits")
+    check(small.placement(restoring: CGPoint(x: -456, y: -730)) == .floating(anchor: CGPoint(x: 165, y: 38)),
+          "one that is, with too little room: brought in to where the capsule fits")
     let restored = small.placement(restoring: CGPoint(x: 100, y: -300))
     check(restored == .floating(anchor: CGPoint(x: 673.5, y: 445)), "one with room: as it was", "\(restored)")
 }

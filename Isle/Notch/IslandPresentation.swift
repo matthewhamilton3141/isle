@@ -59,6 +59,11 @@ final class IslandPresentation: ObservableObject {
     /// also the only thing that sets it).
     @Published var placement: IslandPlacement = .docked
 
+    /// Which way the island opens off its notch (`IslandOpening`), decided
+    /// by `IslandCarry` where the island is put down closed, and kept while
+    /// it's open. Always `.down` on the notch.
+    @Published var opening: IslandOpening = .down
+
     /// The line that runs round the island while it's held (see
     /// `DetachTrace`). A model of its own, like `proximity`, so the line
     /// starting and stopping redraws the line and nothing else.

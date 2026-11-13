@@ -206,6 +206,9 @@ struct IslandFill: View {
     /// glow), and how far right of it the outline is drawn.
     var housing: CGSize? = nil
     var housingShift: CGFloat = 0
+    /// Off the notch and opening upward: the island stands on its bottom
+    /// edge, so the swell grows from there instead of from the top.
+    var growsUp: Bool = false
     /// The band the open panel's content starts under, which Prism keeps
     /// solid black.
     var bandHeight: CGFloat = NotchMetrics.fallbackNotchSize.height
@@ -227,7 +230,7 @@ struct IslandFill: View {
                     .scaleEffect(
                         x: size.width > 0 ? 1 + 2 * swell.width / size.width : 1,
                         y: size.height > 0 ? 1 + swell.height / size.height : 1,
-                        anchor: .top
+                        anchor: growsUp ? .bottom : .top
                     )
                     .offset(x: reading.leanOffset)
             }

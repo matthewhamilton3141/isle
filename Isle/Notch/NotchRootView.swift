@@ -61,6 +61,10 @@ struct NotchRootView: View {
     /// a grabber where the camera was.
     private var floating: Bool { island.placement.isFloating }
 
+    /// Which way the island opens (`IslandOpening`): off the notch, toward
+    /// where there's room; on it, always down.
+    private var direction: IslandOpening { floating ? island.opening : .down }
+
     /// How far the open panel's walls stand in from its frame: the flare's
     /// radius on the notch, nothing off it, where there are no flares and
     /// the frame comes in to the walls (`IslandFloat.openSize`).
@@ -210,8 +214,12 @@ struct NotchRootView: View {
     /// The collapsed sides are asymmetric (Claude's side is usually wider), so
     /// shift the shape to keep the camera cutout centred under the housing.
     private var collapsedShift: CGFloat {
-        // Off the notch there's no camera to stay centred under.
-        guard state == .collapsed, !floating else { return 0 }
+        // Off the notch there's no camera to stay centred under; the window
+        // is centred on the open panel, so the capsule is drawn the
+        // opening's shift away from it, and gets there on the width's
+        // spring, as the open panel's walls do.
+        if floating { return state == .collapsed ? -direction.shift : 0 }
+        guard state == .collapsed else { return 0 }
         let sides = viewModel.collapsedSideWidths
         return (sides.trailing - sides.leading) / 2
     }
@@ -263,6 +271,9 @@ struct NotchRootView: View {
         let opening = state.isExpanded
         let reduced = reduceMotion
         VStack(spacing: 0) {
+            // Opening upward, the island stands on the bottom of its window
+            // (the shadow's room under it), and grows up from there.
+            if direction.upward { Spacer(minLength: 0) }
             notch
                 .offset(x: collapsedShift)
                 // The shift exists to centre an asymmetric pill, so it moves
@@ -286,9 +297,13 @@ struct NotchRootView: View {
                     t.disablesAnimations = false
                     t.animation = panelResizeAnimation
                 }
-            Spacer(minLength: 0)
+            if direction.upward {
+                Color.clear.frame(height: NotchMetrics.floatingBelow)
+            } else {
+                Spacer(minLength: 0)
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: direction.upward ? .bottom : .top)
         // Open on the open spring. Close on the close spring, marked as a
         // collapse so the outline's width, height and corners each take their
         // own (see `notch`; the close spring is the height's, and is what the
@@ -344,7 +359,10 @@ struct NotchRootView: View {
             crown = free.crown
         }
         var genie: NotchShape.Genie?
-        if state == .collapsed, !reduceMotion, let collapseOrigin {
+        // The taper draws the walls in toward the capsule's end: the bottom,
+        // where the island hangs from its top. Standing on its bottom edge
+        // (opening upward) it collapses without one.
+        if state == .collapsed, !reduceMotion, !direction.upward, let collapseOrigin {
             genie = NotchShape.Genie(
                 expanded: collapseOrigin,
                 collapsed: size,
@@ -470,6 +488,7 @@ struct NotchRootView: View {
                 opened: state.isExpanded,
                 housing: glowHousing,
                 housingShift: collapsedShift,
+                growsUp: direction.upward,
                 bandHeight: notchBandHeight,
                 ribbon: ribbon,
                 floating: floating
@@ -477,7 +496,9 @@ struct NotchRootView: View {
         }
         // The line that runs round the outline while the island is held.
         .overlay(alignment: .top) {
-            DetachTrace(model: island.detachTrace, outline: outline, size: size)
+            // From the edge furthest from the capsule: the bottom, or the
+            // top of a panel that opened upward.
+            DetachTrace(model: island.detachTrace, outline: outline, size: size, fromTop: direction.upward)
         }
         // The corners lead the collapse: the clip's and the fill's radii.
         .islandCollapseChannel(.corners)
@@ -526,9 +547,12 @@ struct NotchRootView: View {
     /// space, carrying the collapsed shift that keeps the cutout under the camera.
     private func frameRect(for s: CGSize) -> CGRect {
         let hostWidth = island.metrics?.maximumFrame.width ?? NotchMetrics.expandedSize.width
+        let hostHeight = island.metrics?.maximumFrame.height ?? NotchMetrics.expandedSize.height
         return CGRect(
             x: (hostWidth - s.width) / 2 + collapsedShift,
-            y: 0,
+            // Standing on the window's bottom (the shadow's room under it)
+            // when it opens upward.
+            y: direction.upward ? hostHeight - NotchMetrics.floatingBelow - s.height : 0,
             width: s.width,
             height: s.height
         )

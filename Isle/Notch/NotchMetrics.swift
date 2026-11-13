@@ -200,11 +200,13 @@ struct NotchMetrics {
         )
     }
 
-    /// What the window keeps under the tallest panel: Prism's lip, or the
-    /// shadow an island off the notch casts below itself (Black's, which
-    /// has no lip to fall in), whichever is deeper.
+    /// What the window keeps under the tallest panel: Prism's lip and the
+    /// shadow an island off the notch casts below itself, both. An island
+    /// that opens upward (`IslandOpening`) stands on its capsule with the
+    /// shadow's room under that, and the tallest panel, lip and all, above
+    /// it; one window size holds either way.
     static var roomBelow: CGFloat {
-        max(IslandPrism.lip, IslandFloat.shadowReach.below)
+        IslandPrism.lip + IslandFloat.shadowReach.below
     }
 
     /// The largest frame Isle ever occupies. The window is sized to this once
@@ -240,18 +242,37 @@ struct NotchMetrics {
     // MARK: - Off the notch
 
     /// The window's frame for a placement: `maximumFrame` on the notch, and
-    /// the same size with its top centre on the anchor off it. The island
-    /// is drawn at the top centre of its window either way (see
-    /// `IslandPlacement`), so moving the window is all a placement is.
-    func frame(for placement: IslandPlacement) -> NSRect {
+    /// the same size off it, placed for the way the island opens: its top
+    /// edge level with the anchor when it opens downward, its bottom edge
+    /// the shadow's room below the capsule when it opens upward, and
+    /// centred on the open panel (the anchor moved by the opening's shift).
+    /// The island is drawn inside it accordingly (NotchRootView), so the
+    /// capsule is at the anchor whichever it is.
+    func frame(for placement: IslandPlacement, opening: IslandOpening = .down) -> NSRect {
         let docked = maximumFrame
         guard let anchor = placement.anchor else { return docked }
+        let top = opening.upward
+            ? anchor.y - IslandFloat.pillHeight - Self.floatingBelow + docked.height
+            : anchor.y
         return NSRect(
-            x: anchor.x - docked.width / 2,
-            y: anchor.y - docked.height,
+            x: anchor.x + opening.shift - docked.width / 2,
+            y: top - docked.height,
             width: docked.width,
             height: docked.height
         )
+    }
+
+    /// Off the notch, opening upward: the room the window keeps under the
+    /// capsule, for the shadow it casts.
+    static var floatingBelow: CGFloat { IslandFloat.shadowReach.below }
+
+    /// The anchor of the island in a window at `frame`, opening as
+    /// `opening` says: the inverse of `frame(for:opening:)`.
+    static func anchor(of frame: NSRect, opening: IslandOpening) -> CGPoint {
+        let top = opening.upward
+            ? frame.minY + floatingBelow + IslandFloat.pillHeight
+            : frame.maxY
+        return CGPoint(x: frame.midX - opening.shift, y: top)
     }
 
     /// The top centre of the island in a window at `frame`: the anchor that
@@ -268,8 +289,14 @@ struct NotchMetrics {
         IslandPlacementBounds(
             screen: screen.frame,
             visible: screen.visibleFrame,
-            halfWidth: Self.expandedSize.width / 2 + IslandPrism.sideLip,
-            tallest: Self.panelMaxHeight + IslandPrism.lip + IslandFloat.roof
+            // The open panel off the notch, at its widest (Prism's, side
+            // lips and all, less the flares it has only on the notch).
+            halfWidth: IslandFloat.openSize(
+                docked: CGSize(width: Self.expandedSize.width + 2 * IslandPrism.sideLip, height: 0),
+                wallInset: IslandMotion.openCorners.top
+            ).width / 2,
+            tallest: Self.panelMaxHeight + IslandPrism.lip + IslandFloat.roof,
+            pill: IslandFloat.widestPill(status: IslandFloat.labelMaxShared, clock: IslandFloat.widestClock)
         )
     }
 }
