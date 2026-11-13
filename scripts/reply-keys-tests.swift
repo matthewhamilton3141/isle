@@ -33,6 +33,10 @@ func island(_ fixtureName: String) -> (NotchViewModel, NotchWindow) {
     window.setFrame(NSRect(x: -20000, y: -20000, width: metrics.maximumFrame.width, height: metrics.maximumFrame.height), display: false)
     window.alphaValue = 0
     window.allowsKey = true
+    // Without the style that makes `makeKey()` take the window server's key
+    // focus: this runs on a Mac someone may be typing on, and the field only
+    // needs AppKit to treat the window as key.
+    window.styleMask.remove(.nonactivatingPanel)
     window.orderFrontRegardless()
     window.makeKey()
     presentation.setHovering(true)
