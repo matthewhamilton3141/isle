@@ -69,10 +69,12 @@ final class NotchWindow: NSPanel {
 
     // MARK: - Placement
 
-    /// Where the controller put this window — `NotchMetrics.maximumFrame` —
-    /// set by `place(_:)` and nothing else. The window is never sized by its
-    /// content or moved by AppKit: every frame change lands here, and a
-    /// resize or move that went around `setFrame` is put back.
+    /// Where the controller put this window — `NotchMetrics.maximumFrame`,
+    /// or that size wherever an island off its notch has been left
+    /// (`NotchMetrics.frame(for:)`) — set by `place(_:)` and `slide(to:)`
+    /// and nothing else. The window is never sized by its content or moved
+    /// by AppKit: every frame change lands here, and a resize or move that
+    /// went around `setFrame` is put back.
     ///
     /// The hosting views' `sizingOptions` are empty so the SwiftUI content
     /// doesn't size the window; this holds it even if something else does.
@@ -86,6 +88,21 @@ final class NotchWindow: NSPanel {
     func place(_ frame: NSRect) {
         placedFrame = frame
         setFrame(frame, display: false)
+    }
+
+    /// Moves the window to `frame` while the island is carried or glides
+    /// home: `place`, without the window server round trips of bringing the
+    /// glass back into step in every other respect, which a move changes
+    /// nothing about. It runs on every drag event.
+    ///
+    /// The glass window is this one's child, so AppKit moves it along in
+    /// the same call; it's only set here if that left it somewhere else.
+    func slide(to frame: NSRect) {
+        placedFrame = frame
+        super.setFrame(frame, display: false)
+        if hasGlass, glassWindow.frame != frame {
+            glassWindow.setFrame(frame, display: false)
+        }
     }
 
     override func setFrame(_ frameRect: NSRect, display flag: Bool) {
@@ -157,6 +174,7 @@ final class NotchWindow: NSPanel {
                 // on the way (a Space switch, the window server) moved it.
                 glassWindow.order(.below, relativeTo: windowNumber)
             }
+            glassWindow.assertLens()
         } else {
             hideGlass()
         }
@@ -284,12 +302,62 @@ final class NotchWindow: NSPanel {
     /// list sees it.
     var scrollInterceptor: (@MainActor (NSEvent) -> Bool)?
 
+    /// Offered the primary button's down, dragged and up events before the
+    /// views see them, the same way: this is where a press held on the
+    /// island is told from a click (see `IslandHold`, `IslandCarry`), and
+    /// where the drags of an island being carried stop short of the views.
+    var pressInterceptor: (@MainActor (NSEvent) -> IslandHold.Verdict)?
+
+    /// Where the views last saw the pointer during the press under way, in
+    /// window coordinates: the press itself, or the last drag passed on.
+    private var lastPressLocation: NSPoint?
+
     override func sendEvent(_ event: NSEvent) {
-        if event.type == .scrollWheel, let scrollInterceptor, scrollInterceptor(event) {
-            return
+        switch event.type {
+        case .scrollWheel:
+            if let scrollInterceptor, scrollInterceptor(event) { return }
+        case .leftMouseDown, .leftMouseDragged, .leftMouseUp:
+            switch pressInterceptor?(event) ?? .pass {
+            case .pass:
+                lastPressLocation = event.type == .leftMouseUp ? nil : event.locationInWindow
+            case .swallow:
+                return
+            case .cancelPress:
+                let release = cancellingRelease(for: event)
+                lastPressLocation = nil
+                if let release { super.sendEvent(release) }
+                return
+            }
+        default:
+            break
         }
         super.sendEvent(event)
     }
+
+    /// The button-up the views get in place of `event` when the press under
+    /// it wasn't a click: one that lands far outside the window, so the
+    /// control that took the press sees the pointer let go somewhere else
+    /// and doesn't fire. The views must still get *a* release — they saw
+    /// the press, and would otherwise go on thinking the button is down.
+    ///
+    /// Far away straight down, at the x the views last saw: the island's
+    /// sliders read the pointer's x, and a release that moved sideways could
+    /// be read as one last drag.
+    private func cancellingRelease(for event: NSEvent) -> NSEvent? {
+        NSEvent.mouseEvent(
+            with: .leftMouseUp,
+            location: NSPoint(x: (lastPressLocation ?? event.locationInWindow).x, y: -Self.farAway),
+            modifierFlags: event.modifierFlags,
+            timestamp: event.timestamp,
+            windowNumber: windowNumber,
+            context: nil,
+            eventNumber: event.eventNumber,
+            clickCount: 0,
+            pressure: 0
+        )
+    }
+
+    private static let farAway: CGFloat = 100_000
 
     /// Where a drag over this window goes. The window, not a view, is the
     /// destination: nothing in the notch registers a SwiftUI drop, so AppKit
@@ -334,7 +402,42 @@ extension NotchWindow: NSDraggingDestination {
 /// The window the island's glass is drawn in (see `NotchWindow.glassWindow`):
 /// borderless, transparent, click-through, and never key or main, so its
 /// glass keeps the look it has at rest whatever the panel over it does.
+///
+/// That look is the frosted one, except in Prism, which wants the lens
+/// Liquid Glass keeps for key windows (`lensed`).
 final class IslandGlassWindow: NSPanel {
+    /// Whether this window's glass is drawn as a lens: what's behind it
+    /// nearly sharp, bent at the edges. Liquid Glass does that for a key
+    /// window's glass and switches in `becomeKey()`/`resignKey()`, so this
+    /// tells the window it is key without it ever being so: it still can't
+    /// become key, takes no events, and the window server's key window is
+    /// whichever it was. AppKit's own `resignKey()` — sent when the app
+    /// deactivates, or another of Isle's windows takes the keys — is
+    /// ignored while lensed, and the lens re-asserted after it.
+    var lensed = false {
+        didSet {
+            guard lensed != oldValue else { return }
+            if lensed { super.becomeKey() } else { super.resignKey() }
+        }
+    }
+
+    /// Puts the lens back after something that may have dropped it. Called
+    /// whenever the two windows are brought into step, so it does nothing
+    /// while the window still believes it is key.
+    func assertLens() {
+        if lensed, !isKeyWindow { super.becomeKey() }
+    }
+
+    override func resignKey() {
+        guard !lensed else {
+            // Next turn of the run loop, once AppKit has finished handing
+            // the keys around.
+            DispatchQueue.main.async { [weak self] in self?.assertLens() }
+            return
+        }
+        super.resignKey()
+    }
+
     init() {
         super.init(
             contentRect: .zero,

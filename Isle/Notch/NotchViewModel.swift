@@ -502,9 +502,9 @@ final class NotchViewModel: ObservableObject {
     /// itself changes.
     ///
     /// This is cached rather than derived in the view because extraction is
-    /// not stable under re-running. It picks `ranked[0]` winner-take-all, and
-    /// on real covers the top cells are separated by well under 1% — the
-    /// current one by 0.7%. Two artwork sources feed this (the adapter's
+    /// not stable under re-running. The picker (`CoverColors`) takes the
+    /// best-scoring of the cover's colours, and on real covers the top two
+    /// can be all but tied. Two artwork sources feed this (the adapter's
     /// embedded bytes and Spotify's CDN fetch) and their decodes differ
     /// slightly, so re-deriving could hand back a different winner each time
     /// and the notch visibly flashed between colours. Held steady here, the
@@ -526,6 +526,13 @@ final class NotchViewModel: ObservableObject {
     /// flat look the accent exists to replace.
     var palette: ArtworkPalette {
         artworkPalette ?? settings.claudeAccentPalette
+    }
+
+    /// The palette Prism draws from. It had a picker of its own while the
+    /// other modes' averaged a cover's colour away; now there is one picker
+    /// and this is `palette`.
+    var prismPalette: ArtworkPalette {
+        palette
     }
 
     /// Identity of the cover `palette` was built from, to skip the work when

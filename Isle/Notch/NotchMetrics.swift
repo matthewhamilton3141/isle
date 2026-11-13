@@ -200,6 +200,13 @@ struct NotchMetrics {
         )
     }
 
+    /// What the window keeps under the tallest panel: Prism's lip, or the
+    /// shadow an island off the notch casts below itself (Black's, which
+    /// has no lip to fall in), whichever is deeper.
+    static var roomBelow: CGFloat {
+        max(IslandPrism.lip, IslandFloat.shadowReach.below)
+    }
+
     /// The largest frame Isle ever occupies. The window is sized to this once
     /// and the *content* animates inside it — resizing an NSWindow every frame
     /// fights the compositor and produces visible tearing on the notch edge.
@@ -207,13 +214,17 @@ struct NotchMetrics {
         let expanded = windowFrame(for: .hoverExpanded)
         let collapsed = windowFrame(for: .collapsed)
         // Room for the tallest a face can grow the panel — every face that
-        // grows shares the one cap. Transparent and click-through like the
-        // rest of the window outside the drawn notch.
+        // grows shares the one cap — and under it for Prism's lip or the
+        // shadow a panel casts off the notch, whichever is deeper, whatever
+        // the mode, so a change of mode never resizes the window.
+        // And for the roof an open panel has off the notch. Transparent and
+        // click-through like the rest of the window outside the drawn notch.
+        let tallest = Self.panelMaxHeight + Self.roomBelow + IslandFloat.roof
         let grown = NSRect(
             x: expanded.minX,
-            y: screen.frame.maxY - Self.panelMaxHeight,
+            y: screen.frame.maxY - tallest,
             width: expanded.width,
-            height: Self.panelMaxHeight
+            height: tallest
         )
         // And the stay-open pad either side of the open panel. A hover reads
         // the pad off the global pointer monitor and doesn't need the window
@@ -221,7 +232,44 @@ struct NotchMetrics {
         // to the window only inside its frame, so a pad outside it is a drag
         // leaving, and the drop face shut the moment a drag overshot the
         // panel's edge. Transparent and click-through like the rest.
-        let pad = expanded.insetBy(dx: -Self.stayOpenSidePad, dy: 0)
+        // (Past Prism's wider panel, which the window holds in every mode.)
+        let pad = expanded.insetBy(dx: -(Self.stayOpenSidePad + IslandPrism.sideLip), dy: 0)
         return expanded.union(collapsed).union(grown).union(pad)
+    }
+
+    // MARK: - Off the notch
+
+    /// The window's frame for a placement: `maximumFrame` on the notch, and
+    /// the same size with its top centre on the anchor off it. The island
+    /// is drawn at the top centre of its window either way (see
+    /// `IslandPlacement`), so moving the window is all a placement is.
+    func frame(for placement: IslandPlacement) -> NSRect {
+        let docked = maximumFrame
+        guard let anchor = placement.anchor else { return docked }
+        return NSRect(
+            x: anchor.x - docked.width / 2,
+            y: anchor.y - docked.height,
+            width: docked.width,
+            height: docked.height
+        )
+    }
+
+    /// The top centre of the island in a window at `frame`: the anchor that
+    /// frame is the placement of.
+    static func anchor(of frame: NSRect) -> CGPoint {
+        CGPoint(x: frame.midX, y: frame.maxY)
+    }
+
+    /// Where on this screen an island off its notch may be, and how near
+    /// the notch counts as back on it. The widest and tallest the island is
+    /// drawn are the ones `maximumFrame` holds, less the stay-open pad,
+    /// which is pointer room and may hang off the screen.
+    var placementBounds: IslandPlacementBounds {
+        IslandPlacementBounds(
+            screen: screen.frame,
+            visible: screen.visibleFrame,
+            halfWidth: Self.expandedSize.width / 2 + IslandPrism.sideLip,
+            tallest: Self.panelMaxHeight + IslandPrism.lip + IslandFloat.roof
+        )
     }
 }

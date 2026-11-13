@@ -37,6 +37,9 @@ struct ClaudeExpandedView: View {
     @State private var sessionRowsRoom: CGFloat = 0
 
     @Environment(\.islandOnGlass) private var onGlass
+    /// Off the notch the band is a header with a grabber in its middle,
+    /// not a camera: the wings are wider (see `L.wings`).
+    @Environment(\.islandFloating) private var floating
 
     private var state: ClaudeCodeState { viewModel.claudeState }
 
@@ -143,7 +146,8 @@ struct ClaudeExpandedView: View {
             notch: metrics?.notchSize.width ?? NotchMetrics.fallbackNotchSize.width,
             band: metrics?.notchSize.height ?? NotchMetrics.fallbackNotchSize.height,
             physical: metrics?.hasPhysicalNotch ?? true,
-            crumb: L.crumbWidth(showsHome: viewModel.showsHome)
+            crumb: L.crumbWidth(showsHome: viewModel.showsHome),
+            floating: floating
         )
     }
 

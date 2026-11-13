@@ -7,14 +7,24 @@
 //  That top flare is what sells it as part of the hardware rather than a
 //  rectangle parked under the menu bar.
 //
+//  Off the notch (`IslandPlacement.floating`) there's no bezel to flow out
+//  of: the flares go and the top corners round like the bottom ones
+//  (`crownRadius`), a complete form. One curve draws both, so docking and
+//  undocking morph one into the other — see `path(in:)`.
+//
 
 import SwiftUI
 
 struct NotchShape: Shape {
-    /// Radius of the concave flare where the notch meets the screen edge.
+    /// Radius of the concave flare where the notch meets the screen edge,
+    /// which is also how far the side walls stand in from the frame. Zero
+    /// off the notch: the walls are the frame's edges.
     var topCornerRadius: CGFloat
     /// Radius of the convex bottom corners.
     var bottomCornerRadius: CGFloat
+    /// Radius of convex top corners: zero on the notch, where the top is
+    /// square against the bezel, and the island's own roundness off it.
+    var crownRadius: CGFloat
 
     /// Set while the island is collapsing: the sizes it is collapsing from
     /// and to. The shape reads its taper (side walls drawing in toward the
@@ -48,19 +58,23 @@ struct NotchShape: Shape {
     /// full depth; on a shorter wall it draws in proportionally less.
     private static let taperRamp: CGFloat = 20
 
-    init(topCornerRadius: CGFloat = 8, bottomCornerRadius: CGFloat = 14, genie: Genie? = nil) {
+    init(topCornerRadius: CGFloat = 8, bottomCornerRadius: CGFloat = 14, crownRadius: CGFloat = 0, genie: Genie? = nil) {
         self.topCornerRadius = topCornerRadius
         self.bottomCornerRadius = bottomCornerRadius
+        self.crownRadius = crownRadius
         self.genie = genie
     }
 
-    /// Animating the two radii together keeps the corners proportional while
-    /// the panel resizes, instead of the bottom curve popping at the end.
-    var animatableData: AnimatablePair<CGFloat, CGFloat> {
-        get { AnimatablePair(topCornerRadius, bottomCornerRadius) }
+    /// Animating the radii together keeps the corners proportional while
+    /// the panel resizes, instead of the bottom curve popping at the end —
+    /// and takes the flares into the crown, and back, when the island
+    /// leaves the notch or returns to it.
+    var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, CGFloat> {
+        get { AnimatablePair(AnimatablePair(topCornerRadius, bottomCornerRadius), crownRadius) }
         set {
-            topCornerRadius = newValue.first
-            bottomCornerRadius = newValue.second
+            topCornerRadius = newValue.first.first
+            bottomCornerRadius = newValue.first.second
+            crownRadius = newValue.second
         }
     }
 
@@ -77,10 +91,24 @@ struct NotchShape: Shape {
         }
 
         // Clamp so a small collapsed height can't produce overlapping arcs
-        // that render as a bowtie.
+        // that render as a bowtie. (A spring settling the flare to nothing
+        // passes a hair below it; never negative.)
         let maxRadius = min(rect.width, rect.height) / 2
-        let top = min(topCornerRadius, maxRadius)
+        let top = min(max(topCornerRadius, 0), maxRadius)
         let bottom = min(bottomCornerRadius, maxRadius)
+        let crown = min(max(crownRadius, 0), maxRadius)
+
+        // Each top corner is one curve round the point where the wall meets
+        // the top edge. On the notch it runs from the wall out along the
+        // bezel, away from the island: the flare. Off it, it runs from the
+        // wall in along the island's own top edge: a rounded corner. `reach`
+        // is where along the top edge the curve ends, measured from the
+        // wall toward the island's middle — minus the flare's radius, plus
+        // the crown's — and `drop` how far down the wall it starts. Between
+        // the two the flare draws in to a square corner and the corner
+        // rounds off, so the one shape morphs into the other.
+        let reach = crown - top
+        let drop = top + crown
 
         // How far each wall draws in by the bottom. Zero unless collapsing,
         // and capped so the two bottom corners never meet.
@@ -100,7 +128,7 @@ struct NotchShape: Shape {
         // two the start slides down, and the pinch shrinks to nothing as the
         // wall below its start does: every frame of a collapse draws this
         // shape, so neither change may happen all at once.
-        let wallTop = rect.minY + top
+        let wallTop = rect.minY + drop
         let wallBottom = rect.maxY - bottom
         let taperTop: CGFloat = {
             guard let genie else { return wallTop }
@@ -113,9 +141,9 @@ struct NotchShape: Shape {
         let taper = room > 0 ? pinch * min(1, room / Self.taperRamp) : 0
         let ease = room * 0.45
 
-        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.move(to: CGPoint(x: rect.minX + top + reach, y: rect.minY))
 
-        // Top-left: concave quarter-circle flaring out to the screen edge.
+        // Top-left: the flare out to the screen edge, or the crown.
         path.addQuadCurve(
             to: CGPoint(x: rect.minX + top, y: wallTop),
             control: CGPoint(x: rect.minX + top, y: rect.minY)
@@ -164,9 +192,9 @@ struct NotchShape: Shape {
             path.addLine(to: CGPoint(x: rect.maxX - top, y: wallTop))
         }
 
-        // Top-right: concave.
+        // Top-right: the same curve, mirrored.
         path.addQuadCurve(
-            to: CGPoint(x: rect.maxX, y: rect.minY),
+            to: CGPoint(x: rect.maxX - top - reach, y: rect.minY),
             control: CGPoint(x: rect.maxX - top, y: rect.minY)
         )
 
@@ -184,6 +212,19 @@ struct NotchShape: Shape {
         NotchShape(topCornerRadius: 10, bottomCornerRadius: 22)
             .fill(.black)
             .frame(width: 420, height: 150)
+
+        // Off the notch: closed, open, and half way between docked and not.
+        NotchShape(topCornerRadius: 0, bottomCornerRadius: 19, crownRadius: 19)
+            .fill(.black)
+            .frame(width: 200, height: 38)
+
+        NotchShape(topCornerRadius: 0, bottomCornerRadius: 22, crownRadius: 22)
+            .fill(.black)
+            .frame(width: 400, height: 150)
+
+        NotchShape(topCornerRadius: 5, bottomCornerRadius: 22, crownRadius: 11)
+            .fill(.black)
+            .frame(width: 410, height: 150)
     }
     .padding(40)
     .background(.white)

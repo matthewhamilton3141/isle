@@ -20,10 +20,24 @@
 //  its own sine, so each gets a keyframe loop on its own exact period and the
 //  render server plays them.
 //
+//  On glass the bars carry a dark edge (`EqualizerStyle.onGlass`): behind
+//  each bar, a dark one a hair larger, moved with it. Plain layers like the
+//  bars themselves. (It was a pair of live shadows first, which the render
+//  server had to blur again on every level update, 30 times a second.)
+//
 
 import AppKit
 import Combine
 import SwiftUI
+
+/// How the waveform's bars are drawn.
+enum EqualizerStyle: Equatable {
+    /// The bars alone: on black.
+    case flat
+    /// The same bars with a dark edge (`IslandGlass.barEdge`), so their
+    /// colours hold against whatever shows through the glass.
+    case onGlass
+}
 
 final class EqualizerLayerView: NSView {
 
@@ -56,10 +70,15 @@ final class EqualizerLayerView: NSView {
 
     // MARK: - State
 
+    /// On glass, the dark bars behind the bars: each one `barEdgeWidth`
+    /// larger all round than the bar it follows.
+    private let edge = CALayer()
+    private var edges: [CALayer] = []
     private let gradient = CAGradientLayer()
     private let barMask = CALayer()
     private var bars: [CALayer] = []
 
+    private var style: EqualizerStyle = .flat
     private var palette: ArtworkPalette = .fallback
     private var isPlaying: Bool = true
     /// Real per-band magnitudes, 0...1. Fewer than `barCount` means fall back to
@@ -90,6 +109,8 @@ final class EqualizerLayerView: NSView {
         wantsLayer = true
         layer?.masksToBounds = false
         gradient.mask = barMask
+        edge.isHidden = true
+        layer?.addSublayer(edge)
         layer?.addSublayer(gradient)
     }
 
@@ -118,12 +139,14 @@ final class EqualizerLayerView: NSView {
         setLevels([])
     }
 
-    func configure(palette: ArtworkPalette, isPlaying: Bool) {
+    func configure(palette: ArtworkPalette, isPlaying: Bool, style: EqualizerStyle = .flat) {
         let modeWas = mode
         self.palette = palette
         self.isPlaying = isPlaying
+        let styleWas = self.style
+        self.style = style
         if palette != builtPalette { applyGradient() }
-        if mode != modeWas { rebuild() }
+        if mode != modeWas || style != styleWas { rebuild() }
     }
 
     /// Static levels, for the previews and the gallery.
@@ -160,16 +183,19 @@ final class EqualizerLayerView: NSView {
 
         gradient.frame = CGRect(origin: .zero, size: size)
         barMask.frame = CGRect(origin: .zero, size: size)
+        edge.frame = CGRect(origin: .zero, size: size)
+        edge.isHidden = style != .onGlass
 
         let (barWidth, spacing) = geometry(for: size)
         for index in 0..<barCount {
-            let bar = bars[index]
-            bar.removeAllAnimations()
-            bar.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-            bar.position = CGPoint(
-                x: CGFloat(index) * (barWidth + spacing) + barWidth / 2,
-                y: size.height / 2
-            )
+            for piece in [bars[index]] + (edges.isEmpty ? [] : [edges[index]]) {
+                piece.removeAllAnimations()
+                piece.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+                piece.position = CGPoint(
+                    x: CGFloat(index) * (barWidth + spacing) + barWidth / 2,
+                    y: size.height / 2
+                )
+            }
         }
 
         switch mode {
@@ -185,17 +211,34 @@ final class EqualizerLayerView: NSView {
     }
 
     private func makeBars() {
-        guard bars.count != barCount else { return }
-        bars.forEach { $0.removeFromSuperlayer() }
-        bars = (0..<barCount).map { _ in
-            let bar = CALayer()
-            // Opaque: this layer is a mask, so its alpha is what shows the
-            // gradient through. The colour itself is never seen.
-            bar.backgroundColor = NSColor.black.cgColor
-            barMask.addSublayer(bar)
-            return bar
+        if bars.count != barCount {
+            bars.forEach { $0.removeFromSuperlayer() }
+            bars = (0..<barCount).map { _ in
+                let bar = CALayer()
+                // Opaque: this layer is a mask, so its alpha is what shows the
+                // gradient through. The colour itself is never seen.
+                bar.backgroundColor = NSColor.black.cgColor
+                barMask.addSublayer(bar)
+                return bar
+            }
+        }
+        // The edges only once something is drawn on glass: on black they'd
+        // be six layers of black on black.
+        if style == .onGlass, edges.count != barCount {
+            edges.forEach { $0.removeFromSuperlayer() }
+            edges = (0..<barCount).map { _ in
+                let dark = CALayer()
+                dark.backgroundColor = NSColor.black.withAlphaComponent(CGFloat(IslandGlass.barEdge)).cgColor
+                edge.addSublayer(dark)
+                return dark
+            }
         }
     }
+
+    /// The edge behind a bar of this size: `barEdgeWidth` larger all round,
+    /// and as round.
+    private func edgeHeight(_ full: CGFloat) -> CGFloat { full + 2 * CGFloat(IslandGlass.barEdgeWidth) }
+    private func edgeWidth(_ barWidth: CGFloat) -> CGFloat { barWidth + 2 * CGFloat(IslandGlass.barEdgeWidth) }
 
     private func applyGradient() {
         builtPalette = palette
@@ -245,6 +288,10 @@ final class EqualizerLayerView: NSView {
         // so a bar shorter than it is wide reads as a pill. Match that, or a
         // resting dot would render as a square.
         bar.cornerRadius = min(barWidth, full) / 2
+        guard !edges.isEmpty else { return }
+        let dark = edges[index]
+        dark.bounds = CGRect(x: 0, y: 0, width: edgeWidth(barWidth), height: edgeHeight(full))
+        dark.cornerRadius = min(edgeWidth(barWidth), edgeHeight(full)) / 2
     }
 
     private func applyLiveLevels() {
@@ -275,6 +322,8 @@ final class EqualizerLayerView: NSView {
 
             var heights: [Any] = []
             var radii: [Any] = []
+            var edgeHeights: [Any] = []
+            var edgeRadii: [Any] = []
             heights.reserveCapacity(count + 1)
             radii.reserveCapacity(count + 1)
             for step in 0...count {
@@ -284,6 +333,10 @@ final class EqualizerLayerView: NSView {
                 let full = barHeight(level: level, size: size)
                 heights.append(full)
                 radii.append(min(barWidth, full) / 2)
+                if !edges.isEmpty {
+                    edgeHeights.append(edgeHeight(full))
+                    edgeRadii.append(min(edgeWidth(barWidth), edgeHeight(full)) / 2)
+                }
             }
 
             let bar = bars[index]
@@ -293,6 +346,15 @@ final class EqualizerLayerView: NSView {
                     forKey: "height")
             bar.add(loop(radii, keyPath: "cornerRadius", duration: period, beginTime: now),
                     forKey: "radius")
+
+            guard !edges.isEmpty else { continue }
+            let dark = edges[index]
+            dark.bounds = CGRect(x: 0, y: 0, width: edgeWidth(barWidth), height: edgeHeights[0] as! CGFloat)
+            dark.cornerRadius = edgeRadii[0] as! CGFloat
+            dark.add(loop(edgeHeights, keyPath: "bounds.size.height", duration: period, beginTime: now),
+                     forKey: "height")
+            dark.add(loop(edgeRadii, keyPath: "cornerRadius", duration: period, beginTime: now),
+                     forKey: "radius")
         }
     }
 

@@ -5,13 +5,11 @@
 //  the numbers are in IslandGlass.swift):
 //
 //  - `IslandGlassFill`, the glass half of `IslandFill`: the system material,
-//    its tint (Fade's solid band and gradient, in Fade), the notch glow and
-//    the black that covers it all while the island is closed, blended away
-//    on the open's progress.
-//  - Fade's lens, over its shade: the scrim behind the content, the
-//    specular rim and the spectral glint along the bottom edge, which take
-//    the current cover's colours while a track is up (`FadeLight`), and
-//    the sweep that runs along the rim once as the island opens.
+//    its tint, the notch glow and the black that covers it all while the
+//    island is closed, blended away on the open's progress. Off the notch
+//    (`IslandPlacement.floating`) nothing covers it: glass closed and open.
+//  - Prism's shade and lens are in IslandPrism+SwiftUI.swift; this file
+//    draws them in the fill and asks the glass window for the lens.
 //  - The material: Liquid Glass on macOS 26, an `NSVisualEffectView` behind
 //    the window on 14 and 15. Both are window-server effects — an offscreen
 //    render draws neither — and both are forced dark, so the white content
@@ -25,12 +23,7 @@
 //
 //  Nothing here runs on a clock. The blend is `Animatable`, interpolated by
 //  the same spring that moves the outline and only for as long as it runs;
-//  at rest it doesn't evaluate. The glow is a bitmap built once. Fade's
-//  shade is laid out, not measured: a fixed band and a gradient that takes
-//  whatever height is left, so it follows the outline's frame with no
-//  geometry reader and nothing to redraw at rest. Its lens is the same:
-//  strokes, gradients and one blur flattened to a bitmap, all static — it
-//  is redrawn only while the outline's size is changing.
+//  at rest it doesn't evaluate. The glow is a bitmap built once.
 //
 
 import SwiftUI
@@ -40,7 +33,9 @@ import AppKit
 
 /// The fill for a glass panel background, drawn by `IslandFill` in place of
 /// its flat black. Closed it is that same black; opening, the black thins
-/// to glass on the open's progress, and closing it thickens again.
+/// to glass on the open's progress, and closing it thickens again. Off the
+/// notch there is no black: the capsule is glass too, and no glow grows
+/// out of a camera that isn't under it.
 ///
 /// Clipped to the outline once, outside the blend: the clip takes the
 /// corner radii's own spring during a collapse, like the black fill, so the
@@ -57,80 +52,60 @@ struct IslandGlassFill: View {
     /// `collapsedShift`), so the glow can stay on the camera.
     var housingShift: CGFloat
     /// The band the open panel's content starts under — the camera
-    /// housing's height, or the fallback band without one — which Fade
-    /// keeps solid black and a little more (`IslandGlass.fadeBand`).
+    /// housing's height, or the fallback band without one — which Prism
+    /// keeps solid black (`PrismShade`).
     var bandHeight: CGFloat
-    /// The current track's cover colours, for Fade's light; nil with no
-    /// track or no cover, which leaves it spectral.
-    var lightPalette: ArtworkPalette? = nil
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    /// When the island last closed, and when Fade's sweep last started, for
-    /// the rule that decides whether an open sweeps
-    /// (`IslandGlass.fadeSweeps`). Kept here because this view lasts across
-    /// opens and closes; the lens itself is rebuilt with every open.
-    @State private var closedAt: Date?
-    @State private var sweptAt: Date?
-    /// The open that earned a sweep, handed to the lens to run it.
-    @State private var sweepAt: Date?
+    /// What Prism's ribbon follows; nil in every other mode.
+    var ribbon: PrismRibbonInput? = nil
+    /// Whether the island is off its notch — the lift's target, 1 or 0.
+    var floating: Bool = false
 
     var body: some View {
         IslandGlassBlend(
             progress: opened ? 1 : 0,
+            lift: floating ? 1 : 0,
             background: background,
             shape: shape,
             housing: housing,
             housingShift: housingShift,
             bandHeight: bandHeight,
-            lightPalette: lightPalette,
-            sweepAt: sweepAt
+            ribbon: ribbon
         )
         // The blend runs on the width's spring during a collapse — the
         // channel `expandProgress`, and so the content's fade, read off —
         // and on the transaction's own animation otherwise (the open).
         .islandCollapseChannel(.width)
         .clipShape(shape)
-        // Opens and closes only: a face swipe or a height change doesn't
-        // touch `opened`, so it never sweeps.
-        .onChange(of: opened) { _, isOpen in
-            let now = Date()
-            guard isOpen else {
-                closedAt = now
-                return
-            }
-            guard background == .fade, IslandGlass.fadeSweeps(
-                sinceClose: closedAt.map { now.timeIntervalSince($0) },
-                sinceSweep: sweptAt.map { now.timeIntervalSince($0) },
-                reduceMotion: reduceMotion
-            ) else { return }
-            sweptAt = now
-            sweepAt = now
-        }
     }
 }
 
 /// The blend from black to glass as an animatable value, so it follows the
 /// spring that moves the outline frame by frame rather than jumping to its
-/// end.
+/// end — and with it the lift off the notch, which takes the black away
+/// altogether (`IslandGlass.blackCover(progress:lift:)`).
 private struct IslandGlassBlend: View, Animatable {
     var progress: Double
+    /// 0 on the notch, 1 off it.
+    var lift: Double
     var background: PanelBackground
     var shape: NotchShape
     var housing: CGSize?
     var housingShift: CGFloat
     var bandHeight: CGFloat
-    var lightPalette: ArtworkPalette?
-    var sweepAt: Date?
+    var ribbon: PrismRibbonInput?
 
     @Environment(\.islandGlassLayer) private var layer
 
-    var animatableData: Double {
-        get { progress }
-        set { progress = newValue }
+    var animatableData: AnimatablePair<Double, Double> {
+        get { AnimatablePair(progress, lift) }
+        set {
+            progress = newValue.first
+            lift = newValue.second
+        }
     }
 
     var body: some View {
+        let showsGlass = IslandGlass.showsGlass(progress: progress, lift: lift)
         ZStack(alignment: .top) {
             if layer == .materialOnly {
                 // The glass window keeps its material in the tree the whole
@@ -143,17 +118,19 @@ private struct IslandGlassBlend: View, Animatable {
                 // of every open. At zero opacity it isn't composited, so the
                 // closed pill costs nothing for it.
                 material
-                    .opacity(IslandGlass.showsGlass(progress: progress) ? 1 : 0)
-            } else if IslandGlass.showsGlass(progress: progress) {
+                    .opacity(showsGlass ? 1 : 0)
+            } else if showsGlass {
                 material
                     .overlay(alignment: .top) {
-                        if layer != .materialOnly {
-                            IslandGlassShade(background: background, bandHeight: bandHeight)
+                        // Glass's tint. Prism's shade is drawn with the
+                        // material, under its ribbon (`material`).
+                        if layer != .materialOnly, background != .prism {
+                            IslandGlassShade(background: background, bandHeight: bandHeight, lift: lift)
                         }
                     }
                     .overlay(alignment: .top) {
-                        if background == .fade, layer != .materialOnly {
-                            FadeLens(shape: shape, bandHeight: bandHeight, light: FadeLight.resolve(lightPalette), sweepAt: sweepAt)
+                        if background == .prism, layer != .materialOnly {
+                            PrismLens(shape: shape, pane: pane)
                         }
                     }
                     .transition(.identity)
@@ -162,6 +139,12 @@ private struct IslandGlassBlend: View, Animatable {
             // window's: there, under full black, there's simply no glass yet.
             if layer != .materialOnly {
                 cover
+                // Off the notch, Glass's hairline (Prism's lens has an edge
+                // of its own): in with the lift, on its spring.
+                if background == .glass, lift > 0 {
+                    IslandRim(shape: shape, opacity: IslandFloat.glassRimOpacity)
+                        .opacity(lift)
+                }
             }
         }
     }
@@ -173,8 +156,39 @@ private struct IslandGlassBlend: View, Animatable {
         if layer == .withoutMaterial {
             Color.clear
         } else {
-            IslandGlassMaterial(shape: shape, clear: background == .fade)
+            IslandGlassMaterial(
+                shape: shape,
+                clear: background == .prism,
+                lens: background == .prism
+            )
+            .overlay(alignment: .top) {
+                // Prism's shade, frost and ribbon, in the material's own
+                // window with the lens: glass on glass and the light in
+                // it, under everything the panel draws. The shade first, so
+                // the ribbon lies on it rather than under it: over the
+                // ribbon, a shade dark enough for a bright window took the
+                // colour out of the light.
+                if background == .prism {
+                    PrismShade(bandHeight: bandHeight, lift: lift)
+                    PrismCap()
+                    PrismFrost(shape: shape, pane: pane)
+                    PrismRibbonStrip(shape: shape, ribbon: ribbon)
+                        // The ribbon is the open lip's. On the notch the
+                        // black cover hides it while closed; off it, it
+                        // comes and goes with the open instead.
+                        .opacity(lift > 0 ? IslandGlass.openOnlyOpacity(progress: progress) : 1)
+                }
+            }
         }
+    }
+
+    /// Where Prism's frost and scrim lie: the docked pane, the floating
+    /// one at this much of the open, or — while the island morphs between
+    /// the two — the one part way from the first to the second.
+    private var pane: PrismPaneInsets {
+        let docked = PrismPaneInsets.docked
+        guard lift > 0 else { return docked }
+        return docked.mixed(with: PrismPaneInsets(IslandFloat.prismPane(progress: progress, closedHeight: IslandFloat.pillHeight)), by: lift)
     }
 
     /// The notch glow and the black that blends away on the open.
@@ -190,7 +204,7 @@ private struct IslandGlassBlend: View, Animatable {
             }
             Rectangle()
                 .fill(.black)
-                .opacity(IslandGlass.blackCover(progress: progress))
+                .opacity(IslandGlass.blackCover(progress: progress, lift: lift))
         }
     }
 }
@@ -211,7 +225,7 @@ private struct IslandGlassBlend: View, Animatable {
 /// So as Isle runs, the material is drawn in a window of its own that never
 /// becomes key (`IslandGlassWindow`, a child of the panel, ordered just
 /// below it), from the same view tree with `.materialOnly`, while the panel
-/// draws everything else with `.withoutMaterial`: the shade, Fade's lens,
+/// draws everything else with `.withoutMaterial`: the shade, Prism's scrim,
 /// the glow and the black that blends away on the open all lie over the
 /// glass exactly as before. Both trees follow the same state on the same
 /// springs, so the two windows move as one.
@@ -236,296 +250,20 @@ extension EnvironmentValues {
     }
 }
 
-/// The black laid over the material: a flat tint in Glass and Smoked; in
-/// Fade, solid over the band and easing to `IslandGlass.fadeEndTint` at the
-/// bottom edge.
-///
-/// Fade's shade is a fixed-height black band over a gradient that fills the
-/// rest, so the ease always spans from the band's foot to the outline's
-/// current bottom edge — as the panel opens, collapses or changes height,
-/// layout hands the gradient its new height and nothing is measured or
-/// stretched from a stale one. In an overlay on a flexible clear view, so
-/// it never sets the fill's size: while the outline is shallower than the
-/// band (the first frames of an open, the last of a collapse) the band
-/// simply runs past the clip, and that whole while the cover is solid
-/// black anyway.
+/// The black laid over the material: a flat tint in Glass, Prism's shade
+/// (`PrismShade`) in Prism.
 private struct IslandGlassShade: View {
     var background: PanelBackground
     var bandHeight: CGFloat
+    /// 0 on the notch, 1 off it, where Prism has no black over a camera.
+    var lift: Double
 
     var body: some View {
-        if background == .fade {
-            Color.clear.overlay(alignment: .top) {
-                VStack(spacing: 0) {
-                    Rectangle()
-                        .fill(.black)
-                        .frame(height: IslandGlass.fadeBand(notchHeight: bandHeight))
-                    LinearGradient(stops: FadeStops.stops, startPoint: .top, endPoint: .bottom)
-                }
-            }
+        if background == .prism {
+            PrismShade(bandHeight: bandHeight, lift: lift)
         } else {
             Color.black.opacity(IslandGlass.tint(for: background))
         }
-    }
-}
-
-/// Fade's gradient stops, sampled from the curve once.
-private enum FadeStops {
-    static let stops: [Gradient.Stop] = IslandGlass.fadeStops().map {
-        Gradient.Stop(color: .black.opacity($0.alpha), location: $0.location)
-    }
-}
-
-/// Fade's lens, drawn over its shade and under the content: what makes the
-/// glass below the band read as a piece of glass rather than a tinted
-/// window.
-///
-/// - The scrim: black behind the content (`IslandGlass.fadeScrim`), inset
-///   from the walls and bottom edge with a soft edge, so text and the action
-///   row near the bottom sit on enough dark over a bright or busy backdrop,
-///   while a rim of lighter glass runs round them.
-/// - The rim: a 1pt specular line along the outline, white at the bottom
-///   corners and fainter between, fading out up the walls before the band.
-/// - The glint: a thin spectral line across the middle of the bottom edge
-///   and a low haze of the same colours rising a few points from it.
-///
-/// The rim and glint are the lens's light (`FadeLight`): spectral, or the
-/// current cover's colours, cross-faded when that changes — an opacity
-/// transition on the change alone, nothing running at rest.
-///
-/// The light is added (plus-lighter), as light on glass is. Everything is
-/// static and laid out against the outline's current frame, with the band
-/// as the only fixed length, so it follows the panel as it opens, collapses
-/// and changes height, and the closed pill's black cover hides it all.
-private struct FadeLens: View {
-    var shape: NotchShape
-    var bandHeight: CGFloat
-    var light: FadeLight
-    /// The open that earned a sweep (see `IslandGlassFill`), if any.
-    var sweepAt: Date?
-
-    var body: some View {
-        let band = IslandGlass.fadeBand(notchHeight: bandHeight)
-        ZStack {
-            scrim(band: band)
-            // Keyed by the light, so a new cover's colours come in as a new
-            // view and the old fade out under them.
-            ZStack {
-                ZStack {
-                    rim(band: band)
-                    glint
-                }
-                .id(light)
-                .transition(.opacity)
-            }
-            .animation(.easeInOut(duration: IslandGlass.fadeLightCrossfade), value: light)
-            FadeSweepRun(sweepAt: sweepAt, shape: shape, light: light)
-        }
-        .allowsHitTesting(false)
-    }
-
-    /// The outline's walls stand its top flare's radius in from the frame.
-    private var wall: CGFloat { shape.topCornerRadius }
-
-    /// Soft-edged black behind the content. Its top runs up under the band,
-    /// where it can't be seen, so only the sides and bottom are soft.
-    /// Flattened to one bitmap, so the blur costs nothing at rest.
-    private func scrim(band: CGFloat) -> some View {
-        let inset = wall + IslandGlass.fadeScrimInset
-        let radius = max(shape.bottomCornerRadius - IslandGlass.fadeScrimInset, 0)
-        return Color.clear.overlay {
-            UnevenRoundedRectangle(bottomLeadingRadius: radius, bottomTrailingRadius: radius, style: .continuous)
-                .fill(.black.opacity(IslandGlass.fadeScrim))
-                .padding(.horizontal, inset)
-                .padding(.bottom, IslandGlass.fadeScrimInset)
-                .padding(.top, -2 * IslandGlass.fadeScrimFeather)
-                .blur(radius: IslandGlass.fadeScrimFeather)
-        }
-        .drawingGroup()
-    }
-
-    /// The specular line round the lower outline.
-    private func rim(band: CGFloat) -> some View {
-        shape
-            .stroke(LinearGradient(stops: light.rim, startPoint: .leading, endPoint: .trailing),
-                    lineWidth: IslandGlass.fadeRimWidth)
-            .mask {
-                // Nothing over the band, then up to full by the bottom.
-                VStack(spacing: 0) {
-                    Color.clear.frame(height: band)
-                    LinearGradient(colors: [.clear, .white], startPoint: .top, endPoint: .bottom)
-                }
-            }
-            .blendMode(.plusLighter)
-    }
-
-    /// The spectral line and its haze along the bottom edge.
-    private var glint: some View {
-        let colors = LinearGradient(stops: light.glint, startPoint: .leading, endPoint: .trailing)
-        return ZStack(alignment: .bottom) {
-            shape
-                .stroke(colors, lineWidth: IslandGlass.fadeGlintWidth)
-                .opacity(IslandGlass.fadeGlintAlpha)
-                .mask {
-                    VStack(spacing: 0) {
-                        Color.clear
-                        LinearGradient(colors: [.clear, .white], startPoint: .top, endPoint: .bottom)
-                            .frame(height: IslandGlass.fadeGlintReach)
-                    }
-                }
-            Rectangle()
-                .fill(colors)
-                .frame(height: IslandGlass.fadeHazeHeight)
-                .mask(LinearGradient(colors: [.clear, .white], startPoint: .top, endPoint: .bottom))
-                .opacity(IslandGlass.fadeHazeAlpha)
-        }
-        .blendMode(.plusLighter)
-    }
-}
-
-/// Runs Fade's sweep once for the open that earned it: from nothing at the
-/// centre to the corners over `IslandGlass.fadeSweepDuration`, eased out,
-/// starting `fadeSweepDelay` after the open — when the outline first
-/// reaches its full width. One animation of one value (`FadeSweep`'s
-/// phase); before and after it, nothing is drawn and nothing runs.
-private struct FadeSweepRun: View {
-    var sweepAt: Date?
-    var shape: NotchShape
-    var light: FadeLight
-
-    /// 1 at rest (done, or never started): nothing drawn.
-    @State private var phase: Double = 1
-
-    var body: some View {
-        // On a clear view that's always there: at rest the sweep draws
-        // nothing, and a view that draws nothing never appears.
-        Color.clear
-            .overlay { FadeSweep(phase: phase, shape: shape, light: light) }
-            .onAppear(perform: start)
-            .onChange(of: sweepAt) { _, _ in start() }
-    }
-
-    private func start() {
-        guard let sweepAt else { return }
-        // The lens is rebuilt with each open, a moment after the open that
-        // set `sweepAt`; anything older is a sweep already run.
-        let age = Date().timeIntervalSince(sweepAt)
-        guard age >= 0, age < IslandGlass.fadeSweepDelay else { return }
-        var reset = Transaction()
-        reset.disablesAnimations = true
-        withTransaction(reset) { phase = 0 }
-        DispatchQueue.main.asyncAfter(deadline: .now() + (IslandGlass.fadeSweepDelay - age)) {
-            withAnimation(.easeOut(duration: IslandGlass.fadeSweepDuration)) { phase = 1 }
-        }
-    }
-}
-
-/// The sweep at `phase` of its run: the light's colours, bright, along the
-/// lower rim with a low haze under it, carried by two soft highlights that
-/// part from the centre (`IslandGlass.fadeSweepMask`) and faded in and out
-/// over the run (`fadeSweepEnvelope`). Animatable on the phase alone; at 0
-/// and 1 it draws nothing at all.
-private struct FadeSweep: View, Animatable {
-    var phase: Double
-    var shape: NotchShape
-    var light: FadeLight
-
-    var animatableData: Double {
-        get { phase }
-        set { phase = newValue }
-    }
-
-    var body: some View {
-        let envelope = IslandGlass.fadeSweepEnvelope(phase: phase)
-        if phase > 0, phase < 1, envelope > 0.001 {
-            let colors = LinearGradient(stops: light.sweep, startPoint: .leading, endPoint: .trailing)
-            let carry = IslandGlass.fadeSweepMask(phase: phase).map {
-                Gradient.Stop(color: .white.opacity($0.alpha), location: $0.location)
-            }
-            ZStack(alignment: .bottom) {
-                shape
-                    .stroke(colors, lineWidth: IslandGlass.fadeGlintWidth)
-                    .opacity(IslandGlass.fadeSweepAlpha)
-                Rectangle()
-                    .fill(colors)
-                    .frame(height: IslandGlass.fadeHazeHeight)
-                    .mask(LinearGradient(colors: [.clear, .white], startPoint: .top, endPoint: .bottom))
-                    .opacity(IslandGlass.fadeSweepHazeAlpha)
-            }
-            .mask {
-                // The lower rim only, thinning out up the walls.
-                VStack(spacing: 0) {
-                    Color.clear
-                    LinearGradient(colors: [.clear, .white], startPoint: .top, endPoint: .bottom)
-                        .frame(height: IslandGlass.fadeGlintReach)
-                }
-            }
-            .mask(LinearGradient(stops: carry, startPoint: .leading, endPoint: .trailing))
-            .opacity(envelope)
-            .blendMode(.plusLighter)
-        }
-    }
-}
-
-/// Fade's light: the rim's and the glint's gradients. Spectral with no
-/// cover; from a cover, the glint in its palette's colours
-/// (`IslandGlass.fadeGlint`, each lit to a brightness floor so a dark or
-/// grey cover still throws light) and the rim's white faintly tinted toward
-/// its primary (`IslandGlass.fadeRimColor`). Consumes the palette the view
-/// model already extracted; extracts nothing.
-struct FadeLight: Hashable {
-    var rim: [Gradient.Stop]
-    var glint: [Gradient.Stop]
-    /// The sweep's colours: the glint's at full strength across the middle
-    /// and the rim's colour out at the corners, where the glint fades.
-    var sweep: [Gradient.Stop]
-
-    static let spectral = FadeLight(glint: IslandGlass.fadeSpectralGlint(), rim: nil)
-
-    private init(glint: [IslandGlass.GlintStop], rim primary: IslandGlass.HSB?) {
-        let c = IslandGlass.fadeRimColor(primary: primary)
-        let rimColor = Color(.sRGB, red: c.r, green: c.g, blue: c.b)
-        rim = IslandGlass.fadeRimStops().map {
-            Gradient.Stop(color: rimColor.opacity($0.alpha), location: $0.location)
-        }
-        self.glint = glint.map {
-            Gradient.Stop(
-                color: Color(hue: $0.color.h, saturation: $0.color.s, brightness: $0.color.b).opacity($0.strength),
-                location: $0.location
-            )
-        }
-        sweep = [Gradient.Stop(color: rimColor, location: 0)]
-            + glint.map { Gradient.Stop(color: Color(hue: $0.color.h, saturation: $0.color.s, brightness: $0.color.b), location: $0.location) }
-            + [Gradient.Stop(color: rimColor, location: 1)]
-    }
-
-    init(palette: ArtworkPalette) {
-        let primary = Self.hsb(palette.primary)
-        self.init(
-            glint: IslandGlass.fadeGlint(primary: primary, secondary: Self.hsb(palette.secondary), accent: Self.hsb(palette.accent)),
-            rim: primary
-        )
-    }
-
-    /// The light for a palette (nil: spectral). The last one is kept, since
-    /// the lens is laid out on every frame of an open or resize and the
-    /// palette changes only with the cover.
-    @MainActor
-    static func resolve(_ palette: ArtworkPalette?) -> FadeLight {
-        guard let palette else { return spectral }
-        if let last, last.palette == palette { return last.light }
-        let light = FadeLight(palette: palette)
-        last = (palette, light)
-        return light
-    }
-
-    @MainActor private static var last: (palette: ArtworkPalette, light: FadeLight)?
-
-    private static func hsb(_ color: Color) -> IslandGlass.HSB {
-        guard let c = NSColor(color).usingColorSpace(.sRGB) else { return IslandGlass.HSB(h: 0, s: 0, b: 1) }
-        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        c.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-        return IslandGlass.HSB(h: Double(h), s: Double(s), b: Double(b))
     }
 }
 
@@ -592,13 +330,14 @@ private enum NotchGlowImage {
 /// desktop — the panel usually sits over app windows, and the material
 /// reads whatever is really there.
 ///
-/// Glass and Smoked draw the frosted `.regular` variant; Fade the
-/// `.clear`, which lets more of the backdrop's colour and light through. In
-/// the window it's drawn in, which never becomes key (`IslandGlassLayer`),
-/// both stay frosted: the backdrop's shapes and colours come through, its
-/// detail doesn't. (In a key window the system lenses the backdrop nearly
-/// sharp, `.clear` most of all — which is what a focused reply field used
-/// to show for as long as it was focused.)
+/// Glass draws the frosted `.regular` variant; Prism the `.clear`, which
+/// lets more of the backdrop's colour and light through, and asks for it
+/// as a lens. In the window it's drawn in, which never becomes key
+/// (`IslandGlassLayer`), Glass stays frosted: the backdrop's shapes and
+/// colours come through, its detail doesn't. (In a key window the system
+/// lenses the backdrop nearly sharp — which is what a focused reply field
+/// used to show for as long as it was focused, and what Prism asks for on
+/// purpose.)
 /// It is never tinted through `Glass.tint` — black there lightens the glass
 /// to grey rather than darkening it — so the shade over it does that. Not
 /// `.interactive()`: the panel is a surface with buttons on it, not a
@@ -609,14 +348,51 @@ private struct IslandGlassMaterial: View {
     var shape: NotchShape
     /// Liquid Glass's clear variant rather than the frosted.
     var clear: Bool = false
+    /// Drawn as a lens (Prism): asks the glass window for the look Liquid
+    /// Glass keeps for key windows (`IslandGlassWindow.lensed`). Only that
+    /// window answers, so in a preview or a render, where the material is
+    /// in the panel's own window, this is the frosted clear glass.
+    var lens: Bool = false
 
     var body: some View {
         if #available(macOS 26.0, *) {
             Color.clear
                 .glassEffect(clear ? .clear : .regular, in: shape)
                 .environment(\.colorScheme, .dark)
+                .background(IslandGlassLensSwitch(lens: lens))
         } else {
             IslandVisualEffect()
+        }
+    }
+}
+
+/// Tells the window the material is drawn in whether its glass is a lens.
+/// In every mode, so leaving Prism for another puts the frosted look back.
+private struct IslandGlassLensSwitch: NSViewRepresentable {
+    var lens: Bool
+
+    func makeNSView(context: Context) -> SwitchView {
+        let view = SwitchView()
+        view.lens = lens
+        return view
+    }
+
+    func updateNSView(_ view: SwitchView, context: Context) {
+        view.lens = lens
+    }
+
+    final class SwitchView: NSView {
+        var lens = false { didSet { apply() } }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            apply()
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        private func apply() {
+            (window as? IslandGlassWindow)?.lensed = lens
         }
     }
 }
@@ -661,14 +437,33 @@ extension EnvironmentValues {
     }
 }
 
-/// Secondary text: white at `opacity` on black, a little brighter on glass
-/// (`IslandGlass.liftedOpacity`). On black it resolves to exactly
-/// `.white.opacity(opacity)`.
+private struct IslandHasRibbonKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// Whether the panel has Prism's ribbon along its lip
+    /// (`IslandPrism.showsRibbon`). The ribbon is the waveform there, so
+    /// the Music face leaves its own bars out.
+    var islandHasRibbon: Bool {
+        get { self[IslandHasRibbonKey.self] }
+        set { self[IslandHasRibbonKey.self] = newValue }
+    }
+}
+
+/// Secondary text: white at `opacity` on black; on glass brighter
+/// (`IslandGlass.liftedOpacity`) and with a soft dark edge
+/// (`IslandGlass.textShade`), so it holds over a light window. On black it
+/// resolves to exactly `.white.opacity(opacity)`.
 struct IslandSecondaryStyle: ShapeStyle {
     var opacity: Double
 
-    func resolve(in environment: EnvironmentValues) -> Color {
-        .white.opacity(environment.islandOnGlass ? IslandGlass.liftedOpacity(opacity) : opacity)
+    func resolve(in environment: EnvironmentValues) -> AnyShapeStyle {
+        guard environment.islandOnGlass else { return AnyShapeStyle(Color.white.opacity(opacity)) }
+        return AnyShapeStyle(
+            Color.white.opacity(IslandGlass.liftedOpacity(opacity))
+                .shadow(.drop(color: .black.opacity(IslandGlass.textShade), radius: IslandGlass.textShadeRadius))
+        )
     }
 }
 

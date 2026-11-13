@@ -11,6 +11,9 @@
 //  per-side widths come from the view model (CollapsedSize) so the shape is
 //  sized and centred to match.
 //
+//  Off the notch there's no camera to sit either side of: the same pieces
+//  are laid out as one capsule (CollapsedNotchView+Floating.swift).
+//
 
 import SwiftUI
 
@@ -18,14 +21,33 @@ struct CollapsedNotchView: View {
     @ObservedObject var viewModel: NotchViewModel
     @ObservedObject var island: IslandPresentation
     var palette: ArtworkPalette
+    /// The waveform's colours: the cover's as the pill on the notch draws
+    /// them, wherever the bars are. `palette` is lifted for glass
+    /// (`flooredForGlass`), which made the open panel's bars and a
+    /// detached island's a paler thing than the notch's (Matthew: "i want
+    /// compacted notch colours"). The bars have a dark edge on glass
+    /// instead (`EqualizerStyle.onGlass`). Nil: `palette`.
+    var waveformPalette: ArtworkPalette? = nil
+
+    /// Whether the pill is drawn on glass: only off the notch, in a glass
+    /// mode (see NotchRootView). On the notch the pill is always black.
+    @Environment(\.islandOnGlass) var onGlass
 
     private var cutoutWidth: CGFloat {
         island.metrics?.notchSize.width ?? 0
     }
 
     var body: some View {
+        if island.placement.isFloating {
+            floatingPill
+        } else {
+            docked
+        }
+    }
+
+    private var docked: some View {
         let sides = viewModel.collapsedSideWidths
-        HStack(spacing: 0) {
+        return HStack(spacing: 0) {
             // The cutout gap sits between each cluster and the camera, so the
             // clusters tuck against the housing with a little air and the album
             // pulls back toward the outer edge (rather than sitting flush).
@@ -152,14 +174,14 @@ struct CollapsedNotchView: View {
     /// centre is, so nothing shifts when a toast takes the island and gives it
     /// back. Tall enough for the tallest glyphs at this point size
     /// (`computermouse.fill`, `airpodsmax`, 16pt) without clipping.
-    private static let toastGlyphSlot = CGSize(width: CollapsedSize.album, height: 18)
+    static let toastGlyphSlot = CGSize(width: CollapsedSize.album, height: 18)
 
     /// The rune is hand-drawn, so it has no point size to inherit — 16 puts it
     /// between `headphones` (15) and `computermouse.fill` (16) at the same
     /// setting, which are the glyphs it appears alongside.
     private static let toastRuneHeight: CGFloat = 16
 
-    private func toastSymbol(_ toast: IslandToast) -> some View {
+    func toastSymbol(_ toast: IslandToast, slot: CGSize = toastGlyphSlot) -> some View {
         Group {
             if let name = toast.symbolName {
                 // Nudged onto its own ink rather than its layout box — see
@@ -176,12 +198,12 @@ struct CollapsedNotchView: View {
             }
         }
         // Centres both axes for every glyph, whatever its own proportions.
-        .frame(width: Self.toastGlyphSlot.width, height: Self.toastGlyphSlot.height)
+        .frame(width: slot.width, height: slot.height)
     }
 
-    private func toastText(_ toast: IslandToast) -> some View {
+    func toastText(_ toast: IslandToast, fontSize: CGFloat = CollapsedSize.statusFontSize) -> some View {
         Text(toast.text)
-            .font(.system(size: CollapsedSize.statusFontSize, weight: .semibold))
+            .font(.system(size: fontSize, weight: .semibold))
             .foregroundStyle(toast.tint)
             .lineLimit(1)
             .fixedSize()
@@ -193,7 +215,7 @@ struct CollapsedNotchView: View {
 
     // MARK: - Pieces
 
-    private func claudeDots(size: CGFloat) -> some View {
+    func claudeDots(size: CGFloat) -> some View {
         ClaudeStatusGlyphView(
             state: viewModel.claudeState,
             kind: viewModel.claudeMarkerKind,
@@ -203,11 +225,13 @@ struct CollapsedNotchView: View {
         .frame(width: size, height: size)
     }
 
-    private var statusText: some View {
+    private var statusText: some View { statusText(fontSize: CollapsedSize.statusFontSize) }
+
+    func statusText(fontSize: CGFloat) -> some View {
         // Matches the width the view model measured for sizing, so the text
         // fits its slot exactly.
         Text(viewModel.collapsedStatusText)
-            .font(.system(size: CollapsedSize.statusFontSize, weight: .semibold))
+            .font(.system(size: fontSize, weight: .semibold))
             .foregroundStyle(markerColor)
             .lineLimit(1)
             .fixedSize()
@@ -219,7 +243,7 @@ struct CollapsedNotchView: View {
 
     /// The status text colour, matched to the dots: the warm thinking/working
     /// tint when it applies, else the marker's fixed hue or the artwork accent.
-    private var markerColor: Color {
+    var markerColor: Color {
         if let tint = viewModel.workingTint { return tint }
         let design = MarkerStore.shared.design(for: viewModel.claudeMarkerKind)
         return design.colorMode == .fixed ? Color(hex: design.fixedColorHex) : palette.accent
@@ -242,23 +266,27 @@ struct CollapsedNotchView: View {
     /// `.periodic` kept re-evaluating a paused clock once a second to draw
     /// the same digits.)
     private var pomodoroClock: some View {
+        pomodoroClock(fontSize: CollapsedSize.statusFontSize, width: viewModel.pomodoroClockWidth)
+    }
+
+    func pomodoroClock(fontSize: CGFloat, width: CGFloat) -> some View {
         TimelineView(.animation(minimumInterval: 1, paused: !viewModel.pomodoro.isRunning)) { context in
             Text(PomodoroTimer.clock(viewModel.pomodoro.remaining(at: context.date)))
-                .font(.system(size: CollapsedSize.statusFontSize, weight: .semibold).monospacedDigit())
+                .font(.system(size: fontSize, weight: .semibold).monospacedDigit())
                 .foregroundStyle(pomodoroTint)
                 .lineLimit(1)
                 .fixedSize()
                 // Pinned to the slot the view model reserved for it (measured
                 // in this same font), so the text and the island's width can't
                 // disagree and clip the last digit.
-                .frame(width: viewModel.pomodoroClockWidth, alignment: .leading)
+                .frame(width: width, alignment: .leading)
         }
     }
 
     /// A thin progress ring that fills as the interval runs down. Focus draws
     /// in the palette accent; breaks in the softer secondary, so a glance
     /// tells which half of the cycle you're in.
-    private func pomodoroRing(size: CGFloat) -> some View {
+    func pomodoroRing(size: CGFloat) -> some View {
         TimelineView(.animation(minimumInterval: 1, paused: !viewModel.pomodoro.isRunning)) { context in
             PomodoroRing(
                 progress: viewModel.pomodoro.progress(at: context.date),
@@ -275,10 +303,10 @@ struct CollapsedNotchView: View {
         viewModel.pomodoro.phase.isBreak ? palette.secondary : palette.accent
     }
 
-    private func equalizer(width: CGFloat) -> some View {
+    func equalizer(width: CGFloat) -> some View {
         LiveEqualizer(
             source: viewModel.audioLevelSource,
-            palette: palette,
+            palette: waveformPalette ?? palette,
             isPlaying: viewModel.media.isPlaying,
             listens: viewModel.waveformSource.capturesAudio
         )
@@ -286,6 +314,10 @@ struct CollapsedNotchView: View {
     }
 
     private var artworkThumbnail: some View {
+        artworkThumbnail(size: CollapsedSize.album, radius: 5)
+    }
+
+    func artworkThumbnail(size: CGFloat, radius: CGFloat) -> some View {
         Group {
             if let artwork = viewModel.media.artwork {
                 // High interpolation is load-bearing here: this is a ~640px
@@ -304,7 +336,7 @@ struct CollapsedNotchView: View {
                 )
             }
         }
-        .frame(width: CollapsedSize.album, height: CollapsedSize.album)
-        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
     }
 }

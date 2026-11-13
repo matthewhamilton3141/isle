@@ -15,6 +15,13 @@
 //  server and shows up as tearing along the notch edge, which is the one
 //  place it's most visible.
 //
+//  An island can be taken off its notch and left anywhere on its screen
+//  (hold the open panel; see IslandHold and IslandCarry). That moves the
+//  window and nothing else: the island is still drawn at the top centre of
+//  it, so everything here that asks where the island is — the hover zones,
+//  click-through, drops — asks the window's frame and the drawn rect, never
+//  the screen's top edge.
+//
 
 import AppKit
 import SwiftUI
@@ -29,6 +36,10 @@ final class NotchWindowController {
         let presentation: IslandPresentation
         let window: NotchWindow
         let hosting: NotchHostingView<NotchRootView>
+
+        /// This island's way off its notch and back: the press-and-hold,
+        /// the carrying, and where its window is (see `IslandCarry`).
+        let carry: IslandCarry
 
         /// The screen this island is drawn on. Re-resolved on every sync: a
         /// hotplug can hand back a different `NSScreen` object for the same
@@ -45,11 +56,13 @@ final class NotchWindowController {
             presentation: IslandPresentation,
             window: NotchWindow,
             hosting: NotchHostingView<NotchRootView>,
+            carry: IslandCarry,
             screen: NSScreen
         ) {
             self.presentation = presentation
             self.window = window
             self.hosting = hosting
+            self.carry = carry
             self.screen = screen
         }
     }
@@ -156,6 +169,8 @@ final class NotchWindowController {
         viewModel.endCompose()
         giveKeysBack()
         for island in islands.values {
+            // An island in the user's hand is put down where it is.
+            island.carry.cancel()
             island.presentation.endDrop(collapse: false)
             island.presentation.setHovering(false)
             island.presentation.relaxProximity()
@@ -186,6 +201,13 @@ final class NotchWindowController {
     /// attached screen gets a panel, and a screen that has gone away — or
     /// dropped out of scope — loses one. Called on launch, on display changes,
     /// and when the user changes the display scope.
+    ///
+    /// "In place" is on the notch, or wherever an island taken off it was
+    /// left: each island's placement is read back from what was remembered
+    /// for its display and checked against the screen as it is now
+    /// (`rememberedPlacement`), so an island is never left where a screen
+    /// used to be. A screen that goes away takes its island with it; what
+    /// was remembered stays for when that display comes back.
     private func syncIslands() {
         guard isRunning else { return }
 
@@ -194,7 +216,9 @@ final class NotchWindowController {
         // is reaching for the island — plugging in a monitor renumbers screens
         // and can move the built-in display's origin — would move it mid-reach.
         // Defer instead, and pick it up on collapse.
-        if islands.values.contains(where: { $0.presentation.isHovering }) {
+        // Nor one that's being carried, or is still gliding to where it
+        // was put down.
+        if islands.values.contains(where: { $0.presentation.isHovering || $0.carry.isBusy }) {
             syncDeferred = true
             return
         }
@@ -216,7 +240,7 @@ final class NotchWindowController {
             if let island = islands[id] {
                 island.screen = screen
                 island.presentation.metrics = metrics
-                island.window.place(metrics.maximumFrame)
+                island.carry.place(rememberedPlacement(for: id, on: metrics))
                 island.window.orderFrontRegardless()
             } else {
                 makeIsland(id: id, screen: screen, metrics: metrics)
@@ -224,6 +248,7 @@ final class NotchWindowController {
         }
 
         for (id, island) in islands where !wanted.contains(id) {
+            island.carry.cancel()
             island.presentation.endDrop(collapse: false)
             island.presentation.setHovering(false)
             island.window.orderOut(nil)
@@ -264,6 +289,25 @@ final class NotchWindowController {
         window.registerForDraggedTypes([.fileURL])
         window.dropHandler = self
 
+        // A press held on the open panel takes the island off the notch.
+        let carry = IslandCarry(presentation: presentation, window: window)
+        window.pressInterceptor = { [weak carry] event in
+            carry?.handle(event) ?? .pass
+        }
+        carry.drawnRect = { [weak self] in
+            guard let self, let island = self.islands[id] else { return nil }
+            return self.drawnRectInScreen(island)
+        }
+        // Not while a reply is being typed, nor with files in flight.
+        carry.canArm = { [weak self] in
+            guard let self else { return false }
+            return self.viewModel.composing == nil && self.keyIsland == nil && !self.fileDrag.isDraggingFiles
+        }
+        carry.reduceMotion = { [weak self] in self?.reduceMotion ?? false }
+        carry.haptic = { [weak self] in self?.playHaptic($0) }
+        carry.onPlaced = { [weak self] placement in self?.remember(placement, for: id) }
+        carry.onArrived = { [weak self] in self?.islandArrived(id) }
+
         // In the dictionary before the content view is set: SwiftUI can report
         // its first layout during the `contentView` assignment, and the
         // callback above looks the island up by id.
@@ -271,12 +315,74 @@ final class NotchWindowController {
             presentation: presentation,
             window: window,
             hosting: hosting,
+            carry: carry,
             screen: screen
         )
 
         window.contentView = hosting
-        window.place(metrics.maximumFrame)
+        carry.place(rememberedPlacement(for: id, on: metrics))
         window.orderFrontRegardless()
+    }
+
+    // MARK: - Off the notch
+
+    /// A display's name for remembering by: its UUID, which it keeps across
+    /// reconnects and reboots (its display ID it doesn't).
+    private static func displayKey(_ id: CGDirectDisplayID) -> String? {
+        guard let uuid = CGDisplayCreateUUIDFromDisplayID(id)?.takeRetainedValue() else { return nil }
+        return CFUUIDCreateString(nil, uuid) as String?
+    }
+
+    /// Where the island of display `id` belongs: where it was left, if that
+    /// is still somewhere on this screen, else on the notch.
+    private func rememberedPlacement(for id: CGDirectDisplayID, on metrics: NotchMetrics) -> IslandPlacement {
+        guard let key = Self.displayKey(id) else { return .docked }
+        return metrics.placementBounds.placement(restoring: settings.islandOffsets[key])
+    }
+
+    /// The island of display `id` was put down at `placement`.
+    private func remember(_ placement: IslandPlacement, for id: CGDirectDisplayID) {
+        guard let key = Self.displayKey(id), let metrics = islands[id]?.presentation.metrics else { return }
+        settings.islandOffsets[key] = metrics.placementBounds.offset(of: placement)
+    }
+
+    /// The window of display `id`'s island has stopped moving after being
+    /// put down. It may have moved out from under a pointer that didn't —
+    /// going home to the notch, or settling clear of the menu bar — and no
+    /// pointer move is coming to say so.
+    private func islandArrived(_ id: CGDirectDisplayID) {
+        guard let island = islands[id] else { return }
+        updateClickThrough(island)
+        if island.presentation.isHovering, island !== keyIsland, !island.presentation.isHeldOpen,
+           let zones = hoverZones(for: island), !zones.stayOpen.contains(NSEvent.mouseLocation) {
+            cancelSweepRecheck()
+            island.presentation.setHovering(false)
+        }
+        runDeferredSync()
+    }
+
+    private func playHaptic(_ haptic: IslandCarry.Haptic) {
+        switch haptic {
+        case .lifted:
+            // The island's own tap, as for an open or a close.
+            viewModel.playTransitionHaptic()
+        case .snapped:
+            guard settings.haptics else { return }
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        }
+    }
+
+    /// An island is off its notch.
+    var hasFloatingIsland: Bool {
+        islands.values.contains { $0.presentation.placement.isFloating }
+    }
+
+    /// Every island off its notch goes back onto it (the menu bar's
+    /// "Return Island to Notch"). One in the user's hand is left there.
+    func returnIslandsToNotch() {
+        for island in islands.values {
+            island.carry.returnToNotch()
+        }
     }
 
     /// One screen's panel and its glass window, with their view trees, built
@@ -373,6 +479,7 @@ final class NotchWindowController {
 
     /// A move faster than this, and mostly sideways, is the pointer crossing
     /// the island on its way to the menu bar rather than arriving at it.
+    /// (Off the notch, any direction: see `handlePointerMove`.)
     private static let sweepSpeed: CGFloat = 900        // points per second
     private static let sweepAspect: CGFloat = 2.5       // |dx| vs |dy|
 
@@ -463,6 +570,11 @@ final class NotchWindowController {
         // window's own drag callbacks end the drop face on the way out; this
         // is the backstop for one that never got them.
         endDropTargets()
+        // Likewise a press on an island whose release went somewhere this
+        // app never saw.
+        for island in islands.values {
+            island.carry.pointerMovedFreely()
+        }
 
         // Every move: reconcile click-through on every island, so the window
         // server only routes clicks to Isle when the pointer is over a drawn
@@ -475,7 +587,7 @@ final class NotchWindowController {
         // between consecutive events, so sampling it only once the pointer is
         // already over the island would date it from whenever the pointer was
         // last there — and a sweep would clear the gate on its first frame.
-        let sweeping = isSweep(event)
+        let move = measureMove(event)
 
         let pointer = NSEvent.mouseLocation
         let pointerIsland = island(containing: pointer)
@@ -499,6 +611,11 @@ final class NotchWindowController {
             other.presentation.relaxProximity()
             if other !== keyIsland, !other.presentation.isHeldOpen { other.presentation.setHovering(false) }
         }
+
+        // On the notch the island can only be crossed sideways, on the way
+        // along the menu bar. Off it the pointer crosses in any direction,
+        // on its way to anything, so any fast move over it is a crossing.
+        let sweeping = move.fast && (move.sideways || active.presentation.placement.isFloating)
 
         // The swell, before the hover rule and independent of it: it never
         // opens, delays or holds anything. A sweep is the pointer passing,
@@ -599,7 +716,9 @@ final class NotchWindowController {
 
     /// Run a sync that was held off because an island was open.
     private func runDeferredSync() {
-        guard syncDeferred, !islands.values.contains(where: { $0.presentation.isHovering }) else {
+        guard syncDeferred,
+              !islands.values.contains(where: { $0.presentation.isHovering || $0.carry.isBusy })
+        else {
             return
         }
         syncIslands()
@@ -607,9 +726,19 @@ final class NotchWindowController {
 
     /// The open and stay-open regions in screen coordinates, or nil before the
     /// first layout.
+    ///
+    /// Both hang off the island as it's drawn, wherever its window is, so
+    /// they follow an island off its notch with nothing more said. What
+    /// changes there is above it: on the notch that's the edge of the
+    /// screen, and off it it's more screen — somewhere the pointer can
+    /// arrive from and overshoot into — so the lip and the generous pad go
+    /// on top as well as underneath.
     private func hoverZones(for island: Island) -> (open: CGRect, stayOpen: CGRect)? {
         guard let drawn = drawnRectInScreen(island) else { return nil }
         let pad = Self.stayOpenPad
+        let floating = island.presentation.placement.isFloating
+        let lipAbove = floating ? Self.openLip : 0
+        let padAbove = floating ? pad.bottom : pad.top
         return (
             // Screen coords are bottom-left origin, so "below the island" is
             // *lower* y — the lip hangs off `minY`.
@@ -617,26 +746,27 @@ final class NotchWindowController {
                 x: drawn.minX,
                 y: drawn.minY - Self.openLip,
                 width: drawn.width,
-                height: drawn.height + Self.openLip
+                height: drawn.height + Self.openLip + lipAbove
             ),
             stayOpen: CGRect(
                 x: drawn.minX - pad.side,
                 y: drawn.minY - pad.bottom,
                 width: drawn.width + pad.side * 2,
-                height: drawn.height + pad.bottom + pad.top
+                height: drawn.height + pad.bottom + padAbove
             )
         )
     }
 
-    /// Speed and direction of this move. The first event after a pause has no
-    /// meaningful interval behind it, so it never counts as a sweep — which is
-    /// the safe way round: it opens.
-    private func isSweep(_ event: NSEvent) -> Bool {
+    /// Speed and direction of this move: whether it's fast enough to be a
+    /// crossing, and whether it's mostly sideways. The first event after a
+    /// pause has no meaningful interval behind it, so it never counts as
+    /// fast — which is the safe way round: it opens.
+    private func measureMove(_ event: NSEvent) -> (fast: Bool, sideways: Bool) {
         let interval = event.timestamp - lastPointerTimestamp
         lastPointerTimestamp = event.timestamp
-        guard interval > 0, interval < 0.2 else { return false }
+        guard interval > 0, interval < 0.2 else { return (false, false) }
         let dx = abs(event.deltaX), dy = abs(event.deltaY)
-        return hypot(dx, dy) / interval > Self.sweepSpeed && dx > dy * Self.sweepAspect
+        return (hypot(dx, dy) / interval > Self.sweepSpeed, dx > dy * Self.sweepAspect)
     }
 
     private func scheduleSweepRecheck(on island: Island) {

@@ -838,6 +838,18 @@ private final class AudioAnalyzer: @unchecked Sendable {
     private var magnitudes: [Float]
     private var sampleBuffer: [Float]
 
+    /// The last `fftSize` samples, oldest first, carried across callbacks.
+    ///
+    /// A callback delivers 512 samples and the transform wants 1024. This used
+    /// to zero-fill the other half, which left the window covering only its
+    /// rising slope and then dropping from full weight straight to nothing —
+    /// a hard edge in every frame. An edge like that leaks whatever is loudest
+    /// across the whole spectrum, so the bass turned up in every band and the
+    /// bars moved together. Windowing 1024 real samples, half of them from the
+    /// previous callback, closes the window properly and the bands separate.
+    /// Audio-thread-only, like the rest of the scratch.
+    private var history: [Float]
+
     /// Per-band scratch, sized once for the same reason as the FFT buffers
     /// above — these are written on every callback, ~94 times a second, on the
     /// realtime audio thread. Allocated fresh each time they were three
@@ -852,6 +864,39 @@ private final class AudioAnalyzer: @unchecked Sendable {
     /// loud Spotify itself is playing. Audio-thread-only state, like the FFT
     /// scratch above; the copy under `lock` exists purely for diagnostics.
     private var reference: Double = AudioAnalyzer.referenceStart
+
+    /// Where each band usually sits, in the same units as `reference`. The
+    /// slow average of one band rather than of all of them, so it holds the
+    /// *shape* of the music — how far the bass rides over the treble — where
+    /// `reference` holds its level. See `shapeRelief` for what it is for.
+    /// Audio-thread-only.
+    private var bandReference: [Double]
+
+    /// How fast a band's own reference follows it, per callback. About 2.7s:
+    /// slow enough that a beat is measured against it rather than absorbed
+    /// into it, the same reasoning as the reference rates below.
+    private static let bandReferenceRate = 0.004
+
+    /// How much of the music's standing shape is taken back out before the
+    /// bands are scaled, 0...1.
+    ///
+    /// The strip shows two things at once: the shape of the spectrum, which
+    /// barely changes within a song, and the movement on top of it, which is
+    /// the part that looks alive. A steeper scale magnifies both — the bars
+    /// travel further, but the treble also drops to the floor and stays
+    /// there. Removing half of each band's standing offset first lets the
+    /// scale be about twice as steep with the arc left the height it was:
+    /// measured band medians went 0.54 0.63 0.64 0.59 0.47 0.36 before and
+    /// 0.49 0.59 0.59 0.55 0.42 0.30 after. At 1 every band would centre on
+    /// the same height and the arc would be gone.
+    private static let shapeRelief = 0.5
+
+    /// Above this fraction of the strip a bar is eased toward the top rather
+    /// than run into it. The scale below is steep enough that a loud passage
+    /// would otherwise sit clipped at full height; the knee spends the last
+    /// 40% of the strip on everything from about 4dB over the reference upward, so
+    /// the loudest peaks land around 0.9 and none are pinned.
+    private static let knee = 0.6
 
     /// How fast the reference chases the signal, per callback (~94/sec).
     ///
@@ -934,12 +979,14 @@ private final class AudioAnalyzer: @unchecked Sendable {
 
         bandDb = Array(repeating: 0, count: bandCount)
         newLevels = Array(repeating: 0, count: bandCount)
+        bandReference = Array(repeating: Self.referenceStart, count: bandCount)
 
         window = [Float](repeating: 0, count: fftSize)
         realParts = [Float](repeating: 0, count: fftSize / 2)
         imagParts = [Float](repeating: 0, count: fftSize / 2)
         magnitudes = [Float](repeating: 0, count: fftSize / 2)
         sampleBuffer = [Float](repeating: 0, count: fftSize)
+        history = [Float](repeating: 0, count: fftSize)
 
         log2n = vDSP_Length(log2(Float(fftSize)))
         fftSetup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))
@@ -1018,12 +1065,32 @@ private final class AudioAnalyzer: @unchecked Sendable {
     private func analyse(_ samples: UnsafePointer<Float>, count: Int) {
         guard let fftSetup else { return }
 
+        // The newest `n` samples of this callback — all of them, unless the
+        // device hands over more than a whole transform at once.
         let n = min(count, fftSize)
+        let newest = samples + (count - n)
+
+        // Slide them into the history: the older samples move down and the
+        // new ones go on the end. Block moves rather than an indexed loop —
+        // this runs on the realtime thread and, unoptimised, a loop's bounds
+        // checks and iterator metadata were the single hottest thing in the
+        // callback. Done before the silence gate so the history stays
+        // continuous through a pause; it is 4KB, against the transform the
+        // gate exists to skip.
+        history.withUnsafeMutableBufferPointer { buffer in
+            let base = buffer.baseAddress!
+            if n < fftSize {
+                base.update(from: base + n, count: fftSize - n)
+            }
+            (base + (fftSize - n)).update(from: newest, count: n)
+        }
+
         // Broadband RMS, taken from the raw samples before the window scales
         // them. This only drives the silence gate, so it wants the true input
-        // amplitude rather than a windowed one.
+        // amplitude rather than a windowed one — and this callback's alone,
+        // or the bars would hang on for a frame after the music stopped.
         var rms: Float = 0
-        vDSP_rmsqv(samples, 1, &rms, vDSP_Length(n))
+        vDSP_rmsqv(newest, 1, &rms, vDSP_Length(n))
         let isSilent = rms < Self.silenceThreshold
 
         // Silence needs no spectrum: every band is going to zero regardless,
@@ -1038,20 +1105,7 @@ private final class AudioAnalyzer: @unchecked Sendable {
             return
         }
 
-        // Zero-fill a short buffer rather than skipping it, so quiet passages
-        // still produce output instead of freezing the meter. A block copy and
-        // a vector clear rather than an indexed loop: this runs on the
-        // realtime thread and, unoptimised, the loop's bounds checks and
-        // iterator metadata were the single hottest thing in the callback.
-        sampleBuffer.withUnsafeMutableBufferPointer { buffer in
-            let base = buffer.baseAddress!
-            base.update(from: samples, count: n)
-            if n < fftSize {
-                vDSP_vclr(base + n, 1, vDSP_Length(fftSize - n))
-            }
-        }
-
-        vDSP_vmul(sampleBuffer, 1, window, 1, &sampleBuffer, 1, vDSP_Length(fftSize))
+        vDSP_vmul(history, 1, window, 1, &sampleBuffer, 1, vDSP_Length(fftSize))
 
         let halfSize = fftSize / 2
 
@@ -1145,20 +1199,43 @@ private final class AudioAnalyzer: @unchecked Sendable {
         reference += (frameLevel - reference) * coefficient
         reference = max(reference, Self.referenceFloor)
 
+        // Each band's own standing level, clamped like the frame level above
+        // so an empty band doesn't drag its reference to the floor, and their
+        // mean, which is what a band's offset is measured from.
+        var bandReferenceMean = 0.0
         for band in 0..<bandCount {
-            // +28 over a 53dB span puts a band sitting exactly at the
-            // reference just past half the strip's height, and pegs one
-            // running 25dB above it.
+            bandReference[band] += (max(bandDb[band], frameFloor) - bandReference[band])
+                * Self.bandReferenceRate
+            bandReferenceMean += bandReference[band]
+        }
+        bandReferenceMean /= Double(bandCount)
+
+        for band in 0..<bandCount {
+            // How far the band is over the reference, less part of where it
+            // always sits — see `shapeRelief`.
+            let over = bandDb[band] - reference
+                - Self.shapeRelief * (bandReference[band] - bandReferenceMean)
+
+            // +13 over a 28dB span puts a band sitting exactly at the
+            // reference just under half the strip's height.
             //
-            // This started at +30/50 — a 0.6 resting point with only 20dB
-            // of headroom. Measured against real playback, bands sit
-            // +15.5dB over the reference at p99, so the loudest passages
-            // were within 5dB of the ceiling: at full volume the bars'
-            // true peaks reached 0.97 of the strip and read as pinned.
-            // The span is the knob that buys headroom — 53dB keeps the
-            // loudest peaks around 0.88, clear of the ceiling but not so
-            // far down that the waveform goes limp.
-            let normalised = (bandDb[band] - reference + 28) / 53
+            // The span is what decides how much the bars move. This started
+            // at +30/50 and went to +28/53 to buy headroom: bands run +15dB
+            // over the reference at p99, and the loudest passages were
+            // reading as pinned. 53dB kept them clear, but it also meant a
+            // 10dB swing — a whole beat — moved a bar under a fifth of the
+            // strip. Measured over real playback the bars spent half their
+            // time inside a band 0.15 of the strip tall, and looked
+            // unresponsive however quickly they followed.
+            //
+            // 28dB is about twice as steep, and that same band is 0.28 tall.
+            // The headroom the wide span bought comes from the knee instead,
+            // so the loudest peaks still land around 0.9.
+            var normalised = (over + 13) / 28
+            if normalised > Self.knee {
+                let room = 1 - Self.knee
+                normalised = Self.knee + room * (1 - exp(-(normalised - Self.knee) / room))
+            }
             newLevels[band] = min(max(normalised, 0), 1)
         }
 
@@ -1183,7 +1260,13 @@ private final class AudioAnalyzer: @unchecked Sendable {
             let target = targets[index]
             // Fast attack, slow release — mirrors a physical VU meter and
             // stops the bars flickering on transients.
-            let coefficient = target > smoothed[index] ? 0.55 : 0.12
+            //
+            // The attack was 0.55, which takes two callbacks to cover 80% of
+            // a jump. The sliding window already spreads an onset across two
+            // (its newest samples carry the least weight), so at 0.55 a beat
+            // reached the bars a callback later than it used to; 0.8 covers
+            // the same ground in one and puts it back where it was.
+            let coefficient = target > smoothed[index] ? 0.8 : 0.12
             smoothed[index] += (target - smoothed[index]) * coefficient
             // Snap to a true zero once the release decay is below a
             // sub-pixel height. Exponential decay only approaches zero, and

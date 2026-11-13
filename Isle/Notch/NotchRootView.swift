@@ -54,10 +54,25 @@ struct NotchRootView: View {
         reduceTransparency ? .black : viewModel.panelBackground
     }
 
+    /// Whether this island has been taken off its notch
+    /// (`IslandPlacement`). The window is moved for it elsewhere; here it
+    /// changes what is drawn (`IslandFloat`): a complete rounded form with
+    /// no flares, a capsule when closed, the mode's material all over, and
+    /// a grabber where the camera was.
+    private var floating: Bool { island.placement.isFloating }
+
+    /// How far the open panel's walls stand in from its frame: the flare's
+    /// radius on the notch, nothing off it, where there are no flares and
+    /// the frame comes in to the walls (`IslandFloat.openSize`).
+    private var wallInset: CGFloat {
+        floating ? 0 : IslandMotion.openCorners.top
+    }
+
     /// The camera housing the notch glow grows from: with the glow on, in a
-    /// mode that has one, and only on a screen with a real notch.
+    /// mode that has one, and only on a screen with a real notch — and
+    /// only on it: off the notch there's no camera under the panel.
     private var glowHousing: CGSize? {
-        guard viewModel.panelNotchGlow, panelBackground.growsNotchGlow,
+        guard viewModel.panelNotchGlow, panelBackground.growsNotchGlow, !floating,
               let metrics = island.metrics, metrics.hasPhysicalNotch else { return nil }
         return metrics.notchSize
     }
@@ -69,6 +84,8 @@ struct NotchRootView: View {
     private var size: CGSize {
         guard let metrics = island.metrics else { return NotchMetrics.expandedSize }
         if state == .collapsed {
+            // Off the notch: one capsule, as wide as what it holds.
+            if floating { return FloatingPillLayout.pill(for: viewModel).size }
             // Nothing active: collapse to exactly the physical cutout so the
             // island vanishes into the hardware notch. Hover still expands it
             // (the window keeps a hot margin around the notch), so it remains
@@ -84,7 +101,90 @@ struct NotchRootView: View {
                 height: metrics.notchSize.height
             )
         }
-        return CGSize(width: metrics.windowSize(for: state).width, height: expandedHeight)
+        let open = CGSize(width: metrics.windowSize(for: state).width + 2 * sideLip, height: expandedHeight + lip)
+        return floating ? IslandFloat.openSize(docked: open, wallInset: IslandMotion.openCorners.top) : open
+    }
+
+    /// Prism's wider panel: room each side for its walls' border of clear
+    /// glass (`IslandPrism.sideLip`). The content keeps its width.
+    private var sideLip: CGFloat {
+        panelBackground == .prism ? IslandPrism.sideLip : 0
+    }
+
+    /// Prism's lip: clear glass below the content, which only that mode's
+    /// open panel has. The content's room is the same in every mode; the
+    /// panel is this much taller around it.
+    private var lip: CGFloat {
+        panelBackground == .prism ? IslandPrism.lip : 0
+    }
+
+    /// What Prism's ribbon follows and in which colours. For the tree that
+    /// draws the material, which the ribbon is part of (see
+    /// `PrismRibbonStrip`).
+    private var ribbon: PrismRibbonInput? {
+        guard IslandPrism.showsRibbon, panelBackground == .prism, glassLayer != .withoutMaterial else { return nil }
+        let subject = ribbonSubject
+        return PrismRibbonInput(
+            source: viewModel.audioLevelSource,
+            listens: viewModel.waveformSource.capturesAudio,
+            isPlaying: viewModel.media.isPlaying,
+            motion: subject.motion,
+            stops: subject.stops,
+            open: state.isExpanded,
+            reduceMotion: reduceMotion
+        )
+    }
+
+    /// The ribbon is about what the panel is about. On the Claude face it
+    /// is Claude's status, moving as the status does and in its colour.
+    /// Everywhere else it is the music, in the cover's colours, while
+    /// there is any — and Claude's status when there isn't, so an island
+    /// with no music still has a pulse. With neither, the resting streak
+    /// in the plain spectrum.
+    private var ribbonSubject: (motion: IslandPrism.Motion, stops: [IslandPrism.RGB]) {
+        let music = viewModel.hasMusicActivity
+        if !island.isDropTarget {
+            let kind = viewModel.claudeMarkerKind
+            let motion = Self.ribbonMotion(for: kind)
+            let onClaude = viewModel.expandedPlace == .face(.claude)
+            if motion != .rest, onClaude || (!music && viewModel.hasClaudeActivity) {
+                let design = MarkerStore.shared.design(for: kind)
+                // A status with a colour of its own is that colour; one
+                // that draws from the palette (working) is the palette.
+                let colors = design.colorMode == .fixed
+                    ? [Self.rgb(Color(hex: design.fixedColorHex))]
+                    : Self.rgb(palette)
+                return (motion, IslandPrism.stops(from: colors))
+            }
+        }
+        guard music else { return (.rest, IslandPrism.spectrum) }
+        // A cover's colours, or the spectrum when the track has none.
+        let stops = viewModel.artworkPalette == nil
+            ? IslandPrism.spectrum
+            : IslandPrism.stops(from: Self.rgb(viewModel.prismPalette))
+        return (viewModel.showsWaveform ? .music : .rest, stops)
+    }
+
+    /// How the ribbon moves for a status: the ones that are under way run,
+    /// the ones waiting on an answer breathe, a finish crests once, and a
+    /// failure holds still. Anything else is no news, and rests.
+    private static func ribbonMotion(for kind: MarkerKind) -> IslandPrism.Motion {
+        switch kind {
+        case .working, .compacting: return .working
+        case .needsApproval, .needsQuestion, .planReview: return .attention
+        case .done, .success: return .done
+        case .apiError, .serverError, .rateLimited, .networkOffline, .warning: return .steady
+        case .disconnected, .idle, .waitingInput, .paused: return .rest
+        }
+    }
+
+    private static func rgb(_ palette: ArtworkPalette) -> [IslandPrism.RGB] {
+        [rgb(palette.primary), rgb(palette.accent), rgb(palette.secondary)]
+    }
+
+    private static func rgb(_ color: Color) -> IslandPrism.RGB {
+        guard let c = NSColor(color).usingColorSpace(.sRGB) else { return IslandPrism.RGB(r: 1, g: 1, b: 1) }
+        return IslandPrism.RGB(r: Double(c.redComponent), g: Double(c.greenComponent), b: Double(c.blueComponent))
     }
 
     /// The open panel's height: the standard 146, unless the face on screen
@@ -110,15 +210,21 @@ struct NotchRootView: View {
     /// The collapsed sides are asymmetric (Claude's side is usually wider), so
     /// shift the shape to keep the camera cutout centred under the housing.
     private var collapsedShift: CGFloat {
-        guard state == .collapsed else { return 0 }
+        // Off the notch there's no camera to stay centred under.
+        guard state == .collapsed, !floating else { return 0 }
         let sides = viewModel.collapsedSideWidths
         return (sides.trailing - sides.leading) / 2
     }
 
     /// 0 when fully collapsed, 1 when fully expanded, tracking the animation.
     private var expandProgress: CGFloat {
-        let collapsed = island.metrics?.windowSize(for: .collapsed).width ?? 0
-        let expanded = NotchMetrics.expandedSize.width
+        var collapsed = island.metrics?.windowSize(for: .collapsed).width ?? 0
+        var expanded = NotchMetrics.expandedSize.width
+        if floating {
+            // Between the capsule as it is now and the panel less its flares.
+            collapsed = FloatingPillLayout.pill(for: viewModel).size.width
+            expanded = IslandFloat.openSize(docked: NotchMetrics.expandedSize, wallInset: IslandMotion.openCorners.top).width
+        }
         guard expanded > collapsed, liveSize.width > 0 else { return state.isExpanded ? 1 : 0 }
         return min(max((liveSize.width - collapsed) / (expanded - collapsed), 0), 1)
     }
@@ -135,16 +241,12 @@ struct NotchRootView: View {
     /// colours and the accent): deriving it here re-ran extraction on every
     /// body evaluation, which both cost real CPU at 30fps and let a near-tied
     /// colour ranking flip frame to frame.
+    ///
+    /// Prism draws from the cover's colourful colours instead
+    /// (`NotchViewModel.prismPalette`), open and closed alike, so the bars
+    /// on the pill are the colour of the bars in the panel.
     private var palette: ArtworkPalette {
-        viewModel.palette
-    }
-
-    /// The cover's colours for Fade's light: only while there's a track up
-    /// and it has a cover. Not `palette`, whose accent stand-in would light
-    /// a panel with no music in it; without a cover the light stays
-    /// spectral.
-    private var lightPalette: ArtworkPalette? {
-        panelBackground == .fade && viewModel.hasMusicActivity ? viewModel.artworkPalette : nil
+        panelBackground == .prism ? viewModel.prismPalette : viewModel.palette
     }
 
     /// Height of the physical camera housing. Content in the expanded panel
@@ -209,6 +311,11 @@ struct NotchRootView: View {
         // changing the state; give that its own spring rather than a jump.
         // The same curves, by direction.
         .animation(panelResizeAnimation, value: expandedHeight)
+        // (Leaving the notch and coming back to it need nothing here: the
+        // placement is changed inside the animation it should run on — the
+        // open spring coming loose, the close spring going home — by
+        // whatever changes it, and the flares, the corners, the frame and
+        // the material all follow that transaction.)
         .onChange(of: state) { previous, current in
             if previous.isExpanded, !current.isExpanded, liveSize.width > 0, liveSize.height > 0 {
                 collapseOrigin = liveSize
@@ -226,17 +333,27 @@ struct NotchRootView: View {
     /// never disagree. While collapsing it carries the sizes it's collapsing
     /// between, which is what lets it taper (see `NotchShape.genie`).
     private var outline: NotchShape {
-        let corners = state.isExpanded ? IslandMotion.openCorners : IslandMotion.collapsedCorners
+        var corners = state.isExpanded ? IslandMotion.openCorners : IslandMotion.collapsedCorners
+        if state.isExpanded, panelBackground == .prism { corners.bottom = IslandPrism.bottomCornerRadius }
+        // Off the notch: no flares, and the top corners as round as the
+        // bottom ones — a card open, a capsule closed.
+        var crown: CGFloat = 0
+        if floating {
+            let free = IslandFloat.corners(open: state.isExpanded, prism: panelBackground == .prism, closedHeight: size.height)
+            corners = (free.top, free.bottom)
+            crown = free.crown
+        }
         var genie: NotchShape.Genie?
         if state == .collapsed, !reduceMotion, let collapseOrigin {
             genie = NotchShape.Genie(
                 expanded: collapseOrigin,
                 collapsed: size,
-                band: island.metrics?.notchSize ?? NotchMetrics.fallbackNotchSize,
+                // No camera band to keep clear of off the notch.
+                band: floating ? .zero : island.metrics?.notchSize ?? NotchMetrics.fallbackNotchSize,
                 bandShift: collapsedShift
             )
         }
-        return NotchShape(topCornerRadius: corners.top, bottomCornerRadius: corners.bottom, genie: genie)
+        return NotchShape(topCornerRadius: corners.top, bottomCornerRadius: corners.bottom, crownRadius: crown, genie: genie)
     }
 
     private var notch: some View {
@@ -247,13 +364,17 @@ struct NotchRootView: View {
             Color.clear
 
             content
-                .padding(.horizontal, state.isExpanded ? 22 : 10)
+                // Open, the content stands 10pt inside the walls. (The
+                // floating capsule insets its own content.)
+                .padding(.horizontal, state.isExpanded ? Self.contentInset + wallInset + sideLip : floating ? 0 : 10)
                 // Reserve the camera housing's band. Nothing may be drawn in
                 // the top `notchHeight` points of the expanded panel — that's
                 // physical hardware, and anything placed there is simply
-                // invisible rather than merely obscured.
+                // invisible rather than merely obscured. Off the notch the
+                // band stays, as the panel's header: every face keeps its
+                // layout, and the band's middle has the grabber.
                 .padding(.top, state.isExpanded ? notchBandHeight + NotchMetrics.contentTopGap : 0)
-                .padding(.bottom, state.isExpanded ? 8 : 0)
+                .padding(.bottom, state.isExpanded ? 8 + lip : 0)
 
             // The way home, inside a face (only when there is more than one
             // face, so there's a home to go back to). In the housing band to
@@ -274,7 +395,7 @@ struct NotchRootView: View {
                     }
                     .frame(height: notchBandHeight)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                    .padding(.trailing, Self.crumbTrailing)
+                    .padding(.trailing, Self.crumbInset + wallInset + sideLip)
                     .opacity(expandedContentOpacity)
                     .transition(.opacity)
                 } else if state.isExpanded, viewModel.expandedPlace == .home || !viewModel.showsHome, !island.isDropTarget {
@@ -286,13 +407,31 @@ struct NotchRootView: View {
                     NotchSettingsButton()
                         .frame(height: notchBandHeight)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                        .padding(.trailing, Self.crumbTrailing - 5)
+                        .padding(.trailing, Self.crumbInset + wallInset - 5 + sideLip)
                         .opacity(expandedContentOpacity)
                         .transition(.opacity)
                 }
             }
             .animation(reduceMotion ? .easeInOut(duration: 0.28) : .tileMorph, value: viewModel.expandedPlace == .home)
+
+            // Off the notch, where the camera was: the grabber. The band's
+            // middle is clear on every face — it was hardware — so nothing
+            // has to move for it. Drawn, not pressed: taking hold of the
+            // island is the window controller's.
+            if glassLayer != .materialOnly, floating, state.isExpanded {
+                IslandGrabber(size: IslandFloat.grabber)
+                    .frame(height: notchBandHeight)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .environment(\.islandOnGlass, panelBackground.isGlass)
+                    .opacity(expandedContentOpacity)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
         }
+        // Off the notch and open, the roof: the header and everything under
+        // it this much lower, in a panel that much taller
+        // (`IslandFloat.openSize`).
+        .padding(.top, floating && state.isExpanded ? IslandFloat.roof : 0)
         // A swipe's face swap stays instant for everything inside the
         // outline, though the notch's outermost modifier (in `body`) gives
         // the swipe's transaction an animation for the outline's sake.
@@ -332,8 +471,13 @@ struct NotchRootView: View {
                 housing: glowHousing,
                 housingShift: collapsedShift,
                 bandHeight: notchBandHeight,
-                lightPalette: lightPalette
+                ribbon: ribbon,
+                floating: floating
             )
+        }
+        // The line that runs round the outline while the island is held.
+        .overlay(alignment: .top) {
+            DetachTrace(model: island.detachTrace, outline: outline, size: size)
         }
         // The corners lead the collapse: the clip's and the fill's radii.
         .islandCollapseChannel(.corners)
@@ -397,24 +541,34 @@ struct NotchRootView: View {
             EmptyView()
         } else if state.isExpanded {
             let glass = panelBackground.isGlass
-            ExpandedNotchView(viewModel: viewModel, island: island, palette: glass ? palette.flooredForGlass : palette)
+            ExpandedNotchView(viewModel: viewModel, island: island, palette: glass ? palette.flooredForGlass : palette, waveformPalette: palette)
                 .environment(\.islandOnGlass, glass)
+                .environment(\.islandHasRibbon, panelBackground == .prism && IslandPrism.showsRibbon)
+                .environment(\.islandFloating, floating)
                 // Opacity gated on how far the notch has actually opened; the
                 // transition still handles the fade-out on collapse.
                 .opacity(expandedContentOpacity)
                 .transition(.opacity)
         } else {
-            CollapsedNotchView(viewModel: viewModel, island: island, palette: palette)
+            // On the notch the pill is black in every mode. Off it, it is
+            // the mode's material, so its content gets glass's lifts too.
+            let glass = floating && panelBackground.isGlass
+            CollapsedNotchView(viewModel: viewModel, island: island, palette: glass ? palette.flooredForGlass : palette, waveformPalette: palette)
+                .environment(\.islandOnGlass, glass)
                 .transition(.opacity)
         }
     }
 
     // MARK: - Crumb
 
-    /// Inset of the crumb from the panel's right edge: the panel's 22 plus
-    /// the waveform's own 4, so the crumb ends on the waveform's right edge
-    /// in the band just above it.
-    private static let crumbTrailing: CGFloat = 26
+    /// How far inside the panel's walls the open content stands.
+    private static let contentInset: CGFloat = 10
+
+    /// Inset of the crumb from the panel's right wall: the content's 10
+    /// plus the waveform's own 4, so the crumb ends on the waveform's right
+    /// edge in the band just above it. (From the frame's edge, on the
+    /// notch, that is 26: the wall stands the flare's 12 inside it.)
+    private static let crumbInset: CGFloat = contentInset + 4
 }
 
 // MARK: - Previews

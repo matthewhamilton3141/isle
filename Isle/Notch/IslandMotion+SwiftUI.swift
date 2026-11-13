@@ -3,8 +3,9 @@
 //
 //  The island's motions as SwiftUI sees them: the springs as `Animation`s,
 //  the transaction flag that gives the collapse its per-channel timing, and
-//  the fill that carries the proximity swell. The numbers are in
-//  IslandMotion.swift.
+//  the fill that carries the proximity swell — and, off the notch, the
+//  edge a black island needs over a dark window. The numbers are in
+//  IslandMotion.swift and IslandFloat.swift.
 //
 //  Nothing here runs on a clock. The collapse is three springs SwiftUI runs
 //  for the length of the close and no longer — the outline's width and
@@ -175,7 +176,7 @@ final class IslandProximityModel: ObservableObject {
 
 /// The island's fill, swollen and leaning by the proximity reading: flat
 /// black, or in a glass mode (`PanelBackground`) black that blends to glass
-/// (or, in Fade, to black fading into glass) while the island is open.
+/// while the island is open.
 ///
 /// It's the only fill: drawn behind the clipped content, outside the clip,
 /// so it can reach a few points past the outline the content and the hit
@@ -183,6 +184,11 @@ final class IslandProximityModel: ObservableObject {
 /// render transform over the same path the clip uses, so the top stays
 /// flush with the screen, the taper and corners match the clip exactly, and
 /// a change costs no layout.
+///
+/// Off the notch the swell still grows from the top edge, though nothing
+/// there is flush with a screen: the island's top edge is its window's
+/// (see `IslandPlacement`), so a capsule swelling about its middle would
+/// have its upper half cut off by the window.
 struct IslandFill: View {
     @ObservedObject var proximity: IslandProximityModel
     var shape: NotchShape
@@ -200,11 +206,14 @@ struct IslandFill: View {
     /// glow), and how far right of it the outline is drawn.
     var housing: CGSize? = nil
     var housingShift: CGFloat = 0
-    /// The band the open panel's content starts under, which Fade keeps
+    /// The band the open panel's content starts under, which Prism keeps
     /// solid black.
     var bandHeight: CGFloat = NotchMetrics.fallbackNotchSize.height
-    /// The current track's cover colours, for Fade's light (nil: spectral).
-    var lightPalette: ArtworkPalette? = nil
+    /// What Prism's ribbon follows; nil in every other mode.
+    var ribbon: PrismRibbonInput? = nil
+    /// Whether the island is off its notch (`IslandPlacement`): glass all
+    /// over, closed as well as open, or black with an edge of its own.
+    var floating: Bool = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.islandGlassLayer) private var glassLayer
@@ -234,13 +243,83 @@ struct IslandFill: View {
                 housing: housing,
                 housingShift: housingShift,
                 bandHeight: bandHeight,
-                lightPalette: lightPalette
+                ribbon: ribbon,
+                floating: floating
             )
         } else if glassLayer == .materialOnly {
             // The glass window has no glass to draw in Black.
             Color.clear
         } else {
             shape.fill(.black)
+                // Off the notch: a soft shadow under it and a hairline
+                // round it. Each comes and goes with the placement, on the
+                // spring that morphs the outline. By opacity, not by being
+                // put in and taken out: a view on its way out keeps the
+                // shape it had, and the old outline's rim and shadow would
+                // hang there fading while the island changed under them.
+                // At no opacity nothing of them is drawn.
+                .background {
+                    IslandShadow(shape: shape)
+                        .opacity(floating ? 1 : 0)
+                }
+                .overlay {
+                    IslandRim(shape: shape, opacity: IslandFloat.rimOpacity)
+                        .opacity(floating ? 1 : 0)
+                }
         }
+    }
+}
+
+// MARK: - The island's edge, off the notch
+
+/// The hairline just inside a floating island's outline: on the notch the
+/// island runs into the bezel and needs no edge; over a dark window, off
+/// it, black would have none (`IslandFloat.rimOpacity`) and dark glass
+/// next to none (`glassRimOpacity`).
+struct IslandRim: View {
+    var shape: NotchShape
+    var opacity: Double
+
+    var body: some View {
+        // Centred on the outline and clipped to it, so the inner half
+        // shows: a hairline that follows the outline exactly as it moves.
+        shape
+            .stroke(.white.opacity(opacity), lineWidth: IslandFloat.rimWidth)
+            .clipShape(shape)
+            .allowsHitTesting(false)
+    }
+}
+
+/// The shadow under a floating black island: the outline's own, soft and
+/// cast downward, growing from nothing at the top edge.
+///
+/// The island's top edge is its window's (the window is never resized, and
+/// the island hangs from its top — see `IslandPlacement`), so a shadow all
+/// round would be cut off square along the top. Rising from nothing there
+/// over `IslandFloat.shadowRise`, it reads as light from above and there
+/// is nothing to cut. To the sides and below it has `shadowReach` of room,
+/// which the window has in every state (see the tests).
+private struct IslandShadow: View {
+    var shape: NotchShape
+
+    var body: some View {
+        let reach = IslandFloat.shadowReach
+        shape
+            .fill(.black)
+            .shadow(color: .black.opacity(IslandFloat.shadowOpacity), radius: IslandFloat.shadowRadius, y: IslandFloat.shadowDrop)
+            // Room for the shadow inside the mask's bounds, then given
+            // back, so the fill's own layout is the outline's.
+            .padding(.horizontal, reach.side)
+            .padding(.bottom, reach.below)
+            .mask {
+                VStack(spacing: 0) {
+                    LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                        .frame(height: IslandFloat.shadowRise)
+                    Color.black
+                }
+            }
+            .padding(.horizontal, -reach.side)
+            .padding(.bottom, -reach.below)
+            .allowsHitTesting(false)
     }
 }
