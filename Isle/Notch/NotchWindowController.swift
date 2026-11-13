@@ -265,6 +265,13 @@ final class NotchWindowController {
             .removeDuplicates()
             .sink { [weak self] _ in self?.shortcuts.refresh() }
             .store(in: &cancellables)
+        // So is an alert opening it, which the island takes in a turn after
+        // the view model changes (`opensForActivity`) — after the shortcuts'
+        // own read of that change, which would otherwise see it closed.
+        presentation.$opensForActivity
+            .removeDuplicates()
+            .sink { [weak self] _ in self?.shortcuts.refresh() }
+            .store(in: &cancellables)
         // A hold that ended any way but the preview's own end — the pointer
         // visited, the shortcut, a click in another app — isn't the
         // preview's to close any more.

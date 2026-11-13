@@ -58,10 +58,9 @@ final class IslandPresentation: ObservableObject {
 
     var isHeldCompact: Bool { compactPanel != nil }
 
-    /// Called just before a closed island opens on a hover, a click, a
-    /// shortcut or a drop — not mid-close, where it's still drawn as it was
-    /// — so it can be turned to open the way its place calls for now
-    /// (`IslandCarry`). Not for an alert, which opens every island at once.
+    /// Called just before a closed island opens, however it opens (`expand`)
+    /// — not mid-close, where it's still drawn as it was — so it can be
+    /// turned to open the way its place calls for now (`IslandCarry`).
     var willOpen: () -> Void = {}
 
     /// Geometry of the camera housing (or the fallback pill) on the screen this
@@ -129,8 +128,50 @@ final class IslandPresentation: ObservableObject {
     /// space, as the face reports it. Not published: only the drag reads it.
     var dropTargetFrames: [DropTarget: CGRect] = [:]
 
+    /// The shared alert rule (`NotchViewModel.autoExpandsForActivity`) as
+    /// this island has taken it in: one of the two things that open it, the
+    /// other its own hover. Taken in only through `expand`, so an alert
+    /// opens a floating island the way its place calls for, as a hover
+    /// does. A step behind the view model — taken in on the main queue's
+    /// next turn after any change to it (`objectWillChange` comes before
+    /// the change), which is before anything is drawn of it.
+    @Published private(set) var opensForActivity: Bool
+
+    private var activityWatch: AnyCancellable?
+    private var activityCheckQueued = false
+
     init(content: NotchViewModel) {
         self.content = content
+        opensForActivity = content.autoExpandsForActivity
+        // Whatever the rule reads — the Claude state, a dismissal, the
+        // settings, which the view model passes on — changes the view model.
+        activityWatch = content.objectWillChange.sink { [weak self] _ in
+            self?.queueActivityCheck()
+        }
+    }
+
+    private func queueActivityCheck() {
+        guard !activityCheckQueued else { return }
+        activityCheckQueued = true
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.activityCheckQueued = false
+                self.takeInActivity()
+            }
+        }
+    }
+
+    /// Takes in the alert rule as it is now. Internal for the tests, which
+    /// can take it in without waiting a turn.
+    func takeInActivity() {
+        let now = content.autoExpandsForActivity
+        guard now != opensForActivity else { return }
+        if now {
+            expand { opensForActivity = true }
+        } else {
+            opensForActivity = false
+        }
     }
 
     /// A file drag reached this island: open it on the drop face. Opens past
@@ -198,7 +239,7 @@ final class IslandPresentation: ObservableObject {
     var state: NotchState {
         NotchStateResolver.resolve(
             isHovering: isHovering,
-            hasLiveActivity: content.autoExpandsForActivity
+            hasLiveActivity: opensForActivity
         )
     }
 
@@ -229,10 +270,19 @@ final class IslandPresentation: ObservableObject {
         }
     }
 
-    /// Opens on the hover: `willOpen` first, while it's closed and settled.
+    /// Opens on the hover, through `expand`.
     private func beginOpen() {
+        expand { isHovering = true }
+    }
+
+    /// The one way a closed island opens, whatever opens it — a hover, a
+    /// click, a shortcut, a drop, an alert: `change` sets one of the two
+    /// things `state` reads, and `willOpen` comes first, while the island
+    /// is closed and settled (not mid-close, where it's still drawn as it
+    /// was), so a floating one opens the way its place calls for now.
+    private func expand(_ change: () -> Void) {
         if !collapseLocked, state == .collapsed { willOpen() }
-        isHovering = true
+        change()
     }
 
     /// The grabber was clicked: close to the capsule, on the close spring,
