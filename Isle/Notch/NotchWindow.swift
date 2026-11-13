@@ -153,10 +153,35 @@ final class NotchWindow: NSPanel {
 
     /// Gives the glass window its content: the island's tree drawing the
     /// material alone.
+    ///
+    /// Inside a plain view that fills the window, not as the window's
+    /// content view itself. A hosting view that *is* its window's content
+    /// view also keeps the window's size limits, in `updateConstraints()`,
+    /// and brings its view graph up to date there to do it; whatever that
+    /// update finds changed — after a resize, its size and its transform —
+    /// asks for another constraints pass from inside the pass. That ask,
+    /// by that route, is the one in every report of the crash where AppKit
+    /// gives up on a window that has had "more Update Constraints in Window
+    /// passes than there are views in the window", and this window has as
+    /// few as two views. Measured with `ConstraintPassProbe`: through a
+    /// run of resizes, re-placings and mode changes this hosting view
+    /// asked 23 times as the content view and never as a subview, and the
+    /// panel's never did. What made it ask in pass after pass — which is
+    /// what the crash takes — was not found, so this closes the route for
+    /// this window rather than explaining the crash. A hosting view that
+    /// isn't the content view does none of that work there, and the
+    /// window's size is the panel's alone anyway.
     func attachGlass(_ view: NSView) {
-        glassWindow.contentView = view
+        let content = IslandGlassContentView(frame: NSRect(origin: .zero, size: glassWindow.frame.size))
+        content.fill(with: view)
+        glassWindow.contentView = content
         hasGlass = true
         syncGlass()
+    }
+
+    /// The view `attachGlass` was given.
+    var glassView: NSView? {
+        (glassWindow.contentView as? IslandGlassContentView)?.subviews.first
     }
 
     /// Whether `attachGlass` has given the glass window anything to draw.
@@ -439,6 +464,24 @@ extension NotchWindow: NSDraggingDestination {
     func draggingEnded(_ sender: any NSDraggingInfo) {
         dropHandler?.dragEnded(self)
     }
+}
+
+/// The glass window's content view: nothing of its own, one subview kept
+/// at its bounds (see `NotchWindow.attachGlass`).
+final class IslandGlassContentView: NSView {
+    func fill(with view: NSView) {
+        subviews.forEach { $0.removeFromSuperview() }
+        view.autoresizingMask = []
+        view.frame = bounds
+        addSubview(view)
+    }
+
+    override func resizeSubviews(withOldSize oldSize: NSSize) {
+        subviews.forEach { $0.frame = bounds }
+    }
+
+    // The window takes no events; nor does this.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 /// The window the island's glass is drawn in (see `NotchWindow.glassWindow`):

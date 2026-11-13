@@ -188,7 +188,7 @@ func floatingChecks(_ w: NotchWindow, vm: NotchViewModel, island: IslandPresenta
     let glassHost = NSHostingView(rootView: NotchRootView(viewModel: vm, island: island, glassLayer: .materialOnly) { reported.glass = $0 })
     glassHost.sizingOptions = []
     // The window's own two views go back when this is done.
-    let ownPanel = w.contentView, ownGlass = w.glassWindow.contentView
+    let ownPanel = w.contentView, ownGlass = w.glassView
     defer {
         w.contentView = ownPanel
         if let ownGlass { w.attachGlass(ownGlass) }
@@ -772,8 +772,14 @@ func run() {
     w.orderFrontRegardless()
     spin(0.5)
     check(hosting.sizingOptions.isEmpty, "the panel's hosting view doesn't size the window")
-    check((w.glassWindow.contentView as? NSHostingView<NotchRootView>)?.sizingOptions.isEmpty == true,
+    check((w.glassView as? NSHostingView<NotchRootView>)?.sizingOptions.isEmpty == true,
           "nor does the glass window's")
+    // Not the glass window's content view: a hosting view that is one
+    // updates its view graph inside `updateConstraints()`, and after a
+    // resize asks for another pass from in there (see `attachGlass`).
+    check(!(w.glassWindow.contentView is NSHostingView<NotchRootView>) && w.glassView?.superview === w.glassWindow.contentView,
+          "the glass window's hosting view is inside its content view, not the content view itself")
+    check(w.glassView?.frame == w.glassWindow.contentView?.bounds, "and fills it", "\(String(describing: w.glassView?.frame))")
     check(target.width > NotchMetrics.expandedSize.width, "maximumFrame is wider than the open panel (the side pads)")
     checkPlaced(w, target, "after setup")
     checkInStep(w, "after setup")
