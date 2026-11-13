@@ -65,6 +65,11 @@ final class IslandCarry {
     /// picked up, so the island keeps the place it was grabbed by.
     private var grabOffset: CGPoint?
 
+    /// While carrying closed: the capsule's width as it was picked up, so
+    /// it's the capsule itself — not the widest it could grow to — that's
+    /// kept on the screen and put down against its edges.
+    private var pillWidth: CGFloat?
+
     /// The notch may take the island back mid-carry. False for an island
     /// only just taken off the notch, until it has been carried clear: it
     /// starts on the notch, and would be pulled straight back.
@@ -298,6 +303,7 @@ final class IslandCarry {
         cancelGlide()
         let anchor = NotchMetrics.anchor(of: window.frame, opening: presentation.placement.isFloating ? presentation.opening : .down)
         grabOffset = CGPoint(x: anchor.x - point.x, y: anchor.y - point.y)
+        pillWidth = drawnRect()?.width
         snapped = false
         snapArmed = !bounds.captures(anchor)
         presentation.detachTrace.complete()
@@ -319,7 +325,9 @@ final class IslandCarry {
 
     /// Where the island is carried to for `wanted`, kept on the screen.
     private func carried(_ wanted: CGPoint, in bounds: IslandPlacementBounds) -> CGPoint {
-        isOpen ? bounds.carrying(wanted, open: presentation.opening) : bounds.carrying(wanted)
+        if isOpen { return bounds.carrying(wanted, open: presentation.opening) }
+        guard presentation.placement.isFloating, let pillWidth else { return bounds.carrying(wanted) }
+        return bounds.carrying(wanted, pillWidth: pillWidth, carried: presentation.opening)
     }
 
     private func carry(to point: CGPoint) {
@@ -356,6 +364,7 @@ final class IslandCarry {
     private func drop(at point: CGPoint) {
         defer {
             grabOffset = nil
+            pillWidth = nil
             snapped = false
         }
         guard let grabOffset, let bounds = presentation.metrics?.placementBounds else { return }
@@ -367,7 +376,8 @@ final class IslandCarry {
         } else {
             // Put down away from the notch: the black lets go.
             bleed.release(drain: true)
-            settle(.floating(anchor: bounds.putDown(wanted, open: keptOpening).anchor))
+            let down = bounds.putDown(wanted, open: keptOpening, pillWidth: pillWidth ?? bounds.pill.width, carried: presentation.opening)
+            settle(.floating(anchor: down.anchor))
         }
     }
 
@@ -397,7 +407,7 @@ final class IslandCarry {
     /// off it, kept while it's open, else the way its place calls for.
     private func opening(for placement: IslandPlacement, in bounds: IslandPlacementBounds) -> IslandOpening {
         guard let anchor = placement.anchor else { return .down }
-        return bounds.putDown(anchor, open: keptOpening).opening
+        return keptOpening ?? bounds.opening(at: anchor)
     }
 
     /// The way an open island opens, which it keeps wherever it's put;
@@ -413,9 +423,18 @@ final class IslandCarry {
     /// that opening puts it, in the same screen update. Only ever called
     /// with the island closed (or on its way to the notch, where it opens
     /// down), so it's the capsule that is redrawn in place.
+    ///
+    /// Pinned differently (`IslandOpening.pin`), the anchor is another
+    /// point of the capsule — its middle or an end — so it's taken afresh,
+    /// for the capsule as it's drawn now.
     private func turn(to opening: IslandOpening) {
         guard presentation.opening != opening, let metrics = presentation.metrics else { return }
-        let anchor = NotchMetrics.anchor(of: window.frame, opening: presentation.opening)
+        let old = presentation.opening
+        var anchor = NotchMetrics.anchor(of: window.frame, opening: old)
+        if presentation.placement.isFloating, let width = drawnRect()?.width {
+            let mid = window.frame.midX + old.offset(width: width, open: isOpen)
+            anchor.x = mid - opening.offset(width: width, open: isOpen) - opening.shift
+        }
         window.disableScreenUpdatesUntilFlush()
         window.glassWindow.disableScreenUpdatesUntilFlush()
         var instant = Transaction()

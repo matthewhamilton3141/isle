@@ -223,10 +223,13 @@ struct NotchRootView: View {
     /// shift the shape to keep the camera cutout centred under the housing.
     private var collapsedShift: CGFloat {
         // Off the notch there's no camera to stay centred under; the window
-        // is centred on the open panel, so the capsule is drawn the
-        // opening's shift away from it, and gets there on the width's
-        // spring, as the open panel's walls do.
-        if floating { return state == .collapsed ? -direction.shift : 0 }
+        // is centred on the widest open panel, and the island is drawn
+        // where the opening puts it for its width: centred on the anchor
+        // closed and on the window open, or, pinned near an edge, with its
+        // end there at the anchor whatever its width. It gets there on the
+        // width's spring, with the width, so a pinned end stays put as the
+        // island grows and shrinks (`IslandOpening.offset`).
+        if floating { return direction.offset(width: size.width, open: state != .collapsed) }
         guard state == .collapsed else { return 0 }
         let sides = viewModel.collapsedSideWidths
         return (sides.trailing - sides.leading) / 2
@@ -501,6 +504,7 @@ struct NotchRootView: View {
                 housing: glowHousing,
                 housingShift: collapsedShift,
                 growsUp: direction.upward,
+                pin: floating ? direction.pin : .centre,
                 notch: physicalNotch,
                 ribbon: ribbon,
                 floating: floating,
