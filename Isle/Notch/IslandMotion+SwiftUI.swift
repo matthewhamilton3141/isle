@@ -63,10 +63,22 @@ private struct PanelResizeKey: TransactionKey {
     static let defaultValue = false
 }
 
+/// The curve a flagged resize runs on, when it isn't NotchRootView's own
+/// resize spring: a swipe landing gives the height the faces' spring
+/// (`IslandMotion.faceSettle`), so the face and the height arrive together.
+private struct PanelResizeAnimationKey: TransactionKey {
+    static let defaultValue: Animation? = nil
+}
+
 extension Transaction {
     var isPanelResize: Bool {
         get { self[PanelResizeKey.self] }
         set { self[PanelResizeKey.self] = newValue }
+    }
+
+    var panelResizeAnimation: Animation? {
+        get { self[PanelResizeAnimationKey.self] }
+        set { self[PanelResizeAnimationKey.self] = newValue }
     }
 }
 
@@ -206,14 +218,24 @@ struct IslandFill: View {
     /// glow), and how far right of it the outline is drawn.
     var housing: CGSize? = nil
     var housingShift: CGFloat = 0
-    /// The band the open panel's content starts under, which Prism keeps
-    /// solid black.
-    var bandHeight: CGFloat = NotchMetrics.fallbackNotchSize.height
+    /// Off the notch and opening upward: the island stands on its bottom
+    /// edge, so the swell grows from there instead of from the top.
+    var growsUp: Bool = false
+    /// Off the notch and pinned to one side (`IslandOpening.pin`): the
+    /// swell grows from that end, and leans only away from it, so the end
+    /// stays where the island was put — against a screen edge, perhaps.
+    var pin: IslandOpening.Pin = .centre
+    /// The physical camera housing, which Prism keeps black whatever the
+    /// glow's setting; nil on a display without one.
+    var notch: CGSize? = nil
     /// What Prism's ribbon follows; nil in every other mode.
     var ribbon: PrismRibbonInput? = nil
     /// Whether the island is off its notch (`IslandPlacement`): glass all
     /// over, closed as well as open, or black with an edge of its own.
     var floating: Bool = false
+    /// The notch's black on the island as it's carried near the notch
+    /// (`IslandBleedStain`); nil draws none.
+    var bleed: IslandBleedModel? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.islandGlassLayer) private var glassLayer
@@ -222,15 +244,41 @@ struct IslandFill: View {
         let reading = active && !reduceMotion ? proximity.reading : .rest
         let swell = reading.swell
         surface
+            // Over the rim and the glass, under the content: the panel's
+            // tree only (the glass window's is the material).
+            .overlay {
+                if let bleed, glassLayer != .materialOnly {
+                    IslandBleedStain(model: bleed, shape: shape, floating: floating)
+                }
+            }
             .animation(.islandSwell) { fill in
                 fill
                     .scaleEffect(
                         x: size.width > 0 ? 1 + 2 * swell.width / size.width : 1,
                         y: size.height > 0 ? 1 + swell.height / size.height : 1,
-                        anchor: .top
+                        anchor: swellAnchor
                     )
-                    .offset(x: reading.leanOffset)
+                    .offset(x: lean(reading.leanOffset))
             }
+    }
+
+    /// Where the swell grows from: the edge the island hangs from or
+    /// stands on, at its middle or at its pinned end.
+    private var swellAnchor: UnitPoint {
+        switch pin {
+        case .centre: return growsUp ? .bottom : .top
+        case .leading: return growsUp ? .bottomLeading : .topLeading
+        case .trailing: return growsUp ? .bottomTrailing : .topTrailing
+        }
+    }
+
+    /// The lean toward the pointer, never toward the pinned end.
+    private func lean(_ offset: CGFloat) -> CGFloat {
+        switch pin {
+        case .centre: return offset
+        case .leading: return max(offset, 0)
+        case .trailing: return min(offset, 0)
+        }
     }
 
     @ViewBuilder
@@ -242,7 +290,7 @@ struct IslandFill: View {
                 opened: opened,
                 housing: housing,
                 housingShift: housingShift,
-                bandHeight: bandHeight,
+                notch: notch,
                 ribbon: ribbon,
                 floating: floating
             )

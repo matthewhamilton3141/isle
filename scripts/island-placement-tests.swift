@@ -7,7 +7,8 @@
 //
 //  - IslandHold.swift: one press, from button down to button up — a click
 //    left alone, a hold that runs the line and lifts the island, the ways a
-//    hold is called off, and a plain drag of a closed island.
+//    hold is called off, a plain drag of a closed island or of an open one
+//    by its header, and the click a plain drag can turn out to be.
 //  - IslandPlacement.swift: where an island off its notch may rest and be
 //    carried, how near the notch takes it back, and what's remembered.
 //  - DetachTraceGeometry.swift: the line's two halves, from the bottom
@@ -208,7 +209,53 @@ do {
     check(up == Outcome(verdict: .cancelPress, actions: [.dropped(at: CGPoint(x: 750, y: 880))]), "and put down on release")
 
     _ = hold.down(kind: .drag, at: press, time: 20)
-    check(hold.up(at: press, time: 20.1) == Outcome(), "a click without a drag is a click")
+    let click = hold.up(at: CGPoint(x: 702, y: 899), time: 20.1)
+    check(click == Outcome(verdict: .pass, actions: [.clicked(at: press)]),
+          "a click without a drag is a click: passed on, and said so, at the press", "\(click)")
+    check(hold.phase == .idle, "and the press is over")
+
+    _ = hold.down(kind: .drag, at: press, time: 30)
+    _ = hold.tick(time: 35, pointer: press, buttonDown: true)
+    check(hold.up(at: press, time: 35.1).actions == [.clicked(at: press)], "however long it was held still: nothing is timed, so it's still a click")
+
+    _ = hold.down(kind: .drag, at: press, time: 40)
+    _ = hold.moved(to: CGPoint(x: 760, y: 900), time: 40.1)
+    check(hold.up(at: press, time: 40.2).actions == [.dropped(at: press)], "dragged and brought back: a move, not a click")
+
+    _ = hold.down(kind: .drag, at: press, time: 50)
+    _ = hold.tick(time: 50.5, pointer: press, buttonDown: false)
+    check(hold.phase == .idle && hold.up(at: press, time: 50.6) == Outcome(),
+          "a release seen only as the button up (it went elsewhere): no click")
+}
+
+print("Hold: an open island off the notch, by its header or its edge, is dragged at once")
+
+do {
+    // IslandCarry gives a press on the grabber, the band round it or the
+    // panel's bare edge `.drag`, and one on its content `.pickUp`.
+    var hold = IslandHold()
+    _ = hold.down(kind: .drag, at: press, time: 10)
+    check(hold.deadline == nil, "no grace, no line: nothing to wait for")
+    let lifted = hold.moved(to: CGPoint(x: 690, y: 896), time: 10.03)
+    check(lifted == Outcome(verdict: .swallow, actions: [.lifted(at: press), .carried(to: CGPoint(x: 690, y: 896))]),
+          "the first drag past the slop, 30ms in, picks it up", "\(lifted)")
+    check(hold.moved(to: CGPoint(x: 600, y: 850), time: 10.1) == Outcome(verdict: .swallow, actions: [.carried(to: CGPoint(x: 600, y: 850))]),
+          "and it follows the pointer")
+    check(hold.up(at: CGPoint(x: 600, y: 850), time: 10.2) == Outcome(verdict: .cancelPress, actions: [.dropped(at: CGPoint(x: 600, y: 850))]),
+          "and is put down on release, which the views don't take for a click")
+
+    // On its content the hold stays: a scrub there is the scrubber's.
+    var content = IslandHold()
+    _ = content.down(kind: .pickUp, at: press, time: 10)
+    check(content.moved(to: CGPoint(x: 760, y: 900), time: 10.05) == Outcome() && content.phase == .spent,
+          "on the content a drag straight away is still the control's")
+    check(content.up(at: CGPoint(x: 760, y: 900), time: 10.3) == Outcome(), "and so is its release")
+    _ = content.down(kind: .pickUp, at: press, time: 20)
+    check(content.up(at: press, time: 20.1) == Outcome(), "a click on the content is the content's, and nothing of the island's")
+
+    // The on-notch hold is untouched.
+    check(IslandHold.Kind.detach.timing.map { $0.grace == 0.25 && $0.run == 1.1 } == true, "taking it off the notch still takes the 0.25 + 1.1s hold")
+    check(IslandHold.Kind.drag.timing == nil, "a plain drag is never timed")
 }
 
 print("Hold: never left carrying")
@@ -243,38 +290,380 @@ do {
 // MARK: - Placement
 
 // This Mac's built-in display: 1512×982 with a 38pt menu bar, and the
-// island's widest and tallest (the 520pt panel with Prism's side lips; the
-// 230pt cap with its lip).
+// island's widest and tallest off the notch (the 520pt card: the docked
+// panel with Prism's side lips, less its flares; the 230pt cap with its lip
+// and the roof), and about the widest closed capsule.
+let pill = CGSize(width: 330, height: 38)
 let bounds = IslandPlacementBounds(
     screen: CGRect(x: 0, y: 0, width: 1512, height: 982),
     visible: CGRect(x: 0, y: 0, width: 1512, height: 944),
-    halfWidth: 272,
-    tallest: 264
+    halfWidth: 260,
+    tallest: 250,
+    pill: pill
 )
+
+/// Where the widest, tallest open panel lies for an island at `anchor`
+/// opening as `opening`.
+func panel(_ anchor: CGPoint, _ opening: IslandOpening, in b: IslandPlacementBounds) -> CGRect {
+    b.panel(CGSize(width: 2 * b.halfWidth, height: b.tallest), at: anchor, opening: opening)
+}
+
+/// Where a closed capsule `width` wide lies for an island at `anchor`
+/// opening (and so pinned) as `opening`: what NotchRootView draws.
+func capsule(_ anchor: CGPoint, _ width: CGFloat, _ opening: IslandOpening, in b: IslandPlacementBounds) -> CGRect {
+    CGRect(x: opening.pillMinX(anchor: anchor.x, width: width), y: anchor.y - b.pill.height, width: width, height: b.pill.height)
+}
+
+/// The same, at the widest the capsule gets.
+func capsule(_ anchor: CGPoint, in b: IslandPlacementBounds) -> CGRect {
+    capsule(anchor, b.pill.width, b.opening(at: anchor), in: b)
+}
+
+func inside(_ r: CGRect, _ outer: CGRect) -> Bool {
+    r.minX >= outer.minX - 0.01 && r.maxX <= outer.maxX + 0.01 && r.minY >= outer.minY - 0.01 && r.maxY <= outer.maxY + 0.01
+}
+
+/// The drawn outline's centre for an island at `anchor`, `width` wide:
+/// the window's centre (the anchor and the shift) and the offset in it.
+func drawnMid(_ anchor: CGPoint, _ width: CGFloat, open: Bool, _ o: IslandOpening) -> CGFloat {
+    anchor.x + o.shift + o.offset(width: width, open: open)
+}
 
 print("Placement: where an island may be")
 
 do {
     check(bounds.dock == CGPoint(x: 756, y: 982), "docked is the top centre of the screen")
+    check(bounds.room == 260 && bounds.pinsToEdges, "room for the widest panel either side, and a screen wide enough to pin")
     let free = CGPoint(x: 500, y: 600)
     check(bounds.resting(free) == free && bounds.carrying(free) == free, "an anchor with room all round is left alone")
     check(bounds.resting(CGPoint(x: 756, y: 982)) == CGPoint(x: 756, y: 944), "at rest the island sits below the menu bar")
     check(bounds.carrying(CGPoint(x: 756, y: 982)) == CGPoint(x: 756, y: 982), "carried, it may be at the very top — where it starts")
     check(bounds.carrying(CGPoint(x: 756, y: 1100)) == CGPoint(x: 756, y: 982), "but not above it")
-    check(bounds.resting(CGPoint(x: -400, y: 3000)) == CGPoint(x: 272, y: 944), "off the top left: brought in to where the panel fits")
-    check(bounds.resting(CGPoint(x: 9000, y: -50)) == CGPoint(x: 1240, y: 264),
-          "off the bottom right: up far enough for the tallest panel to fit")
+    check(bounds.resting(CGPoint(x: -400, y: 3000)) == CGPoint(x: 0, y: 944),
+          "a remembered anchor off the top left: to the corner, where it's the capsule's left end")
+    check(bounds.resting(CGPoint(x: 9000, y: -50)) == CGPoint(x: 1512, y: 38),
+          "off the bottom right: into the corner, its right end on the edge, its bottom on the screen's")
     let low = bounds.resting(CGPoint(x: 600, y: 10))
-    check(low.y - bounds.tallest >= bounds.visible.minY, "the tallest panel never hangs below the visible frame", "\(low)")
+    check(low == CGPoint(x: 600, y: 38), "the bottom of the screen is somewhere to rest, not out of bounds", "\(low)")
 
     // With the Dock on the left and an auto-hidden menu bar.
     let docked = IslandPlacementBounds(screen: bounds.screen, visible: CGRect(x: 70, y: 0, width: 1442, height: 982),
-                                       halfWidth: 272, tallest: 264)
-    check(docked.resting(CGPoint(x: 0, y: 500)).x == 342, "the Dock's side is kept clear")
+                                       halfWidth: 260, tallest: 250, pill: pill)
+    check(docked.resting(CGPoint(x: 0, y: 500)).x == 70, "the Dock's side is kept clear: the wall is the Dock's edge")
 
     let tiny = IslandPlacementBounds(screen: CGRect(x: 0, y: 0, width: 400, height: 200),
-                                     visible: CGRect(x: 0, y: 0, width: 400, height: 180), halfWidth: 272, tallest: 264)
-    check(tiny.resting(CGPoint(x: 10, y: 10)) == CGPoint(x: 200, y: 180), "a screen too small for the panel: centred, from the top")
+                                     visible: CGRect(x: 0, y: 0, width: 400, height: 180), halfWidth: 260, tallest: 250, pill: pill)
+    check(!tiny.pinsToEdges, "a screen narrower than an island pinned near one edge can grow to: no pinning")
+    check(tiny.resting(CGPoint(x: 10, y: 10)) == CGPoint(x: 165, y: 38), "and the widest capsule is kept on it, centred")
+    let sliver = IslandPlacementBounds(screen: CGRect(x: 0, y: 0, width: 200, height: 30),
+                                       visible: CGRect(x: 0, y: 0, width: 200, height: 30), halfWidth: 260, tallest: 250, pill: pill)
+    check(sliver.resting(CGPoint(x: 10, y: 10)) == CGPoint(x: 100, y: 30), "one too small even for that: centred, from the top")
+}
+
+print("Placement: pinned near an edge, it grows away from it")
+
+do {
+    check(bounds.pin(at: 0) == .leading && bounds.pin(at: 259) == .leading, "within reach of the left edge: its left end stays put")
+    check(bounds.pin(at: 260) == .centre && bounds.pin(at: 1252) == .centre, "with room either side: its middle")
+    check(bounds.pin(at: 1253) == .trailing && bounds.pin(at: 1512) == .trailing, "within reach of the right edge: its right end")
+
+    // A capsule of any width against the left edge, and the open panel,
+    // all have their left ends at the anchor.
+    let left = bounds.opening(at: CGPoint(x: 0, y: 600))
+    check(left == IslandOpening(upward: false, shift: 260, pin: .leading), "against the left edge: pinned, the window reaching right", "\(left)")
+    for w: CGFloat in [60, 132, 330, 471] {
+        let mid = drawnMid(CGPoint(x: 0, y: 600), w, open: false, left)
+        check(near(mid - w / 2, 0), "closed \(Int(w))pt wide: its left end on the edge")
+    }
+    for w: CGFloat in [496, 520] {
+        check(near(drawnMid(CGPoint(x: 0, y: 600), w, open: true, left) - w / 2, 0), "open \(Int(w))pt wide: its left wall on the edge, no slide")
+    }
+    let right = bounds.opening(at: CGPoint(x: 1512, y: 600))
+    check(right == IslandOpening(upward: false, shift: -260, pin: .trailing), "against the right edge: the same, mirrored", "\(right)")
+    for (w, open) in [(CGFloat(60), false), (132, false), (471, false), (496, true), (520, true)] {
+        check(near(drawnMid(CGPoint(x: 1512, y: 600), w, open: open, right) + w / 2, 1512), "\(open ? "open" : "closed") \(Int(w))pt wide: its right end on the edge")
+    }
+    // The middle: the capsule centred on the anchor, the panel on the window.
+    let mid = bounds.opening(at: CGPoint(x: 756, y: 600))
+    check(mid == .down, "in the middle: down, centred")
+    check(near(drawnMid(CGPoint(x: 756, y: 600), 60, open: false, mid), 756) && near(drawnMid(CGPoint(x: 756, y: 600), 496, open: true, mid), 756),
+          "capsule and panel on the same middle")
+
+    // Wherever a capsule of any width rests and is anchored again for its
+    // place, every form the island takes there is on the screen and grows
+    // out of the capsule as it rests.
+    var everywhere = true, overCapsule = true, inPlace = true
+    for x in stride(from: CGFloat(-100), through: 1700, by: 23) {
+        for y in stride(from: CGFloat(-50), through: 1050, by: 41) {
+            for w: CGFloat in [60, 132, 330] {
+                let anchor = bounds.restingPill(CGPoint(x: x, y: y), width: w, carried: .down)
+                let o = bounds.opening(at: anchor)
+                let c = capsule(anchor, w, o, in: bounds)
+                // Carried centred to `x`; put down, it's where it was, moved in only as far as it had to be.
+                let wantMinX = min(max(x - w / 2, 0), 1512 - w)
+                if !near(c.minX, wantMinX) { inPlace = false }
+                let widest = capsule(anchor, 471, o, in: bounds)
+                let p = panel(anchor, o, in: bounds)
+                if !inside(c, bounds.visible) || !inside(widest, bounds.visible) || !inside(p, bounds.visible) { everywhere = false }
+                if !(p.minX <= c.minX + 0.01 && p.maxX >= c.maxX - 0.01 && (o.upward ? near(p.minY, c.minY) : near(p.maxY, c.maxY))) { overCapsule = false }
+            }
+        }
+    }
+    check(inPlace, "a capsule put down stays where it was let go, moved in only to be wholly on the screen")
+    check(everywhere, "and wherever it rests, the widest capsule and the open panel fit on the screen")
+    check(overCapsule, "the panel stands on the capsule's bottom or hangs from its top, over the whole of it")
+}
+
+print("Placement: which way it opens")
+
+do {
+    let mid = CGPoint(x: 756, y: 600)
+    check(bounds.opening(at: mid) == .down, "with room below: down, centred on the capsule")
+    check(bounds.opening(at: CGPoint(x: 756, y: 250)) == .down, "down for as long as the tallest panel fits below")
+    let justUnder = bounds.opening(at: CGPoint(x: 756, y: 249))
+    check(justUnder.upward && justUnder.shift == 0, "a point lower and it opens up, from the capsule's bottom edge")
+
+    // A display shorter than the open panel: it opens the way with more room.
+    let short = IslandPlacementBounds(screen: CGRect(x: 0, y: 0, width: 800, height: 220),
+                                      visible: CGRect(x: 0, y: 0, width: 800, height: 200), halfWidth: 260, tallest: 250, pill: pill)
+    let nearTop = short.resting(CGPoint(x: 400, y: 190)), nearBottom = short.resting(CGPoint(x: 400, y: 50))
+    check(!short.opening(at: nearTop).upward && short.opening(at: nearBottom).upward,
+          "a display shorter than the panel: down from near the top, up from near the bottom")
+    check(inside(capsule(nearBottom, in: short), short.visible), "and the capsule itself still rests wholly on it")
+    // Narrower than the panel: the panel is centred on the screen.
+    let narrow = IslandPlacementBounds(screen: CGRect(x: 0, y: 0, width: 500, height: 900),
+                                       visible: CGRect(x: 0, y: 0, width: 500, height: 900), halfWidth: 260, tallest: 250, pill: pill)
+    check(near(narrow.opening(at: CGPoint(x: 180, y: 600)).shift, 70), "a screen narrower than the panel: it opens over the screen's middle")
+
+    // Carried open, the panel stays on the screen opening the way it does.
+    let up = IslandOpening(upward: true, shift: 260, pin: .leading)
+    let held = bounds.carrying(CGPoint(x: -300, y: 2000), open: up)
+    check(inside(panel(held, up, in: bounds), bounds.screen) && held.x == 0, "an open panel pinned left, carried up and left, stays on the screen, against its edge", "\(held)")
+    let put = bounds.resting(CGPoint(x: 3000, y: -500), open: .down)
+    check(inside(panel(put, .down, in: bounds), bounds.visible), "and put down, rests where it fits the way it opens", "\(put)")
+}
+
+print("Placement: carried closed, the capsule itself goes to the wall")
+
+do {
+    // Carried as it was put down — centred, here — the capsule as drawn is
+    // what's kept on the screen, not the widest it could be.
+    for w: CGFloat in [60, 132, 330] {
+        let l = bounds.carrying(CGPoint(x: -500, y: 600), pillWidth: w, carried: .down)
+        let r = bounds.carrying(CGPoint(x: 5000, y: 600), pillWidth: w, carried: .down)
+        check(near(l.x - w / 2, 0) && near(r.x + w / 2, 1512), "\(Int(w))pt wide: carried against either edge, right up to it", "\(l) \(r)")
+    }
+    let pinned = IslandOpening(upward: false, shift: 260, pin: .leading)
+    let fromLeft = bounds.carrying(CGPoint(x: 5000, y: 600), pillWidth: 60, carried: pinned)
+    check(near(fromLeft.x + 60, 1512), "pinned left and carried right across the screen, it still goes all the way", "\(fromLeft)")
+    check(bounds.carrying(CGPoint(x: 400, y: -80), pillWidth: 60, carried: .down).y == 38, "down to the bottom edge")
+}
+
+print("Placement: closed by the grabber, carried to an edge, opened")
+
+do {
+    // An open card in the middle of the screen, opening down. The grabber
+    // is clicked: it closes to its capsule where it is, and keeps the way
+    // it opened until it's put down (IslandCarry's `keptOpening` is nil
+    // from the moment it's closed).
+    let card = CGSize(width: 520, height: 154)
+    let start = CGPoint(x: 756, y: 700)
+    let before = bounds.putDown(start, open: .down, pillWidth: 132, carried: .down)
+    check(before.anchor == start && before.opening == .down, "put down open, it keeps its way")
+    check(bounds.panel(card, at: start, opening: .down).contains(CGPoint(x: 756, y: 700 - 24)),
+          "the grabber it was closed by is over the capsule that's left: the pointer is still on it")
+
+    // Then carried, closed, past each edge and corner, and let go, for the
+    // bead, Claude alone and the widest capsule.
+    let targets: [(String, CGPoint, Bool, IslandOpening.Pin)] = [
+        ("right edge", CGPoint(x: 5000, y: 600), false, .trailing),
+        ("left edge", CGPoint(x: -5000, y: 600), false, .leading),
+        ("top edge", CGPoint(x: 400, y: 5000), false, .centre),
+        ("bottom edge", CGPoint(x: 900, y: -5000), true, .centre),
+        ("top right", CGPoint(x: 5000, y: 5000), false, .trailing),
+        ("top left", CGPoint(x: -5000, y: 5000), false, .leading),
+        ("bottom right", CGPoint(x: 5000, y: -5000), true, .trailing),
+        ("bottom left", CGPoint(x: -5000, y: -5000), true, .leading),
+    ]
+    for w: CGFloat in [60, 132, 471] {
+        for (name, wanted, upward, pin) in targets {
+            let carried = bounds.carrying(wanted, pillWidth: w, carried: .down)
+            let down = bounds.putDown(carried, open: nil, pillWidth: w, carried: .down)
+            let o = down.opening
+            let c = capsule(down.anchor, w, o, in: bounds)
+            let label = "\(name), \(Int(w))pt"
+            check(inside(c, bounds.visible), "\(label): it rests there, whole", "\(c)")
+            switch pin {
+            case .leading: check(near(c.minX, 0), "\(label): flush against the left edge", "\(c)")
+            case .trailing: check(near(c.maxX, 1512), "\(label): flush against the right edge", "\(c)")
+            case .centre: break
+            }
+            if upward { check(near(c.minY, 0), "\(label): flush on the bottom edge", "\(c)") }
+            if name.hasPrefix("top") { check(near(c.maxY, 944), "\(label): flush under the menu bar", "\(c)") }
+            check(o.upward == upward && o.pin == pin,
+                  "\(label): opens \(upward ? "up" : "down"), \(pin == .centre ? "centred" : pin == .leading ? "growing right" : "growing left")", "\(o)")
+            for size in [card, CGSize(width: 496, height: 146), CGSize(width: 520, height: bounds.tallest)] {
+                let p = bounds.panel(size, at: down.anchor, opening: o)
+                check(inside(p, bounds.visible), "\(label): the \(Int(size.width))×\(Int(size.height)) panel opens on the screen", "\(p)")
+                let still = pin == .leading ? near(p.minX, c.minX) : pin == .trailing ? near(p.maxX, c.maxX) : near(p.midX, c.midX)
+                check(still && (o.upward ? near(p.minY, c.minY) : near(p.maxY, c.maxY)),
+                      "\(label): out of the capsule, its \(pin == .centre ? "middle" : "wall side") where the capsule's was: one motion, no slide", "\(p) from \(c)")
+            }
+        }
+    }
+
+    // Had it been carried open instead, it would have kept its way down,
+    // and so been kept out of the bottom of the screen: why it's closed first.
+    let openToCorner = bounds.putDown(CGPoint(x: 5000, y: -5000), open: .down, pillWidth: 132, carried: .down)
+    check(openToCorner.opening == .down && openToCorner.anchor.y == bounds.tallest,
+          "carried open into the bottom right it stays opening down, a panel's height up", "\(openToCorner)")
+    check(bounds.putDown(CGPoint(x: 5000, y: -5000), open: nil, pillWidth: 132, carried: .down).anchor.y == bounds.pill.height,
+          "closed, it goes right into the corner")
+
+    // The room it's held compact in is the panel it would open into, so the
+    // capsule — wherever the opening has put it — is inside it.
+    for anchor in [CGPoint(x: 1512, y: 38), CGPoint(x: 0, y: 944), CGPoint(x: 756, y: 500)] {
+        let o = bounds.opening(at: anchor)
+        check(bounds.panel(card, at: anchor, opening: o).insetBy(dx: -0.01, dy: -0.01).contains(capsule(anchor, 132, o, in: bounds).insetBy(dx: 1, dy: 1)),
+              "held compact at \(Int(anchor.x)),\(Int(anchor.y)): the capsule is in the room it's held in")
+    }
+}
+
+print("Placement: put down where there's room, it's where it was let go")
+
+do {
+    // A bead let go 100pt in from the left edge: pinned there, not pulled
+    // to the wall, and still growing rightward.
+    let bead = bounds.putDown(CGPoint(x: 130, y: 600), open: nil, pillWidth: 60, carried: .down)
+    check(bead.anchor.x == 100 && bead.opening.pin == .leading, "a bead 100pt from the left edge stays 100pt from it, growing right", "\(bead)")
+    // Pinned, then carried into the middle: anchored by its middle again,
+    // where it is.
+    let back = bounds.putDown(CGPoint(x: 700, y: 600), open: nil, pillWidth: 60, carried: bead.opening)
+    check(back.anchor.x == 730 && back.opening.pin == .centre, "a pinned bead carried to the middle is centred there, where it was drawn", "\(back)")
+    // At the boundary nothing jumps: the capsule is where it was either way.
+    for x in stride(from: CGFloat(240), through: 290, by: 1) {
+        let d = bounds.putDown(CGPoint(x: x, y: 600), open: nil, pillWidth: 60, carried: .down)
+        if !near(capsule(d.anchor, 60, d.opening, in: bounds).midX, x) { check(false, "the bead let go at \(x) is drawn there", "\(d)") }
+    }
+    check(true, "either side of where pinning starts, a capsule is drawn where it was let go")
+}
+
+print("Placement: closed again, it opens the way its place calls for now")
+
+do {
+    // Matthew: "once u make the pill open in a different way, it just
+    // defaults to that method until u make it open another way". An open
+    // card keeps its way while it's carried and put down (so it stays on
+    // the screen), but closed, the next open is decided afresh.
+    let up = bounds.opening(at: CGPoint(x: 756, y: 38))
+    check(up.upward, "at the bottom it opens up")
+    // Carried open up to the top middle and put down: it keeps opening up there.
+    let carriedUp = bounds.putDown(CGPoint(x: 900, y: 700), open: up, pillWidth: 132, carried: up)
+    check(carriedUp.opening == up, "put down open, it keeps its way while it's open")
+    // Closed there and opened again: down, and the capsule doesn't move.
+    let again = bounds.forPlace(carriedUp.anchor, pillWidth: 132, was: up)
+    check(!again.opening.upward && again.opening.pin == .centre, "closed at the top and opened again: it opens down", "\(again)")
+    check(again.anchor == carriedUp.anchor, "anchored where it was")
+
+    // Pinned right, carried open to the middle, closed: it grows from its middle,
+    // re-anchored in place (the anchor was its right end, now its middle).
+    let right = bounds.opening(at: CGPoint(x: 1512, y: 500))
+    check(right.pin == .trailing, "against the right wall: pinned right")
+    let middle = bounds.putDown(CGPoint(x: 800, y: 600), open: right, pillWidth: 132, carried: right)
+    check(middle.opening.pin == .trailing, "carried open to the middle it's still pinned right while open")
+    let centred = bounds.forPlace(middle.anchor, pillWidth: 132, was: middle.opening)
+    check(centred.opening.pin == .centre && centred.opening.shift == 0, "closed in the middle and opened: it grows from the centre", "\(centred)")
+    check(near(capsule(centred.anchor, 132, centred.opening, in: bounds).minX, capsule(middle.anchor, 132, middle.opening, in: bounds).minX),
+          "and the capsule is drawn where it was")
+    // Already right for its place: nothing changes.
+    let settled = bounds.forPlace(CGPoint(x: 1512, y: 500), pillWidth: 132, was: right)
+    check(settled.anchor == CGPoint(x: 1512, y: 500) && settled.opening == right, "a capsule already anchored for its place is left alone")
+}
+
+print("Placement: opens toward the pointer")
+
+do {
+    // Matthew, 2026-11-14: "makes it try to open in the direction the mouse
+    // comes from more". Where it fits, a hover opens the island toward the
+    // side the pointer came from; the capsule itself never moves for it.
+    let drawn = CGRect(x: 690, y: 562, width: 132, height: 38)
+    check(IslandApproach(from: CGPoint(x: 756, y: 610), onto: drawn) == IslandApproach(fromAbove: true, fromRight: nil), "a pointer above it came from above")
+    check(IslandApproach(from: CGPoint(x: 756, y: 550), onto: drawn) == IslandApproach(fromAbove: false, fromRight: nil), "below it, from below")
+    check(IslandApproach(from: CGPoint(x: 680, y: 580), onto: drawn) == IslandApproach(fromAbove: nil, fromRight: false), "past its left end, from the left")
+    check(IslandApproach(from: CGPoint(x: 830, y: 605), onto: drawn) == IslandApproach(fromAbove: true, fromRight: true), "past its top right corner, from both")
+    check(IslandApproach(from: CGPoint(x: 756, y: 580), onto: drawn) == nil, "never outside it: no approach")
+
+    let mid = CGPoint(x: 756, y: 600)
+    let plain = bounds.forPlace(mid, pillWidth: 132, was: .down)
+    check(!plain.opening.upward && plain.opening.pin == .centre, "no approach: down from the middle, as before")
+    let fromAbove = bounds.forPlace(mid, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: true, fromRight: nil))
+    check(fromAbove.opening.upward && fromAbove.anchor == mid, "from above, with room above: it opens up", "\(fromAbove)")
+    let fromBelow = bounds.forPlace(mid, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: false, fromRight: nil))
+    check(!fromBelow.opening.upward, "from below: down")
+
+    let high = CGPoint(x: 756, y: 900)
+    check(!bounds.forPlace(high, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: true, fromRight: nil)).opening.upward,
+          "from above, no room above: down all the same")
+    let low = CGPoint(x: 756, y: 100)
+    check(bounds.forPlace(low, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: false, fromRight: nil)).opening.upward,
+          "from below, no room below: up all the same")
+
+    let fromRight = bounds.forPlace(mid, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: nil, fromRight: true))
+    check(fromRight.opening.pin == .leading && fromRight.anchor.x == 690, "from the right: pinned at its left end, it grows right", "\(fromRight)")
+    check(near(capsule(fromRight.anchor, 132, fromRight.opening, in: bounds).minX, capsule(mid, 132, plain.opening, in: bounds).minX),
+          "and the capsule is drawn where it was")
+    let fromLeft = bounds.forPlace(mid, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: nil, fromRight: false))
+    check(fromLeft.opening.pin == .trailing && fromLeft.anchor.x == 822, "from the left: pinned at its right end, it grows left", "\(fromLeft)")
+    check(near(capsule(fromLeft.anchor, 132, fromLeft.opening, in: bounds).minX, capsule(mid, 132, plain.opening, in: bounds).minX),
+          "and the capsule is drawn where it was")
+    for (name, placed) in [("right", fromRight), ("left", fromLeft)] {
+        let p = panel(placed.anchor, placed.opening, in: bounds)
+        check(p.minX >= bounds.visible.minX && p.maxX <= bounds.visible.maxX, "grown \(name), the panel is on the screen", "\(p)")
+    }
+
+    let nearRight = CGPoint(x: 1100, y: 600)
+    let noRoom = bounds.forPlace(nearRight, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: nil, fromRight: true))
+    check(noRoom.opening.pin == .centre && noRoom.anchor == nearRight, "from the right with no room to grow right: centred as before", "\(noRoom)")
+    let wall = CGPoint(x: 100, y: 600)
+    let walled = bounds.forPlace(wall, pillWidth: 132, was: bounds.opening(at: wall), approach: IslandApproach(fromAbove: nil, fromRight: false))
+    check(walled.opening.pin == .leading, "against the left wall, from the left: the wall's pin stands", "\(walled)")
+
+    let corner = bounds.forPlace(mid, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: true, fromRight: true))
+    check(corner.opening.upward && corner.opening.pin == .leading, "from above and to the right: up and rightward", "\(corner)")
+}
+
+print("Placement: back to the notch from any opening and pin")
+
+do {
+    // Matthew: "it also makes it impossible to redock it". The notch takes
+    // back the island whose drawn top centre reaches it; the anchor is that
+    // only centred and opening down.
+    let card = CGSize(width: 496, height: 154)
+    let pillSize = CGSize(width: 132, height: 38)
+    let openings: [(String, IslandOpening)] = [
+        ("down", .down),
+        ("up", IslandOpening(upward: true, shift: 0)),
+        ("pinned left", IslandOpening(upward: false, shift: 260, pin: .leading)),
+        ("pinned right", IslandOpening(upward: false, shift: -260, pin: .trailing)),
+        ("up, pinned left", IslandOpening(upward: true, shift: 260, pin: .leading)),
+        ("up, pinned right", IslandOpening(upward: true, shift: -260, pin: .trailing)),
+    ]
+    for (name, o) in openings {
+        for (what, size, open) in [("open card", card, true), ("capsule", pillSize, false)] {
+            let t = o.topCentre(of: size, open: open, pillHeight: bounds.pill.height)
+            // The anchor that puts the drawn top centre on the notch.
+            let anchor = CGPoint(x: bounds.dock.x - t.x, y: bounds.dock.y - t.y)
+            let top = CGPoint(x: anchor.x + t.x, y: anchor.y + t.y)
+            check(bounds.captures(top), "\(name), \(what): its top centre on the notch is taken back")
+            // The drawn top centre, worked out from the outline as NotchRootView draws it.
+            let mid = anchor.x + o.shift + o.offset(width: size.width, open: open)
+            let drawnTop = o.upward ? anchor.y - bounds.pill.height + size.height : anchor.y
+            check(near(top.x, mid) && near(top.y, drawnTop), "\(name), \(what): the top centre is where it's drawn")
+            if o != .down && open {
+                check(!bounds.captures(anchor), "\(name), \(what): its anchor there is no test (the bug)", "\(anchor)")
+            }
+        }
+    }
 }
 
 print("Placement: the way back to the notch")
@@ -317,12 +706,17 @@ do {
     check(bounds.placement(restoring: CGPoint(x: 0, y: 40)) == .docked, "above it: docked")
     check(bounds.placement(restoring: CGPoint(x: 30, y: -20)) == .docked, "on the notch: docked")
 
+    // Left near the bottom of the screen: back where it was, opening up.
+    let lowLeft = bounds.placement(restoring: CGPoint(x: -500, y: -930))
+    check(lowLeft == .floating(anchor: CGPoint(x: 256, y: 52)), "left near the bottom, it comes back there", "\(lowLeft)")
+    check(lowLeft.anchor.map { bounds.opening(at: $0).upward } == true, "and opens upward")
+
     // A smaller display under the same name (a changed resolution).
     let small = IslandPlacementBounds(screen: CGRect(x: 0, y: 0, width: 1147, height: 745),
-                                      visible: CGRect(x: 0, y: 0, width: 1147, height: 707), halfWidth: 272, tallest: 264)
+                                      visible: CGRect(x: 0, y: 0, width: 1147, height: 707), halfWidth: 260, tallest: 250, pill: pill)
     check(small.placement(restoring: CGPoint(x: -700, y: -382)) == .docked, "a place that's no longer on the screen: docked")
-    check(small.placement(restoring: CGPoint(x: -356, y: -700)) == .floating(anchor: CGPoint(x: 272, y: 264)),
-          "one that is, with too little room: brought in to where the panel fits")
+    check(small.placement(restoring: CGPoint(x: -456, y: -730)) == .floating(anchor: CGPoint(x: 117.5, y: 38)),
+          "one that is, with too little room below: brought up to where the capsule fits, pinned left where it was")
     let restored = small.placement(restoring: CGPoint(x: 100, y: -300))
     check(restored == .floating(anchor: CGPoint(x: 673.5, y: 445)), "one with room: as it was", "\(restored)")
 }

@@ -8,6 +8,9 @@
 //  - The proximity swell. A collapsed island grows by a few points, and leans
 //    a point or so toward the pointer, as the pointer comes near it. Purely a
 //    visual: the hover zones, the hit rect and the open timing all ignore it.
+//  - The swipe between faces, once the fingers lift: the spring that brings
+//    the face home (`faceSettle`), and where it has got to when a new swipe
+//    catches it on the way (`Spring.displacement`).
 //  - The collapse. Closing, the panel's corners and width lead and its height
 //    follows, so it draws back into the notch with a shape rather than
 //    shrinking evenly: while the width is ahead the side walls taper in
@@ -68,7 +71,45 @@ enum IslandMotion {
             let decay = exp(-z * w0 * t)
             return 1 - decay * (cos(wd * t) + (z * w0 / wd) * sin(wd * t))
         }
+
+        /// Unit mass, so these are the spring's own constants, as
+        /// `Animation.interpolatingSpring(mass:stiffness:damping:)` takes them.
+        var stiffness: Double { pow(2 * Double.pi / response, 2) }
+        var damping: Double { 2 * dampingFraction * stiffness.squareRoot() }
+
+        /// How far from its rest a value is `t` seconds after it was let go
+        /// `x0` from it, moving at `v0` a second (in the value's own units,
+        /// toward rest when the signs differ). Where a face is, part way
+        /// home, when the next swipe catches it.
+        func displacement(from x0: Double, velocity v0: Double, at t: Double) -> Double {
+            guard t > 0 else { return x0 }
+            let w0 = 2 * Double.pi / response
+            let z = dampingFraction
+            if z >= 1 {
+                // Critical, as the faces' spring is.
+                return (x0 + (v0 + w0 * x0) * t) * exp(-w0 * t)
+            }
+            let wd = w0 * (1 - z * z).squareRoot()
+            let decay = exp(-z * w0 * t)
+            return decay * (x0 * cos(wd * t) + (v0 + z * w0 * x0) / wd * sin(wd * t))
+        }
     }
+
+    /// A swipe between faces, from the moment the fingers lift: the spring
+    /// that carries the face the rest of the way home (and the panel's
+    /// height to the new face's with it, so the two arrive together).
+    ///
+    /// Slower and softer than it was (Matthew: "its just really fast"). It
+    /// ran on stiffness 300 and damping 31 — a response of 0.36s, a little
+    /// under critical — and in films of 1.2.0 the new face came in from 10%
+    /// to 90% in 0.15s after a flick, when it wasn't simply there at once
+    /// (see `FacePager.settle`). Critically damped now, so it eases all the
+    /// way in and never passes home: 0.23s for the same flick, 0.5s after a
+    /// slow release. 0.6 was filmed too and read the same, a little longer
+    /// in the tail. The fingers' own speed still starts it (`FacePager`),
+    /// so a flick carries on into it. Only what happens after the fingers
+    /// lift: while they're down the face is where they put it. Tune here.
+    static let faceSettle = Spring(response: 0.5, dampingFraction: 1.0)
 
     /// Opening: one spring for the whole outline (`Animation.notchOpen`).
     /// Underdamped, so the panel overshoots a little larger and settles.

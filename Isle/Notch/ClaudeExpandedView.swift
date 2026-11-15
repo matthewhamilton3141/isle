@@ -37,6 +37,10 @@ struct ClaudeExpandedView: View {
     @State private var sessionRowsRoom: CGFloat = 0
 
     @Environment(\.islandOnGlass) private var onGlass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Ties the reply bar at rest to the field it opens into, so a click
+    /// grows the one into the other (see `composeAnimation`).
+    @Namespace private var replyBar
     /// Off the notch the band is a header with a grabber in its middle,
     /// not a camera: the wings are wider (see `L.wings`).
     @Environment(\.islandFloating) private var floating
@@ -54,6 +58,19 @@ struct ClaudeExpandedView: View {
         guard let request = viewModel.pendingRequest, request.kind == .question,
               let question = viewModel.currentQuestion else { return nil }
         return (request, question)
+    }
+
+    /// The spring a field opens and closes on: the panel's own, by
+    /// direction — the open spring as a field takes the row, the close
+    /// spring as it gives it back — and Reduce Motion's plain ease for both.
+    ///
+    /// Without it the change was untimed, and everything it moves jumped in
+    /// one frame: the reply bar to the row's full width, the session's app
+    /// gone from beside it, the meta line saying "Replying", and all of it
+    /// back again on Esc.
+    private var composeAnimation: Animation {
+        if reduceMotion { return .notchCloseReduced }
+        return viewModel.composing != nil ? .notchOpen : .notchClose
     }
 
     var body: some View {
@@ -76,20 +93,28 @@ struct ClaudeExpandedView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .animation(.easeInOut(duration: 0.22), value: listing)
+        // A field opening or closing — the reply bar clicked, Esc, a click
+        // in another app, a send — and whatever the face held while it was
+        // open landing as it lets go: one change, on one spring.
+        .animation(composeAnimation, value: viewModel.composing)
         .foregroundStyle(.white)
         // Click the alert panel to retract it (no-op unless an alert is live and
         // dismissing is enabled). contentShape so taps land on the whole card,
         // not just the glyph and text.
         .contentShape(Rectangle())
         // Not while a field is taking keys: a click meant for the field must
-        // never retract the panel it's typing in. Esc is the way out.
+        // never retract the panel it's typing in. A click outside the field
+        // lets the field go instead (`ComposeClickOut`) — and only that,
+        // however this tap and the letting go are ordered: it went down
+        // while the field was open.
         .onTapGesture {
-            guard viewModel.composing == nil else { return }
+            guard viewModel.composing == nil, !viewModel.pressBeganComposing else { return }
             island.dismissAlert()
         }
-        // While a reply is being written the face holds still; what Claude
-        // needs meanwhile is said here, over the face's top-right corner,
-        // without moving anything.
+        // While a reply or an answer is being written the face holds
+        // still; what Claude needs meanwhile, or that the question being
+        // answered has gone, is said here, over the face's top-right
+        // corner, without moving anything.
         .overlay(alignment: .topTrailing) {
             composeNotice
         }
@@ -109,11 +134,13 @@ struct ClaudeExpandedView: View {
         }
     }
 
-    // MARK: - While a reply is written
+    // MARK: - While a reply or an answer is written
 
     @ViewBuilder
     private var composeNotice: some View {
-        if let refusal = viewModel.replyRefusal {
+        if let gone = viewModel.requestGoneWhileComposing {
+            notice(gone, tint: Self.lifted(stateColor(.warning)))
+        } else if let refusal = viewModel.replyRefusal {
             notice(refusal, tint: Self.lifted(stateColor(.warning)))
         } else if viewModel.claudeNeedsYouWhileComposing {
             notice("Claude needs you — finish, or esc", tint: Self.lifted(stateColor(.warning)))
@@ -183,7 +210,7 @@ struct ClaudeExpandedView: View {
                 glyph
                 Text(wingWord)
                     .font(L.statusFont)
-                    .foregroundStyle(statusTint)
+                    .foregroundStyle(.islandTint(statusTint))
                     .minimumScaleFactor(0.85)
                     .truncationMode(.tail)
                     .contentTransition(.opacity)
@@ -227,8 +254,9 @@ struct ClaudeExpandedView: View {
 
     /// The state's colour, for its words: the marker's own hue — working in
     /// the palette's, done green, an approval amber, an error red — lifted a
-    /// little so it reads as text on black. Ready and No session are plain:
-    /// they're not news.
+    /// little so it reads as text on black, and the same on glass, where the
+    /// words carry a dark edge besides (`IslandTintStyle`). Ready and No
+    /// session are plain: they're not news.
     private var statusTint: Color {
         if agentState == nil, state == .idle || state == .disconnected { return .white.opacity(0.85) }
         return Self.lifted(stateColor(viewModel.claudeMarkerKind))
@@ -346,6 +374,8 @@ struct ClaudeExpandedView: View {
                 jumpChip
             }
             .frame(height: L.chipHeight)
+            // The field grows over all of it: gone before it's covered.
+            .transition(ReplyBar.swap)
         }
     }
 
@@ -424,7 +454,7 @@ struct ClaudeExpandedView: View {
         case .agents(let type, let count, let more):
             HStack(spacing: 6) {
                 rowSymbol("arrow.triangle.branch")
-                    .foregroundStyle(statusTint)
+                    .foregroundStyle(.islandTint(statusTint))
                 Text(agentName(type, count: count))
                     .foregroundStyle(.white.opacity(0.85))
                 if count > 1, !type.isEmpty {
@@ -635,13 +665,19 @@ struct ClaudeExpandedView: View {
                 projectLabel
                 // A dot between items, never ahead of the first.
                 if viewModel.composing == .reply {
-                    if showsProject { separator }
-                    Text("Replying").foregroundStyle(.white.opacity(0.8))
-                    separator
-                    Text("esc to cancel")
+                    Group {
+                        if showsProject { separator }
+                        Text("Replying").foregroundStyle(.white.opacity(0.8))
+                        separator
+                        Text("esc to cancel")
+                    }
+                    .transition(ReplyBar.swap)
                 } else if viewModel.claudeUpdatedAt != nil, showsAge {
-                    if showsProject { separator }
-                    elapsed
+                    Group {
+                        if showsProject { separator }
+                        elapsed
+                    }
+                    .transition(ReplyBar.swap)
                 }
                 if viewModel.isKeepingAwake {
                     keepAwakeCup
@@ -1124,7 +1160,7 @@ struct ClaudeExpandedView: View {
                         .fixedSize(horizontal: true, vertical: false)
                     Text(row.stateTitle)
                         .font(L.sessionStateFont)
-                        .foregroundStyle(quiet ? Color.white.opacity(0.45) : stateColor(row.markerKind))
+                        .foregroundStyle(quiet ? AnyShapeStyle(Color.white.opacity(0.45)) : AnyShapeStyle(.islandTint(stateColor(row.markerKind))))
                         .lineLimit(1)
                         .fixedSize()
                     Text(row.detail)
@@ -1424,11 +1460,13 @@ struct ClaudeExpandedView: View {
                     viewModel.jumpToSession()
                 }
                 .help("Open this background session in \(ClaudeLauncher.attachApp) (claude attach)")
+                .transition(ReplyBar.swap)
             } else if let target = viewModel.jumpTarget {
                 pill(target, systemImage: "arrow.up.forward.app", fill: .white.opacity(0.14)) {
                     viewModel.jumpToSession()
                 }
                 .help(viewModel.jumpAttaches ? "Attach in \(target)" : "Show this session in \(target)")
+                .transition(ReplyBar.swap)
             }
             switch viewModel.replyDelivery {
             case .sending:
@@ -1462,6 +1500,8 @@ struct ClaudeExpandedView: View {
             onSend: { viewModel.sendCompose() },
             onCancel: { viewModel.endCompose() }
         )
+        .matchedGeometryEffect(id: ReplyBar.id, in: replyBar)
+        .transition(ReplyBar.swap)
     }
 
     /// The reply while a prompt is up in the terminal, where typing would
@@ -1512,6 +1552,8 @@ struct ClaudeExpandedView: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .matchedGeometryEffect(id: ReplyBar.id, in: replyBar)
+        .transition(ReplyBar.swap)
         .accessibilityLabel(draft.isEmpty ? "Reply to Claude" : "Reply to Claude: \(draft)")
     }
 
@@ -1671,7 +1713,7 @@ struct ClaudeExpandedView: View {
             glyph
             Text(question.header ?? "Question")
                 .font(L.statusFont)
-                .foregroundStyle(statusTint)
+                .foregroundStyle(.islandTint(statusTint))
                 .truncationMode(.tail)
                 .layoutPriority(-1)
             if request.questions.count > 1 {
@@ -2066,7 +2108,8 @@ private struct MetaLabelStyle: LabelStyle {
 
 /// The face's text field, in the action row it replaces: the text, and the
 /// button that sends it. Return sends and Esc cancels, both handled here so
-/// every field behaves the same. Takes focus as it appears — the panel has
+/// every field behaves the same; a click on the island outside it cancels
+/// too (`ComposeFieldRegion` marks where it is). Takes focus as it appears — the panel has
 /// just become key for it (see `NotchViewModel.composing`).
 ///
 /// One line: Claude Code submits a prompt on Return, so a reply can't carry
@@ -2149,6 +2192,9 @@ private struct ComposeField: View {
         .overlay(RoundedRectangle(cornerRadius: ClaudePanelLayout.actionHeight / 2, style: .continuous)
             .inset(by: 0.5).stroke(.white.opacity(0.4), lineWidth: 1))
         .background(WindowReader(reference: window))
+        // A click in here is the field's; anywhere else on the island lets
+        // it go (see `ComposeClickOut`).
+        .background(ComposeFieldRegion())
         .background {
             GeometryReader { proxy in
                 Color.clear
@@ -2169,6 +2215,25 @@ private struct ComposeField: View {
             onCancel()
         }
     }
+}
+
+/// The reply bar's identity for `matchedGeometryEffect`: the bar at rest
+/// and the field it opens into are one thing that changes size, so the
+/// field grows out of the bar's frame and shrinks back into it.
+///
+/// What's drawn in it changes as it grows — the prompt for the field and
+/// its Send, the draft for itself — and so does the meta line's "Replying"
+/// for the time, and the session's app it grows over goes. Each comes in
+/// on the spring, but what's going goes at once, on a short fade of its
+/// own: crossfaded on the same spring, the two were legible on top of
+/// each other for most of it.
+private enum ReplyBar {
+    static let id = "replyBar"
+
+    static let swap: AnyTransition = .asymmetric(
+        insertion: .opacity,
+        removal: .opacity.animation(.easeOut(duration: 0.1))
+    )
 }
 
 /// Holds the window a view is in, weakly, without SwiftUI watching it.

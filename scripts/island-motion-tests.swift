@@ -239,5 +239,36 @@ do {
     check(IslandMotion.collapseHeight.reach(1.5) == 3, "a spring that never gets there stops looking at 3s")
 }
 
+print("the swipe between faces")
+do {
+    let settle = IslandMotion.faceSettle
+    // The spring it replaced, as the stiffness and damping it was written in.
+    let was = IslandMotion.Spring(response: 2 * Double.pi / 300.0.squareRoot(), dampingFraction: 31 / (2 * 300.0.squareRoot()))
+    check(abs(was.stiffness - 300) < 1e-9 && abs(was.damping - 31) < 1e-9, "stiffness and damping as interpolatingSpring takes them",
+          "\(was.stiffness) \(was.damping)")
+    check(settle.dampingFraction >= 1, "critically damped: the face never passes home and shows the gap")
+    let ratio = settle.reach(0.9) / was.reach(0.9)
+    check(ratio >= 1.25 && ratio <= 2.5, "slower than it was, short of sluggish", "\(ratio)× to 90%")
+    check(settle.reach(0.98) < 1.2, "home within 1.2s from rest", "\(settle.reach(0.98))")
+    // Where a face is, part way home: from rest it is the step response.
+    var same = true
+    for i in 0...100 {
+        let t = Double(i) / 100
+        if abs(settle.displacement(from: 200, velocity: 0, at: t) - 200 * (1 - settle.value(at: t))) > 1e-9 { same = false }
+    }
+    check(same, "let go from rest, the face is where the step response puts it")
+    check(settle.displacement(from: 200, velocity: -900, at: 0) == 200, "where it was let go, at the moment it was let go")
+    // Its speed at the start is the speed it was let go at.
+    let dt = 1e-6
+    let v = (settle.displacement(from: 200, velocity: -900, at: dt) - 200) / dt
+    check(abs(v + 900) < 0.1, "and moving as fast as it was let go", "\(v)")
+    var falling = true, prev = 200.0
+    for i in 1...600 { let x = settle.displacement(from: 200, velocity: -900, at: Double(i) / 500); if x > prev + 1e-9 || x < -1e-9 { falling = false }; prev = x }
+    check(falling, "a flick toward home goes on toward it and doesn't pass it")
+    check(abs(settle.displacement(from: 200, velocity: 0, at: 3)) < 0.01, "and is home in the end")
+    // The underdamped branch: the old spring, checked against its own step response.
+    check(abs(was.displacement(from: 1, velocity: 0, at: 0.1) - (1 - was.value(at: 0.1))) < 1e-9, "the same holds for an underdamped spring")
+}
+
 print("\n\(passes) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

@@ -18,6 +18,11 @@
 //  into the background colour's alpha, which is exactly how `Color.opacity`
 //  behaved in the Canvas version, so splitting them is not an approximation.
 //
+//  On glass each dot has a dark one behind it, a hair larger, on the same
+//  opacity and scale curves (`IslandGlass.barEdge`): the edge the waveform's
+//  bars have there, and for the same reason — a cover's colour can be the
+//  colour of what is behind the glass. Plain layers, nothing blurred.
+//
 //  See DotMatrixView.swift for the curves themselves.
 //
 
@@ -61,7 +66,12 @@ final class DotMatrixLayerView: NSView {
     private var appliedDesign: MarkerDesign?
     private var appliedPalette: ArtworkPalette?
     private var appliedTint: Color?
+    /// Whether the dots carry their dark edge: on glass.
+    private var edged = false
     private var dotLayers: [CALayer] = []
+    /// The dark dot behind each dot, in step with `dotLayers`; empty off
+    /// glass.
+    private var edgeLayers: [CALayer] = []
     private var builtSize: CGSize = .zero
 
     override init(frame frameRect: NSRect) {
@@ -78,14 +88,16 @@ final class DotMatrixLayerView: NSView {
 
     // MARK: - Input
 
-    func apply(design: MarkerDesign, palette: ArtworkPalette, tint: Color?, animateMorph: Bool) {
-        guard design != appliedDesign || palette != appliedPalette || tint != appliedTint else { return }
+    func apply(design: MarkerDesign, palette: ArtworkPalette, tint: Color?, edged: Bool = false, animateMorph: Bool) {
+        let edgeChanged = edged != self.edged
+        guard design != appliedDesign || palette != appliedPalette || tint != appliedTint || edgeChanged else { return }
         appliedDesign = design
         appliedPalette = palette
         appliedTint = tint
+        self.edged = edged
 
         let next = Config(design: design, colors: DotColors(design: design, palette: palette, tint: tint))
-        guard next != config else { return }
+        guard next != config || edgeChanged else { return }
 
         let previousLevels = levels
         let previousDots = config?.design.dots
@@ -127,6 +139,7 @@ final class DotMatrixLayerView: NSView {
         let diameter = maxRadius * 2
 
         makeLayers(count: MarkerDesign.dotCount, in: host)
+        let edgeWidth = CGFloat(IslandGlass.barEdgeWidth)
 
         // One clock for the whole grid. The curves are functions of absolute
         // time, so anchoring every loop to the same instant keeps dots in the
@@ -152,8 +165,18 @@ final class DotMatrixLayerView: NSView {
                 )
                 dot.removeAllAnimations()
 
+                // The dark dot behind it: the same centre and the same
+                // curves, `barEdgeWidth` larger all round at full size.
+                let edge = edgeLayers.isEmpty ? nil : edgeLayers[index]
+                if let edge {
+                    edge.bounds = CGRect(x: 0, y: 0, width: diameter + 2 * edgeWidth, height: diameter + 2 * edgeWidth)
+                    edge.cornerRadius = maxRadius + edgeWidth
+                    edge.position = dot.position
+                    edge.removeAllAnimations()
+                }
+
                 install(
-                    on: dot, row: row, col: col, index: index,
+                    on: dot, edge: edge, row: row, col: col, index: index,
                     curves: curves, previousLevels: previousLevels,
                     now: now, clockNow: clockNow, morphDuration: morphDuration
                 )
@@ -164,21 +187,35 @@ final class DotMatrixLayerView: NSView {
     }
 
     private func makeLayers(count: Int, in host: CALayer) {
-        guard dotLayers.count != count else { return }
-        dotLayers.forEach { $0.removeFromSuperlayer() }
-        dotLayers = (0..<count).map { _ in
-            let dot = CALayer()
-            dot.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-            dot.allowsEdgeAntialiasing = true
-            host.addSublayer(dot)
-            return dot
+        if dotLayers.count != count {
+            dotLayers.forEach { $0.removeFromSuperlayer() }
+            dotLayers = (0..<count).map { _ in
+                let dot = CALayer()
+                dot.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+                dot.allowsEdgeAntialiasing = true
+                host.addSublayer(dot)
+                return dot
+            }
+        }
+        // The edges only on glass: on black they'd be 25 layers of black on
+        // black. Under every dot, so no dot is ever behind another's edge.
+        let wanted = edged ? count : 0
+        guard edgeLayers.count != wanted else { return }
+        edgeLayers.forEach { $0.removeFromSuperlayer() }
+        edgeLayers = (0..<wanted).map { index in
+            let dark = CALayer()
+            dark.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            dark.allowsEdgeAntialiasing = true
+            dark.backgroundColor = NSColor.black.withAlphaComponent(CGFloat(IslandGlass.barEdge)).cgColor
+            host.insertSublayer(dark, at: UInt32(index))
+            return dark
         }
     }
 
     // MARK: - Animations
 
     private func install(
-        on dot: CALayer, row: Int, col: Int, index: Int,
+        on dot: CALayer, edge: CALayer?, row: Int, col: Int, index: Int,
         curves: DotMatrixCurves, previousLevels: [Double]?,
         now: CFTimeInterval, clockNow: Double, morphDuration: Double
     ) {
@@ -212,6 +249,8 @@ final class DotMatrixLayerView: NSView {
         dot.opacity = Float(opacity.first as? Double ?? 0)
         dot.setValue(scale.first as? Double ?? 0, forKeyPath: "transform.scale")
         dot.backgroundColor = (colors.first as! CGColor)
+        edge?.opacity = dot.opacity
+        edge?.setValue(scale.first as? Double ?? 0, forKeyPath: "transform.scale")
 
         // The morph: a one-shot run from where the dot was to where the loop
         // begins, so dots slide on and off when the design's layout changes.
@@ -243,6 +282,14 @@ final class DotMatrixLayerView: NSView {
                     loop(morphScale as [Any], keyPath: "transform.scale",
                          duration: morphDuration, beginTime: now, repeats: false),
                     forKey: "morphScale")
+                edge?.add(
+                    loop(morphOpacity as [Any], keyPath: "opacity",
+                         duration: morphDuration, beginTime: now, repeats: false),
+                    forKey: "morphOpacity")
+                edge?.add(
+                    loop(morphScale as [Any], keyPath: "transform.scale",
+                         duration: morphDuration, beginTime: now, repeats: false),
+                    forKey: "morphScale")
             }
         }
 
@@ -253,6 +300,12 @@ final class DotMatrixLayerView: NSView {
                 forKey: "scale")
         dot.add(loop(colors, keyPath: "backgroundColor", duration: colorPeriod, beginTime: loopStart),
                 forKey: "color")
+        // The edge follows the dot's size and how lit it is; its colour is
+        // its own.
+        edge?.add(loop(opacity, keyPath: "opacity", duration: period, beginTime: loopStart),
+                  forKey: "opacity")
+        edge?.add(loop(scale, keyPath: "transform.scale", duration: period, beginTime: loopStart),
+                  forKey: "scale")
     }
 
     /// Samples one full period, repeating the first value as the last so the

@@ -40,7 +40,7 @@ func makeIsland(_ fixtureName: String, mode: IsleMode, floating: Bool = false) -
     })
     hostingRef = hosting
     hosting.sizingOptions = []
-    window.contentView = hosting
+    window.attachContent(hosting)
     window.setFrame(NSRect(x: -20000, y: -20000, width: frame.width, height: frame.height), display: false)
     window.alphaValue = 0
     window.orderFrontRegardless()

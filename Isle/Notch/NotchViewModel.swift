@@ -346,22 +346,41 @@ final class NotchViewModel: ObservableObject {
     /// moment it clears — see `NotchWindowController.observeComposing`.
     @Published private(set) var composing: ComposeKind? {
         didSet {
-            // The reply's field let go — sent, Esc, or focus went elsewhere:
-            // what changed while it held the face still lands now.
-            if oldValue == .reply, composing != .reply { thawClaudeFace() }
+            // A field on the Claude face let go — sent, Esc, or focus went
+            // elsewhere: what changed while it held the face still lands now.
+            if Self.holdsClaudeFace(oldValue), !Self.holdsClaudeFace(composing) { thawClaudeFace() }
         }
     }
 
-    // MARK: Holding the face still while a reply is written
+    // MARK: Holding the face still while a field on it is written in
 
-    /// The Claude face holds still while the reply field has the keys: a
-    /// face that changes under the pointer — rows sliding in, the headline
+    /// The Claude face holds still while one of its fields has the keys —
+    /// a reply, a typed answer to a question, a denial's reason: a face
+    /// that changes under the pointer — rows sliding in, the headline
     /// changing, Done swapping in for the working face, another session
     /// taking the island — throws off what's being typed. What arrives is
     /// kept, the latest of each, and applied once when the field lets go
     /// (`thawClaudeFace`). Only the field itself grows meanwhile. The
     /// draft is never touched by any of it.
-    var claudeFaceFrozen: Bool { composing == .reply }
+    ///
+    /// The answer and the denial were not held at first, and the two ways
+    /// a status ends composing — another session taking the island, and
+    /// the pending request no longer matching, which a subagent's report
+    /// in the same session does for a moment — closed the field mid-word.
+    /// Closing the field hands the keyboard back, which brings the
+    /// terminal forward: typing an answer, the user was thrown back to
+    /// the terminal, and the answer so far was thrown away.
+    var claudeFaceFrozen: Bool { Self.holdsClaudeFace(composing) }
+
+    private static func holdsClaudeFace(_ kind: ComposeKind?) -> Bool {
+        kind == .reply || kind == .answer || kind == .denial
+    }
+
+    /// The request the answer or denial being typed is for: the one on the
+    /// face while its field has the keys.
+    private var composedRequest: ClaudeRequest? {
+        composing == .answer || composing == .denial ? pendingRequest : nil
+    }
 
     /// The latest status that arrived while the face was held, and whether
     /// it would have announced itself.
@@ -375,14 +394,47 @@ final class NotchViewModel: ObservableObject {
     /// Why Return didn't send: a prompt is up in this session's terminal,
     /// where the text would answer it. The field and the draft stay.
     @Published private(set) var replyRefusal: String?
+    /// The question or the call being answered is gone — answered in the
+    /// terminal, cancelled, timed out — while its field was open. Said on
+    /// the face as soon as it's known and again on Return, which sends
+    /// nothing. The field and what's typed in it stay until Esc.
+    @Published private(set) var requestGoneWhileComposing: String?
+    /// The request `answerDraft` and `denialDraft` were typed for. Text
+    /// typed for one request is never offered to another.
+    private var draftsRequestId: String?
+    #if DEBUG
+    /// For tests: every answer `send` was asked to make and for which
+    /// request, and a stand-in for the hook's side of taking it.
+    var previewSends: [(request: String, reply: ClaudeRequestWatcher.Reply)] = []
+    var previewRespond: ((ClaudeRequestWatcher.Reply, ClaudeRequest) -> Bool)?
+    #endif
     /// Held back: the eased revert to Ready, a request to refresh, queued
     /// rows Claude has taken.
     private var heldIdleRevert = false
     private var heldRequestRefresh = false
     private var heldQueueRemovals: [(session: String, id: UUID)] = []
 
-    private func noteHeldNeedsYou(_ state: ClaudeCodeState) {
-        if state.isAttention, !claudeNeedsYouWhileComposing { claudeNeedsYouWhileComposing = true }
+    private func noteHeldNeedsYou(_ status: ClaudeStatus) {
+        // Not the very request being answered, written again.
+        if let answering = composedRequest, status.sessionId == claudeSessionId,
+           status.requestId == nil || status.requestId == answering.id { return }
+        if status.state.isAttention, !claudeNeedsYouWhileComposing { claudeNeedsYouWhileComposing = true }
+    }
+
+    /// Whether `request` is still waiting for its answer: its file is still
+    /// among the requests on disk, for the same session. (The answer itself
+    /// is written against the request's own id — `ClaudeRequestWatcher
+    /// .respond` — so it could not reach another; this is so nothing is
+    /// claimed sent, and the face can say why.)
+    private func isStillPending(_ request: ClaudeRequest) -> Bool {
+        claudeRequests.contains { $0.id == request.id && $0.sessionId == request.sessionId }
+    }
+
+    private func noteRequestGone(_ request: ClaudeRequest) {
+        let text = request.kind == .question
+            ? "This question is gone or already answered (esc)"
+            : "This request is gone or already answered (esc)"
+        if requestGoneWhileComposing != text { requestGoneWhileComposing = text }
     }
 
     /// Applies what the face held back while the reply was written, once,
@@ -390,6 +442,7 @@ final class NotchViewModel: ObservableObject {
     private func thawClaudeFace() {
         claudeNeedsYouWhileComposing = false
         replyRefusal = nil
+        requestGoneWhileComposing = nil
         if let trails = heldTrails {
             heldTrails = nil
             if trails != claudeTrails { withAnimation(.easeOut(duration: 0.22)) { claudeTrails = trails } }
@@ -1602,6 +1655,12 @@ final class NotchViewModel: ObservableObject {
     /// isn't running, which EqualizerView reads as "use the procedural fallback".
     var audioLevelSource: SystemAudioLevels { audio }
 
+    /// A click on the Music face's waveform: start the meter over, in case
+    /// it has stopped answering. Listens only; playback is never touched.
+    func restartWaveform() {
+        audio.restartFromUser()
+    }
+
     /// What the open panel is drawn on, as chosen in Settings — read here so
     /// a change re-renders the island through this model.
     var panelBackground: PanelBackground { settings.panelBackground }
@@ -2149,7 +2208,7 @@ final class NotchViewModel: ObservableObject {
             // Held until the reply's field lets go; the latest wins, and an
             // announcement held back is still made then.
             heldStatus = (status, announce || (heldStatus?.announce ?? false))
-            noteHeldNeedsYou(status.state)
+            noteHeldNeedsYou(status)
             return
         }
         lastAppliedStatus = status
@@ -2181,8 +2240,10 @@ final class NotchViewModel: ObservableObject {
         if claudeSessionId != status.sessionId {
             // Another session took the island: whatever was being typed or
             // confirmed was for the one before. Its draft stays filed under
-            // its own id.
-            composing = nil
+            // its own id. (A field on the Claude face holds the face still,
+            // so this is never reached with one open; the agenda's field is
+            // no session's, and is left alone.)
+            if composing != .quickAdd { composing = nil }
             deliveryTask?.cancel()
             deliveryTask = nil
             replyDelivery = .none
@@ -2666,7 +2727,15 @@ final class NotchViewModel: ObservableObject {
             // A request taking the face would take the field with it: it
             // waits, and the face says Claude needs you.
             heldRequestRefresh = true
-            if claudeRequests.contains(where: { $0.sessionId == claudeSessionId }) { claudeNeedsYouWhileComposing = true }
+            if let answering = composedRequest {
+                // Answering one: is it still there, and is there another?
+                if !isStillPending(answering) { noteRequestGone(answering) }
+                if claudeRequests.contains(where: { $0.sessionId == claudeSessionId && $0.id != answering.id }) {
+                    claudeNeedsYouWhileComposing = true
+                }
+            } else if claudeRequests.contains(where: { $0.sessionId == claudeSessionId }) {
+                claudeNeedsYouWhileComposing = true
+            }
             return
         }
         let match = claudeRequests.first { request in
@@ -2689,10 +2758,16 @@ final class NotchViewModel: ObservableObject {
             questionTyped = [:]
             answeredRequestId = nil
             isReviewingRemember = false
-            // Text typed for the request before belongs to a question or a
-            // call that has already gone, one way or another.
-            answerDraft = ""
-            denialDraft = ""
+            // Text typed for the request before belongs to that question
+            // or call and no other: gone the moment a different request is
+            // on the face. With nothing on the face it's kept — the same
+            // request can be back in a moment (its session's state read as
+            // something else for one status), and its text with it.
+            if let match, match.id != draftsRequestId {
+                answerDraft = ""
+                denialDraft = ""
+                draftsRequestId = nil
+            }
             if composing == .answer || composing == .denial { composing = nil }
         }
         withAnimation(.easeInOut(duration: 0.25)) {
@@ -2823,6 +2898,16 @@ final class NotchViewModel: ObservableObject {
     @discardableResult
     private func send(_ reply: ClaudeRequestWatcher.Reply, to request: ClaudeRequest) -> Bool {
         answeredRequestId = request.id
+        #if DEBUG
+        previewSends.append((request.id, reply))
+        if let previewRespond {
+            guard previewRespond(reply, request) else {
+                answeredRequestId = nil
+                return false
+            }
+            return true
+        }
+        #endif
         guard requestWatcher.respond(reply, to: request) else {
             // The hook let go first (its deadline, Esc in the terminal) or the
             // write failed. Claim nothing: re-arm, and re-scan so buttons for a
@@ -3018,14 +3103,46 @@ final class NotchViewModel: ObservableObject {
             guard showsAgenda else { return }
         }
         guard composing != kind else { return }
+        if kind == .answer || kind == .denial, let request = pendingRequest, draftsRequestId != request.id {
+            // A field for another request than the drafts were typed for.
+            if draftsRequestId != nil {
+                answerDraft = ""
+                denialDraft = ""
+            }
+            draftsRequestId = request.id
+        }
         composing = kind
     }
 
-    /// Esc, or focus going elsewhere: stop taking keys. What was typed is
-    /// kept, and is there when the field is opened again.
+    /// Esc, a click on the island outside the field, or focus going
+    /// elsewhere: stop taking keys. What was typed is kept, and is there
+    /// when the field is opened again.
     func endCompose() {
         guard composing != nil else { return }
         composing = nil
+    }
+
+    /// Whether a click on the island outside the field lets this one go:
+    /// the Claude face's three. The agenda's quick add keeps to Esc, a
+    /// click in another app, or its add landing — its preview and its Add
+    /// sit above the field, and are clicked while it's open.
+    static func clickOutLetsGo(_ kind: ComposeKind) -> Bool {
+        holdsClaudeFace(kind)
+    }
+
+    /// Whether the latest press on an island went down while a field had
+    /// the keys. The face's own click (retracting a panel an alert opened)
+    /// reads it: a click that lets a field go must do only that, whether
+    /// SwiftUI runs the face's tap before the field lets go or after.
+    var pressBeganComposing = false
+
+    /// A click on the island outside the field, pressed while `kind` had
+    /// the keys: Esc's way out, draft kept. Once the click is done, so a
+    /// control it was on has had it — and only if the same field is still
+    /// open: one the click opened, or a send it made, is left alone.
+    func clickedOutsideField(_ kind: ComposeKind) {
+        guard composing == kind, Self.clickOutLetsGo(kind) else { return }
+        endCompose()
     }
 
     /// Return, or the Send button.
@@ -3043,15 +3160,38 @@ final class NotchViewModel: ObservableObject {
 
     /// "Type something": the typed text answers the question on screen, then
     /// the ask moves on — to the next question, or, on the last, sends.
+    ///
+    /// The face has been held still while this was typed, so the question
+    /// on it may no longer be the one waiting: answered in the terminal,
+    /// cancelled, or another in its place. Nothing is sent unless this
+    /// exact request is still pending; if it isn't, the field and the text
+    /// stay and the face says so. And everything is done before the field
+    /// lets go — letting go is what lets the face catch up, and a request
+    /// that changed then must not find this text on its way in.
     private func answerWithTypedText() {
         let text = answerDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, currentQuestion != nil, !isAnsweringRequest,
+        guard !text.isEmpty, let request = pendingRequest, currentQuestion != nil, !isAnsweringRequest,
               questionPicks.indices.contains(questionIndex) else { return }
-        composing = nil
-        questionTyped[questionIndex] = text
-        questionPicks[questionIndex] = []
-        answerDraft = ""
+        guard isStillPending(request) else {
+            noteRequestGone(request)
+            return
+        }
+        let index = questionIndex
+        let isLast = index + 1 >= request.questions.count
+        let picked = questionPicks[index]
+        questionTyped[index] = text
+        questionPicks[index] = []
+        // To the next question, or, on the last, sends.
         advanceQuestion()
+        if isLast, !isAnsweringRequest {
+            // It went between the look and the write: nothing was sent.
+            questionTyped[index] = nil
+            questionPicks[index] = picked
+            noteRequestGone(request)
+            return
+        }
+        answerDraft = ""
+        composing = nil
     }
 
     /// "No, and tell Claude what to do differently": a denial whose message
@@ -3061,8 +3201,13 @@ final class NotchViewModel: ObservableObject {
         let text = denialDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, let request = pendingRequest, request.kind == .approval,
               !isAnsweringRequest else { return }
+        // As for a typed answer: only to this very request, still pending,
+        // and sent before the field lets go.
+        guard isStillPending(request), send(.denySaying(text), to: request) else {
+            noteRequestGone(request)
+            return
+        }
         composing = nil
-        send(.denySaying(text), to: request)
     }
 
     /// Sends the draft: typed into the session's terminal as the next
@@ -4277,6 +4422,13 @@ extension NotchViewModel {
         receiveAgents(agents)
     }
 
+    /// The requests on disk changing, as the request watcher reports it and
+    /// the read that follows lands it — for tests of what the face does.
+    func previewReceive(requests: [ClaudeRequest]) {
+        claudeRequests = requests
+        refreshPendingRequest()
+    }
+
     /// A record arriving from the watcher, through the same path a real
     /// one takes — for tests of what the face does with it.
     func previewReceive(_ status: ClaudeStatus) {
@@ -4351,6 +4503,12 @@ extension NotchViewModel {
         answerDraft = fixture.answerDraft
         denialDraft = fixture.denialDraft
         activeTab = .claude
+    }
+
+    /// A track for previews and tests, put straight on the island the way a
+    /// player's report would land, without a player.
+    func applyPreviewMedia(_ model: MediaPlaybackModel) {
+        media = model
     }
 }
 #endif

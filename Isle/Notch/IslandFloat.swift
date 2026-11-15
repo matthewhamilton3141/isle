@@ -86,6 +86,45 @@ enum IslandFloat {
     /// The gap in the header's middle that the faces leave for the grabber.
     static var grabberGap: CGFloat { grabber.width + 2 * grabberClearance }
 
+    // MARK: - Taking hold of the open panel
+
+    /// What a press on the open panel lands on, for what it can become
+    /// (`IslandHold`, `IslandCarry`).
+    enum PanelSpot: Equatable {
+        /// The grabber, and the header around it: a click closes the panel
+        /// to its capsule, a drag moves it at once.
+        case grabber
+        /// The bare edge, inside the outline and outside everything drawn
+        /// in it: a drag moves it at once.
+        case edge
+        /// Anything else, where a drag can be a control's: a short hold
+        /// picks it up.
+        case content
+    }
+
+    /// The grabber's target: this wide, and from the panel's top edge down
+    /// through the roof and the band. The bar is 36×5, too small to hit;
+    /// this is most of the gap the faces leave it (`grabberGap`), a few
+    /// points short of the wings either side. Tune here.
+    static let grabberTarget: CGFloat = 56
+
+    /// The bare edge the panel can be taken by: this far in from its walls
+    /// and its bottom, short of everything inside (the content stands 10pt
+    /// in, the gear's target 9pt, Prism's further still), and the roof
+    /// above the header. Tune here.
+    static let edgeGrip: CGFloat = 6
+
+    /// Where `point` is on an open panel `panel` big whose header band is
+    /// `band` tall. `point` is in the panel's own space: from its top-left
+    /// corner, y down. Just outside the outline counts as its edge.
+    static func spot(at point: CGPoint, panel: CGSize, band: CGFloat) -> PanelSpot {
+        if abs(point.x - panel.width / 2) <= grabberTarget / 2, point.y <= roof + band { return .grabber }
+        if point.y < roof || point.x < edgeGrip || point.x > panel.width - edgeGrip || point.y > panel.height - edgeGrip {
+            return .edge
+        }
+        return .content
+    }
+
     // MARK: - The closed capsule
 
     /// The capsule's height: taller than the camera band (32 on this Mac),
@@ -214,6 +253,11 @@ enum IslandFloat {
             return CGSize(width: width.rounded(.up), height: f.pillHeight)
         }
     }
+
+    /// A generous width for the timer's clock counting hours ("1:59:59"
+    /// at the capsule's title size), for keeping the widest capsule on the
+    /// screen without measuring text.
+    static let widestClock: CGFloat = 56
 
     /// The widest the capsule gets: all three clusters, their labels at
     /// their caps, a clock that counts hours (`clock` wide), the waveform

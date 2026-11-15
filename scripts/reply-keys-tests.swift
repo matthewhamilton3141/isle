@@ -29,10 +29,14 @@ func island(_ fixtureName: String) -> (NotchViewModel, NotchWindow) {
     let hosting = NotchHostingView(rootView: NotchRootView(viewModel: vm, island: presentation) { ref?.activeRect = $0 })
     ref = hosting
     hosting.sizingOptions = []
-    window.contentView = hosting
+    window.attachContent(hosting)
     window.setFrame(NSRect(x: -20000, y: -20000, width: metrics.maximumFrame.width, height: metrics.maximumFrame.height), display: false)
     window.alphaValue = 0
     window.allowsKey = true
+    // Without the style that makes `makeKey()` take the window server's key
+    // focus: this runs on a Mac someone may be typing on, and the field only
+    // needs AppKit to treat the window as key.
+    window.styleMask.remove(.nonactivatingPanel)
     window.orderFrontRegardless()
     window.makeKey()
     presentation.setHovering(true)
@@ -113,6 +117,11 @@ enum KeyProbe {
         // answer is taken and the field closes).
         do {
             let (vm, window) = island("jr_question_type_pill")
+            let request = vm.pendingRequest!
+            // A hook waiting for the answer and taking it. With none, Return
+            // sends nothing and the field stays, saying the question is gone
+            // (see scripts/compose-freeze-tests.swift).
+            vm.previewRespond = { _, _ in true }
             vm.answerDraft = ""
             vm.beginCompose(.answer)
             RunLoop.main.run(until: Date().addingTimeInterval(0.8))
@@ -120,6 +129,7 @@ enum KeyProbe {
             report(vm.answerDraft == "Mango", "typing lands in the answer field", vm.answerDraft.debugDescription)
             key(window, "\r", code: 36)
             report(vm.composing == nil && vm.answerDraft.isEmpty, "Return sends", "composing \(String(describing: vm.composing))")
+            report(vm.previewSends.map(\.request) == [request.id], "to the question on the face", "\(vm.previewSends.map(\.request))")
             window.orderOut(nil)
         }
         print(failures == 0 ? "\nall keys did what they should" : "\n\(failures) failed")

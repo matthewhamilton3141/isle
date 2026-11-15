@@ -9,10 +9,16 @@
 //  keep clear, no flares into the bezel, and a closed form that can be more
 //  than a sliver either side of a cutout.
 //
-//  The layout inside the window doesn't change with the placement: the
-//  island is drawn at the top centre of its window either way, and growing
-//  means growing downward from there. Detaching moves the window, so that
-//  top centre lands on `anchor`.
+//  On the notch the island is drawn at the top centre of its window and
+//  grows downward from there. Off it, it opens toward where there's room
+//  (`IslandOpening`): down from the closed capsule while the open panel
+//  fits below it, else up from the capsule's bottom edge. Sideways, near
+//  the screen's left or right edge it's pinned to that side: the capsule's
+//  end on that side stays put, and everything it grows into — a wider
+//  capsule, the swell, the open panel — grows away from it, in one motion.
+//  Elsewhere it grows from its middle. The capsule itself never moves for
+//  any of it: the window is placed for the open panel, and the capsule is
+//  drawn inside it wherever `anchor` puts it.
 //
 //  Kept free of AppKit and SwiftUI so it compiles on its own for scripts
 //  (scripts/test-island-placement.sh).
@@ -24,8 +30,11 @@ enum IslandPlacement: Equatable {
     /// On the notch (or, on a screen without one, where the notch would be).
     case docked
 
-    /// Off the notch. `anchor` is the top centre of the drawn island, in
-    /// global screen coordinates (AppKit's: origin bottom-left, y up).
+    /// Off the notch. `anchor` is on the closed capsule's top edge — its
+    /// middle, or its left or right end where it's pinned to that side
+    /// (`IslandOpening.pin`) — in global screen coordinates (AppKit's:
+    /// origin bottom-left, y up). The open panel hangs from it, or stands
+    /// on the capsule's bottom edge (`IslandOpening`).
     ///
     /// It's where the island was last put down. While it's being carried
     /// the window runs ahead of it (the window moves on every drag event;
@@ -44,6 +53,92 @@ enum IslandPlacement: Equatable {
     }
 }
 
+/// Which way an island off its notch opens from its closed capsule.
+struct IslandOpening: Equatable {
+    /// Which side of the island stays put as it grows.
+    enum Pin: Equatable {
+        /// Its middle: it grows both ways.
+        case centre
+        /// Its left end: it grows rightward, away from the screen's left
+        /// edge.
+        case leading
+        /// Its right end: it grows leftward.
+        case trailing
+    }
+
+    /// Up from the capsule's bottom edge, rather than down from its top.
+    var upward: Bool
+    /// How far right of the anchor the window's centre is, in points
+    /// (negative: left): where the widest open panel is centred. Pinned,
+    /// half that panel's width, so it reaches from the anchor away from
+    /// the edge; in the middle of the screen nothing.
+    var shift: CGFloat
+    /// What stays put (`Pin`). The anchor is that point of the capsule.
+    var pin: Pin = .centre
+
+    /// Down from the capsule, centred on it: every island on its notch, and
+    /// every one off it with room.
+    static let down = IslandOpening(upward: false, shift: 0)
+
+    /// How far right of the window's centre the island is drawn centred,
+    /// `width` wide (closed or `open`): pinned, so its pinned end is at the
+    /// anchor whatever the width, which the width's spring then keeps there
+    /// as it changes — the outline's offset and its width move together.
+    /// In the middle the capsule is centred on the anchor and the open
+    /// panel on the window.
+    func offset(width: CGFloat, open: Bool) -> CGFloat {
+        switch pin {
+        case .centre: return open ? 0 : -shift
+        case .leading: return width / 2 - shift
+        case .trailing: return -width / 2 - shift
+        }
+    }
+
+    /// The drawn island's top centre less its anchor, `size` big (closed
+    /// or `open`), the capsule `pillHeight` tall: what the notch takes
+    /// back when it reaches it. Only centred and opening down is that the
+    /// anchor itself; opening up the anchor is the capsule's top under the
+    /// panel, and pinned it's one end.
+    func topCentre(of size: CGSize, open: Bool, pillHeight: CGFloat) -> CGPoint {
+        CGPoint(x: shift + offset(width: size.width, open: open), y: upward ? size.height - pillHeight : 0)
+    }
+
+    /// The left end of a capsule `width` wide anchored at `x`.
+    func pillMinX(anchor x: CGFloat, width: CGFloat) -> CGFloat {
+        switch pin {
+        case .centre: return x - width / 2
+        case .leading: return x
+        case .trailing: return x - width
+        }
+    }
+}
+
+/// Which side the pointer came onto a closed capsule from, when a hover
+/// opens it: the island then opens toward it where there's room, so the
+/// panel grows round the pointer rather than away from it (Matthew,
+/// 2026-11-14: "makes it try to open in the direction the mouse comes
+/// from more"). Read off where the pointer last was outside the drawn
+/// capsule, so a slow arrival and a fast one read the same.
+struct IslandApproach: Equatable {
+    /// From above the capsule (true), below it (false), or level with it.
+    var fromAbove: Bool?
+    /// From beyond its right end (true), its left end (false), or neither.
+    var fromRight: Bool?
+
+    /// The approach of a pointer last seen outside the capsule at `origin`,
+    /// the capsule drawn at `pill`. Nil when it was never outside it.
+    init?(from origin: CGPoint, onto pill: CGRect) {
+        fromAbove = origin.y > pill.maxY ? true : origin.y < pill.minY ? false : nil
+        fromRight = origin.x > pill.maxX ? true : origin.x < pill.minX ? false : nil
+        if fromAbove == nil && fromRight == nil { return nil }
+    }
+
+    init(fromAbove: Bool?, fromRight: Bool?) {
+        self.fromAbove = fromAbove
+        self.fromRight = fromRight
+    }
+}
+
 /// The room one screen gives an island that's off its notch: where it may
 /// rest, where it may be carried, and how near the notch counts as back on
 /// it. One screen's worth — an island stays on the screen it belongs to.
@@ -56,38 +151,227 @@ struct IslandPlacementBounds: Equatable {
     var screen: CGRect
     var visible: CGRect
 
-    /// Half the widest the island is ever drawn, and the tallest: the panel
-    /// always grows downward from the anchor, so a resting anchor leaves
-    /// this much room below it and this much either side.
+    /// Half the open panel's width, and its height at its tallest, the
+    /// roof and Prism's lip included: what has to fit on the screen beside
+    /// and above or below the capsule when it opens.
     var halfWidth: CGFloat
     var tallest: CGFloat
+
+    /// The closed capsule at its widest and its height: what has to be on
+    /// the screen where the island rests. Anywhere it fits, it may rest —
+    /// the bottom of the screen and its corners too. (It used to be kept
+    /// where the open panel fitted below it, about the bottom quarter of a
+    /// laptop screen out of bounds: Matthew, "i cant drag the compacted
+    /// pill around to certain spots bc it only expands one way".)
+    var pill: CGSize
 
     /// The anchor of a docked island: the top centre of the screen.
     var dock: CGPoint { CGPoint(x: screen.midX, y: screen.maxY) }
 
+    // MARK: Pinning
+
+    /// How far either side of its middle an island grows at most: half the
+    /// widest open panel or the widest capsule, whichever is wider. Where
+    /// that much room isn't there on one side, it's pinned to the other.
+    var room: CGFloat { max(halfWidth, pill.width / 2) }
+
+    /// Whether the visible frame is wide enough to pin at all: an island
+    /// pinned near one edge reaches `room` in from it and grows the whole
+    /// panel's width further. On anything narrower (no Mac display is) the
+    /// island grows from its middle and the panel is moved in to fit.
+    var pinsToEdges: Bool { visible.width >= 3 * room }
+
+    /// What stays put for an island anchored at `x`: its left end within
+    /// `room` of the visible frame's left edge, its right end within
+    /// `room` of its right, else its middle. A function of the anchor
+    /// alone, so a remembered anchor comes back the same.
+    func pin(at x: CGFloat) -> IslandOpening.Pin {
+        guard pinsToEdges else { return .centre }
+        if x < visible.minX + room { return .leading }
+        if x > visible.maxX - room { return .trailing }
+        return .centre
+    }
+
+    // MARK: Opening
+
+    /// Which way an island resting at `anchor` opens: down while the
+    /// tallest panel fits below the capsule's top inside the visible
+    /// frame; else up, standing on the capsule's bottom edge, if it fits
+    /// that way; and on a screen too short for either, whichever way has
+    /// more room. Decided by the tallest panel, not the face showing, so a
+    /// face that grows the panel never flips it over.
+    ///
+    /// Sideways, pinned near an edge (`pin(at:)`) it grows from the
+    /// anchored end away from the edge; in the middle, centred on the
+    /// capsule, where there's room for that by the same rule. On a display
+    /// too narrow to pin, centred unless that would take it past the
+    /// visible frame's left or right edge, then moved in just far enough
+    /// (narrower than the panel, to the middle).
+    ///
+    /// Arrived at by a pointer from above or below (`approach`), it opens
+    /// toward that side whenever the tallest panel fits that way.
+    func opening(at anchor: CGPoint, approach fromAbove: Bool? = nil) -> IslandOpening {
+        let below = anchor.y - visible.minY
+        let above = visible.maxY - (anchor.y - pill.height)
+        let upward: Bool
+        if fromAbove == true, above >= tallest {
+            upward = true
+        } else if fromAbove == false, below >= tallest {
+            upward = false
+        } else if below >= tallest {
+            upward = false
+        } else if above >= tallest {
+            upward = true
+        } else {
+            upward = above > below
+        }
+        switch pin(at: anchor.x) {
+        case .leading: return IslandOpening(upward: upward, shift: halfWidth, pin: .leading)
+        case .trailing: return IslandOpening(upward: upward, shift: -halfWidth, pin: .trailing)
+        case .centre:
+            guard !pinsToEdges else { return IslandOpening(upward: upward, shift: 0) }
+            let minX = visible.minX + halfWidth, maxX = visible.maxX - halfWidth
+            let centre = minX <= maxX ? min(max(anchor.x, minX), maxX) : visible.midX
+            return IslandOpening(upward: upward, shift: centre - anchor.x)
+        }
+    }
+
+    /// Where an open panel `size` big lies for an island resting at
+    /// `anchor` and opening as `opening`: hanging from the capsule's top,
+    /// or standing on its bottom edge, centred the opening's shift from it.
+    func panel(_ size: CGSize, at anchor: CGPoint, opening: IslandOpening) -> CGRect {
+        let bottom = opening.upward ? anchor.y - pill.height : anchor.y - size.height
+        let mid = anchor.x + opening.shift + opening.offset(width: size.width, open: true)
+        return CGRect(x: mid - size.width / 2, y: bottom, width: size.width, height: size.height)
+    }
+
+    /// Where an island let go at `anchor` comes to rest and which way it
+    /// then opens. Open (`open`, the way it opens), it's kept whole on the
+    /// screen and keeps its way. Closed — however it got that way, the
+    /// grabber clicked included — it's the capsule as it is, `pillWidth`
+    /// wide and carried as `carried` says, that's put down: anywhere it is
+    /// wholly on the visible frame, right up against its edges, and its
+    /// place decides the rest (`pin(at:)`, `opening(at:)`), so a capsule
+    /// taken to an edge or a corner grows away from it.
+    func putDown(_ anchor: CGPoint, open: IslandOpening?, pillWidth: CGFloat, carried: IslandOpening) -> (anchor: CGPoint, opening: IslandOpening) {
+        if let open { return (resting(anchor, open: open), open) }
+        return forPlace(anchor, pillWidth: pillWidth, was: carried)
+    }
+
+    /// A closed capsule `pillWidth` wide, anchored at `anchor` as `was`
+    /// says, anchored again and opening the way its place calls for now —
+    /// whichever way it opened before, wherever it was put down open.
+    /// Where it's wholly on the visible frame it doesn't move for this.
+    ///
+    /// Opened by a pointer arriving from one side (`approach`), it opens
+    /// toward that side where it fits: up or down (`opening(at:approach:)`),
+    /// and from beyond one end, pinned at the other so it grows toward the
+    /// pointer — if the whole panel fits that way. Near a screen edge the
+    /// edge's pin stands; the capsule itself doesn't move for any of it.
+    func forPlace(_ anchor: CGPoint, pillWidth: CGFloat, was: IslandOpening,
+                  approach: IslandApproach? = nil) -> (anchor: CGPoint, opening: IslandOpening) {
+        let rest = restingPill(anchor, width: pillWidth, carried: was)
+        let opened = opening(at: rest, approach: approach?.fromAbove)
+        guard let fromRight = approach?.fromRight, pinsToEdges, opened.pin == .centre
+        else { return (rest, opened) }
+        // Centred, the anchor is the capsule's middle; pinned it's an end.
+        let half = min(pillWidth, visible.width) / 2
+        if fromRight {
+            let left = rest.x - half
+            guard left + 2 * room <= visible.maxX else { return (rest, opened) }
+            return (CGPoint(x: left, y: rest.y), IslandOpening(upward: opened.upward, shift: halfWidth, pin: .leading))
+        } else {
+            let right = rest.x + half
+            guard right - 2 * room >= visible.minX else { return (rest, opened) }
+            return (CGPoint(x: right, y: rest.y), IslandOpening(upward: opened.upward, shift: -halfWidth, pin: .trailing))
+        }
+    }
+
+    /// Where a capsule `width` wide, anchored at `anchor` as `carried` says,
+    /// comes to rest: moved in until it's wholly on the visible frame, and
+    /// anchored again for where it is — its middle, or its end nearer an
+    /// edge it hasn't the room to grow toward. It doesn't move for that.
+    func restingPill(_ anchor: CGPoint, width: CGFloat, carried: IslandOpening) -> CGPoint {
+        guard pinsToEdges else { return resting(anchor) }
+        let w = min(width, visible.width)
+        let minX = min(max(carried.pillMinX(anchor: anchor.x, width: w), visible.minX), visible.maxX - w)
+        let mid = minX + w / 2
+        let x: CGFloat
+        if mid < visible.minX + room {
+            x = minX
+        } else if mid > visible.maxX - room {
+            x = minX + w
+        } else {
+            x = mid
+        }
+        return CGPoint(x: x, y: resting(anchor).y)
+    }
+
     // MARK: Clamping
 
-    /// Where an island let go at `anchor` comes to rest: the nearest anchor
-    /// from which the tallest panel still fits inside the visible frame.
+    /// Where a closed island anchored at `anchor` rests, its width not
+    /// known (a remembered place): the nearest anchor on the visible frame
+    /// whatever the capsule's width — pinned within reach of an edge, it
+    /// grows away from it, and in the middle there's room either side.
+    /// On a display too narrow to pin, the nearest with the widest capsule
+    /// inside the visible frame.
     func resting(_ anchor: CGPoint) -> CGPoint {
-        clamp(anchor, to: visible)
+        let clamped = clampPill(anchor, to: visible)
+        guard pinsToEdges else { return clamped }
+        return CGPoint(x: min(max(anchor.x, visible.minX), visible.maxX), y: clamped.y)
+    }
+
+    /// Where an open panel let go at `anchor` comes to rest, opening the
+    /// way it already does: the nearest anchor with the whole panel inside
+    /// the visible frame. It keeps its direction while open — turning it
+    /// over under the pointer would put it somewhere else — and takes the
+    /// one its place calls for the next time it is put down closed.
+    func resting(_ anchor: CGPoint, open opening: IslandOpening) -> CGPoint {
+        clampPanel(anchor, opening, to: visible)
     }
 
     /// Where an island being carried toward `anchor` is drawn: kept on the
     /// screen, but allowed up over the menu bar — it starts at the very top
     /// when it's taken off the notch, and has to reach the top again to be
-    /// put back. It settles into `resting` when it's let go.
-    func carrying(_ anchor: CGPoint) -> CGPoint {
-        clamp(anchor, to: screen)
+    /// put back. It settles into `resting` when it's let go. Open, the
+    /// whole panel is kept on the screen, opening the way it does.
+    func carrying(_ anchor: CGPoint, open opening: IslandOpening? = nil) -> CGPoint {
+        if let opening { return clampPanel(anchor, opening, to: screen) }
+        return clampPill(anchor, to: screen)
     }
 
-    private func clamp(_ anchor: CGPoint, to rect: CGRect) -> CGPoint {
-        let minX = rect.minX + halfWidth, maxX = rect.maxX - halfWidth
-        let minY = rect.minY + tallest, maxY = rect.maxY
-        return CGPoint(
-            // A screen too small for the panel: centred, hanging from the top.
-            x: minX <= maxX ? min(max(anchor.x, minX), maxX) : rect.midX,
-            y: minY <= maxY ? min(max(anchor.y, minY), maxY) : rect.maxY
+    /// Where a closed capsule `width` wide, anchored as `carried` says
+    /// (the way it was resting when it was picked up), is carried toward
+    /// `anchor`: the capsule itself kept on the screen, right up to its
+    /// edges, rather than the widest it could be.
+    func carrying(_ anchor: CGPoint, pillWidth width: CGFloat, carried: IslandOpening) -> CGPoint {
+        let y = clampPill(anchor, to: screen).y
+        let w = min(width, screen.width)
+        let minX = min(max(carried.pillMinX(anchor: anchor.x, width: w), screen.minX), screen.maxX - w)
+        return CGPoint(x: anchor.x + minX - carried.pillMinX(anchor: anchor.x, width: w), y: y)
+    }
+
+    private func clampPill(_ anchor: CGPoint, to rect: CGRect) -> CGPoint {
+        let half = pill.width / 2
+        return clamp(anchor, x: (rect.minX + half, rect.maxX - half), y: (rect.minY + pill.height, rect.maxY), in: rect)
+    }
+
+    /// The panel's centre is the anchor moved by the opening's shift, and
+    /// the shift is the anchor's own (it doesn't change while the panel is
+    /// open), so the panel is kept on the screen by keeping the anchor in.
+    private func clampPanel(_ anchor: CGPoint, _ opening: IslandOpening, to rect: CGRect) -> CGPoint {
+        let x = (rect.minX + halfWidth - opening.shift, rect.maxX - halfWidth - opening.shift)
+        let y = opening.upward
+            ? (rect.minY + pill.height, rect.maxY - tallest + pill.height)
+            : (rect.minY + tallest, rect.maxY)
+        return clamp(anchor, x: x, y: y, in: rect)
+    }
+
+    private func clamp(_ anchor: CGPoint, x: (CGFloat, CGFloat), y: (CGFloat, CGFloat), in rect: CGRect) -> CGPoint {
+        CGPoint(
+            // A screen too small for it: centred, hanging from the top.
+            x: x.0 <= x.1 ? min(max(anchor.x, x.0), x.1) : rect.midX,
+            y: y.0 <= y.1 ? min(max(anchor.y, y.0), y.1) : rect.maxY
         )
     }
 
@@ -139,7 +423,8 @@ struct IslandPlacementBounds: Equatable {
     /// The island can't be lost: an offset that isn't a point on this screen
     /// any more (a smaller display, a changed resolution, nonsense on disk)
     /// docks it, one that is but leaves too little room is brought in to
-    /// where the panel fits, and one that lands on the notch is docked.
+    /// where the capsule fits, and one that lands on the notch is docked.
+    /// It comes back closed, so it opens the way its place calls for.
     func placement(restoring offset: CGPoint?) -> IslandPlacement {
         guard let offset, offset.x.isFinite, offset.y.isFinite else { return .docked }
         let anchor = CGPoint(x: dock.x + offset.x, y: dock.y + offset.y)
