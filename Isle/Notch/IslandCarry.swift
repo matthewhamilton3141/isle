@@ -125,7 +125,7 @@ final class IslandCarry {
         self.window = window
         bleed = IslandBleedDriver(presentation: presentation)
         bleed.drawnRect = { [weak self] in self?.drawnRect() }
-        presentation.willOpen = { [weak self] in self?.openForPlace() }
+        presentation.willOpen = { [weak self] approach in self?.openForPlace(approach: approach) }
         bleed.reduceMotion = { [weak self] in self?.reduceMotion() ?? false }
         window.didSlide = { [weak self] in self?.bleed.follow() }
     }
@@ -524,16 +524,22 @@ final class IslandCarry {
     /// it's the capsule's place that decides, wherever it got there.
     /// Anchored again for that in place, so nothing on the screen moves
     /// (`turn`) before the open spring starts.
-    private func openForPlace() {
+    ///
+    /// A hover says which side the pointer came from (`approach`), and the
+    /// island opens toward it where it fits. What's remembered is the
+    /// place's own anchor, not that: pinned for the pointer, the anchor is
+    /// an end of the capsule, which a relaunch would read as its middle.
+    private func openForPlace(approach: IslandApproach?) {
         guard presentation.placement.isFloating, !isOpen, hold.phase != .carrying, glide == nil,
               let metrics = presentation.metrics, let anchor = presentation.placement.anchor,
               let width = drawnRect()?.width
         else { return }
-        let (rest, opening) = metrics.placementBounds.forPlace(anchor, pillWidth: width, was: presentation.opening)
+        let bounds = metrics.placementBounds
+        let (rest, opening) = bounds.forPlace(anchor, pillWidth: width, was: presentation.opening, approach: approach)
         guard opening != presentation.opening || rest != anchor else { return }
         turn(to: opening)
         setPlacement(.floating(anchor: rest))
-        onPlaced(.floating(anchor: rest))
+        onPlaced(.floating(anchor: bounds.forPlace(anchor, pillWidth: width, was: presentation.opening).anchor))
         window.slide(to: metrics.frame(for: .floating(anchor: rest), opening: opening))
     }
 

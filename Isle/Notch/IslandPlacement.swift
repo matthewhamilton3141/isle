@@ -113,6 +113,32 @@ struct IslandOpening: Equatable {
     }
 }
 
+/// Which side the pointer came onto a closed capsule from, when a hover
+/// opens it: the island then opens toward it where there's room, so the
+/// panel grows round the pointer rather than away from it (Matthew,
+/// 2026-11-14: "makes it try to open in the direction the mouse comes
+/// from more"). Read off where the pointer last was outside the drawn
+/// capsule, so a slow arrival and a fast one read the same.
+struct IslandApproach: Equatable {
+    /// From above the capsule (true), below it (false), or level with it.
+    var fromAbove: Bool?
+    /// From beyond its right end (true), its left end (false), or neither.
+    var fromRight: Bool?
+
+    /// The approach of a pointer last seen outside the capsule at `origin`,
+    /// the capsule drawn at `pill`. Nil when it was never outside it.
+    init?(from origin: CGPoint, onto pill: CGRect) {
+        fromAbove = origin.y > pill.maxY ? true : origin.y < pill.minY ? false : nil
+        fromRight = origin.x > pill.maxX ? true : origin.x < pill.minX ? false : nil
+        if fromAbove == nil && fromRight == nil { return nil }
+    }
+
+    init(fromAbove: Bool?, fromRight: Bool?) {
+        self.fromAbove = fromAbove
+        self.fromRight = fromRight
+    }
+}
+
 /// The room one screen gives an island that's off its notch: where it may
 /// rest, where it may be carried, and how near the notch counts as back on
 /// it. One screen's worth — an island stays on the screen it belongs to.
@@ -181,11 +207,18 @@ struct IslandPlacementBounds: Equatable {
     /// too narrow to pin, centred unless that would take it past the
     /// visible frame's left or right edge, then moved in just far enough
     /// (narrower than the panel, to the middle).
-    func opening(at anchor: CGPoint) -> IslandOpening {
+    ///
+    /// Arrived at by a pointer from above or below (`approach`), it opens
+    /// toward that side whenever the tallest panel fits that way.
+    func opening(at anchor: CGPoint, approach fromAbove: Bool? = nil) -> IslandOpening {
         let below = anchor.y - visible.minY
         let above = visible.maxY - (anchor.y - pill.height)
         let upward: Bool
-        if below >= tallest {
+        if fromAbove == true, above >= tallest {
+            upward = true
+        } else if fromAbove == false, below >= tallest {
+            upward = false
+        } else if below >= tallest {
             upward = false
         } else if above >= tallest {
             upward = true
@@ -229,9 +262,29 @@ struct IslandPlacementBounds: Equatable {
     /// says, anchored again and opening the way its place calls for now —
     /// whichever way it opened before, wherever it was put down open.
     /// Where it's wholly on the visible frame it doesn't move for this.
-    func forPlace(_ anchor: CGPoint, pillWidth: CGFloat, was: IslandOpening) -> (anchor: CGPoint, opening: IslandOpening) {
+    ///
+    /// Opened by a pointer arriving from one side (`approach`), it opens
+    /// toward that side where it fits: up or down (`opening(at:approach:)`),
+    /// and from beyond one end, pinned at the other so it grows toward the
+    /// pointer — if the whole panel fits that way. Near a screen edge the
+    /// edge's pin stands; the capsule itself doesn't move for any of it.
+    func forPlace(_ anchor: CGPoint, pillWidth: CGFloat, was: IslandOpening,
+                  approach: IslandApproach? = nil) -> (anchor: CGPoint, opening: IslandOpening) {
         let rest = restingPill(anchor, width: pillWidth, carried: was)
-        return (rest, opening(at: rest))
+        let opened = opening(at: rest, approach: approach?.fromAbove)
+        guard let fromRight = approach?.fromRight, pinsToEdges, opened.pin == .centre
+        else { return (rest, opened) }
+        // Centred, the anchor is the capsule's middle; pinned it's an end.
+        let half = min(pillWidth, visible.width) / 2
+        if fromRight {
+            let left = rest.x - half
+            guard left + 2 * room <= visible.maxX else { return (rest, opened) }
+            return (CGPoint(x: left, y: rest.y), IslandOpening(upward: opened.upward, shift: halfWidth, pin: .leading))
+        } else {
+            let right = rest.x + half
+            guard right - 2 * room >= visible.minX else { return (rest, opened) }
+            return (CGPoint(x: right, y: rest.y), IslandOpening(upward: opened.upward, shift: -halfWidth, pin: .trailing))
+        }
     }
 
     /// Where a capsule `width` wide, anchored at `anchor` as `carried` says,

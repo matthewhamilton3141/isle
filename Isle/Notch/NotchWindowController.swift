@@ -540,6 +540,13 @@ final class NotchWindowController {
     private static let sweepRecheck: TimeInterval = 0.08
 
     private var lastPointerTimestamp: TimeInterval = 0
+
+    /// The pointer's last few places, newest last: where it was before it
+    /// reached an island, which says which side it came from
+    /// (`IslandApproach`). A move a frame apart is a point or two at an
+    /// arrival's speed, so this reaches back well past the open lip.
+    private var pointerTrail: [CGPoint] = []
+    private static let pointerTrailLength = 12
     private var sweepRecheckWork: DispatchWorkItem?
 
     /// Tracks the pointer to do three things: keep clicks passing through the
@@ -627,6 +634,8 @@ final class NotchWindowController {
         }
 
         let pointer = NSEvent.mouseLocation
+        pointerTrail.append(pointer)
+        if pointerTrail.count > Self.pointerTrailLength { pointerTrail.removeFirst() }
 
         // An island closed by its grabber stays closed until the pointer
         // has left the room it was in: then coming back opens it as ever.
@@ -718,8 +727,20 @@ final class NotchWindowController {
             scheduleSweepRecheck(on: active)
         } else {
             cancelSweepRecheck()
-            active.presentation.setHovering(true)
+            open(active)
         }
+    }
+
+    /// Opens an island on the hover, toward where the pointer came from
+    /// off its notch: the last place it was outside the drawn capsule.
+    private func open(_ island: Island) {
+        if island.presentation.placement.isFloating, let drawn = drawnRectInScreen(island),
+           let origin = pointerTrail.last(where: { !drawn.contains($0) }) {
+            island.presentation.approach = IslandApproach(from: origin, onto: drawn)
+        }
+        island.presentation.setHovering(true)
+        // Used up if it opened; if it didn't, it's nobody else's.
+        island.presentation.approach = nil
     }
 
     /// Which island the pointer is on, by screen.
@@ -860,7 +881,7 @@ final class NotchWindowController {
                       let zones = self.hoverZones(for: island),
                       zones.open.contains(NSEvent.mouseLocation)
                 else { return }
-                island.presentation.setHovering(true)
+                self.open(island)
             }
         }
         sweepRecheckWork = work

@@ -60,8 +60,14 @@ final class IslandPresentation: ObservableObject {
 
     /// Called just before a closed island opens, however it opens (`expand`)
     /// — not mid-close, where it's still drawn as it was — so it can be
-    /// turned to open the way its place calls for now (`IslandCarry`).
-    var willOpen: () -> Void = {}
+    /// turned to open the way its place calls for now (`IslandCarry`) —
+    /// and, opened by a hover, toward the side the pointer came from.
+    var willOpen: (IslandApproach?) -> Void = { _ in }
+
+    /// Which side the pointer arrived from, set by the hover rule just
+    /// before it opens the island and used up by that open (`expand`). Any
+    /// other way of opening has none.
+    var approach: IslandApproach?
 
     /// Geometry of the camera housing (or the fallback pill) on the screen this
     /// island is drawn on. Published because the views size themselves from it:
@@ -281,7 +287,9 @@ final class IslandPresentation: ObservableObject {
     /// is closed and settled (not mid-close, where it's still drawn as it
     /// was), so a floating one opens the way its place calls for now.
     private func expand(_ change: () -> Void) {
-        if !collapseLocked, state == .collapsed { willOpen() }
+        let approach = self.approach
+        self.approach = nil
+        if !collapseLocked, state == .collapsed { willOpen(approach) }
         change()
     }
 

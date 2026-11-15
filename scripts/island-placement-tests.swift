@@ -580,6 +580,58 @@ do {
     check(settled.anchor == CGPoint(x: 1512, y: 500) && settled.opening == right, "a capsule already anchored for its place is left alone")
 }
 
+print("Placement: opens toward the pointer")
+
+do {
+    // Matthew, 2026-11-14: "makes it try to open in the direction the mouse
+    // comes from more". Where it fits, a hover opens the island toward the
+    // side the pointer came from; the capsule itself never moves for it.
+    let drawn = CGRect(x: 690, y: 562, width: 132, height: 38)
+    check(IslandApproach(from: CGPoint(x: 756, y: 610), onto: drawn) == IslandApproach(fromAbove: true, fromRight: nil), "a pointer above it came from above")
+    check(IslandApproach(from: CGPoint(x: 756, y: 550), onto: drawn) == IslandApproach(fromAbove: false, fromRight: nil), "below it, from below")
+    check(IslandApproach(from: CGPoint(x: 680, y: 580), onto: drawn) == IslandApproach(fromAbove: nil, fromRight: false), "past its left end, from the left")
+    check(IslandApproach(from: CGPoint(x: 830, y: 605), onto: drawn) == IslandApproach(fromAbove: true, fromRight: true), "past its top right corner, from both")
+    check(IslandApproach(from: CGPoint(x: 756, y: 580), onto: drawn) == nil, "never outside it: no approach")
+
+    let mid = CGPoint(x: 756, y: 600)
+    let plain = bounds.forPlace(mid, pillWidth: 132, was: .down)
+    check(!plain.opening.upward && plain.opening.pin == .centre, "no approach: down from the middle, as before")
+    let fromAbove = bounds.forPlace(mid, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: true, fromRight: nil))
+    check(fromAbove.opening.upward && fromAbove.anchor == mid, "from above, with room above: it opens up", "\(fromAbove)")
+    let fromBelow = bounds.forPlace(mid, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: false, fromRight: nil))
+    check(!fromBelow.opening.upward, "from below: down")
+
+    let high = CGPoint(x: 756, y: 900)
+    check(!bounds.forPlace(high, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: true, fromRight: nil)).opening.upward,
+          "from above, no room above: down all the same")
+    let low = CGPoint(x: 756, y: 100)
+    check(bounds.forPlace(low, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: false, fromRight: nil)).opening.upward,
+          "from below, no room below: up all the same")
+
+    let fromRight = bounds.forPlace(mid, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: nil, fromRight: true))
+    check(fromRight.opening.pin == .leading && fromRight.anchor.x == 690, "from the right: pinned at its left end, it grows right", "\(fromRight)")
+    check(near(capsule(fromRight.anchor, 132, fromRight.opening, in: bounds).minX, capsule(mid, 132, plain.opening, in: bounds).minX),
+          "and the capsule is drawn where it was")
+    let fromLeft = bounds.forPlace(mid, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: nil, fromRight: false))
+    check(fromLeft.opening.pin == .trailing && fromLeft.anchor.x == 822, "from the left: pinned at its right end, it grows left", "\(fromLeft)")
+    check(near(capsule(fromLeft.anchor, 132, fromLeft.opening, in: bounds).minX, capsule(mid, 132, plain.opening, in: bounds).minX),
+          "and the capsule is drawn where it was")
+    for (name, placed) in [("right", fromRight), ("left", fromLeft)] {
+        let p = panel(placed.anchor, placed.opening, in: bounds)
+        check(p.minX >= bounds.visible.minX && p.maxX <= bounds.visible.maxX, "grown \(name), the panel is on the screen", "\(p)")
+    }
+
+    let nearRight = CGPoint(x: 1100, y: 600)
+    let noRoom = bounds.forPlace(nearRight, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: nil, fromRight: true))
+    check(noRoom.opening.pin == .centre && noRoom.anchor == nearRight, "from the right with no room to grow right: centred as before", "\(noRoom)")
+    let wall = CGPoint(x: 100, y: 600)
+    let walled = bounds.forPlace(wall, pillWidth: 132, was: bounds.opening(at: wall), approach: IslandApproach(fromAbove: nil, fromRight: false))
+    check(walled.opening.pin == .leading, "against the left wall, from the left: the wall's pin stands", "\(walled)")
+
+    let corner = bounds.forPlace(mid, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: true, fromRight: true))
+    check(corner.opening.upward && corner.opening.pin == .leading, "from above and to the right: up and rightward", "\(corner)")
+}
+
 print("Placement: back to the notch from any opening and pin")
 
 do {
