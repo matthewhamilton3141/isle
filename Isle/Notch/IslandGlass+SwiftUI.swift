@@ -18,8 +18,9 @@
 //    window, or, as Isle runs, in a window of its own under it that never
 //    becomes key, because Liquid Glass changes its look with its window's
 //    key status (see `IslandGlassWindow`).
-//  - The content's legibility lifts on glass, read from the environment so
-//    Black mode resolves to exactly the colours it always drew.
+//  - The content's legibility lifts on glass — brighter secondary text, a
+//    dark edge on coloured words — read from the environment so Black mode
+//    resolves to exactly the colours it always drew.
 //
 //  Nothing here runs on a clock. The blend is `Animatable`, interpolated by
 //  the same spring that moves the outline and only for as long as it runs;
@@ -51,10 +52,10 @@ struct IslandGlassFill: View {
     /// How far the outline sits right of the housing's centre (NotchRootView's
     /// `collapsedShift`), so the glow can stay on the camera.
     var housingShift: CGFloat
-    /// The band the open panel's content starts under — the camera
-    /// housing's height, or the fallback band without one — which Prism
-    /// keeps solid black (`PrismShade`).
-    var bandHeight: CGFloat
+    /// The physical camera housing, which Prism keeps black
+    /// (`PrismNotchShade`), whatever the glow's setting; nil on a display
+    /// without one.
+    var notch: CGSize?
     /// What Prism's ribbon follows; nil in every other mode.
     var ribbon: PrismRibbonInput? = nil
     /// Whether the island is off its notch — the lift's target, 1 or 0.
@@ -68,7 +69,7 @@ struct IslandGlassFill: View {
             shape: shape,
             housing: housing,
             housingShift: housingShift,
-            bandHeight: bandHeight,
+            notch: notch,
             ribbon: ribbon
         )
         // The blend runs on the width's spring during a collapse — the
@@ -91,7 +92,7 @@ private struct IslandGlassBlend: View, Animatable {
     var shape: NotchShape
     var housing: CGSize?
     var housingShift: CGFloat
-    var bandHeight: CGFloat
+    var notch: CGSize?
     var ribbon: PrismRibbonInput?
 
     @Environment(\.islandGlassLayer) private var layer
@@ -125,7 +126,7 @@ private struct IslandGlassBlend: View, Animatable {
                         // Glass's tint. Prism's shade is drawn with the
                         // material, under its ribbon (`material`).
                         if layer != .materialOnly, background != .prism {
-                            IslandGlassShade(background: background, bandHeight: bandHeight, lift: lift)
+                            Color.black.opacity(IslandGlass.tint(for: background))
                         }
                     }
                     .overlay(alignment: .top) {
@@ -159,7 +160,10 @@ private struct IslandGlassBlend: View, Animatable {
             IslandGlassMaterial(
                 shape: shape,
                 clear: background == .prism,
-                lens: background == .prism
+                lens: background == .prism,
+                // On the notch the lens has no top edge to show: it hangs
+                // from the screen's. Off it, it has one like any other.
+                rise: background == .prism ? IslandPrism.topRise * CGFloat(1 - min(max(lift, 0), 1)) : 0
             )
             .overlay(alignment: .top) {
                 // Prism's shade, frost and ribbon, in the material's own
@@ -167,10 +171,16 @@ private struct IslandGlassBlend: View, Animatable {
                 // it, under everything the panel draws. The shade first, so
                 // the ribbon lies on it rather than under it: over the
                 // ribbon, a shade dark enough for a bright window took the
-                // colour out of the light.
+                // colour out of the light. The camera's black over the cap
+                // (`PrismNotchShade` says why).
                 if background == .prism {
-                    PrismShade(bandHeight: bandHeight, lift: lift)
+                    PrismShade()
                     PrismCap()
+                    if let look = IslandPrism.bandLook {
+                        PrismBand(look: look, housing: notch, shift: housingShift, lift: lift)
+                    } else {
+                        PrismNotchShade(housing: notch, shift: housingShift, lift: lift, spread: IslandPrism.bandStyle == .spread)
+                    }
                     PrismFrost(shape: shape, pane: pane)
                     PrismRibbonStrip(shape: shape, ribbon: ribbon)
                         // The ribbon is the open lip's. On the notch the
@@ -250,23 +260,6 @@ extension EnvironmentValues {
     }
 }
 
-/// The black laid over the material: a flat tint in Glass, Prism's shade
-/// (`PrismShade`) in Prism.
-private struct IslandGlassShade: View {
-    var background: PanelBackground
-    var bandHeight: CGFloat
-    /// 0 on the notch, 1 off it, where Prism has no black over a camera.
-    var lift: Double
-
-    var body: some View {
-        if background == .prism {
-            PrismShade(bandHeight: bandHeight, lift: lift)
-        } else {
-            Color.black.opacity(IslandGlass.tint(for: background))
-        }
-    }
-}
-
 /// The notch glow: black growing out of the camera housing, solid over it
 /// and fading outward, wider to the sides than down (`IslandGlass.glowAlpha`).
 /// Anchored on the camera, not the panel: while the outline is a lopsided
@@ -306,20 +299,30 @@ private enum NotchGlowImage {
         let key = "\(housing.width)x\(housing.height)"
         if let cached = cache[key] { return cached }
         let mask = IslandGlass.glowMask(housing: housing, scale: scale)
-        // Black, premultiplied: every channel but alpha is zero.
-        var pixels = [UInt8](repeating: 0, count: mask.width * mask.height * 4)
-        for i in 0..<mask.alpha.count { pixels[i * 4 + 3] = mask.alpha[i] }
-        guard let provider = CGDataProvider(data: Data(pixels) as CFData),
-              let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let image = CGImage(
-                width: mask.width, height: mask.height,
-                bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: mask.width * 4,
-                space: space,
-                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-                provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent
-              ) else { return nil }
+        guard let image = IslandBlackImage.image(width: mask.width, height: mask.height, alpha: mask.alpha) else { return nil }
         cache[key] = image
         return image
+    }
+}
+
+/// Black at the given alphas (row major from the top, one 0...255 value
+/// per pixel) as an image: what the notch glow and Prism's black over the
+/// camera are drawn from.
+enum IslandBlackImage {
+    static func image(width: Int, height: Int, alpha: [UInt8]) -> CGImage? {
+        guard width > 0, height > 0, alpha.count == width * height else { return nil }
+        // Black, premultiplied: every channel but alpha is zero.
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        for i in 0..<alpha.count { pixels[i * 4 + 3] = alpha[i] }
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData),
+              let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        return CGImage(
+            width: width, height: height,
+            bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+            space: space,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent
+        )
     }
 }
 
@@ -353,16 +356,57 @@ private struct IslandGlassMaterial: View {
     /// window answers, so in a preview or a render, where the material is
     /// in the panel's own window, this is the frosted clear glass.
     var lens: Bool = false
+    /// How far above the outline's top edge the glass's own top edge is
+    /// put (`IslandPrism.topRise`); 0 leaves the glass the outline's shape.
+    var rise: CGFloat = 0
 
     var body: some View {
         if #available(macOS 26.0, *) {
             Color.clear
-                .glassEffect(clear ? .clear : .regular, in: shape)
+                .glassEffect(clear ? .clear : .regular, in: IslandGlassOutline(shape: shape, rise: rise))
+                // The glass view is that much taller, upward, so the whole
+                // of its shape is inside it; the fill's clip and the
+                // window's top edge cut it back to the outline.
+                .padding(.top, -rise)
                 .environment(\.colorScheme, .dark)
                 .background(IslandGlassLensSwitch(lens: lens))
         } else {
             IslandVisualEffect()
         }
+    }
+}
+
+/// The outline as Liquid Glass is given it: the outline itself, or, with a
+/// `rise`, the outline carried up past its own top edge by that much, in
+/// a rect that much taller.
+///
+/// A lens has a rim: a line of light just inside its edge, all the way
+/// round. Down the walls and round the lip that is the look. Along the
+/// top of a panel that hangs from the screen's top edge it is a pale line
+/// against the bezel, which the black bar across the band used to cover
+/// (Matthew, once the bar had gone: "theres this weird seem at the top").
+/// With the glass's top edge above the screen there is no rim to see: the
+/// fill is clipped to the real outline, and the window ends there too.
+private struct IslandGlassOutline: Shape {
+    var shape: NotchShape
+    var rise: CGFloat
+
+    /// The outline's own, so the corners move as they do in the clip.
+    var animatableData: NotchShape.AnimatableData {
+        get { shape.animatableData }
+        set { shape.animatableData = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        guard rise > 0 else { return shape.path(in: rect) }
+        let body = CGRect(x: rect.minX, y: rect.minY + rise, width: rect.width, height: max(rect.height - rise, 0))
+        let outline = shape.path(in: body)
+        // A strip from the top of the taller rect down into the outline,
+        // as wide as the outline is at its widest (its top edge, on the
+        // notch).
+        let box = outline.boundingRect
+        guard !box.isNull, !box.isEmpty else { return outline }
+        return outline.union(Path(CGRect(x: box.minX, y: rect.minY, width: box.width, height: rise + 1)))
     }
 }
 
@@ -473,21 +517,25 @@ extension ShapeStyle where Self == IslandSecondaryStyle {
     }
 }
 
-extension ArtworkPalette {
-    /// The palette with each colour held above the glass lightness floor
-    /// (`IslandGlass.floored`), for content on glass only. The extraction,
-    /// and the palette Black mode draws, are untouched.
-    var flooredForGlass: ArtworkPalette {
-        ArtworkPalette(
-            primary: Self.floored(primary),
-            secondary: Self.floored(secondary),
-            accent: Self.floored(accent)
+/// A cover's colour or a status's, for words and small marks: on black,
+/// the colour; on glass the same colour with a dark edge
+/// (`IslandGlass.tintEdge`, `tintShade`), where it used to be a paler
+/// colour. On black it resolves to exactly `color`.
+struct IslandTintStyle: ShapeStyle {
+    var color: Color
+
+    func resolve(in environment: EnvironmentValues) -> AnyShapeStyle {
+        guard environment.islandOnGlass else { return AnyShapeStyle(color) }
+        return AnyShapeStyle(
+            color
+                .shadow(.drop(color: .black.opacity(IslandGlass.tintEdge), radius: IslandGlass.tintEdgeRadius))
+                .shadow(.drop(color: .black.opacity(IslandGlass.tintShade), radius: IslandGlass.tintShadeRadius))
         )
     }
+}
 
-    private static func floored(_ color: Color) -> Color {
-        guard let c = NSColor(color).usingColorSpace(.sRGB) else { return color }
-        let f = IslandGlass.floored(r: Double(c.redComponent), g: Double(c.greenComponent), b: Double(c.blueComponent))
-        return Color(.sRGB, red: f.r, green: f.g, blue: f.b, opacity: Double(c.alphaComponent))
+extension ShapeStyle where Self == IslandTintStyle {
+    static func islandTint(_ color: Color) -> IslandTintStyle {
+        IslandTintStyle(color: color)
     }
 }

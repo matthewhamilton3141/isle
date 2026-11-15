@@ -39,6 +39,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var returnToNotchItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        // Names the window if AppKit ever gives up on its constraint passes
+        // (see `ConstraintPassLog`).
+        ConstraintPassLog.install()
+        #endif
         setUpStatusItem()
 
         // The gear on the island's home grid asks for Settings this way: the

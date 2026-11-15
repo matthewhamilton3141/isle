@@ -88,7 +88,12 @@ final class NotchWindow: NSPanel {
     func place(_ frame: NSRect) {
         placedFrame = frame
         setFrame(frame, display: false)
+        didSlide?()
     }
+
+    /// Told after every `place` and `slide`: the island's window moved.
+    /// The notch's bleed follows it (`IslandBleedDriver`).
+    var didSlide: (() -> Void)?
 
     /// Moves the window to `frame` while the island is carried or glides
     /// home: `place`, without the window server round trips of bringing the
@@ -103,6 +108,7 @@ final class NotchWindow: NSPanel {
         if hasGlass, glassWindow.frame != frame {
             glassWindow.setFrame(frame, display: false)
         }
+        didSlide?()
     }
 
     override func setFrame(_ frameRect: NSRect, display flag: Bool) {
@@ -147,14 +153,67 @@ final class NotchWindow: NSPanel {
 
     /// Gives the glass window its content: the island's tree drawing the
     /// material alone.
+    ///
+    /// Inside a plain view that fills the window, not as the window's
+    /// content view itself. A hosting view that *is* its window's content
+    /// view also keeps the window's size limits, in `updateConstraints()`,
+    /// and brings its view graph up to date there to do it; whatever that
+    /// update finds changed — after a resize, its size and its transform —
+    /// asks for another constraints pass from inside the pass. That ask,
+    /// by that route, is the one in every report of the crash where AppKit
+    /// gives up on a window that has had "more Update Constraints in Window
+    /// passes than there are views in the window", and this window has as
+    /// few as two views. Measured with `ConstraintPassProbe`: through a
+    /// run of resizes, re-placings and mode changes this hosting view
+    /// asked 23 times as the content view and never as a subview, and the
+    /// panel's never did. What made it ask in pass after pass — which is
+    /// what the crash takes — was not found, so this closes the route for
+    /// this window rather than explaining the crash. A hosting view that
+    /// isn't the content view does none of that work there, and the
+    /// window's size is the panel's alone anyway.
     func attachGlass(_ view: NSView) {
-        glassWindow.contentView = view
+        let content = IslandGlassContentView(frame: NSRect(origin: .zero, size: glassWindow.frame.size))
+        content.fill(with: view)
+        glassWindow.contentView = content
         hasGlass = true
         syncGlass()
     }
 
+    /// The view `attachGlass` was given.
+    var glassView: NSView? {
+        (glassWindow.contentView as? IslandGlassContentView)?.subviews.first
+    }
+
     /// Whether `attachGlass` has given the glass window anything to draw.
     private(set) var hasGlass = false
+
+    /// Gives this window its content: the island's tree, in a plain view
+    /// that fills the window, never as the window's content view itself —
+    /// for the reasons in `attachGlass`, which the panel shares.
+    ///
+    /// Caught at last (13 Nov, in the glass window): two routes, taken in
+    /// turn inside one display cycle, until AppKit threw. The hosting view
+    /// keeping the window's size limits from inside `updateConstraints()`
+    /// (`updateWindowContentSizeExtremaIfNecessary`), which found its
+    /// transform changed and asked for another pass; and the hosting view
+    /// sizing the window from `windowDidLayout` (`updateAnimatedWindowSize`),
+    /// whose new frame invalidated its safe area and asked again. Both are
+    /// work a hosting view does only as its window's content view, and
+    /// `sizingOptions = []` stops neither. This window has more views, so
+    /// AppKit lets it have more passes, but the routes were the same.
+    ///
+    /// Clicks reach the island's views as before: this view takes none
+    /// itself (see `IslandPanelContentView`).
+    func attachContent(_ view: NSView) {
+        let content = IslandPanelContentView(frame: NSRect(origin: .zero, size: frame.size))
+        content.fill(with: view)
+        contentView = content
+    }
+
+    /// The view `attachContent` was given.
+    var contentHost: NSView? {
+        (contentView as? IslandPanelContentView)?.subviews.first
+    }
 
     /// Brings the glass window into step with this one: the same frame,
     /// level and alpha, on screen just below it when this window is on
@@ -312,7 +371,21 @@ final class NotchWindow: NSPanel {
     /// window coordinates: the press itself, or the last drag passed on.
     private var lastPressLocation: NSPoint?
 
+    /// Told of each press the views are about to get, with where it went
+    /// down in window coordinates. What it returns runs once the views have
+    /// had that press's release — through here, or inside a control that
+    /// tracks the mouse itself (`trackedItsOwnRelease`) — and only if they
+    /// had all of it, so a press the island took for a hold or a carry
+    /// runs nothing. This is how a click outside a field that has the keys
+    /// lets the field go (`watchClicksOutsideComposeFields`), after
+    /// whatever the click was on has done its job.
+    var pressObserver: (@MainActor (NSPoint) -> (@MainActor () -> Void)?)?
+
+    /// What `pressObserver` asked to run when the press under way is let go.
+    private var afterRelease: (@MainActor () -> Void)?
+
     override func sendEvent(_ event: NSEvent) {
+        var released: (@MainActor () -> Void)?
         switch event.type {
         case .scrollWheel:
             if let scrollInterceptor, scrollInterceptor(event) { return }
@@ -320,11 +393,19 @@ final class NotchWindow: NSPanel {
             switch pressInterceptor?(event) ?? .pass {
             case .pass:
                 lastPressLocation = event.type == .leftMouseUp ? nil : event.locationInWindow
+                if event.type == .leftMouseDown {
+                    afterRelease = pressObserver?(event.locationInWindow)
+                } else if event.type == .leftMouseUp {
+                    released = afterRelease
+                    afterRelease = nil
+                }
             case .swallow:
+                afterRelease = nil
                 return
             case .cancelPress:
                 let release = cancellingRelease(for: event)
                 lastPressLocation = nil
+                afterRelease = nil
                 if let release { super.sendEvent(release) }
                 return
             }
@@ -332,6 +413,39 @@ final class NotchWindow: NSPanel {
             break
         }
         super.sendEvent(event)
+        if event.type == .leftMouseDown, afterRelease != nil, trackedItsOwnRelease(event) {
+            // A control that tracks the mouse itself — a scroller, an
+            // AppKit control — took the whole press, release and all, from
+            // inside its mouse-down, so the release will never come this
+            // way: the press is over now.
+            released = afterRelease
+            afterRelease = nil
+        }
+        released?()
+    }
+
+    /// Whether the views, handling the button-down `down`, have already
+    /// had its release: a control that tracks the mouse runs a loop of its
+    /// own, pulling the drags and the release off the queue, and the last
+    /// event that loop took is then the app's current event.
+    private func trackedItsOwnRelease(_ down: NSEvent) -> Bool {
+        guard let current = NSApp.currentEvent, current !== down, current.type == .leftMouseUp,
+              current.windowNumber == windowNumber else { return false }
+        return current.timestamp >= down.timestamp
+    }
+
+    /// The views a click may land in without letting a field go: each
+    /// `ComposeFieldRegion` on the island adds itself while it's in this
+    /// window. Weak, so a field that's gone is gone from here too.
+    let composeFields = NSHashTable<NSView>.weakObjects()
+
+    /// Whether `point`, in window coordinates, is in a field drawn in this
+    /// window — its text, its Send, or the capsule round them.
+    func composeFieldContains(_ point: NSPoint) -> Bool {
+        composeFields.allObjects.contains { view in
+            view.window === self && !view.isHiddenOrHasHiddenAncestor
+                && view.convert(view.bounds, to: nil).contains(point)
+        }
     }
 
     /// The button-up the views get in place of `event` when the press under
@@ -399,49 +513,162 @@ extension NotchWindow: NSDraggingDestination {
     }
 }
 
+/// A content view that is only a frame for one view, kept at its bounds, so
+/// the hosting view in it is never the window's content view (see
+/// `NotchWindow.attachGlass` and `attachContent`).
+class IslandContentView: NSView {
+    func fill(with view: NSView) {
+        subviews.forEach { $0.removeFromSuperview() }
+        view.autoresizingMask = []
+        view.frame = bounds
+        addSubview(view)
+    }
+
+    override func resizeSubviews(withOldSize oldSize: NSSize) {
+        subviews.forEach { $0.frame = bounds }
+    }
+}
+
+/// The glass window's content view (see `NotchWindow.attachGlass`).
+final class IslandGlassContentView: IslandContentView {
+    // The window takes no events; nor does this.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// The panel's content view (see `NotchWindow.attachContent`). A click goes
+/// to whatever in the island is under it, exactly as when the hosting view
+/// was the content view — which answers nil outside the drawn island
+/// (`NotchHostingView`). Where nothing is, this is nothing too, rather than
+/// a view of its own taking the click.
+final class IslandPanelContentView: IslandContentView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit === self ? nil : hit
+    }
+}
+
 /// The window the island's glass is drawn in (see `NotchWindow.glassWindow`):
 /// borderless, transparent, click-through, and never key or main, so its
 /// glass keeps the look it has at rest whatever the panel over it does.
 ///
 /// That look is the frosted one, except in Prism, which wants the lens
 /// Liquid Glass keeps for key windows (`lensed`).
-final class IslandGlassWindow: NSPanel {
+///
+/// A plain window, and it must stay one. For a window whose style mask has
+/// `.nonactivatingPanel`, `NSWindow.becomeKey()` itself asks the window
+/// server for the key focus (AppKit's `_stealKeyFocusWithOptions:`), which
+/// is how such a panel is typed into while another app stays frontmost.
+/// The lens is got by calling `becomeKey()` directly, so with that style
+/// this window took the keyboard from whatever the user was typing in —
+/// nothing in Isle got the keys either, so every press was an alert beep —
+/// though it can't become key, takes no events and is never ordered key.
+/// That was 1.2.0. Without the style, `becomeKey()` changes the window's
+/// own state and appearance and asks the window server for nothing.
+final class IslandGlassWindow: NSWindow {
     /// Whether this window's glass is drawn as a lens: what's behind it
-    /// nearly sharp, bent at the edges. Liquid Glass does that for a key
-    /// window's glass and switches in `becomeKey()`/`resignKey()`, so this
-    /// tells the window it is key without it ever being so: it still can't
-    /// become key, takes no events, and the window server's key window is
-    /// whichever it was. AppKit's own `resignKey()` — sent when the app
-    /// deactivates, or another of Isle's windows takes the keys — is
-    /// ignored while lensed, and the lens re-asserted after it.
+    /// nearly sharp, bent at the edges. Liquid Glass does that for a
+    /// window with the key appearance, which a window takes on in
+    /// `becomeKey()`, so this tells the window it is key without it ever
+    /// being so: it still can't become key, takes no events, and the
+    /// keyboard stays where it was (see above for what that depends on).
+    ///
+    /// Three things take the appearance away again, and each is answered:
+    /// - AppKit's own `resignKey()`, sent when the app deactivates or
+    ///   another of Isle's windows takes the keys: ignored while lensed.
+    /// - The window server, which notices a window dressed as key in an
+    ///   app that hasn't the keyboard and asks for the appearance back —
+    ///   a few tens of milliseconds after it's taken, and again whenever
+    ///   the keyboard moves between apps. AppKit gives it up without a
+    ///   word to the window (`_handleResignKeyAppearanceEvent`), so that
+    ///   is refused while lensed (`handleResignKeyAppearanceEvent`).
+    /// - Ordering the window out. It's asked for again once it is back
+    ///   (`assertLens`, from `NotchWindow.syncGlass`).
     var lensed = false {
         didSet {
             guard lensed != oldValue else { return }
-            if lensed { super.becomeKey() } else { super.resignKey() }
+            if lensed {
+                assertLens()
+            } else {
+                lensAsk &+= 1
+                super.resignKey()
+            }
         }
     }
 
-    /// Puts the lens back after something that may have dropped it. Called
-    /// whenever the two windows are brought into step, so it does nothing
-    /// while the window still believes it is key.
+    /// Puts the lens up, or back after something that may have dropped it:
+    /// called whenever the two windows are brought into step.
+    ///
+    /// Never at once. The key appearance doesn't hold in a window that is
+    /// off screen, nor when taken in the turn of the run loop that orders
+    /// the window in. So it's taken on the next turn, with the window on
+    /// screen — a window still off screen then is left for the `syncGlass`
+    /// that follows its ordering in — and taken again a little later, in
+    /// case the first was too soon after all. However often this is called
+    /// in a turn, that happens once.
     func assertLens() {
-        if lensed, !isKeyWindow { super.becomeKey() }
+        guard lensed else { return }
+        lensAsk &+= 1
+        let ask = lensAsk
+        DispatchQueue.main.async { [weak self] in self?.raiseLens(ask) }
+        for delay in Self.lensRetries {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.raiseLens(ask) }
+        }
+    }
+
+    /// When the lens is asked for again after `assertLens`, in seconds.
+    private static let lensRetries: [TimeInterval] = [0.1, 0.5]
+
+    /// Counts the calls to `assertLens`, so only the latest one's work runs.
+    private var lensAsk = 0
+
+    /// Given up and taken, not just taken: a window that believes it has
+    /// the key appearance doesn't ask the window server for it, and what
+    /// it believes can be out of date (the window server drops it without
+    /// a word when the window goes off screen). The two in one turn change
+    /// nothing on screen when the lens is already up.
+    private func raiseLens(_ ask: Int) {
+        guard ask == lensAsk, lensed, isVisible else { return }
+        super.resignKey()
+        super.becomeKey()
+    }
+
+    override func orderOut(_ sender: Any?) {
+        // Off screen there is no lens, and AppKit is told so.
+        if lensed { super.resignKey() }
+        super.orderOut(sender)
     }
 
     override func resignKey() {
         guard !lensed else {
-            // Next turn of the run loop, once AppKit has finished handing
-            // the keys around.
-            DispatchQueue.main.async { [weak self] in self?.assertLens() }
+            // Nothing was given up; asked for again all the same, in case
+            // AppKit took the appearance on its way here.
+            assertLens()
             return
         }
         super.resignKey()
     }
 
+    /// The window server asking for the key appearance back (see `lensed`).
+    /// This is AppKit's own handler for that, under its own name: private,
+    /// so if a later macOS calls it something else this is never reached,
+    /// and Prism's glass goes back to frosted the first time the keyboard
+    /// changes hands. Nothing else depends on it.
+    @objc(_handleResignKeyAppearanceEvent)
+    func handleResignKeyAppearanceEvent() {
+        guard !lensed else { return }
+        // Not lensed: AppKit's own handling, whatever it is.
+        let selector = #selector(handleResignKeyAppearanceEvent)
+        guard NSWindow.instancesRespond(to: selector),
+              let original = class_getMethodImplementation(NSWindow.self, selector) else { return }
+        typealias Handler = @convention(c) (AnyObject, Selector) -> Void
+        unsafeBitCast(original, to: Handler.self)(self, selector)
+    }
+
     init() {
         super.init(
             contentRect: .zero,
-            styleMask: [.borderless, .nonactivatingPanel],
+            // Never `.nonactivatingPanel`: see the type's comment.
+            styleMask: Self.style,
             backing: .buffered,
             defer: false
         )
@@ -450,10 +677,21 @@ final class IslandGlassWindow: NSPanel {
         hasShadow = false
         ignoresMouseEvents = true
         isMovable = false
+        // Never closed, only ordered out; and never let go of if it were.
+        isReleasedWhenClosed = false
         hidesOnDeactivate = false
         isExcludedFromWindowsMenu = true
         // Ordered with the panel, instantly, as the panel is (see there).
         animationBehavior = .none
+    }
+
+    /// Borderless and nothing else.
+    static let style: NSWindow.StyleMask = [.borderless]
+
+    override var styleMask: NSWindow.StyleMask {
+        get { super.styleMask }
+        // Whatever else is asked for, never the style that takes the keys.
+        set { super.styleMask = newValue.subtracting(.nonactivatingPanel) }
     }
 
     override var canBecomeKey: Bool { false }

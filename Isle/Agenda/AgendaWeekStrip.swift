@@ -64,7 +64,7 @@ struct AgendaWeekStrip: View {
                     .foregroundStyle(.islandSecondary(IsleType.Tone.meta))
                 Text(day.formatted(.dateTime.day()))
                     .font(IsleType.headline.monospacedDigit())
-                    .foregroundStyle(isToday ? palette.accent : .white.opacity(isPast ? 0.5 : 0.95))
+                    .foregroundStyle(isToday ? AnyShapeStyle(.islandTint(palette.accent)) : AnyShapeStyle(.white.opacity(isPast ? 0.5 : 0.95)))
                 HStack(spacing: 2) {
                     ForEach(dots) { item in
                         Circle().fill(item.color).frame(width: 4, height: 4)

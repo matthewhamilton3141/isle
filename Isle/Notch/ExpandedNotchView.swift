@@ -15,14 +15,11 @@ struct ExpandedNotchView: View {
     @ObservedObject var viewModel: NotchViewModel
     /// Observed for the drop face, which is this island's alone.
     @ObservedObject var island: IslandPresentation
+    /// The cover's colours (or the accent's), the same on glass as on
+    /// black: the bars, the dots and the words in them are one palette
+    /// wherever the island is. On glass they carry a dark edge instead of
+    /// a lighter colour (`EqualizerStyle.onGlass`, `IslandTintStyle`).
     var palette: ArtworkPalette
-    /// The waveform's colours: the cover's as the pill on the notch draws
-    /// them, wherever the bars are. `palette` is lifted for glass
-    /// (`flooredForGlass`), which made the open panel's bars and a
-    /// detached island's a paler thing than the notch's (Matthew: "i want
-    /// compacted notch colours"). The bars have a dark edge on glass
-    /// instead (`EqualizerStyle.onGlass`). Nil: `palette`.
-    var waveformPalette: ArtworkPalette? = nil
 
     private var media: MediaPlaybackModel { viewModel.media }
 
@@ -47,6 +44,10 @@ struct ExpandedNotchView: View {
 
     private static let crossDissolve = Animation.easeInOut(duration: 0.28)
 
+    /// Slack round the corner waveform's bars that still counts as a click
+    /// on them.
+    static let waveformSlack: CGFloat = 3
+
     var body: some View {
         // The way home lives in NotchRootView, in the housing band to the
         // right of the physical cutout — see the crumb in NotchRootView.notch.
@@ -66,21 +67,33 @@ struct ExpandedNotchView: View {
             // something else, and a row of paused dots in their corner was
             // one more thing to read. Pinned to the panel's top-right outside
             // the face switch, so it fades out as a swipe carries the Music
-            // face away and in once it lands back. Gated on a live track;
-            // non-interactive so it never swallows a seek or dismiss tap.
+            // face away and in once it lands back. Gated on a live track.
+            //
+            // A click on it starts the meter over (`restartWaveform`), for
+            // when the bars have stopped answering the music, and the bars
+            // answer with a ping. Its own corner holds nothing else — the
+            // title and the output list keep `waveformInset` clear of it, and
+            // the scrubber and keys are well below — so it takes no click
+            // that meant something already. Only with Live: the animated
+            // pattern has no meter to restart, and stays out of the way.
             .overlay(alignment: .topTrailing) {
                 ZStack {
                     if showsCornerWaveform {
                         LiveEqualizer(
                             source: viewModel.audioLevelSource,
-                            palette: waveformPalette ?? palette,
+                            palette: palette,
                             isPlaying: media.isPlaying,
                             listens: viewModel.waveformSource.capturesAudio
                         )
                         .frame(width: 30, height: 24)
-                        .padding(.top, 10)
-                        .padding(.trailing, 4)
-                        .allowsHitTesting(false)
+                        // A few points of slack round the bars for the click,
+                        // taken back out of the placement so nothing moves.
+                        .padding(Self.waveformSlack)
+                        .contentShape(Rectangle())
+                        .onTapGesture { viewModel.restartWaveform() }
+                        .allowsHitTesting(viewModel.waveformSource.capturesAudio)
+                        .padding(.top, 10 - Self.waveformSlack)
+                        .padding(.trailing, 4 - Self.waveformSlack)
                         .modifier(SwipeFade(pager: island.pager))
                         .transition(.opacity)
                     }
@@ -539,22 +552,11 @@ private struct FaceCarousel<Face: View>: View {
         GeometryReader { proxy in
             ZStack(alignment: .topLeading) {
                 ForEach(slots) { slot in
-                    let progress = min(1, abs(slot.x) / pager.page)
                     content(slot.tab)
                         .frame(width: proxy.size.width,
                                height: slot.tab == face ? proxy.size.height : height(slot.tab))
                         .frame(height: proxy.size.height, alignment: .top)
-                        // A short drift and a cross-fade, not a full page of
-                        // travel: a face sliding the panel's width would run
-                        // its raised artwork under the camera housing and its
-                        // text under the waveform. Drifting a tenth of the
-                        // distance keeps everything clear of both while the
-                        // fingers still visibly carry it.
-                        .offset(x: slot.x * faceSwipeDrift)
-                        // Sequential, not overlapping: the leaving face is
-                        // gone by half-way and the arriving one builds from
-                        // there, so the two never show through each other.
-                        .opacity(max(0, 1 - 2 * progress))
+                        .modifier(FaceSlotPlacement(x: slot.x, page: pager.page))
                         .transition(.opacity)
                 }
             }
@@ -563,6 +565,39 @@ private struct FaceCarousel<Face: View>: View {
         // can't arrive for a panel that isn't there, and the next open
         // mustn't find a face parked half-way.
         .onDisappear { pager.reset() }
+    }
+}
+
+/// Where a face in the carousel is drawn for how far it sits from home, and
+/// how much of it shows.
+///
+/// A short drift and a cross-fade, not a full page of travel: a face
+/// sliding the panel's width would run its raised artwork under the camera
+/// housing and its text under the waveform. Drifting a tenth of the
+/// distance keeps everything clear of both while the fingers still visibly
+/// carry it. Sequential, not overlapping: the leaving face is gone by
+/// half-way and the arriving one builds from there, so the two never show
+/// through each other.
+///
+/// Both read off `x` as it animates, not each animated on its own. Animated
+/// apart — the opacity from its old value to its new on the settle's
+/// spring, as SwiftUI animates any modifier — the leaving face was still
+/// half there when the arriving one had begun, and a slower settle showed
+/// the two faces' text through each other for most of it.
+private struct FaceSlotPlacement: ViewModifier, Animatable {
+    var x: CGFloat
+    var page: CGFloat
+
+    var animatableData: CGFloat {
+        get { x }
+        set { x = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        let progress = page > 0 ? min(1, abs(x) / page) : 0
+        content
+            .offset(x: x * faceSwipeDrift)
+            .opacity(max(0, 1 - 2 * progress))
     }
 }
 

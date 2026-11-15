@@ -8,12 +8,22 @@
 //  offscreen and invisible; statuses arrive through the view model's own
 //  path. "Unchanged" is pixels: the panel drawn before and after.
 //
+//  The same for a typed answer to a question and a denial's reason, which
+//  were not held at first: another session's status, or the session's own
+//  reading as something else for a moment, closed the field mid-word —
+//  which hands the keyboard back and brings the terminal forward — and
+//  threw the text away. And what holding makes possible: the question on
+//  the face may be gone by the time Return is pressed, so nothing is sent
+//  unless that very request is still pending, never to another, and the
+//  face says so and keeps the text.
+//
 //  Run with scripts/test-compose-freeze.sh. With FREEZE_FRAMES=<dir> it
 //  also writes each moment as a PNG.
 //
 
 import SwiftUI
 import AppKit
+import Combine
 
 var failures = 0
 func report(_ ok: Bool, _ name: String, _ detail: String = "") {
@@ -42,11 +52,15 @@ final class Island {
         hosting = NotchHostingView(rootView: NotchRootView(viewModel: vm, island: presentation) { ref?.activeRect = $0 })
         ref = hosting
         hosting.sizingOptions = []
-        window.contentView = hosting
+        window.attachContent(hosting)
         window.setFrame(NSRect(x: -20000, y: -20000, width: metrics.maximumFrame.width,
                                height: metrics.maximumFrame.height), display: false)
         window.alphaValue = 0
         window.allowsKey = true
+        // Without the style that makes `makeKey()` take the window server's key
+        // focus: this runs on a Mac someone may be typing on, and the field only
+        // needs AppKit to treat the window as key.
+        window.styleMask.remove(.nonactivatingPanel)
         window.orderFrontRegardless()
         window.makeKey()
         if hover { presentation.setHovering(true) }
@@ -92,8 +106,9 @@ final class Island {
 }
 
 func status(_ state: ClaudeCodeState, session: String, action: String? = nil, target: String? = nil,
-            said: String? = nil, active: Bool = false) -> ClaudeStatus {
+            said: String? = nil, active: Bool = false, request: String? = nil) -> ClaudeStatus {
     var s = ClaudeStatus(state: state, project: "isle", sessionId: session)
+    s.requestId = request
     s.action = action
     s.target = target
     s.toolActive = active
@@ -176,6 +191,204 @@ enum FreezeTests {
             vm.endCompose()
             island.settle()
             report(vm.replyDraft == "Retry with", "and survives the field letting go")
+            island.window.orderOut(nil)
+        }
+
+        print("Typing an answer to a question")
+        do {
+            let island = Island("jr_question_type_pill")
+            let vm = island.vm
+            let id = vm.claudeSessionId!
+            let request = vm.pendingRequest!
+            vm.previewRespond = { _, _ in true }
+            vm.beginCompose(.answer)
+            vm.answerDraft = "Mango, and"
+            island.settle()
+            report(vm.composing == .answer, "the answer's field is open")
+            let before = island.pixels("a1-answering")
+
+            // The question written again, as a hook's status re-write does.
+            vm.previewReceive(status(.needsQuestion, session: id, request: request.id))
+            island.settle()
+            report(!vm.claudeNeedsYouWhileComposing, "the question being answered isn't news")
+            // The session's state read as something else for a moment — a
+            // subagent's tool reporting — which no longer matches the request.
+            vm.previewReceive(status(.working, session: id, action: "Bash", target: "swift", active: true))
+            island.settle()
+            report(vm.composing == .answer, "the session reporting a step doesn't close the field", "\(String(describing: vm.composing))")
+            report(vm.pendingRequest?.id == request.id, "nor take the question off the face")
+            report(vm.answerDraft == "Mango, and", "nor throw the answer away", vm.answerDraft.debugDescription)
+            report(island.differing(before, island.pixels("a2-step-arrives")) == 0, "and moves nothing")
+
+            // Another session needs something.
+            vm.previewReceive(status(.needsApproval, session: "another-session", action: "Bash", target: "rm"))
+            island.settle()
+            report(vm.composing == .answer, "another session needing approval doesn't close the field", "\(String(describing: vm.composing))")
+            report(vm.claudeSessionId == id && vm.pendingRequest?.id == request.id, "nor take the island", vm.claudeSessionId ?? "nil")
+            report(vm.answerDraft == "Mango, and", "the answer so far stays")
+            report(vm.claudeNeedsYouWhileComposing, "that Claude needs you elsewhere is said")
+            report(vm.requestGoneWhileComposing == nil, "and nothing says the question is gone: it isn't")
+
+            // Return: to the question it was typed for.
+            vm.answerDraft = "Mango, and make it a smoothie"
+            vm.sendCompose()
+            island.settle()
+            report(vm.previewSends.count == 1 && vm.previewSends.first?.request == request.id,
+                   "Return sends the answer to the question it was typed for", "\(vm.previewSends.map(\.request))")
+            if case .answers(let answers)? = vm.previewSends.first?.reply {
+                report(answers.values.contains("Mango, and make it a smoothie"), "as typed", "\(answers)")
+            } else {
+                report(false, "as typed", "no answers sent")
+            }
+            report(vm.composing == nil && vm.answerDraft.isEmpty, "and the field closes")
+            island.window.orderOut(nil)
+        }
+
+        print("The question answered in the terminal while an answer is typed")
+        do {
+            let island = Island("jr_question_type_pill")
+            let vm = island.vm
+            let id = vm.claudeSessionId!
+            vm.previewRespond = { _, _ in true }
+            vm.beginCompose(.answer)
+            vm.answerDraft = "Mango"
+            island.settle()
+            // Its file goes, and the session works on.
+            vm.previewReceive(requests: [])
+            vm.previewReceive(status(.working, session: id, action: "Read", target: "notes.md"))
+            island.settle()
+            report(vm.composing == .answer && vm.answerDraft == "Mango", "the field and the text stay")
+            report(vm.requestGoneWhileComposing != nil, "the face says the question is gone", "\(String(describing: vm.requestGoneWhileComposing))")
+            vm.sendCompose()
+            island.settle()
+            report(vm.previewSends.isEmpty, "Return sends nothing", "\(vm.previewSends.map(\.request))")
+            report(vm.composing == .answer && vm.answerDraft == "Mango", "and keeps the field and the text")
+            vm.endCompose()
+            island.settle()
+            report(vm.pendingRequest == nil && vm.claudeState == .working, "after Esc the face catches up", "\(vm.claudeState)")
+            report(vm.requestGoneWhileComposing == nil, "and the notice goes")
+            report(vm.answerDraft == "Mango", "what was typed is not thrown away", vm.answerDraft.debugDescription)
+            island.window.orderOut(nil)
+        }
+
+        print("Another question in its place while an answer is typed")
+        do {
+            let island = Island("jr_question_type_pill")
+            let vm = island.vm
+            let id = vm.claudeSessionId!
+            let request = vm.pendingRequest!
+            vm.previewRespond = { _, _ in true }
+            vm.beginCompose(.answer)
+            vm.answerDraft = "Mango"
+            island.settle()
+            // The same questions under a new request: the old one's answer
+            // would fit it word for word, and must not reach it.
+            let other = ClaudeRequest(id: "preview-session-1762300099-5151", kind: .question, sessionId: id,
+                                      toolName: "AskUserQuestion", subject: nil, questions: request.questions)
+            vm.previewReceive(requests: [other])
+            vm.previewReceive(status(.needsQuestion, session: id, request: other.id))
+            island.settle()
+            report(vm.composing == .answer && vm.pendingRequest?.id == request.id, "the face still shows the question being answered")
+            report(vm.requestGoneWhileComposing != nil, "and says it is gone")
+            vm.sendCompose()
+            island.settle()
+            report(vm.previewSends.isEmpty, "Return sends nothing: not to the question that's gone, not to the new one",
+                   "\(vm.previewSends.map(\.request))")
+            report(vm.answerDraft == "Mango" && vm.composing == .answer, "the text stays in its field")
+            vm.endCompose()
+            island.settle()
+            report(vm.pendingRequest?.id == other.id, "after Esc the new question is on the face", vm.pendingRequest?.id ?? "nil")
+            report(vm.answerDraft.isEmpty, "with none of the old answer in its field", vm.answerDraft.debugDescription)
+            vm.beginCompose(.answer)
+            island.settle()
+            report(vm.composing == .answer && vm.answerDraft.isEmpty, "nor when its field is opened")
+            vm.answerDraft = "Papaya"
+            vm.sendCompose()
+            island.settle()
+            report(vm.previewSends.map(\.request) == [other.id], "and its own answer goes to it alone", "\(vm.previewSends.map(\.request))")
+            island.window.orderOut(nil)
+        }
+
+        print("The request going between the look and the write")
+        do {
+            let island = Island("jr_question_type_pill")
+            let vm = island.vm
+            // Still listed, but the hook has let go: the write is refused.
+            vm.previewRespond = { _, _ in false }
+            vm.beginCompose(.answer)
+            vm.answerDraft = "Mango"
+            island.settle()
+            vm.sendCompose()
+            island.settle()
+            report(vm.composing == .answer && vm.answerDraft == "Mango", "an answer the hook didn't take leaves the field and the text")
+            report(vm.requestGoneWhileComposing != nil, "and the face says the question is gone")
+            report(!vm.isAnsweringRequest, "and nothing is claimed sent")
+            island.window.orderOut(nil)
+        }
+
+        print("The session ending while an answer is typed")
+        do {
+            let island = Island("jr_question_type_pill")
+            let vm = island.vm
+            let id = vm.claudeSessionId!
+            vm.beginCompose(.answer)
+            vm.answerDraft = "Mango"
+            island.settle()
+            var states: [ClaudeCodeState] = []
+            let watching = vm.$claudeState.dropFirst().sink { states.append($0) }
+            // It's killed: its request goes, and the island would have moved
+            // to another session, through working to done.
+            vm.previewReceive(requests: [])
+            vm.previewReceive(status(.working, session: "another-session", action: "Bash", target: "make"))
+            vm.previewReceive(status(.needsApproval, session: "another-session", action: "Bash", target: "rm"))
+            vm.previewReceive(status(.done, session: "another-session", said: "Elsewhere."))
+            island.settle()
+            report(vm.claudeSessionId == id && vm.composing == .answer && states.isEmpty, "held while the field is open", "\(states)")
+            vm.endCompose()
+            island.settle()
+            report(vm.claudeSessionId == "another-session" && vm.claudeState == .done, "after Esc the face shows what is so now",
+                   "\(vm.claudeSessionId ?? "nil") \(vm.claudeState)")
+            report(states == [.done], "the latest state once, not everything that was held replayed", "\(states)")
+            watching.cancel()
+            island.window.orderOut(nil)
+        }
+
+        print("Typing a denial's reason")
+        do {
+            let island = Island("jr_approval_tell_pill")
+            let vm = island.vm
+            let id = vm.claudeSessionId!
+            let request = vm.pendingRequest!
+            vm.previewRespond = { _, _ in true }
+            vm.beginCompose(.denial)
+            vm.denialDraft = "Use pnpm"
+            island.settle()
+            report(vm.composing == .denial, "the denial's field is open")
+            vm.previewReceive(status(.done, session: "another-session", said: "Elsewhere."))
+            vm.previewReceive(status(.working, session: id, action: "Read", target: "package.json"))
+            island.settle()
+            report(vm.composing == .denial && vm.pendingRequest?.id == request.id && vm.denialDraft == "Use pnpm",
+                   "statuses arriving leave the field, the request and the reason")
+            vm.sendCompose()
+            island.settle()
+            report(vm.previewSends.map(\.request) == [request.id], "Return denies the call it was typed for", "\(vm.previewSends.map(\.request))")
+            report(vm.composing == nil, "and the field closes")
+            island.window.orderOut(nil)
+        }
+        do {
+            let island = Island("jr_approval_tell_pill")
+            let vm = island.vm
+            vm.previewRespond = { _, _ in true }
+            vm.beginCompose(.denial)
+            vm.denialDraft = "Use pnpm"
+            island.settle()
+            vm.previewReceive(requests: [])
+            island.settle()
+            vm.sendCompose()
+            island.settle()
+            report(vm.previewSends.isEmpty && vm.composing == .denial && vm.denialDraft == "Use pnpm",
+                   "a call that's gone is not denied; the field and the reason stay")
+            report(vm.requestGoneWhileComposing != nil, "and the face says so")
             island.window.orderOut(nil)
         }
 

@@ -100,18 +100,28 @@ struct DetachTrace<Outline: Shape>: View {
     @ObservedObject var model: DetachTraceModel
     var outline: Outline
     var size: CGSize
+    /// Run from the top centre down, rather than from the bottom up: an
+    /// island off its notch that opened upward, whose far edge from the
+    /// capsule is its top. Drawn as the outline turned over, and the line
+    /// turned back with it.
+    var fromTop: Bool = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.islandGlassLayer) private var glassLayer
 
     var body: some View {
         if glassLayer != .materialOnly, model.phase != .idle, size.width > 0, size.height > 0 {
+            let rect = CGRect(origin: .zero, size: size)
+            let flip = CGAffineTransform(a: 1, b: 0, c: 0, d: -1, tx: 0, ty: size.height)
             DetachTraceRepresentable(
-                outline: outline.path(in: CGRect(origin: .zero, size: size)).cgPath,
+                outline: fromTop
+                    ? outline.path(in: rect).applying(flip).cgPath
+                    : outline.path(in: rect).cgPath,
                 phase: model.phase,
                 reduceMotion: reduceMotion
             )
             .frame(width: size.width, height: size.height)
+            .scaleEffect(x: 1, y: fromTop ? -1 : 1)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         }

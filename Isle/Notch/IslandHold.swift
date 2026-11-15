@@ -9,12 +9,20 @@
 //    click is a click exactly as before; then a line runs around the panel
 //    for `run` seconds, and when it has gone all the way round the island
 //    comes loose and follows the pointer until the button comes up.
-//  - On an open island already off the notch, the same but quicker: a short
-//    hold picks it up to be moved.
+//  - On an open island already off the notch, by its header (the grabber
+//    and the band around it) or its bare edge, a plain press-and-drag
+//    moves it, and nothing is timed: there's nothing there a drag could
+//    mean instead. (Matthew: "it shouldnt take too much effort to move it
+//    around like i shouldnt need to hold it for too long".)
+//  - On the rest of an open island off the notch — its content, where a
+//    drag can be a slider, a scrub or an item off the shelf — a short hold
+//    picks it up.
 //  - On a closed island off the notch, a plain press-and-drag moves it.
 //
-//  Let go early, or move more than `slop` — a slider, a scrub, an item
-//  dragged off the shelf — and the line runs back and nothing happens.
+//  Let go early, or move more than `slop` during a hold, and the line runs
+//  back and nothing happens. A plain drag let go without moving is a click
+//  (`clicked`), which `IslandCarry` reads by where it landed: on the
+//  grabber it closes the panel to its capsule, on the capsule it opens it.
 //
 //  The hold is timed on purpose: the user asked to press and hold. (Hover
 //  is another matter and never waits — see `NotchWindowController`.)
@@ -33,9 +41,10 @@ struct IslandHold {
     enum Kind: Equatable {
         /// Open, on the notch: hold to take it off.
         case detach
-        /// Open, off the notch: a short hold picks it up.
+        /// Open, off the notch, on its content: a short hold picks it up.
         case pickUp
-        /// Closed, off the notch: press and drag.
+        /// Off the notch, closed, or open by its header or its edge: press
+        /// and drag.
         case drag
 
         /// How long nothing shows, and how long the line then runs. Nil for
@@ -93,6 +102,9 @@ struct IslandHold {
         case lifted(at: CGPoint)
         case carried(to: CGPoint)
         case dropped(at: CGPoint)
+        /// A plain drag's press let go where it went down: a click, at the
+        /// press. Still passed on to the views, as any click is.
+        case clicked(at: CGPoint)
     }
 
     struct Outcome: Equatable {
@@ -169,8 +181,12 @@ struct IslandHold {
     mutating func up(at point: CGPoint, time: TimeInterval) -> Outcome {
         defer { phase = .idle }
         switch phase {
-        case .idle, .waiting:
+        case .idle:
             return Outcome()
+        case .waiting:
+            // A timed press let go in its grace is the control's click, and
+            // nothing of this one's.
+            return kind == .drag ? Outcome(actions: [.clicked(at: origin)]) : Outcome()
         case .tracing:
             return Outcome(verdict: .cancelPress, actions: [.traceCancelled])
         case .carrying:

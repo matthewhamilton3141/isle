@@ -34,11 +34,12 @@ typealias Pill = IslandFloat.Pill
 let band = CGSize(width: 185, height: 32)
 let dockedOpen = CGSize(width: 520, height: 146)
 // The least the window is, whatever the notch: the open panel with Prism's
-// side lips and the stay-open pads, the tallest panel with Prism's lip or
-// a floating panel's shadow under it, whichever is deeper, and the roof
+// side lips and the stay-open pads, the tallest panel with Prism's lip and
+// a floating island's shadow under it both (an island that opens upward
+// stands on its capsule with the shadow's room under that), and the roof
 // it has off the notch (NotchMetrics.maximumFrame).
 let windowFloor = CGSize(width: 520 + 2 * (16 + IslandPrism.sideLip),
-                         height: 230 + max(IslandPrism.lip, IslandFloat.shadowReach.below) + IslandFloat.roof)
+                         height: 230 + IslandPrism.lip + IslandFloat.shadowReach.below + IslandFloat.roof)
 
 print("the open panel's shape")
 do {
@@ -159,6 +160,45 @@ do {
     check(F.beadGrabber.width < F.grabber.width, "the bead's is the same mark, smaller")
 }
 
+print("taking hold of the open panel")
+do {
+    // The standard open panel off the notch, from its top-left corner, y down.
+    let panel = F.openSize(docked: dockedOpen, wallInset: IslandMotion.openCorners.top)
+    let mid = panel.width / 2
+    let barY = F.roof + band.height / 2
+    func spot(_ x: CGFloat, _ y: CGFloat) -> F.PanelSpot { F.spot(at: CGPoint(x: x, y: y), panel: panel, band: band.height) }
+
+    check(spot(mid, barY) == .grabber, "the bar itself is the grabber")
+    check(F.grabberTarget >= 44 && F.grabberTarget > 1.5 * F.grabber.width, "and its target is far bigger than the 36×5 bar", "\(F.grabberTarget)")
+    check(F.roof + band.height >= 36, "as tall as the roof and the band: easy to hit", "\(F.roof + band.height)")
+    check(spot(mid - F.grabberTarget / 2 + 1, 1) == .grabber && spot(mid + F.grabberTarget / 2 - 1, F.roof + band.height - 1) == .grabber,
+          "corner to corner")
+    // The faces leave the grabber `grabberGap` in the band's middle; the
+    // Claude face's wings (the sessions chip, the way back) end there.
+    check(F.grabberTarget <= F.grabberGap - 6, "a few points short of the wings either side", "\(F.grabberTarget) in \(F.grabberGap)")
+    check(spot(mid - F.grabberGap / 2 - 1, barY) == .content && spot(mid + F.grabberGap / 2 + 1, barY) == .content,
+          "a wing beside it is content: held, not dragged at once")
+    check(spot(mid, F.roof + band.height + 3) == .content, "and so is what's under the band")
+
+    // The bare edge: inside everything drawn. The content stands 10pt in
+    // from the walls (Prism's 10 + its side lip) and 8 + lip above the
+    // bottom; the gear's target ends 9pt from the right wall; the header's
+    // marks start below the roof.
+    check(F.edgeGrip < 9 && F.edgeGrip >= 4, "the edge stops short of the gear's target and the content", "\(F.edgeGrip)")
+    check(spot(2, 80) == .edge && spot(panel.width - 2, 80) == .edge && spot(200, panel.height - 2) == .edge, "the walls and the bottom are edge")
+    check(spot(120, F.roof - 1) == .edge && spot(panel.width - 20, 2) == .edge, "and the roof all along the top, over the crumb too")
+    check(spot(10, 80) == .content && spot(panel.width - 10, 80) == .content && spot(200, panel.height - 8) == .content,
+          "where the content starts is content")
+    check(spot(panel.width - 20, F.roof + 4) == .content, "the crumb and the gear are content")
+    check(spot(-1, 80) == .edge && spot(mid, -1) == .grabber, "just outside the outline counts with it (the press rect is a point wider)")
+
+    // Taller panels (a question, the agenda) keep the header where it is.
+    let tall = CGSize(width: panel.width, height: 238)
+    check(F.spot(at: CGPoint(x: mid, y: barY), panel: tall, band: band.height) == .grabber
+          && F.spot(at: CGPoint(x: 200, y: 236), panel: tall, band: band.height) == .edge
+          && F.spot(at: CGPoint(x: 200, y: 200), panel: tall, band: band.height) == .content, "a taller panel: the same header, its own bottom edge")
+}
+
 print("the edge")
 do {
     check(F.rimOpacity > 0.1 && F.rimOpacity <= 0.3, "black's hairline: visible over a dark window, not a border", "\(F.rimOpacity)")
@@ -173,6 +213,12 @@ do {
     let open = F.openSize(docked: CGSize(width: dockedOpen.width, height: 230), wallInset: IslandMotion.openCorners.top)
     check(open.width + 2 * F.shadowReach.side <= windowFloor.width, "the open panel's shadow fits across the window")
     check(open.height + F.shadowReach.below <= windowFloor.height, "and under the tallest panel", "\(open.height) + \(F.shadowReach.below) in \(windowFloor.height)")
+    // Opening upward the island stands the shadow's room above the window's
+    // bottom: Prism's tallest panel, lip and roof and all, still fits above.
+    let prismTallest = 230 + IslandPrism.lip + F.roof
+    check(prismTallest + F.shadowReach.below <= windowFloor.height, "standing on its capsule, the tallest panel fits above the shadow's room",
+          "\(prismTallest) + \(F.shadowReach.below) in \(windowFloor.height)")
+    check(F.widestClock >= 50, "a clock counting hours is allowed for when keeping the widest capsule on the screen")
 }
 
 print("glass with no black over it")

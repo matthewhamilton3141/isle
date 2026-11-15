@@ -265,6 +265,13 @@ final class NotchWindowController {
             .removeDuplicates()
             .sink { [weak self] _ in self?.shortcuts.refresh() }
             .store(in: &cancellables)
+        // So is an alert opening it, which the island takes in a turn after
+        // the view model changes (`opensForActivity`) — after the shortcuts'
+        // own read of that change, which would otherwise see it closed.
+        presentation.$opensForActivity
+            .removeDuplicates()
+            .sink { [weak self] _ in self?.shortcuts.refresh() }
+            .store(in: &cancellables)
         // A hold that ended any way but the preview's own end — the pointer
         // visited, the shortcut, a click in another app — isn't the
         // preview's to close any more.
@@ -288,6 +295,9 @@ final class NotchWindowController {
         // Files dragged onto the island open the drop face.
         window.registerForDraggedTypes([.fileURL])
         window.dropHandler = self
+        // A click on the island outside the field that has the keys lets it
+        // go, as Esc does.
+        window.watchClicksOutsideComposeFields(viewModel)
 
         // A press held on the open panel takes the island off the notch.
         let carry = IslandCarry(presentation: presentation, window: window)
@@ -307,6 +317,7 @@ final class NotchWindowController {
         carry.haptic = { [weak self] in self?.playHaptic($0) }
         carry.onPlaced = { [weak self] placement in self?.remember(placement, for: id) }
         carry.onArrived = { [weak self] in self?.islandArrived(id) }
+        carry.onClick = { [weak self] click in self?.islandClicked(id, click) }
 
         // In the dictionary before the content view is set: SwiftUI can report
         // its first layout during the `contentView` assignment, and the
@@ -319,7 +330,21 @@ final class NotchWindowController {
             screen: screen
         )
 
-        window.contentView = hosting
+        #if DEBUG
+        // What this island is showing, for the constraint pass log's records
+        // of its two windows (see `ConstraintPassLog`).
+        let describe = { [weak self, weak presentation] () -> String in
+            guard let self, let presentation else { return "gone" }
+            return "display \(id) \(presentation.state) hover \(presentation.isHovering) held \(presentation.isHeldOpen)"
+                + " placement \(presentation.placement) opening \(presentation.opening.upward ? "up" : "down")"
+                + " face \(self.viewModel.expandedPlace)"
+                + " composing \(self.viewModel.composing.map { "\($0)" } ?? "no") background \(self.viewModel.panelBackground.rawValue)"
+        }
+        ConstraintPassLog.watch(window, as: "notch panel", describe: describe)
+        ConstraintPassLog.watch(window.glassWindow, as: "island glass", describe: describe)
+        #endif
+
+        window.attachContent(hosting)
         carry.place(rememberedPlacement(for: id, on: metrics))
         window.orderFrontRegardless()
     }
@@ -361,6 +386,30 @@ final class NotchWindowController {
         runDeferredSync()
     }
 
+    /// A click on display `id`'s island off its notch: on the open panel's
+    /// grabber, which closes it to its capsule, in place, held compact so
+    /// it can be taken somewhere without opening under the pointer; or on
+    /// the capsule, which opens it.
+    private func islandClicked(_ id: CGDirectDisplayID, _ click: IslandCarry.Click) {
+        guard let island = islands[id], island.presentation.placement.isFloating else { return }
+        let presentation = island.presentation
+        switch click {
+        case .grabber:
+            guard presentation.state.isExpanded, let drawn = drawnRectInScreen(island) else { return }
+            cancelSweepRecheck()
+            presentation.holdCompact(panel: drawn.size)
+            // An alert opens every island whatever the hover; the grabber's
+            // click retracts it as a click on its panel would, where that's
+            // allowed (and leaves it open where it isn't).
+            if presentation.state.isExpanded { presentation.dismissAlert() }
+            runDeferredSync()
+        case .capsule:
+            guard !presentation.state.isExpanded else { return }
+            cancelSweepRecheck()
+            presentation.openFromClick()
+        }
+    }
+
     private func playHaptic(_ haptic: IslandCarry.Haptic) {
         switch haptic {
         case .lifted:
@@ -387,8 +436,9 @@ final class NotchWindowController {
 
     /// One screen's panel and its glass window, with their view trees, built
     /// the one way Isle builds them — here, so scripts/test-island-windows.sh
-    /// checks exactly what runs. The panel's content view is left for the
-    /// caller to set (the controller registers the island first), and it
+    /// checks exactly what runs. The panel's hosting view is left for the
+    /// caller to attach (`NotchWindow.attachContent`, never as the content
+    /// view itself; the controller registers the island first), and it
     /// isn't placed or shown.
     static func makePanel(
         viewModel: NotchViewModel,
@@ -490,6 +540,13 @@ final class NotchWindowController {
     private static let sweepRecheck: TimeInterval = 0.08
 
     private var lastPointerTimestamp: TimeInterval = 0
+
+    /// The pointer's last few places, newest last: where it was before it
+    /// reached an island, which says which side it came from
+    /// (`IslandApproach`). A move a frame apart is a point or two at an
+    /// arrival's speed, so this reaches back well past the open lip.
+    private var pointerTrail: [CGPoint] = []
+    private static let pointerTrailLength = 12
     private var sweepRecheckWork: DispatchWorkItem?
 
     /// Tracks the pointer to do three things: keep clicks passing through the
@@ -576,6 +633,18 @@ final class NotchWindowController {
             island.carry.pointerMovedFreely()
         }
 
+        let pointer = NSEvent.mouseLocation
+        pointerTrail.append(pointer)
+        if pointerTrail.count > Self.pointerTrailLength { pointerTrail.removeFirst() }
+
+        // An island closed by its grabber stays closed until the pointer
+        // has left the room it was in: then coming back opens it as ever.
+        for island in islands.values where island.presentation.isHeldCompact {
+            if compactZone(for: island)?.contains(pointer) != true {
+                island.presentation.releaseCompact()
+            }
+        }
+
         // Every move: reconcile click-through on every island, so the window
         // server only routes clicks to Isle when the pointer is over a drawn
         // notch and passes everything else to what's underneath.
@@ -589,7 +658,6 @@ final class NotchWindowController {
         // last there — and a sweep would clear the gate on its first frame.
         let move = measureMove(event)
 
-        let pointer = NSEvent.mouseLocation
         let pointerIsland = island(containing: pointer)
         // Onto another display: whether an open island is in front of the
         // user changed, which the shortcuts read (`islandPresence`).
@@ -659,8 +727,20 @@ final class NotchWindowController {
             scheduleSweepRecheck(on: active)
         } else {
             cancelSweepRecheck()
-            active.presentation.setHovering(true)
+            open(active)
         }
+    }
+
+    /// Opens an island on the hover, toward where the pointer came from
+    /// off its notch: the last place it was outside the drawn capsule.
+    private func open(_ island: Island) {
+        if island.presentation.placement.isFloating, let drawn = drawnRectInScreen(island),
+           let origin = pointerTrail.last(where: { !drawn.contains($0) }) {
+            island.presentation.approach = IslandApproach(from: origin, onto: drawn)
+        }
+        island.presentation.setHovering(true)
+        // Used up if it opened; if it didn't, it's nobody else's.
+        island.presentation.approach = nil
     }
 
     /// Which island the pointer is on, by screen.
@@ -735,10 +815,8 @@ final class NotchWindowController {
     /// on top as well as underneath.
     private func hoverZones(for island: Island) -> (open: CGRect, stayOpen: CGRect)? {
         guard let drawn = drawnRectInScreen(island) else { return nil }
-        let pad = Self.stayOpenPad
         let floating = island.presentation.placement.isFloating
         let lipAbove = floating ? Self.openLip : 0
-        let padAbove = floating ? pad.bottom : pad.top
         return (
             // Screen coords are bottom-left origin, so "below the island" is
             // *lower* y — the lip hangs off `minY`.
@@ -748,13 +826,37 @@ final class NotchWindowController {
                 width: drawn.width,
                 height: drawn.height + Self.openLip + lipAbove
             ),
-            stayOpen: CGRect(
-                x: drawn.minX - pad.side,
-                y: drawn.minY - pad.bottom,
-                width: drawn.width + pad.side * 2,
-                height: drawn.height + pad.bottom + padAbove
-            )
+            stayOpen: Self.stayOpenZone(around: drawn, floating: floating)
         )
+    }
+
+    /// The pad round an open island that a pointer has to leave to close
+    /// it: below and to the sides, and above too off the notch.
+    private static func stayOpenZone(around drawn: CGRect, floating: Bool) -> CGRect {
+        let pad = stayOpenPad
+        let padAbove = floating ? pad.bottom : pad.top
+        return CGRect(
+            x: drawn.minX - pad.side,
+            y: drawn.minY - pad.bottom,
+            width: drawn.width + pad.side * 2,
+            height: drawn.height + pad.bottom + padAbove
+        )
+    }
+
+    /// The room an island closed by its grabber is held compact in: where
+    /// its panel would stay open, were it open — the panel it closed from,
+    /// laid out the way it opens from where the capsule is now (it may have
+    /// been carried since) — and the capsule's own. Nil when it isn't held,
+    /// or is back on its notch.
+    private func compactZone(for island: Island) -> CGRect? {
+        let presentation = island.presentation
+        guard let size = presentation.compactPanel, let anchor = presentation.placement.anchor,
+              let bounds = presentation.metrics?.placementBounds
+        else { return nil }
+        let panel = bounds.panel(size, at: anchor, opening: presentation.opening)
+        var zone = Self.stayOpenZone(around: panel, floating: true)
+        if let drawn = drawnRectInScreen(island) { zone = zone.union(Self.stayOpenZone(around: drawn, floating: true)) }
+        return zone
     }
 
     /// Speed and direction of this move: whether it's fast enough to be a
@@ -779,7 +881,7 @@ final class NotchWindowController {
                       let zones = self.hoverZones(for: island),
                       zones.open.contains(NSEvent.mouseLocation)
                 else { return }
-                island.presentation.setHovering(true)
+                self.open(island)
             }
         }
         sweepRecheckWork = work

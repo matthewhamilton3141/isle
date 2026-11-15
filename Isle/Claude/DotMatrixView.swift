@@ -36,6 +36,10 @@ struct DotMatrixView: View {
     /// orange) without touching the user's saved marker design.
     var tint: Color?
 
+    /// Whether the marker is drawn on glass, where each dot has a dark one
+    /// behind it (`IslandGlass.barEdge`), as the waveform's bars do.
+    @Environment(\.islandOnGlass) private var onGlass
+
     init(design: MarkerDesign, palette: ArtworkPalette = .fallback, tint: Color? = nil) {
         self.design = design
         self.palette = palette
@@ -43,7 +47,7 @@ struct DotMatrixView: View {
     }
 
     var body: some View {
-        DotMatrixLayerRepresentable(design: design, palette: palette, tint: tint)
+        DotMatrixLayerRepresentable(design: design, palette: palette, tint: tint, edged: onGlass)
             .accessibilityHidden(true)
     }
 }
@@ -54,10 +58,11 @@ private struct DotMatrixLayerRepresentable: NSViewRepresentable {
     var design: MarkerDesign
     var palette: ArtworkPalette
     var tint: Color?
+    var edged: Bool
 
     func makeNSView(context: Context) -> DotMatrixLayerView {
         let view = DotMatrixLayerView()
-        view.apply(design: design, palette: palette, tint: tint, animateMorph: false)
+        view.apply(design: design, palette: palette, tint: tint, edged: edged, animateMorph: false)
         return view
     }
 
@@ -65,7 +70,7 @@ private struct DotMatrixLayerRepresentable: NSViewRepresentable {
         // Morph only the lit-dot layout; a colour or speed change just rebuilds
         // the loop in place, matching the old renderer's behaviour of reading
         // those straight from `design` rather than easing them.
-        view.apply(design: design, palette: palette, tint: tint, animateMorph: true)
+        view.apply(design: design, palette: palette, tint: tint, edged: edged, animateMorph: true)
     }
 }
 

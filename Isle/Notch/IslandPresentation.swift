@@ -47,6 +47,28 @@ final class IslandPresentation: ObservableObject {
     /// Nothing here is timed.
     @Published private(set) var isHeldOpen = false
 
+    /// The grabber was clicked: the panel closed to its capsule, and a
+    /// hover doesn't open it again — the pointer is still on it, and the
+    /// point was to have the capsule to move. The size of the panel it
+    /// closed from, for the room it's held compact in
+    /// (`NotchWindowController.compactZone`). Ends when the pointer leaves
+    /// that room, so coming back opens it as ever; or with a click on the
+    /// capsule, a shortcut or a file drag. Nothing here is timed.
+    private(set) var compactPanel: CGSize?
+
+    var isHeldCompact: Bool { compactPanel != nil }
+
+    /// Called just before a closed island opens, however it opens (`expand`)
+    /// — not mid-close, where it's still drawn as it was — so it can be
+    /// turned to open the way its place calls for now (`IslandCarry`) —
+    /// and, opened by a hover, toward the side the pointer came from.
+    var willOpen: (IslandApproach?) -> Void = { _ in }
+
+    /// Which side the pointer arrived from, set by the hover rule just
+    /// before it opens the island and used up by that open (`expand`). Any
+    /// other way of opening has none.
+    var approach: IslandApproach?
+
     /// Geometry of the camera housing (or the fallback pill) on the screen this
     /// island is drawn on. Published because the views size themselves from it:
     /// moving between a notched and a non-notched display changes the shape,
@@ -58,6 +80,11 @@ final class IslandPresentation: ObservableObject {
     /// window controller moves the window to match (`IslandCarry`, which is
     /// also the only thing that sets it).
     @Published var placement: IslandPlacement = .docked
+
+    /// Which way the island opens off its notch (`IslandOpening`), decided
+    /// by `IslandCarry` where the island is put down closed, and kept while
+    /// it's open. Always `.down` on the notch.
+    @Published var opening: IslandOpening = .down
 
     /// The line that runs round the island while it's held (see
     /// `DetachTrace`). A model of its own, like `proximity`, so the line
@@ -98,12 +125,59 @@ final class IslandPresentation: ObservableObject {
     let proximity = IslandProximityModel()
     private var proximityGate = ProximityGate()
 
+    /// The notch's black on the island while it's carried near the notch
+    /// (`IslandBleed`). A model of its own, like `proximity`: it changes on
+    /// drag events, and only the fill's stain watches it.
+    let bleed = IslandBleedModel()
+
     /// Where the drop face drew each target, in the hosting view's top-left
     /// space, as the face reports it. Not published: only the drag reads it.
     var dropTargetFrames: [DropTarget: CGRect] = [:]
 
+    /// The shared alert rule (`NotchViewModel.autoExpandsForActivity`) as
+    /// this island has taken it in: one of the two things that open it, the
+    /// other its own hover. Taken in only through `expand`, so an alert
+    /// opens a floating island the way its place calls for, as a hover
+    /// does. A step behind the view model — taken in on the main queue's
+    /// next turn after any change to it (`objectWillChange` comes before
+    /// the change), which is before anything is drawn of it.
+    @Published private(set) var opensForActivity: Bool
+
+    private var activityWatch: AnyCancellable?
+    private var activityCheckQueued = false
+
     init(content: NotchViewModel) {
         self.content = content
+        opensForActivity = content.autoExpandsForActivity
+        // Whatever the rule reads — the Claude state, a dismissal, the
+        // settings, which the view model passes on — changes the view model.
+        activityWatch = content.objectWillChange.sink { [weak self] _ in
+            self?.queueActivityCheck()
+        }
+    }
+
+    private func queueActivityCheck() {
+        guard !activityCheckQueued else { return }
+        activityCheckQueued = true
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.activityCheckQueued = false
+                self.takeInActivity()
+            }
+        }
+    }
+
+    /// Takes in the alert rule as it is now. Internal for the tests, which
+    /// can take it in without waiting a turn.
+    func takeInActivity() {
+        let now = content.autoExpandsForActivity
+        guard now != opensForActivity else { return }
+        if now {
+            expand { opensForActivity = true }
+        } else {
+            opensForActivity = false
+        }
     }
 
     /// A file drag reached this island: open it on the drop face. Opens past
@@ -112,9 +186,10 @@ final class IslandPresentation: ObservableObject {
     /// simply move again.
     func beginDrop() {
         guard !isDropTarget else { return }
+        compactPanel = nil
         relaxProximity()
         isDropTarget = true
-        if !isHovering { isHovering = true }
+        if !isHovering { beginOpen() }
     }
 
     /// Lights the target under `point` (hosting view, top-left space), if
@@ -139,8 +214,9 @@ final class IslandPresentation: ObservableObject {
     /// `isHeldOpen`). Past the collapse lock, like a drop — the lock is
     /// there for a pointer still on its way out, and this isn't one.
     func openFromShortcut() {
+        compactPanel = nil
         relaxProximity()
-        if !isHovering { isHovering = true }
+        if !isHovering { beginOpen() }
         isHeldOpen = true
     }
 
@@ -169,7 +245,7 @@ final class IslandPresentation: ObservableObject {
     var state: NotchState {
         NotchStateResolver.resolve(
             isHovering: isHovering,
-            hasLiveActivity: content.autoExpandsForActivity
+            hasLiveActivity: opensForActivity
         )
     }
 
@@ -181,12 +257,14 @@ final class IslandPresentation: ObservableObject {
     /// interrupt is unaffected: it opens through `hasLiveActivity`, not hover.
     func setHovering(_ hovering: Bool) {
         if hovering {
+            // Held compact, the pointer on the capsule is no visit.
+            guard compactPanel == nil else { return }
             // Remember that this alert's panel was actually visited, so hovering
             // back off it can count as a dismiss.
             content.noteAlertVisited()
             guard !collapseLocked, !isHovering else { return }
             relaxProximity()
-            isHovering = true
+            beginOpen()
         } else {
             guard isHovering else { return }
             isHovering = false
@@ -196,6 +274,47 @@ final class IslandPresentation: ObservableObject {
                 self?.collapseLocked = false
             }
         }
+    }
+
+    /// Opens on the hover, through `expand`.
+    private func beginOpen() {
+        expand { isHovering = true }
+    }
+
+    /// The one way a closed island opens, whatever opens it — a hover, a
+    /// click, a shortcut, a drop, an alert: `change` sets one of the two
+    /// things `state` reads, and `willOpen` comes first, while the island
+    /// is closed and settled (not mid-close, where it's still drawn as it
+    /// was), so a floating one opens the way its place calls for now.
+    private func expand(_ change: () -> Void) {
+        let approach = self.approach
+        self.approach = nil
+        if !collapseLocked, state == .collapsed { willOpen(approach) }
+        change()
+    }
+
+    /// The grabber was clicked: close to the capsule, on the close spring,
+    /// and stay closed under the pointer (`compactPanel`). `panel` is the
+    /// open panel's size as it was.
+    func holdCompact(panel: CGSize) {
+        compactPanel = panel
+        relaxProximity()
+        setHovering(false)
+    }
+
+    /// The pointer left the room the capsule was held compact in (or the
+    /// island went back on its notch): hovers open it again.
+    func releaseCompact() {
+        compactPanel = nil
+    }
+
+    /// The closed capsule was clicked: open it, held compact or not. Not
+    /// while it's still closing, as a hover can't — a double click on the
+    /// grabber would otherwise close it and open it again.
+    func openFromClick() {
+        guard !collapseLocked, !isHovering else { return }
+        compactPanel = nil
+        setHovering(true)
     }
 
     /// A pointer move on this island's screen: update the swell. `drawn` is
@@ -208,7 +327,8 @@ final class IslandPresentation: ObservableObject {
     /// flight) and not taking a drag.
     func trackProximity(pointer: CGPoint, drawn: CGRect?) {
         let allowed = { [unowned self] in
-            !self.collapseLocked && !self.isDropTarget && self.state == .collapsed
+            // Held compact it won't open, so it doesn't swell as if it would.
+            !self.collapseLocked && !self.isDropTarget && self.state == .collapsed && self.compactPanel == nil
         }
         if let next = proximityGate.update(pointer: pointer, island: drawn, allowed: allowed()) {
             proximity.reading = next

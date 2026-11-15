@@ -61,6 +61,10 @@ struct NotchRootView: View {
     /// a grabber where the camera was.
     private var floating: Bool { island.placement.isFloating }
 
+    /// Which way the island opens (`IslandOpening`): off the notch, toward
+    /// where there's room; on it, always down.
+    private var direction: IslandOpening { floating ? island.opening : .down }
+
     /// How far the open panel's walls stand in from its frame: the flare's
     /// radius on the notch, nothing off it, where there are no flares and
     /// the frame comes in to the walls (`IslandFloat.openSize`).
@@ -74,6 +78,14 @@ struct NotchRootView: View {
     private var glowHousing: CGSize? {
         guard viewModel.panelNotchGlow, panelBackground.growsNotchGlow, !floating,
               let metrics = island.metrics, metrics.hasPhysicalNotch else { return nil }
+        return metrics.notchSize
+    }
+
+    /// The physical camera housing, for Prism's black over it; nil on a
+    /// display without one, where the island hangs from a bare top edge.
+    /// (Off the notch too: the fill fades that black out with the lift.)
+    private var physicalNotch: CGSize? {
+        guard let metrics = island.metrics, metrics.hasPhysicalNotch else { return nil }
         return metrics.notchSize
     }
 
@@ -210,8 +222,15 @@ struct NotchRootView: View {
     /// The collapsed sides are asymmetric (Claude's side is usually wider), so
     /// shift the shape to keep the camera cutout centred under the housing.
     private var collapsedShift: CGFloat {
-        // Off the notch there's no camera to stay centred under.
-        guard state == .collapsed, !floating else { return 0 }
+        // Off the notch there's no camera to stay centred under; the window
+        // is centred on the widest open panel, and the island is drawn
+        // where the opening puts it for its width: centred on the anchor
+        // closed and on the window open, or, pinned near an edge, with its
+        // end there at the anchor whatever its width. It gets there on the
+        // width's spring, with the width, so a pinned end stays put as the
+        // island grows and shrinks (`IslandOpening.offset`).
+        if floating { return direction.offset(width: size.width, open: state != .collapsed) }
+        guard state == .collapsed else { return 0 }
         let sides = viewModel.collapsedSideWidths
         return (sides.trailing - sides.leading) / 2
     }
@@ -263,6 +282,9 @@ struct NotchRootView: View {
         let opening = state.isExpanded
         let reduced = reduceMotion
         VStack(spacing: 0) {
+            // Opening upward, the island stands on the bottom of its window
+            // (the shadow's room under it), and grows up from there.
+            if direction.upward { Spacer(minLength: 0) }
             notch
                 .offset(x: collapsedShift)
                 // The shift exists to centre an asymmetric pill, so it moves
@@ -284,11 +306,17 @@ struct NotchRootView: View {
                 .transaction { t in
                     guard t.isPanelResize else { return }
                     t.disablesAnimations = false
-                    t.animation = panelResizeAnimation
+                    // A swipe's landing brings its own (the faces' spring);
+                    // Reduce Motion keeps the plain curve.
+                    t.animation = reduceMotion ? panelResizeAnimation : t.panelResizeAnimation ?? panelResizeAnimation
                 }
-            Spacer(minLength: 0)
+            if direction.upward {
+                Color.clear.frame(height: NotchMetrics.floatingBelow)
+            } else {
+                Spacer(minLength: 0)
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: direction.upward ? .bottom : .top)
         // Open on the open spring. Close on the close spring, marked as a
         // collapse so the outline's width, height and corners each take their
         // own (see `notch`; the close spring is the height's, and is what the
@@ -344,7 +372,10 @@ struct NotchRootView: View {
             crown = free.crown
         }
         var genie: NotchShape.Genie?
-        if state == .collapsed, !reduceMotion, let collapseOrigin {
+        // The taper draws the walls in toward the capsule's end: the bottom,
+        // where the island hangs from its top. Standing on its bottom edge
+        // (opening upward) it collapses without one.
+        if state == .collapsed, !reduceMotion, !direction.upward, let collapseOrigin {
             genie = NotchShape.Genie(
                 expanded: collapseOrigin,
                 collapsed: size,
@@ -416,8 +447,10 @@ struct NotchRootView: View {
 
             // Off the notch, where the camera was: the grabber. The band's
             // middle is clear on every face — it was hardware — so nothing
-            // has to move for it. Drawn, not pressed: taking hold of the
-            // island is the window controller's.
+            // has to move for it. Drawn, not pressed: a click on it (closing
+            // the panel to its capsule) and a drag of it (moving the panel)
+            // are `IslandCarry`'s, over a target a good deal bigger than the
+            // bar (`IslandFloat.grabberTarget`).
             if glassLayer != .materialOnly, floating, state.isExpanded {
                 IslandGrabber(size: IslandFloat.grabber)
                     .frame(height: notchBandHeight)
@@ -470,14 +503,19 @@ struct NotchRootView: View {
                 opened: state.isExpanded,
                 housing: glowHousing,
                 housingShift: collapsedShift,
-                bandHeight: notchBandHeight,
+                growsUp: direction.upward,
+                pin: floating ? direction.pin : .centre,
+                notch: physicalNotch,
                 ribbon: ribbon,
-                floating: floating
+                floating: floating,
+                bleed: island.bleed
             )
         }
         // The line that runs round the outline while the island is held.
         .overlay(alignment: .top) {
-            DetachTrace(model: island.detachTrace, outline: outline, size: size)
+            // From the edge furthest from the capsule: the bottom, or the
+            // top of a panel that opened upward.
+            DetachTrace(model: island.detachTrace, outline: outline, size: size, fromTop: direction.upward)
         }
         // The corners lead the collapse: the clip's and the fill's radii.
         .islandCollapseChannel(.corners)
@@ -526,9 +564,12 @@ struct NotchRootView: View {
     /// space, carrying the collapsed shift that keeps the cutout under the camera.
     private func frameRect(for s: CGSize) -> CGRect {
         let hostWidth = island.metrics?.maximumFrame.width ?? NotchMetrics.expandedSize.width
+        let hostHeight = island.metrics?.maximumFrame.height ?? NotchMetrics.expandedSize.height
         return CGRect(
             x: (hostWidth - s.width) / 2 + collapsedShift,
-            y: 0,
+            // Standing on the window's bottom (the shadow's room under it)
+            // when it opens upward.
+            y: direction.upward ? hostHeight - NotchMetrics.floatingBelow - s.height : 0,
             width: s.width,
             height: s.height
         )
@@ -541,7 +582,7 @@ struct NotchRootView: View {
             EmptyView()
         } else if state.isExpanded {
             let glass = panelBackground.isGlass
-            ExpandedNotchView(viewModel: viewModel, island: island, palette: glass ? palette.flooredForGlass : palette, waveformPalette: palette)
+            ExpandedNotchView(viewModel: viewModel, island: island, palette: palette)
                 .environment(\.islandOnGlass, glass)
                 .environment(\.islandHasRibbon, panelBackground == .prism && IslandPrism.showsRibbon)
                 .environment(\.islandFloating, floating)
@@ -553,7 +594,7 @@ struct NotchRootView: View {
             // On the notch the pill is black in every mode. Off it, it is
             // the mode's material, so its content gets glass's lifts too.
             let glass = floating && panelBackground.isGlass
-            CollapsedNotchView(viewModel: viewModel, island: island, palette: glass ? palette.flooredForGlass : palette, waveformPalette: palette)
+            CollapsedNotchView(viewModel: viewModel, island: island, palette: palette)
                 .environment(\.islandOnGlass, glass)
                 .transition(.opacity)
         }

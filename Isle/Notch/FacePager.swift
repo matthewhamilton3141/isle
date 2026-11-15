@@ -47,10 +47,16 @@ final class FacePager: ObservableObject {
     /// has taken over doesn't tidy away the new gesture's neighbour.
     private var generation = 0
 
-    /// The settle's spring: firm enough to land promptly, damped so a face
-    /// doesn't bounce past its home and show the gap.
-    private static let settleStiffness: Double = 300
-    private static let settleDamping: Double = 31
+    /// The settle under way, if any: where the face was let go from, how
+    /// fast it was going, and when (the end event's own time), so a swipe
+    /// that starts before it lands can pick the face up where the spring
+    /// has got it to (`IslandMotion.Spring.displacement`) rather than snap
+    /// it home and start from there.
+    private var settling: (from: CGFloat, velocity: CGFloat, time: TimeInterval, generation: Int)?
+
+    /// Where the face was when this gesture picked it up: added to the
+    /// fingers' travel for as long as the gesture lasts.
+    private var base: CGFloat = 0
 
     /// A scroll event on this island's window, while its panel is open.
     /// Returns whether it was a face swipe, which nothing else should see.
@@ -67,6 +73,7 @@ final class FacePager: ObservableObject {
             reset()
         }
 
+        let wasTracking = tracker.isTracking
         let result = tracker.handle(
             SwipeSample(event),
             canGoBack: content.neighbor(of: face, step: -1) != nil,
@@ -75,12 +82,29 @@ final class FacePager: ObservableObject {
 
         switch result.change {
         case .track(let offset, let side)?:
+            if !wasTracking {
+                // A new gesture. If the last one's face is still on its way
+                // home, take it from where it is now.
+                base = 0
+                if let settling, settling.generation == generation, current == face {
+                    let spring = IslandMotion.faceSettle
+                    base = CGFloat(spring.displacement(from: Double(settling.from), velocity: Double(settling.velocity),
+                                                       at: event.timestamp - settling.time))
+                }
+                settling = nil
+            }
             generation += 1
-            current = face
-            self.offset = offset
-            neighbor = content.neighbor(of: face, step: side).map { Neighbor(tab: $0, side: side) }
+            // Untimed, so it takes over from the settle's spring at once
+            // rather than being blended into it.
+            var instant = Transaction()
+            instant.disablesAnimations = true
+            withTransaction(instant) {
+                current = face
+                self.offset = min(max(base + offset, -page), page)
+                neighbor = content.neighbor(of: face, step: side).map { Neighbor(tab: $0, side: side) }
+            }
         case .settle(let step, let velocity)?:
-            settle(step: step, velocity: velocity, from: face, content: content)
+            settle(step: step, velocity: velocity, from: face, content: content, at: event.timestamp)
         case nil:
             break
         }
@@ -92,6 +116,8 @@ final class FacePager: ObservableObject {
     func reset() {
         tracker.drop()
         generation += 1
+        settling = nil
+        base = 0
         var instant = Transaction()
         instant.disablesAnimations = true
         withTransaction(instant) {
@@ -105,9 +131,11 @@ final class FacePager: ObservableObject {
     /// the crumb and every "where am I" read it at once — with the face it
     /// pushed out kept alongside, where it was, as the spring brings the new
     /// one home.
-    private func settle(step: Int, velocity: CGFloat, from face: IsleTab, content: NotchViewModel) {
+    private func settle(step: Int, velocity: CGFloat, from face: IsleTab, content: NotchViewModel, at time: TimeInterval) {
         generation += 1
-        let settling = generation
+        let landing = generation
+        base = 0
+        let spring = IslandMotion.faceSettle
 
         if step != 0, let target = content.neighbor(of: face, step: step) {
             // In one untimed transaction: the face changes without the
@@ -116,8 +144,11 @@ final class FacePager: ObservableObject {
             var instant = Transaction()
             instant.disablesAnimations = true
             // The panel's height is the one thing that should still move:
-            // NotchRootView springs its height frame on this flag.
+            // NotchRootView springs its height frame on this flag, on the
+            // faces' own spring, so the new face and its height land
+            // together.
             instant.isPanelResize = true
+            instant.panelResizeAnimation = .interpolatingSpring(mass: 1, stiffness: spring.stiffness, damping: spring.damping)
             withTransaction(instant) {
                 content.selectTab(target)
                 current = target
@@ -129,17 +160,30 @@ final class FacePager: ObservableObject {
         // The spring starts at the fingers' speed, so a flick carries on
         // into the settle rather than stopping dead and restarting. Relative
         // to the distance left, as the spring wants it.
-        let initial = offset == 0 ? 0 : max(-30, min(30, Double(-velocity / offset)))
-        let spring = Animation.interpolatingSpring(
-            mass: 1, stiffness: Self.settleStiffness, damping: Self.settleDamping, initialVelocity: initial
+        let from = offset
+        let initial = from == 0 ? 0 : max(-30, min(30, Double(-velocity / from)))
+        settling = (from: from, velocity: CGFloat(-initial) * from, time: time, generation: landing)
+        let animation = Animation.interpolatingSpring(
+            mass: 1, stiffness: spring.stiffness, damping: spring.damping, initialVelocity: initial
         )
-        withAnimation(spring, completionCriteria: .logicallyComplete) {
-            offset = 0
-        } completion: { [weak self] in
-            // The face it left is off the panel now; let it go.
-            guard let self, self.generation == settling else { return }
-            self.current = nil
-            self.neighbor = nil
+        // On the next turn of the run loop, not in this one. Sent straight
+        // after the untimed swap above, the two reached SwiftUI as one update
+        // now and then, and that update went out untimed: the new face was
+        // simply there, all at once, about one landing in four in films of
+        // 1.2.0 — the rest took 0.15s. Apart, the swap is drawn first (where
+        // nothing moves) and the spring starts from it. No clock: the next
+        // turn is whenever the main thread gets to it.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.generation == landing else { return }
+            withAnimation(animation, completionCriteria: .logicallyComplete) {
+                self.offset = 0
+            } completion: { [weak self] in
+                // The face it left is off the panel now; let it go.
+                guard let self, self.generation == landing else { return }
+                self.current = nil
+                self.neighbor = nil
+                self.settling = nil
+            }
         }
     }
 }
