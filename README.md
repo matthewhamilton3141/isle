@@ -15,20 +15,34 @@ own when Claude needs you. It expands on hover and folds away when you're done.
 
 Isle uses a private framework and AppleScript automation, which rules out the
 Mac App Store. It ships as a disk image you install yourself, and updates itself
-from there.
+from there. Universal (Apple Silicon and Intel), macOS 14 or newer.
 
-### 1. Download and drag to Applications
+### 1. Install
 
-[**Download Isle 0.3.1**](https://github.com/matthewhamilton3141/isle/releases/latest)
-— universal (Apple Silicon and Intel), macOS 14 or newer. Open the disk image and drag **Isle** into
-**Applications**.
+Paste this into Terminal:
 
-### 2. Clear the quarantine flag
+```bash
+curl -fsSL https://isle.matthewhamilton.dev/install.sh | sh
+```
 
-Isle is code-signed, but not with a paid Apple Developer ID. macOS therefore
-quarantines the download and refuses to open it, usually reporting *"Isle is
-damaged and can't be opened."* That message describes the missing notarisation,
-not the file. One command clears it:
+It downloads the latest release from GitHub, checks it, puts Isle in
+**Applications** and opens it. Running it again replaces the copy you have. The
+script is [`install.sh`](https://github.com/matthewhamilton3141/isle-website/blob/main/install.sh)
+in the website's repository, if you'd like to read it first.
+
+Isle is code-signed, but not with a paid Apple Developer ID, so it isn't
+notarised. macOS quarantines anything a browser downloads and refuses to open an
+un-notarised app, calling it *"damaged"*. Files curl downloads are never
+quarantined, so the Terminal install never meets that.
+
+<details>
+<summary>Installing the disk image by hand</summary>
+
+[**Download the latest Isle**](https://github.com/matthewhamilton3141/isle/releases/latest),
+open the disk image and drag **Isle** into **Applications**.
+
+macOS will report *"Isle is damaged and can't be opened."* That message
+describes the missing notarisation, not the file. One command clears it:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/Isle.app
@@ -37,21 +51,14 @@ xattr -dr com.apple.quarantine /Applications/Isle.app
 Isle then opens normally. This is a one-time step — in-app updates are not
 quarantined, so it does not recur on later versions.
 
-<details>
-<summary>If the disk image itself won't mount</summary>
-
-The same flag, applied to the download:
+If the disk image itself won't mount, clear the same flag on the download:
 
 ```bash
-xattr -dr com.apple.quarantine ~/Downloads/Isle-0.1.3.dmg
+xattr -dr com.apple.quarantine ~/Downloads/Isle-*.dmg
 ```
-</details>
 
-<details>
-<summary>What the command does</summary>
-
-`com.apple.quarantine` is an extended attribute macOS attaches to downloaded
-files. Gatekeeper reads it, finds no Developer ID signature and no notarisation
+**What the command does.** `com.apple.quarantine` is an extended attribute
+macOS attaches to downloaded files. Gatekeeper reads it, finds no Developer ID signature and no notarisation
 ticket, and blocks the app. `xattr -dr` removes that attribute from the bundle,
 which tells macOS you vouch for the app yourself. Nothing about the app changes:
 the code is untouched and still signed, just not by an identity Apple has on
@@ -61,14 +68,14 @@ Run it only on software you trust, from a source you trust. Isle's full source
 is in this repository, and a build you compile yourself never carries the flag.
 </details>
 
-### 3. Choose a mode
+### 2. Choose a mode
 
 First launch asks what Isle should be: **Music**, **Claude Code**, or **Both**.
 The choice is changeable at any time in Settings. Only the subsystems the active
 mode needs are started, so a Claude-only install never requests media
 permissions.
 
-### 4. Choose what Isle may ask for
+### 3. Choose what Isle may ask for
 
 The next screen lists the features that need a macOS permission, all ticked.
 Nothing starts until you press Continue, so Isle only ever asks for what you
@@ -192,7 +199,8 @@ inferring a cause.
 ## Troubleshooting
 
 **"Isle is damaged and can't be opened."** This is the quarantine flag, not a
-corrupt download. Run the `xattr` command from [Install](#2-clear-the-quarantine-flag).
+corrupt download. Install with the Terminal command in [Install](#1-install)
+instead, or run the `xattr` command under *Installing the disk image by hand*.
 
 **Nothing appears in the notch.** Isle has no Dock icon. Use **Toggle Notch**
 from the menu bar item. Isle also runs on Macs without a notch, drawn against
