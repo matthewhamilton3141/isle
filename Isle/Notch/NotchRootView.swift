@@ -68,8 +68,16 @@ struct NotchRootView: View {
     /// How far the open panel's walls stand in from its frame: the flare's
     /// radius on the notch, nothing off it, where there are no flares and
     /// the frame comes in to the walls (`IslandFloat.openSize`).
-    private var wallInset: CGFloat {
-        floating ? 0 : IslandMotion.openCorners.top
+    private var wallInset: CGFloat { openFlare }
+
+    /// The open panel's top-corner flare on the notch: Prism's smaller one
+    /// (`IslandPrism.notchFlare`), the full one in every other mode, none
+    /// off the notch. The frame comes in by what Prism's flare is short of
+    /// the full one, so the panel is as wide between its walls in every
+    /// mode. Closed, the pill keeps its flares in every mode.
+    private var openFlare: CGFloat {
+        if floating { return 0 }
+        return panelBackground == .prism ? IslandPrism.notchFlare : IslandMotion.openCorners.top
     }
 
     /// The camera housing the notch glow grows from: with the glow on, in a
@@ -114,7 +122,9 @@ struct NotchRootView: View {
             )
         }
         let open = CGSize(width: metrics.windowSize(for: state).width + 2 * sideLip, height: expandedHeight + lip)
-        return floating ? IslandFloat.openSize(docked: open, wallInset: IslandMotion.openCorners.top) : open
+        if floating { return IslandFloat.openSize(docked: open, wallInset: IslandMotion.openCorners.top) }
+        // A smaller flare (`openFlare`): the frame comes in by the difference.
+        return CGSize(width: open.width - 2 * (IslandMotion.openCorners.top - openFlare), height: open.height)
     }
 
     /// Prism's wider panel: room each side for its walls' border of clear
@@ -362,6 +372,7 @@ struct NotchRootView: View {
     /// between, which is what lets it taper (see `NotchShape.genie`).
     private var outline: NotchShape {
         var corners = state.isExpanded ? IslandMotion.openCorners : IslandMotion.collapsedCorners
+        if state.isExpanded { corners.top = openFlare }
         if state.isExpanded, panelBackground == .prism { corners.bottom = IslandPrism.bottomCornerRadius }
         // Off the notch: no flares, and the top corners as round as the
         // bottom ones — a card open, a capsule closed.

@@ -73,6 +73,15 @@ enum IslandPrism {
     /// glass above the screen costs nothing: it is clipped. Tune here.
     static let topRise: CGFloat = 40
 
+    /// The open panel's top-corner flare on the notch, in Prism: half the
+    /// other modes' 12. A lens draws its rim of light and its bending just
+    /// inside its edge, all the way round, and round the full flare that
+    /// was a curved dark band in each top corner (Matthew: "weird rounding
+    /// in the corners"). With none the corners were square, and he wanted
+    /// "a slight rounding at the top"; at 6 he said "thats pretty good".
+    /// Tune here.
+    static let notchFlare: CGFloat = 6
+
     // MARK: - The shade
 
     /// Black over the glass across the panel's whole width, from its top
