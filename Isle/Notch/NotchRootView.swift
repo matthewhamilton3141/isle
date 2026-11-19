@@ -39,6 +39,18 @@ struct NotchRootView: View {
     /// content and the hit-test, so neither jumps ahead of the frame.
     @State private var liveSize: CGSize = .zero
 
+    /// The open spring has finished since the island last opened. From then
+    /// the content is fully shown whatever `liveSize` last read.
+    ///
+    /// `liveSize` follows the frame sample by sample, and the last sample of
+    /// an animation can be dropped. The hit box is unioned with the target
+    /// for that reason; the reveal had nothing like it, so a dropped sample
+    /// left a fully grown panel showing bare glass with all of its content
+    /// at zero opacity until something moved it again. Matthew saw exactly
+    /// that on approval prompts in Prism (18 Nov): the panel open at full
+    /// size, no text, no buttons, no gear.
+    @State private var openSettled = false
+
     /// The size the island last started collapsing from, for the collapse's
     /// taper (see `outline`). Snapshotted from the live frame at the moment
     /// of the close rather than recomputed, because the open size a face
@@ -254,6 +266,7 @@ struct NotchRootView: View {
             collapsed = FloatingPillLayout.pill(for: viewModel).size.width
             expanded = IslandFloat.openSize(docked: NotchMetrics.expandedSize, wallInset: IslandMotion.openCorners.top).width
         }
+        if state.isExpanded, openSettled { return 1 }
         guard expanded > collapsed, liveSize.width > 0 else { return state.isExpanded ? 1 : 0 }
         return min(max((liveSize.width - collapsed) / (expanded - collapsed), 0), 1)
     }
@@ -334,6 +347,21 @@ struct NotchRootView: View {
         // quick ease with nothing shaped about it: unmarked, the channels
         // stand aside and the outline closes as one frame.
         .transaction(value: state) { t in
+            if opening {
+                // Once the open has run its course, the reveal stops
+                // depending on the last size sample (`openSettled`). Read
+                // through the presentation, not `state`: this closure
+                // outlives the body it was made in, and an open cut short
+                // by a close must not mark the closed island settled.
+                // Added before the guard so an unanimated open settles too.
+                let island = island
+                t.addAnimationCompletion {
+                    // A short fade, for the case it exists for: content
+                    // still hidden coming up at once would pop.
+                    guard island.state.isExpanded else { return }
+                    withAnimation(.easeOut(duration: 0.15)) { openSettled = true }
+                }
+            }
             guard !t.disablesAnimations else { return }
             if opening {
                 t.animation = .notchOpen
@@ -358,6 +386,9 @@ struct NotchRootView: View {
             if previous.isExpanded, !current.isExpanded, liveSize.width > 0, liveSize.height > 0 {
                 collapseOrigin = liveSize
             }
+            // Closing hands the fade back to the live frame, so the content
+            // fades out with the shrinking panel and in again on the next open.
+            if !current.isExpanded { openSettled = false }
             // Only on the open/close transition itself, not on changes between
             // the two expanded states — those aren't a gesture the user made
             // and buzzing for them would feel random. Once, from the panel.
