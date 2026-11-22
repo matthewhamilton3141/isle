@@ -9,6 +9,12 @@
 //  The rules, in short:
 //
 //  - **Open or close the island** is the one shortcut held all the time.
+//  - **Previous and next face are held only while the open island is in
+//    front of you** — the pointer is on it, or the open shortcut is holding
+//    it — on a face, with no field taking keys, and only toward a face that's
+//    there. So they can be ⌥← and ⌥→, which every text field moves a word
+//    with, and still move a word everywhere else and at the first or last
+//    face.
 //  - **Approve, Deny and the option keys are held only while a request is
 //    waiting on you** — on the session the island is showing, unanswered,
 //    with no field taking keys — and given back the moment it's answered,
@@ -32,6 +38,8 @@ import Foundation
 
 enum ShortcutAction: String, CaseIterable, Codable {
     case toggleIsland
+    case previousFace
+    case nextFace
     case approve
     case deny
     case option1
@@ -43,14 +51,25 @@ enum ShortcutAction: String, CaseIterable, Codable {
     // click elsewhere, or a visit and leaving put it away.
 
     /// The ones Settings lists, in its order: all of them.
-    static let configurable: [ShortcutAction] = [.toggleIsland, .approve, .deny, .option1, .option2, .option3, .option4]
+    static let configurable: [ShortcutAction] = [.toggleIsland, .previousFace, .nextFace,
+                                                 .approve, .deny, .option1, .option2, .option3, .option4]
     static let options: [ShortcutAction] = [.option1, .option2, .option3, .option4]
+    static let faces: [ShortcutAction] = [.previousFace, .nextFace]
 
     /// Held only while a request waits — not all the time.
     var isWhilePending: Bool {
         switch self {
         case .approve, .deny, .option1, .option2, .option3, .option4: return true
-        case .toggleIsland: return false
+        case .toggleIsland, .previousFace, .nextFace: return false
+        }
+    }
+
+    /// Which way a face key steps: -1 the previous face, +1 the next.
+    var faceStep: Int? {
+        switch self {
+        case .previousFace: return -1
+        case .nextFace: return 1
+        default: return nil
         }
     }
 
@@ -74,6 +93,8 @@ enum ShortcutAction: String, CaseIterable, Codable {
         case .option2: return "Option 2"
         case .option3: return "Option 3"
         case .option4: return "Option 4"
+        case .previousFace: return "Previous face"
+        case .nextFace: return "Next face"
         }
     }
 
@@ -87,7 +108,10 @@ enum ShortcutAction: String, CaseIterable, Codable {
     /// options on their numbers. The island on ⌥Tab rather than ⌥Space, which
     /// ChatGPT, Claude, Raycast and Alfred all reach for first (ChatGPT is on
     /// ⌥Space out of the box), where Option-Tab types nothing and no part of
-    /// macOS uses it.
+    /// macOS uses it. The faces on ⌥← and ⌥→, beside it under the same
+    /// thumb: a word's move in any text field, which is why they're held only
+    /// while the island is in front of you, and never with a field of
+    /// Isle's own taking keys.
     var defaultCombo: KeyCombo {
         switch self {
         case .toggleIsland: return KeyCombo(0x30, KeyCombo.option)      // kVK_Tab
@@ -97,6 +121,8 @@ enum ShortcutAction: String, CaseIterable, Codable {
         case .option2: return KeyCombo(0x13, KeyCombo.option)           // kVK_ANSI_2
         case .option3: return KeyCombo(0x14, KeyCombo.option)           // kVK_ANSI_3
         case .option4: return KeyCombo(0x15, KeyCombo.option)           // kVK_ANSI_4
+        case .previousFace: return KeyCombo(0x7B, KeyCombo.option)      // kVK_LeftArrow
+        case .nextFace: return KeyCombo(0x7C, KeyCombo.option)          // kVK_RightArrow
         }
     }
 
@@ -319,6 +345,10 @@ struct ShortcutContext: Equatable {
     var answering = false
     /// A field in the island has the keyboard.
     var composing = false
+    /// The open island is in front of the user (pointer on it, or held by
+    /// the open shortcut), on a face with one before it / after it to go to.
+    var canPageBack = false
+    var canPageForward = false
 }
 
 /// Where the open island is, as far as the user goes. Read off the islands
@@ -409,6 +439,8 @@ enum ShortcutCommand: Equatable {
     case submit
     /// Open the island to the request, and do nothing else yet.
     case reveal
+    /// One face back (-1) or on (+1), as a swipe would.
+    case stepFace(Int)
     case toggleIsland
     case none
 }
@@ -424,6 +456,10 @@ enum ShortcutPlan {
     static func active(_ context: ShortcutContext, bindings: ShortcutBindings) -> [ShortcutAction: KeyCombo] {
         guard context.running else { return [:] }
         var wanted: [ShortcutAction] = [.toggleIsland]
+        if !context.composing {
+            if context.canPageBack { wanted.append(.previousFace) }
+            if context.canPageForward { wanted.append(.nextFace) }
+        }
         if let request = context.request, context.armed, !context.answering, !context.composing {
             switch request {
             case .approval:
@@ -462,6 +498,10 @@ enum ShortcutPlan {
         switch action {
         case .toggleIsland:
             return context.running ? .toggleIsland : .none
+        case .previousFace, .nextFace:
+            guard context.running, !context.composing, let step = action.faceStep,
+                  step < 0 ? context.canPageBack : context.canPageForward else { return .none }
+            return .stepFace(step)
         default:
             break
         }
@@ -544,7 +584,7 @@ extension ShortcutPlan {
         Set(held.keys.filter { action in
             switch command(for: action, context: context, face: face) {
             case .approve, .deny, .confirmRemember, .cancelRemember, .pick, .submit: return true
-            case .reveal, .toggleIsland, .none: return false
+            case .reveal, .toggleIsland, .stepFace, .none: return false
             }
         })
     }

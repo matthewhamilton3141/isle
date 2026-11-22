@@ -361,6 +361,13 @@ final class NotchWindow: NSPanel {
     /// list sees it.
     var scrollInterceptor: (@MainActor (NSEvent) -> Bool)?
 
+    /// Offered the presses of a mouse's other buttons before the views see
+    /// them — the back and forward buttons on a mouse's side step between
+    /// faces. They reach this window the way scroll events do, with the
+    /// pointer over the island, key or not. Returns true to keep the press
+    /// from the views.
+    var buttonInterceptor: (@MainActor (NSEvent) -> Bool)?
+
     /// Offered the primary button's down, dragged and up events before the
     /// views see them, the same way: this is where a press held on the
     /// island is told from a click (see `IslandHold`, `IslandCarry`), and
@@ -389,6 +396,8 @@ final class NotchWindow: NSPanel {
         switch event.type {
         case .scrollWheel:
             if let scrollInterceptor, scrollInterceptor(event) { return }
+        case .otherMouseDown:
+            if let buttonInterceptor, buttonInterceptor(event) { return }
         case .leftMouseDown, .leftMouseDragged, .leftMouseUp:
             switch pressInterceptor?(event) ?? .pass {
             case .pass:

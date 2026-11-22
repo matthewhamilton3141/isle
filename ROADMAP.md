@@ -1722,6 +1722,7 @@ and open the island. Built 2026-11-08.
 | Default | What | Held |
 |---|---|---|
 | ⌥Tab | Open or close the island | always |
+| ⌥← ⌥→ | Previous · next face | only while the open island is in front of you, toward a face that's there |
 | ⌃' | Approve · Always…'s Confirm · Done on a multi-select | only while a request waits |
 | ⌃Esc | Deny · Always…'s Back | only while an approval waits |
 | ⌥1…⌥4 | Pick (single-select) or toggle (multi-select) an option | only while a question waits, one per option |
@@ -1840,6 +1841,38 @@ on a pill, 0.45 on an option), so it lifts on glass.
   to the lines the fit measured. Nothing is near the camera band. The
   hints go faint while Settings' recorder holds every key.
 - Renders: `scratchpad/key-hints/key-hints-contact-sheet.png`.
+
+### Previous and next face (added 2026-11-21)
+
+Matthew asked how a mouse user gets between faces, since the two-finger
+swipe is trackpad-only and Home's tiles cost two clicks each time.
+
+- **Mouse back/forward buttons** (buttons 3 and 4) over the open island step
+  one face, on the swipe's landing spring with the panel height following.
+  The window hands them to the pager the way it hands it scrolls
+  (`NotchWindow.buttonInterceptor` → `IslandPresentation.handleButton` →
+  `FacePager.step`). At the first or last face a press is swallowed, not
+  passed to the app beneath; mid-swipe, on Home, collapsed or under a file
+  drag it does nothing. A press during a landing carries on from where the
+  face is, so a double press moves two. Other buttons still reach the views.
+  macOS sends a button to the window under the pointer, so after ⌥Tab the
+  pointer has to be on the island; grabbing them from anywhere would need
+  an event tap and Accessibility, and would take back/forward from the
+  browser while the island is open. Not done.
+- **⌥← and ⌥→**, for keyboard users, held only while the open island is in
+  front of you (pointer on it, or ⌥Tab holding it), on a face, with no
+  field of Isle's taking keys, and only toward a face that exists: on the
+  first face ⌥← stays a word's move in your app. The rest of the time they
+  are every text field's word move. Settings gives them one row ("Previous
+  or next face": two recorders, one switch, one reset), sharing a layout
+  with the option keys.
+- **Not wheels.** A wheel has no end phase to settle on, vertical scroll
+  belongs to Agenda and long questions, and free-spinning wheels would fly
+  through every face. Shift-wheel stepping was considered and dropped for
+  the buttons.
+- Verified: `test-shortcuts.sh` 345/0; fake presses through the real window
+  and the real shortcut path in a Debug build; Matthew tried both
+  (2026-11-21: "it worked").
 
 ### Settings › Shortcuts
 

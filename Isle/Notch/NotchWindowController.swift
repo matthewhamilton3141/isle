@@ -292,6 +292,10 @@ final class NotchWindowController {
         window.scrollInterceptor = { [weak presentation] event in
             presentation?.handleScroll(event) ?? false
         }
+        // So do a mouse's back and forward buttons.
+        window.buttonInterceptor = { [weak presentation] event in
+            presentation?.handleButton(event) ?? false
+        }
         // Files dragged onto the island open the drop face.
         window.registerForDraggedTypes([.fileURL])
         window.dropHandler = self
@@ -1140,6 +1144,24 @@ extension NotchWindowController: ShortcutIslandHost {
             return .pointerScreen
         }
         return .elsewhere
+    }
+
+    /// The open island in front of the user — the pointer is on it, or the
+    /// open shortcut is holding it — if it's on a face it could page from.
+    private var pagingIsland: Island? {
+        islands.values.first {
+            $0.presentation.isHovering && $0.presentation.state.isExpanded && !$0.presentation.isDropTarget
+        }
+    }
+
+    func canStepFace(_ step: Int) -> Bool {
+        guard pagingIsland != nil, viewModel.showsHome, let face = viewModel.expandedPlace.face else { return false }
+        return viewModel.neighbor(of: face, step: step) != nil
+    }
+
+    func stepFaceFromShortcut(_ step: Int) {
+        guard let island = pagingIsland else { return }
+        _ = island.presentation.pager.step(step, content: viewModel, at: ProcessInfo.processInfo.systemUptime)
     }
 
     /// Open the island if none is open; otherwise put it away — whatever is
