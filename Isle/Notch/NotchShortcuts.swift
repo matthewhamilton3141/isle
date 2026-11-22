@@ -31,6 +31,11 @@ protocol ShortcutIslandHost: AnyObject {
     func toggleIslandFromShortcut()
     /// Open an island, held, if none is open.
     func openIslandFromShortcut()
+    /// Whether the open island in front of the user has a face `step` away
+    /// to go to (-1 the previous, +1 the next).
+    func canStepFace(_ step: Int) -> Bool
+    /// Go one face that way, as a swipe would.
+    func stepFaceFromShortcut(_ step: Int)
 }
 
 @MainActor
@@ -147,6 +152,8 @@ final class NotchShortcuts {
         context.running = host?.shortcutsRunning ?? false
         context.composing = viewModel.composing != nil
         context.answering = viewModel.isAnsweringRequest
+        context.canPageBack = host?.canStepFace(-1) ?? false
+        context.canPageForward = host?.canStepFace(1) ?? false
 
         guard let request = viewModel.pendingRequest else {
             seenRequest = nil
@@ -220,6 +227,8 @@ final class NotchShortcuts {
             faceTracker.restart(now: Date())
         case .toggleIsland:
             host?.toggleIslandFromShortcut()
+        case .stepFace(let step):
+            host?.stepFaceFromShortcut(step)
         case .none:
             break
         }

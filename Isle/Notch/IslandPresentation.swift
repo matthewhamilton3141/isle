@@ -239,6 +239,16 @@ final class IslandPresentation: ObservableObject {
         return pager.handle(event, content: content)
     }
 
+    /// A press of one of the mouse's other buttons reached this island's
+    /// window. Back and forward step to the previous and next face; any
+    /// other button goes on to the views. As with a swipe, a collapsed
+    /// island pages nothing.
+    func handleButton(_ event: NSEvent) -> Bool {
+        guard state.isExpanded, !isDropTarget,
+              let step = FacePager.step(forButton: event.buttonNumber) else { return false }
+        return pager.step(step, content: content, at: event.timestamp)
+    }
+
     /// This island's visual state: its own hover crossed with the shared
     /// live-activity rule. A Claude alert opens every island at once; a hover
     /// opens only the one under the pointer.

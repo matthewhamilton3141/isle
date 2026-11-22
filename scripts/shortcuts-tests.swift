@@ -67,8 +67,11 @@ final class FakeHost: ShortcutIslandHost {
     var islandPresence: ShortcutIslandPresence = .closed
     var isAnyIslandExpanded: Bool { islandPresence != .closed }
     var calls: [String] = []
+    var pageable: Set<Int> = []
     func toggleIslandFromShortcut() { calls.append("toggle") }
     func openIslandFromShortcut() { calls.append("open") }
+    func canStepFace(_ step: Int) -> Bool { pageable.contains(step) }
+    func stepFaceFromShortcut(_ step: Int) { calls.append("step \(step)") }
 }
 
 let o = KeyCombo.option, c = KeyCombo.control, s = KeyCombo.shift, cmd = KeyCombo.command
@@ -112,6 +115,7 @@ enum ShortcutsTests {
         notes()
         heldWhile()
         commands()
+        facePaging()
         faceTracking()
         center()
         endToEnd()
@@ -193,6 +197,78 @@ enum ShortcutsTests {
               "a control character from the layout falls back to the keycap")
         equal(optReturn.spoken, "Option-Return", "spoken")
         equal(KeyCombo(kVK_ANSI_1, o | s).spoken, "Option-Shift-1", "spoken, with a digit")
+    }
+
+    // MARK: - Paging faces
+
+    @MainActor
+    static func facePaging() {
+        print("Faces: defaults")
+        equal(defaults[.previousFace].combo, KeyCombo(kVK_LeftArrow, o), "previous face is ⌥←")
+        equal(defaults[.nextFace].combo, KeyCombo(kVK_RightArrow, o), "next face is ⌥→")
+        equal(A.previousFace.defaultCombo.display(character: { _ in nil }), "⌥←", "written ⌥←")
+        check(!A.previousFace.isWhilePending && !A.nextFace.isWhilePending, "not request keys: no hints on the face's buttons")
+        check(ShortcutHints.keys(defaults)[.previousFace] == nil, "and none in the hints")
+
+        print("Faces: when they're held")
+        var ctx = Ctx(running: true)
+        equal(plan(ctx), [.toggleIsland], "island closed, or not in front of you: ⌥← and ⌥→ stay every text field's")
+        ctx.canPageForward = true
+        equal(plan(ctx), [.toggleIsland, .nextFace], "on the first face: only ⌥→ — ⌥← still moves a word")
+        ctx.canPageBack = true
+        equal(plan(ctx), [.toggleIsland, .previousFace, .nextFace], "a face either side: both")
+        ctx.canPageForward = false
+        equal(plan(ctx), [.toggleIsland, .previousFace], "on the last face: only ⌥←")
+        ctx.canPageForward = true
+        ctx.composing = true
+        equal(plan(ctx), [.toggleIsland], "a field of Isle's has the keys: let go, so ⌥← moves a word in it")
+        ctx.composing = false
+        ctx.running = false
+        equal(plan(ctx), [], "not running: nothing")
+        var both = approvalCtx()
+        both.canPageBack = true
+        both.canPageForward = true
+        equal(plan(both), [.toggleIsland, .previousFace, .nextFace, .approve, .deny], "beside a waiting approval's keys")
+        var off = defaults
+        off[.nextFace].isOn = false
+        var open = Ctx(running: true)
+        open.canPageBack = true
+        open.canPageForward = true
+        equal(plan(open, off), [.toggleIsland, .previousFace], "switched off: not held")
+
+        print("Faces: what a press does")
+        equal(cmdFor(.nextFace, open, .hidden), .stepFace(1), "⌥→: on one face")
+        equal(cmdFor(.previousFace, open, .hidden), .stepFace(-1), "⌥←: back one")
+        var first = Ctx(running: true)
+        first.canPageForward = true
+        equal(cmdFor(.previousFace, first, .hidden), .none, "nothing before the first face: nothing")
+        var typing = open
+        typing.composing = true
+        equal(cmdFor(.nextFace, typing, .hidden), .none, "a field has the keys: nothing")
+        check(ShortcutPlan.live(open, face: .seen, held: [.nextFace: A.nextFace.defaultCombo]).isEmpty,
+              "never lights a button's hint")
+
+        print("Faces: through NotchShortcuts")
+        let suite = "isle.shortcut-tests.\(UUID().uuidString)"
+        let settings = AppSettings(defaults: UserDefaults(suiteName: suite)!)
+        let registrar = FakeRegistrar()
+        let center = HotKeyCenter(registrar: registrar)
+        let host = FakeHost()
+        let shortcuts = NotchShortcuts(viewModel: NotchViewModel(settings: settings), settings: settings,
+                                       center: center, host: host)
+        func spin() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+        shortcuts.refresh(); spin()
+        equal(registrar.heldActions, [.toggleIsland], "nothing to page: neither face key taken")
+        host.pageable = [1]
+        shortcuts.refresh(); spin()
+        equal(registrar.heldActions, [.toggleIsland, .nextFace], "on the first face, in front of you: ⌥→ taken, ⌥← not")
+        registrar.press(.nextFace)
+        equal(host.calls, ["step 1"], "a press steps the host one face on")
+        registrar.press(.previousFace)
+        equal(host.calls, ["step 1"], "a key not held does nothing")
+        host.pageable = []
+        shortcuts.refresh(); spin()
+        equal(registrar.heldActions, [.toggleIsland], "island put away: both let go")
     }
 
     // MARK: - Bindings

@@ -27,10 +27,11 @@ struct ShortcutsSettingsSection: View {
     var body: some View {
         Section {
             row(.toggleIsland, subtitle: "Opens on the pointer’s screen; press again or click away to close.")
+            groupRow("Previous or next face", subtitle: "As a swipe would.", actions: ShortcutAction.faces)
         } header: {
             Text("Island")
         } footer: {
-            Text("No permission needed. Click a shortcut to change it.")
+            Text("No permission needed. Click a shortcut to change it. The face keys are Isle’s only while the island is open in front of you — the pointer on it, or opened by the shortcut — so everywhere else they do what they always do.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -39,7 +40,7 @@ struct ShortcutsSettingsSection: View {
             Section {
                 row(.approve, subtitle: "Also Always…’s Confirm, and Done on a multi-answer question.")
                 row(.deny, subtitle: "Also Always…’s Back.")
-                optionsRow
+                groupRow("Pick option 1–4", subtitle: "Picks an answer, or toggles one.", actions: ShortcutAction.options)
             } header: {
                 Text("While Claude is waiting on you")
             } footer: {
@@ -76,15 +77,14 @@ struct ShortcutsSettingsSection: View {
         }
     }
 
-    /// The four option keys share a row, a switch and a reset: they're one
-    /// idea, four keys.
-    private var optionsRow: some View {
-        let actions = ShortcutAction.options
-        return VStack(alignment: .leading, spacing: 4) {
+    /// Keys that are one idea share a row, a switch and a reset: the four
+    /// option keys, the two face keys.
+    private func groupRow(_ title: String, subtitle: String, actions: [ShortcutAction]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .center, spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Pick option 1–4")
-                    Text("Picks an answer, or toggles one.")
+                    Text(title)
+                    Text(subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -94,7 +94,7 @@ struct ShortcutsSettingsSection: View {
                     ForEach(actions, id: \.self) { recorder($0, compact: true) }
                 }
                 resetButton(actions)
-                Toggle("Pick option 1–4", isOn: isOn(actions))
+                Toggle(title, isOn: isOn(actions))
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.small)

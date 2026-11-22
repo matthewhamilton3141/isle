@@ -4,7 +4,9 @@
 //  One island's swipe between faces: takes the scroll events its window
 //  offers (`NotchWindow.scrollInterceptor`), runs them through
 //  `FaceSwipeTracker`, and publishes where the faces sit for
-//  `ExpandedNotchView` to draw.
+//  `ExpandedNotchView` to draw. A mouse's back and forward buttons
+//  (`NotchWindow.buttonInterceptor`) step a face the same way, landing on
+//  the same spring as a swipe let go.
 //
 //  The faces move by a SwiftUI offset set straight from the scroll deltas —
 //  one change per event, no clock of our own — and settle with one spring
@@ -111,6 +113,42 @@ final class FacePager: ObservableObject {
         return result.verdict == .consume
     }
 
+    /// A mouse's back (-1) or forward (+1) button, pressed over this
+    /// island's open panel: one face that way, landed on the swipe's own
+    /// spring, as a swipe let go past half-way would. A wheel has no gesture
+    /// to page with, so these are the way across for a mouse that has them.
+    /// Returns whether the press was taken.
+    func step(_ step: Int, content: NotchViewModel, at time: TimeInterval) -> Bool {
+        guard content.showsHome, let face = content.expandedPlace.face else {
+            if current != nil { reset() }
+            return false
+        }
+        // Fingers on the trackpad have the face; a press doesn't take it
+        // from them.
+        if tracker.isTracking { return true }
+        if let current, current != face { reset() }
+        // At the first or last face: nothing that way. Taken all the same,
+        // so it doesn't reach whatever is under the island.
+        guard content.neighbor(of: face, step: step) != nil else { return true }
+
+        // Pressed again while the last landing is still on its way: carry on
+        // from where its spring has the face now, so two quick presses run
+        // on through rather than snapping home between them.
+        var from: CGFloat = 0
+        if let settling, settling.generation == generation, current == face {
+            from = CGFloat(IslandMotion.faceSettle.displacement(
+                from: Double(settling.from), velocity: Double(settling.velocity), at: time - settling.time))
+        }
+        var instant = Transaction()
+        instant.disablesAnimations = true
+        withTransaction(instant) {
+            current = face
+            offset = from
+        }
+        settle(step: step, velocity: 0, from: face, content: content, at: time)
+        return true
+    }
+
     /// Back to rest at once, no animation: the panel closed, or the faces
     /// changed under a gesture.
     func reset() {
@@ -184,6 +222,20 @@ final class FacePager: ObservableObject {
                 self.neighbor = nil
                 self.settling = nil
             }
+        }
+    }
+}
+
+extension FacePager {
+    /// Which way a mouse button steps: the back button (button 4, which
+    /// AppKit numbers 3) to the previous face, forward (5, numbered 4) to the
+    /// next — the buttons a browser goes back and forward with. Nil for any
+    /// other button.
+    nonisolated static func step(forButton number: Int) -> Int? {
+        switch number {
+        case 3: return -1
+        case 4: return 1
+        default: return nil
         }
     }
 }
