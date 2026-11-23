@@ -456,11 +456,11 @@ final class IslandCarry {
             let mid = window.frame.midX + old.offset(width: drawn.width, open: isOpen)
             anchor.x = mid - opening.offset(width: drawn.width, open: isOpen) - opening.shift
             // An open panel turned (going home to the notch) keeps its top
-            // edge, or its bottom edge, where it is: it's the capsule's
-            // anchor that differs between opening up and down, not the
-            // panel's top.
+            // edge where it is: it's the capsule's anchor that differs
+            // between the ways it opens, not the panel's top — `rise` of
+            // the panel's height over the capsule below it.
             if isOpen {
-                anchor.y = opening.upward ? drawn.minY + IslandFloat.pillHeight : drawn.maxY
+                anchor.y = drawn.maxY - opening.rise * (drawn.height - IslandFloat.pillHeight)
             }
         }
         window.disableScreenUpdatesUntilFlush()
@@ -525,17 +525,19 @@ final class IslandCarry {
     /// Anchored again for that in place, so nothing on the screen moves
     /// (`turn`) before the open spring starts.
     ///
-    /// A hover says which side the pointer came from (`approach`), and the
-    /// island opens toward it where it fits. What's remembered is the
-    /// place's own anchor, not that: pinned for the pointer, the anchor is
-    /// an end of the capsule, which a relaunch would read as its middle.
+    /// It grows out from the capsule every way at once, and a hover says
+    /// which way the pointer came in (`approach`), which it leans toward
+    /// (`IslandPlacementBounds.forOpen`). What's remembered is the place's
+    /// own anchor, not that: leaning for the pointer, the anchor is
+    /// another point of the capsule, which a relaunch would read as its
+    /// middle.
     private func openForPlace(approach: IslandApproach?) {
         guard presentation.placement.isFloating, !isOpen, hold.phase != .carrying, glide == nil,
               let metrics = presentation.metrics, let anchor = presentation.placement.anchor,
               let width = drawnRect()?.width
         else { return }
         let bounds = metrics.placementBounds
-        let (rest, opening) = bounds.forPlace(anchor, pillWidth: width, was: presentation.opening, approach: approach)
+        let (rest, opening) = bounds.forOpen(anchor, pillWidth: width, was: presentation.opening, approach: approach)
         guard opening != presentation.opening || rest != anchor else { return }
         turn(to: opening)
         setPlacement(.floating(anchor: rest))

@@ -218,12 +218,16 @@ struct IslandFill: View {
     /// glow), and how far right of it the outline is drawn.
     var housing: CGSize? = nil
     var housingShift: CGFloat = 0
-    /// Off the notch and opening upward: the island stands on its bottom
-    /// edge, so the swell grows from there instead of from the top.
-    var growsUp: Bool = false
+    /// Off the notch, how much of its growth goes above the capsule
+    /// (`IslandOpening.rise`): opening upward it stands on its bottom edge,
+    /// so the swell grows from there instead of from the top; growing both
+    /// ways, from the same height on the capsule the panel does.
+    var rise: CGFloat = 0
     /// Off the notch and pinned to one side (`IslandOpening.pin`): the
     /// swell grows from that end, and leans only away from it, so the end
     /// stays where the island was put — against a screen edge, perhaps.
+    /// Leaning toward a pointer, it grows from the same point the open
+    /// panel does.
     var pin: IslandOpening.Pin = .centre
     /// The physical camera housing, which Prism keeps black whatever the
     /// glow's setting; nil on a display without one.
@@ -265,17 +269,13 @@ struct IslandFill: View {
     /// Where the swell grows from: the edge the island hangs from or
     /// stands on, at its middle or at its pinned end.
     private var swellAnchor: UnitPoint {
-        switch pin {
-        case .centre: return growsUp ? .bottom : .top
-        case .leading: return growsUp ? .bottomLeading : .topLeading
-        case .trailing: return growsUp ? .bottomTrailing : .topTrailing
-        }
+        UnitPoint(x: pin.fraction, y: rise)
     }
 
     /// The lean toward the pointer, never toward the pinned end.
     private func lean(_ offset: CGFloat) -> CGFloat {
         switch pin {
-        case .centre: return offset
+        case .centre, .lean: return offset
         case .leading: return max(offset, 0)
         case .trailing: return min(offset, 0)
         }
