@@ -173,7 +173,7 @@ enum AlertOpens {
         spin(0.8)
         report(!vm.autoExpandsForActivity && !a.open && !b.open, "to start: no alert, both closed", "\(a.describe) / \(b.describe)")
 
-        print("An alert opens a floating island the way its place calls for")
+        print("An alert opens a floating island outward from where it rests")
         // At the bottom it opens up. Opened by a hover, carried open up to
         // the top and put down, closed: it still opens up until something
         // decides again.
@@ -187,9 +187,14 @@ enum AlertOpens {
         report(!a.open, "the approval's news shows in the capsule first", a.describe)
         let restedTop = a.drawn()
         alertOpens(settings)
-        report(a.open && !a.island.opening.upward, "an alert opens it down, as its place now calls for", a.describe)
+        // Matthew, 2026-11-22: "we want outwards perfectly". Any open grows
+        // out from the capsule every way; under the menu bar, up only as
+        // far as fits.
+        report(a.open && a.island.opening.rise > 0 && a.island.opening.rise <= 0.5,
+               "an alert opens it outward, up only as far as fits under the top", a.describe)
         if let c = a.drawn(), let p = restedTop {
-            report(abs(c.maxY - p.maxY) < 0.6 && abs(c.midX - p.midX) < 0.6, "hanging from the capsule as it rested", "\(c) from \(p)")
+            report(c.maxY > p.maxY && c.minY < p.minY && abs(c.midX - p.midX) < 0.6,
+                   "grown out past the capsule as it rested, centred on it", "\(c) from \(p)")
             report(v.insetBy(dx: -0.5, dy: -0.5).contains(c), "wholly on the screen", "\(c)")
         }
         report(b.open && b.island.placement == .docked && b.island.opening == .down,
