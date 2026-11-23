@@ -496,7 +496,7 @@ do {
             switch pin {
             case .leading: check(near(c.minX, 0), "\(label): flush against the left edge", "\(c)")
             case .trailing: check(near(c.maxX, 1512), "\(label): flush against the right edge", "\(c)")
-            case .centre: break
+            case .centre, .lean: break
             }
             if upward { check(near(c.minY, 0), "\(label): flush on the bottom edge", "\(c)") }
             if name.hasPrefix("top") { check(near(c.maxY, 944), "\(label): flush under the menu bar", "\(c)") }
@@ -580,56 +580,98 @@ do {
     check(settled.anchor == CGPoint(x: 1512, y: 500) && settled.opening == right, "a capsule already anchored for its place is left alone")
 }
 
-print("Placement: opens toward the pointer")
+print("Placement: grows out every way, leaning toward the pointer")
 
 do {
     // Matthew, 2026-11-14: "makes it try to open in the direction the mouse
-    // comes from more". Where it fits, a hover opens the island toward the
-    // side the pointer came from; the capsule itself never moves for it.
+    // comes from more"; 2026-11-22: "direction shouldnt matter ... outward
+    // from its center but somewhat towards the direction the cursor comes
+    // from", and "it literally grows outwards in all directions but with
+    // bias from the negative vector the mouse comes in at".
     let drawn = CGRect(x: 690, y: 562, width: 132, height: 38)
-    check(IslandApproach(from: CGPoint(x: 756, y: 610), onto: drawn) == IslandApproach(fromAbove: true, fromRight: nil), "a pointer above it came from above")
-    check(IslandApproach(from: CGPoint(x: 756, y: 550), onto: drawn) == IslandApproach(fromAbove: false, fromRight: nil), "below it, from below")
-    check(IslandApproach(from: CGPoint(x: 680, y: 580), onto: drawn) == IslandApproach(fromAbove: nil, fromRight: false), "past its left end, from the left")
-    check(IslandApproach(from: CGPoint(x: 830, y: 605), onto: drawn) == IslandApproach(fromAbove: true, fromRight: true), "past its top right corner, from both")
-    check(IslandApproach(from: CGPoint(x: 756, y: 580), onto: drawn) == nil, "never outside it: no approach")
+    func way(_ a: IslandApproach?) -> (CGFloat, CGFloat)? { a.map { ($0.dx, $0.dy) } }
+    let leftward = IslandApproach(trail: [CGPoint(x: 900, y: 580), CGPoint(x: 850, y: 580), CGPoint(x: 815, y: 580)], onto: drawn)
+    check(way(leftward).map { near($0.0, 1) && near($0.1, 0) } == true, "moving left onto it: it came from the right", "\(String(describing: leftward))")
+    let down = IslandApproach(trail: [CGPoint(x: 756, y: 700), CGPoint(x: 756, y: 640), CGPoint(x: 756, y: 598)], onto: drawn)
+    check(way(down).map { near($0.0, 0) && near($0.1, 1) } == true, "moving down onto it: from above")
+    let slant = IslandApproach(trail: [CGPoint(x: 600, y: 500), CGPoint(x: 700, y: 570)], onto: drawn)
+    check(way(slant).map { $0.0 < 0 && $0.1 < 0 && near($0.0 * $0.0 + $0.1 * $0.1, 1) } == true, "up and right onto it: from below left, a unit vector")
+    let hardlyMoving = IslandApproach(trail: [CGPoint(x: 756, y: 610), CGPoint(x: 756, y: 609)], onto: drawn)
+    check(way(hardlyMoving).map { near($0.0, 0) && near($0.1, 1) } == true, "hardly moving, from above it: from above all the same")
+    check(IslandApproach(trail: [CGPoint(x: 756, y: 580)], onto: drawn) == nil, "never outside it and not moving: no approach")
 
     let mid = CGPoint(x: 756, y: 600)
     let plain = bounds.forPlace(mid, pillWidth: 132, was: .down)
-    check(!plain.opening.upward && plain.opening.pin == .centre, "no approach: down from the middle, as before")
-    let fromAbove = bounds.forPlace(mid, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: true, fromRight: nil))
-    check(fromAbove.opening.upward && fromAbove.anchor == mid, "from above, with room above: it opens up", "\(fromAbove)")
-    let fromBelow = bounds.forPlace(mid, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: false, fromRight: nil))
-    check(!fromBelow.opening.upward, "from below: down")
+    check(plain.opening.hangs && plain.opening.pin == .centre, "put down, it rests as its place says: down from the middle")
+    // Matthew, on ⌥⇥: "still makes it go from the bottom, we want outwards perfectly".
+    let still = bounds.forOpen(mid, pillWidth: 132, was: .down, approach: nil)
+    check(near(still.opening.rise, 0.5) && still.opening.pin == .centre && still.anchor == mid,
+          "opened with no pointer (a shortcut, a click, an alert): evenly out every way", "\(still)")
+    let stillPanel = panel(still.anchor, still.opening, in: bounds)
+    check(near(stillPanel.midX, 756) && near(stillPanel.midY, 600 - 19), "its panel centred on the capsule", "\(stillPanel)")
+    let pill = capsule(mid, 132, plain.opening, in: bounds)
 
-    let high = CGPoint(x: 756, y: 900)
-    check(!bounds.forPlace(high, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: true, fromRight: nil)).opening.upward,
-          "from above, no room above: down all the same")
-    let low = CGPoint(x: 756, y: 100)
-    check(bounds.forPlace(low, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: false, fromRight: nil)).opening.upward,
-          "from below, no room below: up all the same")
+    let fromRight = bounds.forOpen(mid, pillWidth: 132, was: .down, approach: IslandApproach(dx: 1, dy: 0))
+    check(near(fromRight.opening.rise, 0.5), "from the right: half up, half down", "\(fromRight)")
+    check(near(fromRight.opening.pin.fraction, 1.0 / 3) && near(fromRight.anchor.x, 690 + 44), "and leaning right, a third along from its left end", "\(fromRight)")
+    check(near(capsule(fromRight.anchor, 132, fromRight.opening, in: bounds).minX, pill.minX), "and the capsule is drawn where it was")
+    let fromLeft = bounds.forOpen(mid, pillWidth: 132, was: .down, approach: IslandApproach(dx: -1, dy: 0))
+    check(near(fromLeft.opening.pin.fraction, 2.0 / 3) && near(fromLeft.anchor.x, 690 + 88), "from the left: mirrored", "\(fromLeft)")
+    let fromAbove = bounds.forOpen(mid, pillWidth: 132, was: .down, approach: IslandApproach(dx: 0, dy: 1))
+    check(near(fromAbove.opening.rise, 2.0 / 3) && fromAbove.opening.pin == .centre && fromAbove.anchor == mid,
+          "from above: centred sideways, two thirds of it up", "\(fromAbove)")
+    let fromBelow = bounds.forOpen(mid, pillWidth: 132, was: .down, approach: IslandApproach(dx: 0, dy: -1))
+    check(near(fromBelow.opening.rise, 1.0 / 3), "from below: two thirds of it down", "\(fromBelow)")
+    let corner = bounds.forOpen(mid, pillWidth: 132, was: .down, approach: IslandApproach(dx: 1, dy: 1))
+    let lean = IslandPlacementBounds.approachLean / 2.squareRoot()
+    check(near(corner.opening.rise, 0.5 + lean) && near(corner.opening.pin.fraction, 0.5 - lean),
+          "from above right: each axis leans by its part", "\(corner)")
 
-    let fromRight = bounds.forPlace(mid, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: nil, fromRight: true))
-    check(fromRight.opening.pin == .leading && fromRight.anchor.x == 690, "from the right: pinned at its left end, it grows right", "\(fromRight)")
-    check(near(capsule(fromRight.anchor, 132, fromRight.opening, in: bounds).minX, capsule(mid, 132, plain.opening, in: bounds).minX),
-          "and the capsule is drawn where it was")
-    let fromLeft = bounds.forPlace(mid, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: nil, fromRight: false))
-    check(fromLeft.opening.pin == .trailing && fromLeft.anchor.x == 822, "from the left: pinned at its right end, it grows left", "\(fromLeft)")
-    check(near(capsule(fromLeft.anchor, 132, fromLeft.opening, in: bounds).minX, capsule(mid, 132, plain.opening, in: bounds).minX),
-          "and the capsule is drawn where it was")
-    for (name, placed) in [("right", fromRight), ("left", fromLeft)] {
+    let tall = bounds.tallest - bounds.pill.height
+    for (name, placed, dx, dy) in [("right", fromRight, 1.0, 0.0), ("left", fromLeft, -1.0, 0.0),
+                                   ("above", fromAbove, 0.0, 1.0), ("below", fromBelow, 0.0, -1.0), ("above right", corner, 1.0, 1.0)] {
         let p = panel(placed.anchor, placed.opening, in: bounds)
-        check(p.minX >= bounds.visible.minX && p.maxX <= bounds.visible.maxX, "grown \(name), the panel is on the screen", "\(p)")
+        check(inside(p, bounds.visible), "from \(name), the panel is on the screen", "\(p)")
+        check(p.maxY > pill.maxY && p.minY < pill.minY && p.minX < pill.minX && p.maxX > pill.maxX,
+              "from \(name): it grows out past the capsule every way", "\(p) round \(pill)")
+        // Its growth, toward the pointer's side less away from it, per axis.
+        let x = (p.maxX - pill.maxX) - (pill.minX - p.minX), y = (p.maxY - pill.maxY) - (pill.minY - p.minY)
+        check((dx == 0 ? abs(x) < 0.01 : x * dx > 0) && (dy == 0 ? abs(y) < 0.01 : y * dy > 0),
+              "from \(name): more of it toward where the pointer came from", "x \(x) y \(y)")
+        check(near(p.maxY - pill.maxY, placed.opening.rise * tall), "from \(name): rise of it above the capsule")
+        check(near(drawnMid(placed.anchor, 132, open: false, placed.opening), pill.midX), "from \(name): the closed capsule is drawn where it was")
     }
 
-    let nearRight = CGPoint(x: 1100, y: 600)
-    let noRoom = bounds.forPlace(nearRight, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: nil, fromRight: true))
-    check(noRoom.opening.pin == .centre && noRoom.anchor == nearRight, "from the right with no room to grow right: centred as before", "\(noRoom)")
+    // Held in to the screen.
+    let nearRight = CGPoint(x: 1220, y: 600)
+    let held = bounds.forOpen(nearRight, pillWidth: 132, was: .down, approach: IslandApproach(dx: 1, dy: 0))
+    let heldPanel = panel(held.anchor, held.opening, in: bounds)
+    check(held.opening.pin.fraction > 1.0 / 3 && held.opening.pin.fraction < 0.5 && near(heldPanel.maxX, bounds.visible.maxX),
+          "from the right with less room right: it leans only as far as the screen allows", "\(held) \(heldPanel)")
+    let edgeOfMiddle = CGPoint(x: 1252, y: 600)
+    let noRoom = bounds.forOpen(edgeOfMiddle, pillWidth: 132, was: .down, approach: IslandApproach(dx: 1, dy: 0))
+    check(noRoom.opening.pin == .centre && noRoom.anchor == edgeOfMiddle, "from the right with no room to lean right: centred", "\(noRoom)")
     let wall = CGPoint(x: 100, y: 600)
-    let walled = bounds.forPlace(wall, pillWidth: 132, was: bounds.opening(at: wall), approach: IslandApproach(fromAbove: nil, fromRight: false))
+    let walled = bounds.forOpen(wall, pillWidth: 132, was: bounds.opening(at: wall), approach: IslandApproach(dx: -1, dy: 0))
     check(walled.opening.pin == .leading, "against the left wall, from the left: the wall's pin stands", "\(walled)")
+    let high = CGPoint(x: 756, y: 900)
+    let top = bounds.forOpen(high, pillWidth: 132, was: .down, approach: IslandApproach(dx: 0, dy: 1))
+    check(near(panel(top.anchor, top.opening, in: bounds).maxY, bounds.visible.maxY) && top.opening.rise < 0.5,
+          "from above just under the menu bar: as much up as fits, the rest down", "\(top)")
+    let low = CGPoint(x: 756, y: 100)
+    let bottom = bounds.forOpen(low, pillWidth: 132, was: .down, approach: IslandApproach(dx: 0, dy: -1))
+    check(near(panel(bottom.anchor, bottom.opening, in: bounds).minY, bounds.visible.minY) && bottom.opening.rise > 0.5,
+          "from below near the bottom: as much down as fits, the rest up", "\(bottom)")
+    for (name, placed) in [("high", top), ("low", bottom)] {
+        check(inside(panel(placed.anchor, placed.opening, in: bounds), bounds.visible), "\(name): the panel is on the screen")
+    }
 
-    let corner = bounds.forPlace(mid, pillWidth: 132, was: .down, approach: IslandApproach(fromAbove: true, fromRight: true))
-    check(corner.opening.upward && corner.opening.pin == .leading, "from above and to the right: up and rightward", "\(corner)")
+    // Carried open, it stays whole on the screen growing both ways.
+    let both = fromRight.opening
+    for target in [CGPoint(x: 0, y: 2000), CGPoint(x: 5000, y: -500)] {
+        let a = bounds.resting(target, open: both)
+        check(inside(panel(a, both, in: bounds), bounds.visible), "open and growing both ways, carried to \(target): whole on the screen", "\(a)")
+    }
 }
 
 print("Placement: back to the notch from any opening and pin")
@@ -647,6 +689,9 @@ do {
         ("pinned right", IslandOpening(upward: false, shift: -260, pin: .trailing)),
         ("up, pinned left", IslandOpening(upward: true, shift: 260, pin: .leading)),
         ("up, pinned right", IslandOpening(upward: true, shift: -260, pin: .trailing)),
+        ("leaning right", IslandOpening(upward: false, shift: 260.0 / 3, pin: .lean(1.0 / 3))),
+        ("up, leaning left", IslandOpening(upward: true, shift: -260.0 / 3, pin: .lean(2.0 / 3))),
+        ("both ways, leaning right", IslandOpening(rise: 0.6, shift: 260.0 / 3, pin: .lean(1.0 / 3))),
     ]
     for (name, o) in openings {
         for (what, size, open) in [("open card", card, true), ("capsule", pillSize, false)] {
@@ -657,7 +702,7 @@ do {
             check(bounds.captures(top), "\(name), \(what): its top centre on the notch is taken back")
             // The drawn top centre, worked out from the outline as NotchRootView draws it.
             let mid = anchor.x + o.shift + o.offset(width: size.width, open: open)
-            let drawnTop = o.upward ? anchor.y - bounds.pill.height + size.height : anchor.y
+            let drawnTop = anchor.y + o.rise * (size.height - bounds.pill.height)
             check(near(top.x, mid) && near(top.y, drawnTop), "\(name), \(what): the top centre is where it's drawn")
             if o != .down && open {
                 check(!bounds.captures(anchor), "\(name), \(what): its anchor there is no test (the bug)", "\(anchor)")

@@ -340,7 +340,7 @@ final class NotchWindowController {
         let describe = { [weak self, weak presentation] () -> String in
             guard let self, let presentation else { return "gone" }
             return "display \(id) \(presentation.state) hover \(presentation.isHovering) held \(presentation.isHeldOpen)"
-                + " placement \(presentation.placement) opening \(presentation.opening.upward ? "up" : "down")"
+                + " placement \(presentation.placement) opening rise \(presentation.opening.rise) pin \(presentation.opening.pin)"
                 + " face \(self.viewModel.expandedPlace)"
                 + " composing \(self.viewModel.composing.map { "\($0)" } ?? "no") background \(self.viewModel.panelBackground.rawValue)"
         }
@@ -735,12 +735,11 @@ final class NotchWindowController {
         }
     }
 
-    /// Opens an island on the hover, toward where the pointer came from
-    /// off its notch: the last place it was outside the drawn capsule.
+    /// Opens an island on the hover, off its notch leaning back along the
+    /// way the pointer came in (`IslandApproach`).
     private func open(_ island: Island) {
-        if island.presentation.placement.isFloating, let drawn = drawnRectInScreen(island),
-           let origin = pointerTrail.last(where: { !drawn.contains($0) }) {
-            island.presentation.approach = IslandApproach(from: origin, onto: drawn)
+        if island.presentation.placement.isFloating, let drawn = drawnRectInScreen(island) {
+            island.presentation.approach = IslandApproach(trail: pointerTrail, onto: drawn)
         }
         island.presentation.setHovering(true)
         // Used up if it opened; if it didn't, it's nobody else's.

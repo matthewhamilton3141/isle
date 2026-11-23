@@ -304,10 +304,10 @@ struct NotchRootView: View {
         // state this body was evaluated for.
         let opening = state.isExpanded
         let reduced = reduceMotion
-        VStack(spacing: 0) {
+        IslandRiseLayout(rise: floating ? direction.rise : 0, below: NotchMetrics.floatingBelow) {
             // Opening upward, the island stands on the bottom of its window
-            // (the shadow's room under it), and grows up from there.
-            if direction.upward { Spacer(minLength: 0) }
+            // (the shadow's room under it), and grows up from there; growing
+            // both ways, it's `rise` of the way down (`IslandRiseLayout`).
             notch
                 .offset(x: collapsedShift)
                 // The shift exists to centre an asymmetric pill, so it moves
@@ -333,13 +333,8 @@ struct NotchRootView: View {
                     // Reduce Motion keeps the plain curve.
                     t.animation = reduceMotion ? panelResizeAnimation : t.panelResizeAnimation ?? panelResizeAnimation
                 }
-            if direction.upward {
-                Color.clear.frame(height: NotchMetrics.floatingBelow)
-            } else {
-                Spacer(minLength: 0)
-            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: direction.upward ? .bottom : .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Open on the open spring. Close on the close spring, marked as a
         // collapse so the outline's width, height and corners each take their
         // own (see `notch`; the close spring is the height's, and is what the
@@ -416,8 +411,8 @@ struct NotchRootView: View {
         var genie: NotchShape.Genie?
         // The taper draws the walls in toward the capsule's end: the bottom,
         // where the island hangs from its top. Standing on its bottom edge
-        // (opening upward) it collapses without one.
-        if state == .collapsed, !reduceMotion, !direction.upward, let collapseOrigin {
+        // (opening upward), or growing both ways, it collapses without one.
+        if state == .collapsed, !reduceMotion, !floating || direction.hangs, let collapseOrigin {
             genie = NotchShape.Genie(
                 expanded: collapseOrigin,
                 collapsed: size,
@@ -545,7 +540,7 @@ struct NotchRootView: View {
                 opened: state.isExpanded,
                 housing: glowHousing,
                 housingShift: collapsedShift,
-                growsUp: direction.upward,
+                rise: floating ? direction.rise : 0,
                 pin: floating ? direction.pin : .centre,
                 notch: physicalNotch,
                 ribbon: ribbon,
@@ -557,7 +552,7 @@ struct NotchRootView: View {
         .overlay(alignment: .top) {
             // From the edge furthest from the capsule: the bottom, or the
             // top of a panel that opened upward.
-            DetachTrace(model: island.detachTrace, outline: outline, size: size, fromTop: direction.upward)
+            DetachTrace(model: island.detachTrace, outline: outline, size: size, fromTop: floating && direction.rise > 0.5)
         }
         // The corners lead the collapse: the clip's and the fill's radii.
         .islandCollapseChannel(.corners)
@@ -610,8 +605,9 @@ struct NotchRootView: View {
         return CGRect(
             x: (hostWidth - s.width) / 2 + collapsedShift,
             // Standing on the window's bottom (the shadow's room under it)
-            // when it opens upward.
-            y: direction.upward ? hostHeight - NotchMetrics.floatingBelow - s.height : 0,
+            // when it opens upward; `rise` of the way there growing both
+            // ways (`IslandRiseLayout`).
+            y: floating ? direction.drop(in: hostHeight - NotchMetrics.floatingBelow, height: s.height) : 0,
             width: s.width,
             height: s.height
         )

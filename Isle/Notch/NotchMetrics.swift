@@ -244,16 +244,16 @@ struct NotchMetrics {
     /// The window's frame for a placement: `maximumFrame` on the notch, and
     /// the same size off it, placed for the way the island opens: its top
     /// edge level with the anchor when it opens downward, its bottom edge
-    /// the shadow's room below the capsule when it opens upward, and
-    /// centred on the open panel (the anchor moved by the opening's shift).
+    /// the shadow's room below the capsule when it opens upward, between
+    /// for an island that grows both ways (`IslandOpening.rise` of the room
+    /// over the capsule above it), and centred on the open panel (the
+    /// anchor moved by the opening's shift).
     /// The island is drawn inside it accordingly (NotchRootView), so the
     /// capsule is at the anchor whichever it is.
     func frame(for placement: IslandPlacement, opening: IslandOpening = .down) -> NSRect {
         let docked = maximumFrame
         guard let anchor = placement.anchor else { return docked }
-        let top = opening.upward
-            ? anchor.y - IslandFloat.pillHeight - Self.floatingBelow + docked.height
-            : anchor.y
+        let top = anchor.y + opening.rise * Self.roomOver(docked.height)
         return NSRect(
             x: anchor.x + opening.shift - docked.width / 2,
             y: top - docked.height,
@@ -269,10 +269,15 @@ struct NotchMetrics {
     /// The anchor of the island in a window at `frame`, opening as
     /// `opening` says: the inverse of `frame(for:opening:)`.
     static func anchor(of frame: NSRect, opening: IslandOpening) -> CGPoint {
-        let top = opening.upward
-            ? frame.minY + floatingBelow + IslandFloat.pillHeight
-            : frame.maxY
-        return CGPoint(x: frame.midX - opening.shift, y: top)
+        CGPoint(x: frame.midX - opening.shift, y: frame.maxY - opening.rise * roomOver(frame.height))
+    }
+
+    /// In a window `height` tall off the notch, how much room there is
+    /// over the capsule: all of it but the capsule and the shadow's room
+    /// under it. An island opening upward has all of it above the capsule;
+    /// one growing both ways, its `rise` of it.
+    static func roomOver(_ height: CGFloat) -> CGFloat {
+        height - floatingBelow - IslandFloat.pillHeight
     }
 
     /// The top centre of the island in a window at `frame`: the anchor that
