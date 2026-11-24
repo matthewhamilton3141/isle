@@ -110,6 +110,7 @@ struct ShelfExpandedView: View {
                     isSelected: selection.contains(item.id)
                 )
                 .onTapGesture { toggle(item) }
+                .hoverGrow()
                 .onDrag { NSItemProvider(object: item.url as NSURL) }
                 .contextMenu {
                     Button("Show in Finder") {
@@ -336,5 +337,6 @@ private struct ShelfButton: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .hoverGrow()
     }
 }

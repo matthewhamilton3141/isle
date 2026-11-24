@@ -92,6 +92,8 @@ struct ExpandedNotchView: View {
                         .contentShape(Rectangle())
                         .onTapGesture { viewModel.restartWaveform() }
                         .allowsHitTesting(viewModel.waveformSource.capturesAudio)
+                        .disabled(!viewModel.waveformSource.capturesAudio)
+                        .hoverGrow()
                         .padding(.top, 10 - Self.waveformSlack)
                         .padding(.trailing, 4 - Self.waveformSlack)
                         .modifier(SwipeFade(pager: island.pager))
@@ -493,6 +495,7 @@ struct ExpandedNotchView: View {
                 .animation(.easeInOut(duration: 0.15), value: active)
         }
         .buttonStyle(.plain)
+        .hoverGrow()
     }
 }
 
@@ -622,6 +625,7 @@ private struct OutputButton: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(devices.current.map { "Output: \($0.name)" } ?? "Output")
+                .hoverGrow()
                 .transition(.opacity)
             }
         }
@@ -660,6 +664,7 @@ private struct OutputList: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .hoverGrow()
 
                 Spacer(minLength: 0)
             }
@@ -767,6 +772,7 @@ private struct OutputVolumeSlider: View {
             Button(action: volume.toggleMute) { glyph }
                 .buttonStyle(.plain)
                 .accessibilityLabel(state.isMuted == true ? "Unmute" : "Mute")
+                .hoverGrow()
         } else {
             glyph
         }

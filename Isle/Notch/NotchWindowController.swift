@@ -175,6 +175,7 @@ final class NotchWindowController {
             island.presentation.setHovering(false)
             island.presentation.relaxProximity()
             island.window.orderOut(nil)
+            island.presentation.hover.pointerLeft()
         }
         // The panels are kept, not destroyed: `hide()` is a toggle from the
         // menu bar, and rebuilding the hosting views on the way back would
@@ -663,6 +664,18 @@ final class NotchWindowController {
         let move = measureMove(event)
 
         let pointerIsland = island(containing: pointer)
+
+        // The control under the pointer grows (`HoverTracker`): the island
+        // under the pointer gets the move in its own window's space, where
+        // its controls are laid out; every other island is told it's gone.
+        for island in islands.values {
+            if island === pointerIsland {
+                island.presentation.hover.pointerMoved(
+                    island.hosting.topLeftPoint(fromWindow: island.window.convertPoint(fromScreen: pointer)))
+            } else {
+                island.presentation.hover.pointerLeft()
+            }
+        }
         // Onto another display: whether an open island is in front of the
         // user changed, which the shortcuts read (`islandPresence`).
         let pointerDisplay = pointerIsland.map(ObjectIdentifier.init)

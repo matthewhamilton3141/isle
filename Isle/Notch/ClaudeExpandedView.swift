@@ -594,6 +594,7 @@ struct ClaudeExpandedView: View {
         .buttonStyle(.plain)
         .fixedSize()
         .accessibilityLabel(title)
+        .hoverGrow()
     }
 
     /// The face's lead: the exact command on an approval; Claude's own words
@@ -854,6 +855,7 @@ struct ClaudeExpandedView: View {
             .layoutPriority(-1)
             .help("Back to every session")
             .accessibilityLabel("Back to every session")
+            .hoverGrow()
         } else if let name = viewModel.claudeBackground?.name {
             Label(name, systemImage: "rectangle.stack.fill")
                 .foregroundStyle(.white.opacity(0.8))
@@ -923,6 +925,7 @@ struct ClaudeExpandedView: View {
             }
             .buttonStyle(.plain)
             .help(sessionsHelp(others, quiet: quiet))
+            .hoverGrow()
             .accessibilityLabel(others.isEmpty && quiet > 0
                                 ? "\(quiet) more \(quiet == 1 ? "session" : "sessions"), show every session"
                                 : "Every session, \(viewModel.sessionList.count) live")
@@ -1079,6 +1082,7 @@ struct ClaudeExpandedView: View {
         .buttonStyle(.plain)
         .fixedSize()
         .accessibilityLabel("Back")
+        .hoverGrow()
     }
 
     /// The list's right wing: how many, whether the rest are a scroll
@@ -1200,6 +1204,7 @@ struct ClaudeExpandedView: View {
                 .buttonStyle(.plain)
                 .padding(.trailing, 2)
                 .help(attaches ? "Attach in \(jump)" : "Show this session in \(jump)")
+                .hoverGrow()
                 .accessibilityLabel(attaches ? "Attach to \(row.label ?? "this session") in \(jump)"
                                              : "Show \(row.label ?? "this session") in \(jump)")
             } else if holdsJump {
@@ -1739,6 +1744,7 @@ struct ClaudeExpandedView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.white.opacity(0.8))
                 .accessibilityLabel("Previous question")
+                .hoverGrow()
             }
             Text("\(index + 1) of \(count)")
                 .monospacedDigit()
@@ -1834,6 +1840,7 @@ struct ClaudeExpandedView: View {
         .buttonStyle(.plain)
         // Read out in full whatever the setting hides.
         .accessibilityLabel(option.description.map { "\(option.label), \($0)" } ?? option.label)
+        .hoverGrow()
         .accessibilityAddTraits(picked ? [.isSelected] : [])
     }
 
@@ -1900,6 +1907,7 @@ struct ClaudeExpandedView: View {
         .buttonStyle(.plain)
         .help(iconOnly ? title : "")
         .accessibilityLabel(title)
+        .hoverGrow()
     }
 
     /// A shortcut's keys on its button: faint, and there only while a press
@@ -2182,6 +2190,7 @@ private struct ComposeField: View {
             .buttonStyle(.plain)
             .disabled(isEmpty)
             .opacity(isEmpty ? 0.5 : 1)
+            .hoverGrow()
             .padding(.bottom, 2)
         }
         .padding(.leading, 10)
