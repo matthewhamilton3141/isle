@@ -163,7 +163,7 @@ final class EqualizerLayerView: NSView {
         self.isPlaying = isPlaying
         let styleWas = self.style
         self.style = style
-        if palette != builtPalette { applyGradient() }
+        if palette != builtPalette { applyGradient(animated: true) }
         if mode != modeWas || style != styleWas { rebuild() }
     }
 
@@ -258,8 +258,27 @@ final class EqualizerLayerView: NSView {
     private func edgeHeight(_ full: CGFloat) -> CGFloat { full + 2 * CGFloat(IslandGlass.barEdgeWidth) }
     private func edgeWidth(_ barWidth: CGFloat) -> CGFloat { barWidth + 2 * CGFloat(IslandGlass.barEdgeWidth) }
 
-    private func applyGradient() {
+    /// How long a new cover's colours take to blend in. One animation handed
+    /// to the render server, so it costs nothing per frame.
+    private static let paletteFade: CFTimeInterval = 0.5
+
+    /// Sets the ramp's colours. `animated` blends from whatever is on screen
+    /// — including part-way through a previous blend, so a quick double skip
+    /// bends toward the newest cover rather than jumping back to start.
+    /// A rebuild passes false: it re-applies the same colours, and the model
+    /// value it sets matches any blend in flight, which carries on.
+    private func applyGradient(animated: Bool = false) {
+        let changed = palette != builtPalette
         builtPalette = palette
+        let next: [CGColor] = [
+            NSColor(palette.primary).cgColor,
+            NSColor(palette.accent).cgColor
+        ]
+        // Nothing to blend from until the strip has been laid out once.
+        let from = animated && changed && builtSize != .zero
+            ? (gradient.presentation()?.colors ?? gradient.colors)
+            : nil
+
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         // Bottom to top, primary to accent. The view is unflipped, so the
@@ -267,10 +286,15 @@ final class EqualizerLayerView: NSView {
         // version, which ran its gradient from y = height up to y = 0.
         gradient.startPoint = CGPoint(x: 0.5, y: 0)
         gradient.endPoint = CGPoint(x: 0.5, y: 1)
-        gradient.colors = [
-            NSColor(palette.primary).cgColor,
-            NSColor(palette.accent).cgColor
-        ]
+        gradient.colors = next
+        if let from {
+            let blend = CABasicAnimation(keyPath: "colors")
+            blend.fromValue = from
+            blend.toValue = next
+            blend.duration = Self.paletteFade
+            blend.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            gradient.add(blend, forKey: "colors")
+        }
         CATransaction.commit()
     }
 

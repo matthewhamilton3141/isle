@@ -288,24 +288,16 @@ struct ExpandedNotchView: View {
     // MARK: - Artwork
 
     private var artwork: some View {
-        Group {
-            if let image = media.artwork {
-                Image(nsImage: image)
-                    .resizable()
-                    .interpolation(.high)
-                    .antialiased(true)
-                    .aspectRatio(contentMode: .fill)
-            } else {
-                LinearGradient(
-                    colors: [palette.primary, palette.secondary],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .overlay {
-                    Image(systemName: "music.note")
-                        .font(.system(size: 22, weight: .medium))
-                        .foregroundStyle(.islandSecondary(0.75))
-                }
+        CoverArt(image: media.artwork, awaiting: viewModel.awaitingCover) {
+            LinearGradient(
+                colors: [palette.primary, palette.secondary],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .overlay {
+                Image(systemName: "music.note")
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(.islandSecondary(0.75))
             }
         }
         // Sized to fill the usable content height (panel 146 minus the

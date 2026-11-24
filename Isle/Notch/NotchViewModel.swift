@@ -592,6 +592,21 @@ final class NotchViewModel: ObservableObject {
     /// an update carries the same image.
     private var paletteArtwork: NSImage?
 
+    /// A new track is on screen and its cover hasn't arrived yet.
+    ///
+    /// Spotify and Music publish the new title first and the cover a moment
+    /// later, once it's downloaded or read. Drawing the no-cover gradient in
+    /// that gap made every skip fade twice — old cover to placeholder, then
+    /// placeholder to new cover — and swung the waveform through the accent
+    /// colours on the way. While this is set, the art slot shows an empty
+    /// tile instead (nothing claimed about the new track) and the palette
+    /// holds where it was, so the cover and the colours each move once, when
+    /// the cover lands. `coverGraceTask` ends the wait for a track that turns
+    /// out to have no cover.
+    @Published private(set) var awaitingCover = false
+    private var coverGraceTask: Task<Void, Never>?
+    private static let coverGrace: Duration = .seconds(1)
+
     /// Position the user is dragging the scrubber to. Non-nil only mid-drag;
     /// while set, the scrubber renders this instead of the live position so
     /// the thumb doesn't fight the playback clock under the finger.
@@ -2579,10 +2594,20 @@ final class NotchViewModel: ObservableObject {
         // NSImage only when they actually fetched or decoded one, so this is
         // exactly the question of whether the cover changed.
         if model.artwork !== paletteArtwork {
-            paletteArtwork = model.artwork
-            // nil artwork leaves this nil rather than storing `.fallback`, so
-            // `palette` can hand over to the accent instead of the greys.
-            artworkPalette = model.artwork.map { ArtworkColors.palette(from: $0) }
+            if model.artwork == nil, model.hasTrack,
+               awaitingCover || (isNewTrack && paletteArtwork != nil) {
+                // New track, cover still on its way: hold the palette. See
+                // `awaitingCover`.
+                // Each new track restarts the grace, so a quick double skip
+                // gives the latest cover its full second.
+                if !awaitingCover || isNewTrack { beginAwaitingCover() }
+            } else {
+                endAwaitingCover()
+                paletteArtwork = model.artwork
+                // nil artwork leaves this nil rather than storing `.fallback`,
+                // so `palette` can hand over to the accent instead of the greys.
+                artworkPalette = model.artwork.map { ArtworkColors.palette(from: $0) }
+            }
         }
 
         // The anchor above is the only thing that needs the timing fields, and
@@ -2591,6 +2616,25 @@ final class NotchViewModel: ObservableObject {
         // (shape, glyph, equalizer bridge, palette) to redraw nothing.
         guard !model.hasSameDisplay(as: media) else { return }
         media = model
+    }
+
+    private func beginAwaitingCover() {
+        awaitingCover = true
+        coverGraceTask?.cancel()
+        coverGraceTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.coverGrace)
+            guard !Task.isCancelled, let self, self.awaitingCover else { return }
+            // No cover came: this track has none, so show what it is.
+            self.awaitingCover = false
+            self.paletteArtwork = nil
+            self.artworkPalette = nil
+        }
+    }
+
+    private func endAwaitingCover() {
+        coverGraceTask?.cancel()
+        coverGraceTask = nil
+        if awaitingCover { awaitingCover = false }
     }
 
     /// Elapsed position extrapolated from the anchor, clamped to the track.
