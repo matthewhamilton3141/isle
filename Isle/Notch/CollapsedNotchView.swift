@@ -315,23 +315,12 @@ struct CollapsedNotchView: View {
     }
 
     func artworkThumbnail(size: CGFloat, radius: CGFloat) -> some View {
-        Group {
-            if let artwork = viewModel.media.artwork {
-                // High interpolation is load-bearing here: this is a ~640px
-                // bitmap being drawn into 22pt, and the default filter aliases
-                // badly at that reduction.
-                Image(nsImage: artwork)
-                    .resizable()
-                    .interpolation(.high)
-                    .antialiased(true)
-                    .aspectRatio(contentMode: .fill)
-            } else {
-                LinearGradient(
-                    colors: [palette.primary, palette.secondary],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            }
+        CoverArt(image: viewModel.media.artwork, awaiting: viewModel.awaitingCover) {
+            LinearGradient(
+                colors: [palette.primary, palette.secondary],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
