@@ -44,6 +44,7 @@ struct HomeGridView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(tab.title)
+                .hoverGrow()
             }
         }
         // The middle tiles run under the camera cutout, whose hardware edge
@@ -439,6 +440,7 @@ struct NotchCrumb: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(attention ? "Home, something needs you" : "Home")
+            .hoverGrow()
             .padding(.trailing, -6)
 
             Text(face.title)
@@ -477,6 +479,7 @@ struct NotchSettingsButton: View {
         .foregroundStyle(.white)
         .help("Isle Settings")
         .accessibilityLabel("Settings")
+        .hoverGrow()
     }
 }
 

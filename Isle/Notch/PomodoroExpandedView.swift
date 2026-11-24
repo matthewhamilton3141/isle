@@ -163,5 +163,6 @@ struct PomodoroExpandedView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .hoverGrow()
     }
 }

@@ -111,6 +111,10 @@ final class IslandPresentation: ObservableObject {
     /// happens on one screen; the face it lands on is the shared choice.
     let pager = FacePager()
 
+    /// The control under the pointer, which grows (`HoverTracker`). Per
+    /// island: its controls are laid out in its own window's space.
+    let hover = HoverTracker()
+
     /// A file drag is over this island, so it's open on the drop face. Set
     /// only through `beginDrop` / `endDrop`, from the window's own dragging
     /// callbacks (see `NotchWindowController`'s drop handling).

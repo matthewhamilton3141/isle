@@ -81,6 +81,7 @@ struct AgendaExpandedView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Open Calendar")
+                    .hoverGrow()
                     .offset(y: -AgendaLayout.cardRaise)
 
                     Spacer(minLength: 0)
@@ -170,6 +171,7 @@ struct AgendaExpandedView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(option.title)
+                .hoverGrow()
             }
         }
         .padding(2)
@@ -417,6 +419,7 @@ struct AgendaRow: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(isTicked ? "Completed" : "Mark as completed")
+                .hoverGrow()
                 .padding(.horizontal, -4)
             }
         }
@@ -451,6 +454,7 @@ struct AgendaRow: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Join call")
+                .hoverGrow()
             case .none:
                 EmptyView()
             }
@@ -503,6 +507,7 @@ struct JoinPill: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Join call")
+        .hoverGrow()
     }
 }
 
@@ -524,5 +529,6 @@ struct RowPill: View {
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .hoverGrow()
     }
 }

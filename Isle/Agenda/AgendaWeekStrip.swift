@@ -49,6 +49,7 @@ struct AgendaWeekStrip: View {
         .buttonStyle(.plain)
         .disabled(!enabled)
         .accessibilityLabel(symbol == "chevron.left" ? "Previous week" : "Next week")
+        .hoverGrow()
     }
 
     private func cell(_ day: Date) -> some View {
@@ -82,5 +83,6 @@ struct AgendaWeekStrip: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(day.formatted(date: .complete, time: .omitted))
+        .hoverGrow()
     }
 }

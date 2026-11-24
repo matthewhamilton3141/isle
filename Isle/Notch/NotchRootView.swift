@@ -498,6 +498,15 @@ struct NotchRootView: View {
                     .transition(.opacity)
             }
         }
+        // Where the controls that grow under the pointer are (`.hoverGrow`),
+        // for the tracker. Not from the material's window, which lays out no
+        // controls and would tell the tracker there are none.
+        .overlayPreferenceValue(HoverGrowKey.self) { items in
+            if glassLayer != .materialOnly, state.isExpanded {
+                HoverTargetsLayer(items: items, tracker: island.hover)
+            }
+        }
+        .environment(\.hoverTracker, glassLayer == .materialOnly ? nil : island.hover)
         // Off the notch and open, the roof: the header and everything under
         // it this much lower, in a panel that much taller
         // (`IslandFloat.openSize`).
